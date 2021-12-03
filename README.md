@@ -42,8 +42,7 @@ export GNUARMEMB_TOOLCHAIN_PATH=/Applications/ARM
 ## Build
 
 ```bash
-$ cd lexxpluss_apps
-$ west build -p auto -b lexxpluss_mb01
+$ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
 ```
 
 ## Program
@@ -54,4 +53,3 @@ $ west build -p auto -b lexxpluss_mb01
 $ brew install stlink
 $ st-flash --reset --connect-under-reset write build/zephyr/zephyr.bin  0x8000000
 ```
-
