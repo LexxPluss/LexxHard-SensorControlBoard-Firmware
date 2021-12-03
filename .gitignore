@@ -1,6 +1,7 @@
 /.west/
 /LexxAuto/
 /bootloader/
+/build/
 /modules/
 /tools/
 /zephyr/
