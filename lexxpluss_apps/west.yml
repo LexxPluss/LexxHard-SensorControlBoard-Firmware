@@ -1,0 +1,14 @@
+manifest:
+  remotes:
+    - name: lexxpluss
+      url-base: https://github.com/LexxPluss
+  projects:
+    - name: zephyr
+      remote: lexxpluss
+      revision: lexxpluss/main
+      import: true
+    - name: LexxAuto
+      remote: lexxpluss
+      path: LexxAuto
+  self:
+    path: lexxpluss_apps
