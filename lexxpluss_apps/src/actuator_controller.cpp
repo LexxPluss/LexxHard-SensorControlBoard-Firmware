@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include "adc_reader.hpp"
 #include "actuator_controller.hpp"
+#include "can_controller.hpp"
 #include "rosdiagnostic.hpp"
 
 k_msgq msgq_actuator2ros;
@@ -259,9 +260,15 @@ public:
             gpio_pin_configure(gpiok, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         int heartbeat_led{1};
         while (true) {
-            msg_ros2actuator message;
-            if (k_msgq_get(&msgq_ros2actuator, &message, K_NO_WAIT) == 0)
-                handle_control(message);
+            bool is_emergency{can_controller::is_emergency()};
+            msg_ros2actuator ros2actuator;
+            if (k_msgq_get(&msgq_ros2actuator, &ros2actuator, K_NO_WAIT) == 0 && !is_emergency)
+                handle_control(ros2actuator);
+            msg_pwmdirect pwmdirect;
+            if (k_msgq_get(&msgq_pwmdirect, &pwmdirect, K_NO_WAIT) == 0 && !is_emergency)
+                handle_pwmdirect(pwmdirect);
+            if (is_emergency)
+                pwm_control_all(msg_ros2actuator::STOP);
             calculator.poll();
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
@@ -321,8 +328,8 @@ public:
             k_msleep(sleep_ms);
         }
         pwm_call_all(msg_ros2actuator::STOP);
-        calculator.reset();
-        if (remaining <= 0) {
+        if (remaining <= 0 && !can_controller::is_emergency()) {
+            calculator.reset();
             location_initialized = true;
             return 0;
         } else {
@@ -375,12 +382,18 @@ public:
             k_msleep(sleep_ms);
         }
         pwm_call_all(msg_ros2actuator::STOP);
-        if (remaining <= 0) {
-            return 0;
+        int result{0};
+        if (can_controller::is_emergency()) {
+            result = -1;
         } else {
-            LOG_WRN("unable to move location.");
-            return -1;
+            for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+                if (detail[i] != 0)
+                    result = -1;
+            }
         }
+        if (result != 0)
+            LOG_WRN("unable to move location.");
+        return result;
     }
     void set_current_monitor() {
         current_monitor = !current_monitor;
