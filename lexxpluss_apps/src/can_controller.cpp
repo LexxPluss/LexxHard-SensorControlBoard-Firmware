@@ -110,6 +110,11 @@ public:
     uint32_t get_rsoc() const {
         return bmu2ros.rsoc;
     }
+    bool is_emergency() const {
+        return board2ros.emergency_switch[0] ||
+               board2ros.emergency_switch[1] ||
+               ros2board.emergency_stop;
+    }
 private:
     void setup_can_filter() const {
         static const zcan_filter filter_bmu{
@@ -265,6 +270,11 @@ void can_controller::run(void *p1, void *p2, void *p3)
 uint32_t can_controller::get_rsoc()
 {
     return impl.get_rsoc();
+}
+
+bool can_controller::is_emergency()
+{
+    return impl.is_emergency();
 }
 
 k_thread can_controller::thread;
