@@ -122,6 +122,7 @@ private:
         sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
         if (HAL_TIMEx_MasterConfigSynchronization(&timh[1], &sMasterConfig) != HAL_OK)
             return -1;
+        HAL_TIM_Encoder_Start(&timh[1], TIM_CHANNEL_ALL);
         return 0;
     }
     int init_tim8() {
@@ -150,6 +151,7 @@ private:
         sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
         if (HAL_TIMEx_MasterConfigSynchronization(&timh[2], &sMasterConfig) != HAL_OK)
             return -1;
+        HAL_TIM_Encoder_Start(&timh[2], TIM_CHANNEL_ALL);
         return 0;
     }
     TIM_HandleTypeDef timh[ACTUATOR_NUM];
