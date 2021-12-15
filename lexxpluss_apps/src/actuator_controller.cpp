@@ -53,6 +53,14 @@ char __aligned(4) msgq_ros2actuator_buffer[8 * sizeof (msg_ros2actuator)];
 
 static constexpr uint32_t ACTUATOR_NUM{3};
 
+struct msg_pwmdirect {
+    bool all{false};
+    int8_t index{0};
+    int8_t direction{msg_ros2actuator::STOP};
+    uint8_t duty{0};
+};
+K_MSGQ_DEFINE(msgq_pwmdirect, sizeof (msg_pwmdirect), 8, 4);
+
 class timer_hal_helper {
 public:
     int init() {
@@ -231,7 +239,6 @@ public:
         gpio_pin_configure(dev_fail_01, 11, GPIO_INPUT | GPIO_ACTIVE_HIGH);
         gpio_pin_configure(dev_fail_01, 12, GPIO_INPUT | GPIO_ACTIVE_HIGH);
         gpio_pin_configure(dev_fail_2, 4, GPIO_INPUT | GPIO_ACTIVE_HIGH);
-        k_mutex_init(&service_mutex);
         return calculator.init();
     }
     void run() {
@@ -239,9 +246,9 @@ public:
             for (uint32_t j{0}; j < 2; ++j) {
                 if (!device_is_ready(dev_pwm[i][j]))
                     return;
-                pwm_pin_set_nsec(dev_pwm[i][j], config[i][j].pin, CONTROL_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
             }
         }
+        pwm_control_all(msg_ros2actuator::STOP);
         wait_encoder_stabilize();
         const device *gpiok = device_get_binding("GPIOK");
         if (gpiok != nullptr)
@@ -292,11 +299,7 @@ public:
     int init_location() {
         LOG_INF("initialize location.");
         location_initialized = false;
-        if (k_mutex_lock(&service_mutex, K_MSEC(30000)) != 0) {
-            LOG_WRN("can not lock mutex.");
-            return -1;
-        }
-        pwm_control_all(msg_ros2actuator::DOWN, 100);
+        pwm_call_all(msg_ros2actuator::DOWN, 100);
         static constexpr uint32_t timeout_ms{30000}, sleep_ms{500};
         int remaining{3};
         for (uint32_t i{0}, end{timeout_ms / sleep_ms}; i < end; ++i) {
@@ -305,7 +308,7 @@ public:
             remaining = 3;
             for (uint32_t j{0}; j < ACTUATOR_NUM; ++j) {
                 if (i >= 2 && value[j] == 0) {
-                    pwm_control(j, msg_ros2actuator::STOP, 0);
+                    pwm_call(j, msg_ros2actuator::STOP, 0);
                     --remaining;
                 }
             }
@@ -313,8 +316,7 @@ public:
                 break;
             k_msleep(sleep_ms);
         }
-        pwm_control_all(msg_ros2actuator::STOP);
-        k_mutex_unlock(&service_mutex);
+        pwm_call_all(msg_ros2actuator::STOP);
         calculator.reset();
         if (remaining <= 0) {
             location_initialized = true;
@@ -332,16 +334,12 @@ public:
             LOG_WRN("location not initialized.");
             return -1;
         }
-        if (k_mutex_lock(&service_mutex, K_MSEC(30000)) != 0) {
-            LOG_WRN("can not lock mutex.");
-            return -1;
-        }
         int direction[ACTUATOR_NUM];
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             if (power[i] != 0) {
                 int32_t diff{static_cast<int32_t>(location[i]) - calculator.get_location(i)};
                 direction[i] = diff < 0 ? msg_ros2actuator::DOWN : msg_ros2actuator::UP;
-                pwm_control(i, direction[i], power[i]);
+                pwm_call(i, direction[i], power[i]);
                 detail[i] = 1;
             } else {
                 direction[i] = msg_ros2actuator::STOP;
@@ -360,7 +358,7 @@ public:
                     (direction[j] == msg_ros2actuator::UP   && diff <= 0) ||
                     (direction[j] != msg_ros2actuator::STOP && i >= 5 && value[j] == 0)) {
                     direction[j] = msg_ros2actuator::STOP;
-                    pwm_control(j, msg_ros2actuator::STOP, 0);
+                    pwm_call(j, msg_ros2actuator::STOP, 0);
                     detail[j] = 0;
                     --remaining;
                 } else if (direction[j] == msg_ros2actuator::STOP) {
@@ -371,8 +369,7 @@ public:
                 break;
             k_msleep(sleep_ms);
         }
-        pwm_control_all(msg_ros2actuator::STOP);
-        k_mutex_unlock(&service_mutex);
+        pwm_call_all(msg_ros2actuator::STOP);
         if (remaining <= 0) {
             return 0;
         } else {
@@ -392,11 +389,14 @@ public:
     }
 private:
     void handle_control(const msg_ros2actuator &msg) {
-        if (k_mutex_lock(&service_mutex, K_MSEC(10)) != 0)
-            return;
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
             pwm_control(i, msg.actuators[i].direction, msg.actuators[i].power);
-        k_mutex_unlock(&service_mutex);
+    }
+    void handle_pwmdirect(const msg_pwmdirect &msg) {
+        if (msg.all)
+            pwm_control_all(msg.direction, msg.duty);
+        else
+            pwm_control(msg.index, msg.direction, msg.duty);
     }
     void pwm_control_all(int direction, uint8_t pwm_duty = 0) const {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
@@ -417,6 +417,22 @@ private:
             }
         }
     }
+    void pwm_call_all(int direction, uint8_t pwm_duty = 0) const {
+        msg_pwmdirect message;
+        message.all = true;
+        message.direction = direction;
+        message.duty = pwm_duty;
+        while (k_msgq_put(&msgq_pwmdirect, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq_pwmdirect);
+    }
+    void pwm_call(int index, int direction, uint8_t pwm_duty) const {
+        msg_pwmdirect message;
+        message.index = index;
+        message.direction = direction;
+        message.duty = pwm_duty;
+        while (k_msgq_put(&msgq_pwmdirect, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq_pwmdirect);
+    }
     void get_current(int32_t (&data)[ACTUATOR_NUM]) const {
         data[0] = adc_reader::get(adc_reader::INDEX_ACTUATOR_0);
         data[1] = adc_reader::get(adc_reader::INDEX_ACTUATOR_1);
@@ -434,7 +450,6 @@ private:
     }
     location_calculator calculator;
     msg_actuator2ros actuator2ros;
-    k_mutex service_mutex;
     uint32_t prev_cycle{0};
     bool location_initialized{false}, current_monitor{false};
     const device *dev_pwm[ACTUATOR_NUM][2]{{nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}};
