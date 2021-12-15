@@ -199,6 +199,10 @@ public:
             prev_pulse_value[i] = pulse_value[i];
         }
     }
+    bool is_near(int index, int32_t location, int32_t thres_mm = 2) const {
+        int32_t diff_abs{abs(location - get_location(index))};
+        return diff_abs < thres_mm;
+    }
 private:
     void update_pulse(int index, int pulse) {
         pulse_value[index] += -pulse;
@@ -359,7 +363,8 @@ public:
                     (direction[j] != msg_ros2actuator::STOP && i >= 5 && value[j] == 0)) {
                     direction[j] = msg_ros2actuator::STOP;
                     pwm_call(j, msg_ros2actuator::STOP, 0);
-                    detail[j] = 0;
+                    if (calculator.is_near(j, location[j]))
+                        detail[j] = 0;
                     --remaining;
                 } else if (direction[j] == msg_ros2actuator::STOP) {
                     --remaining;
