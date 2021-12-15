@@ -445,7 +445,8 @@ private:
 
 static int cmd_init(const shell *shell, size_t argc, char **argv)
 {
-    impl.init_location();
+    if (impl.init_location() != 0)
+        shell_print(shell, "init error.");
     return 0;
 }
 
@@ -474,7 +475,8 @@ static int cmd_locate(const shell *shell, size_t argc, char **argv)
         shell_error(shell, "Usage: %s %s <location> <power> ...\n", argv[-1], argv[0]);
         return 1;
     }
-    impl.to_location(location, power, detail);
+    if (impl.to_location(location, power, detail) != 0)
+        shell_print(shell, "location error.");
     return 0;
 }
 
