@@ -11,6 +11,11 @@ jobs:
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
+      - name: credential
+        uses: fusion-engineering/setup-git-credentials@v2
+        id: credential
+        with:
+          credentials: ${{secrets.GIT_CREDENTIALS}}
       - name: Checkout
         uses: actions/checkout@v2
       - name: Cache
