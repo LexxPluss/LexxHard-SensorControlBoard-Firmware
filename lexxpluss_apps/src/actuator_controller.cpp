@@ -1,39 +1,42 @@
+#include <zephyr.h>
 #include <device.h>
 #include <drivers/gpio.h>
 #include <drivers/pwm.h>
 #include <logging/log.h>
 #include <shell/shell.h>
+#include <cmath>
 #include <cstdlib>
-#include "adc_reader.hpp"
+#include <tuple>
 #include "actuator_controller.hpp"
+#include "adc_reader.hpp"
 #include "can_controller.hpp"
 #include "rosdiagnostic.hpp"
 
 extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
 {
     GPIO_InitTypeDef GPIO_InitStruct{0};
-    if(htim_encoder->Instance==TIM1) {
+    if(htim_encoder->Instance == TIM1) {
         __HAL_RCC_TIM1_CLK_ENABLE();
         __HAL_RCC_GPIOE_CLK_ENABLE();
-        GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_11;
+        GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_11;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
         GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
         HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-    } else if(htim_encoder->Instance==TIM5) {
+    } else if(htim_encoder->Instance == TIM5) {
         __HAL_RCC_TIM5_CLK_ENABLE();
         __HAL_RCC_GPIOH_CLK_ENABLE();
-        GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+        GPIO_InitStruct.Pin = GPIO_PIN_10 | GPIO_PIN_11;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
         GPIO_InitStruct.Alternate = GPIO_AF2_TIM5;
         HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
-    } else if(htim_encoder->Instance==TIM8) {
+    } else if(htim_encoder->Instance == TIM8) {
         __HAL_RCC_TIM8_CLK_ENABLE();
         __HAL_RCC_GPIOC_CLK_ENABLE();
-        GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
+        GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -51,172 +54,325 @@ char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
 static constexpr uint32_t ACTUATOR_NUM{3};
 
-struct msg_pwmdirect {
+struct msg_pwmtrampoline {
     bool all{false};
     int8_t index{0};
     int8_t direction{msg_control::STOP};
     uint8_t duty{0};
 };
-K_MSGQ_DEFINE(msgq_pwmdirect, sizeof (msg_pwmdirect), 8, 4);
+K_MSGQ_DEFINE(msgq_pwmtrampoline, sizeof (msg_pwmtrampoline), 8, 4);
 
-class timer_hal_helper {
-public:
-    int init() {
-        if (init_tim1() != 0 || init_tim5() != 0 || init_tim8() != 0)
-            return -1;
-        return 0;
-    }
-    void get_count(int16_t (&data)[ACTUATOR_NUM]) const {
-        data[0] = TIM1->CNT;
-        TIM1->CNT = 0;
-        data[1] = TIM8->CNT;
-        TIM8->CNT = 0;
-        data[2] = TIM5->CNT;
-        TIM5->CNT = 0;
-    }
-private:
-    int init_tim1() {
-        TIM_Encoder_InitTypeDef sConfig{0};
-        timh[0].Instance = TIM1;
-        timh[0].Init.Prescaler = 0;
-        timh[0].Init.CounterMode = TIM_COUNTERMODE_UP;
-        timh[0].Init.Period = 65535;
-        timh[0].Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-        timh[0].Init.RepetitionCounter = 0;
-        timh[0].Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-        sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-        sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC1Filter = 0b1111;
-        sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC2Filter = 0b1111;
-        if (HAL_TIM_Encoder_Init(&timh[0], &sConfig) != HAL_OK)
-            return -1;
-        TIM_MasterConfigTypeDef sMasterConfig{0};
-        sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-        sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
-        sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-        if (HAL_TIMEx_MasterConfigSynchronization(&timh[0], &sMasterConfig) != HAL_OK)
-            return -1;
-        HAL_TIM_Encoder_Start(&timh[0], TIM_CHANNEL_ALL);
-        return 0;
-    }
-    int init_tim5() {
-        TIM_Encoder_InitTypeDef sConfig{0};
-        timh[1].Instance = TIM5;
-        timh[1].Init.Prescaler = 0;
-        timh[1].Init.CounterMode = TIM_COUNTERMODE_UP;
-        timh[1].Init.Period = 4294967295;
-        timh[1].Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-        timh[1].Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-        sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-        sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC1Filter = 0b1111;
-        sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC2Filter = 0b1111;
-        if (HAL_TIM_Encoder_Init(&timh[1], &sConfig) != HAL_OK)
-            return -1;
-        TIM_MasterConfigTypeDef sMasterConfig{0};
-        sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-        sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-        if (HAL_TIMEx_MasterConfigSynchronization(&timh[1], &sMasterConfig) != HAL_OK)
-            return -1;
-        HAL_TIM_Encoder_Start(&timh[1], TIM_CHANNEL_ALL);
-        return 0;
-    }
-    int init_tim8() {
-        TIM_Encoder_InitTypeDef sConfig{0};
-        timh[2].Instance = TIM8;
-        timh[2].Init.Prescaler = 0;
-        timh[2].Init.CounterMode = TIM_COUNTERMODE_UP;
-        timh[2].Init.Period = 65535;
-        timh[2].Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-        timh[2].Init.RepetitionCounter = 0;
-        timh[2].Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-        sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-        sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC1Filter = 0b1111;
-        sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC2Filter = 0b1111;
-        if (HAL_TIM_Encoder_Init(&timh[2], &sConfig) != HAL_OK)
-            return -1;
-        TIM_MasterConfigTypeDef sMasterConfig{0};
-        sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-        sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
-        sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-        if (HAL_TIMEx_MasterConfigSynchronization(&timh[2], &sMasterConfig) != HAL_OK)
-            return -1;
-        HAL_TIM_Encoder_Start(&timh[2], TIM_CHANNEL_ALL);
-        return 0;
-    }
-    TIM_HandleTypeDef timh[ACTUATOR_NUM];
+template<typename T>
+inline const T &constrain(const T &val, const T &min, const T &max)
+{
+    return val < min ? min : (val > max ? max : val);
+}
+
+enum class POS {
+    LEFT, CENTER, RIGHT
 };
 
-class location_calculator {
+class encoder {
 public:
-    location_calculator() {
-        mm_per_pulse[0] = 50.0f / 525.0f;
-        mm_per_pulse[1] = 50.0f / 1050.0f;
-        mm_per_pulse[2] = 50.0f / 525.0f;
+    int init(TIM_TypeDef *tim) {
+        this->tim = tim;
+        TIM_Encoder_InitTypeDef sConfig{0};
+        TIM_MasterConfigTypeDef sMasterConfig{0};
+        if (tim == TIM1 || tim == TIM8) {
+            timh.Init.Period = 65535;
+            timh.Init.RepetitionCounter = 0;
+            sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+        } else if (tim == TIM5) {
+            timh.Init.Period = 4294967295;
+        }
+        timh.Instance = tim;
+        timh.Init.Prescaler = 0;
+        timh.Init.CounterMode = TIM_COUNTERMODE_UP;
+        timh.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+        timh.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+        sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+        sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+        sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+        sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+        sConfig.IC1Filter = 0b1111;
+        sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+        sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+        sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+        sConfig.IC2Filter = 0b1111;
+        if (HAL_TIM_Encoder_Init(&timh, &sConfig) != HAL_OK)
+            return -1;
+        sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+        sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+        if (HAL_TIMEx_MasterConfigSynchronization(&timh, &sMasterConfig) != HAL_OK)
+            return -1;
+        HAL_TIM_Encoder_Start(&timh, TIM_CHANNEL_ALL);
+        return 0;
     }
-    int init() {
-        reset();
-        return helper.init();
+    int16_t get() const {
+        int16_t count{static_cast<int16_t>(tim->CNT)};
+        tim->CNT = 0;
+        return count;
+    }
+private:
+    TIM_TypeDef *tim{nullptr};
+    TIM_HandleTypeDef timh;
+};
+
+class counter {
+public:
+    int init(POS pos) {
+        int result{0};
+        switch (pos) {
+        case POS::LEFT:
+            result = enc.init(TIM1);
+            mm_per_pulse = 50.0f / 538.0f;
+            break;
+        case POS::CENTER:
+            result = enc.init(TIM8);
+            mm_per_pulse = 50.0f / 1054.0f;
+            break;
+        case POS::RIGHT:
+            result = enc.init(TIM5);
+            mm_per_pulse = 50.0f / 538.0f;
+            break;
+        }
+        reset_pulse();
+        return result;
     }
     void reset() {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-            pulse_value[i] = prev_pulse_value[i] = 0;
+        reset_pulse();
+        wait_stabilize();
+        reset_pulse();
     }
-    void poll() {
-        int16_t d[ACTUATOR_NUM];
-        helper.get_count(d);
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-            update_pulse(i, d[i]);
+    void poll(uint32_t dt_ms) {
+        int16_t pulse{update_pulse()};
+        if (dt_ms != 0)
+            velocity = static_cast<float>(pulse) * mm_per_pulse * 1000.0f / static_cast<float>(dt_ms) + 0.5f;
     }
-    int32_t get_location(int index) const {
-        return static_cast<float>(pulse_value[index]) * mm_per_pulse[index];
+    int32_t get_location() const {return pulse_value * mm_per_pulse;}
+    int32_t get_velocity() const {return velocity;}
+    int32_t get_pulse() const {return pulse_value;}
+    int32_t get_delta_pulse() {
+        int32_t value{pulse_value - prev_pulse_value};
+        prev_pulse_value = pulse_value;
+        return value;
     }
-    void get_pulse(int32_t (&value)[ACTUATOR_NUM]) const {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-            value[i] = pulse_value[i];
-    }
-    void get_delta_pulse(int32_t (&value)[ACTUATOR_NUM]) {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-            value[i] = pulse_value[i] - prev_pulse_value[i];
-            prev_pulse_value[i] = pulse_value[i];
-        }
-    }
-    bool is_near(int index, int32_t location, int32_t thres_mm = 2) const {
-        int32_t diff_abs{abs(location - get_location(index))};
+    bool is_near(int32_t location, int32_t thres_mm = 2) const {
+        int32_t diff_abs{abs(location - get_location())};
         return diff_abs < thres_mm;
     }
 private:
-    void update_pulse(int index, int pulse) {
-        pulse_value[index] += pulse;
+    void reset_pulse() {
+        pulse_value = prev_pulse_value = 0;
     }
-    timer_hal_helper helper;
-    int32_t pulse_value[ACTUATOR_NUM]{0, 0, 0}, prev_pulse_value[ACTUATOR_NUM]{0, 0, 0};
-    float mm_per_pulse[ACTUATOR_NUM];
+    void wait_stabilize() {
+        for (int i{0}; i < 10; ++i) {
+            update_pulse();
+            if (get_delta_pulse() == 0)
+                break;
+            k_msleep(100);
+        }
+    }
+    int16_t update_pulse() {
+        int16_t pulse{enc.get()};
+        pulse_value += pulse;
+        return pulse;
+    }
+    encoder enc;
+    float mm_per_pulse{0.0f};
+    int32_t velocity{0}, pulse_value{0}, prev_pulse_value{0};
 };
 
-static const struct {
-    const char *name;
-    uint32_t pin;
-} config[ACTUATOR_NUM][2]{
-    {{"PWM_12", 1}, {"PWM_2", 3}},
-    {{"PWM_14", 1}, {"PWM_4", 1}},
-    {{"PWM_3",  3}, {"PWM_9", 1}}
+class pwm_driver {
+public:
+    int init(POS pos) {
+        switch (pos) {
+        case POS::LEFT:
+            dev[0] = device_get_binding("PWM_12");
+            dev[1] = device_get_binding("PWM_2");
+            pin[0] = 1;
+            pin[1] = 3;
+            break;
+        case POS::CENTER:
+            dev[0] = device_get_binding("PWM_14");
+            dev[1] = device_get_binding("PWM_4");
+            pin[0] = 1;
+            pin[1] = 1;
+            break;
+        case POS::RIGHT:
+            dev[0] = device_get_binding("PWM_3");
+            dev[1] = device_get_binding("PWM_9");
+            pin[0] = 3;
+            pin[1] = 1;
+            break;
+        }
+        if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
+            return -1;
+        set_duty(msg_control::STOP);
+        return 0;
+    }
+    void set_duty(int8_t direction, uint8_t duty = 0) const {
+        uint32_t pulse_ns[2]{0, 0};
+        if (direction != msg_control::STOP && duty != 0) {
+            uint32_t ns{duty * CONTROL_PERIOD_NS / 100};
+            pulse_ns[direction > msg_control::STOP ? 0 : 1] = ns;
+        }
+        pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
+        pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
+    }
+private:
+    uint32_t pin[2]{0, 0};
+    const device *dev[2]{nullptr, nullptr};
+    static constexpr uint32_t CONTROL_HZ{10000};
+    static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
+};
+
+class position_control {
+public:
+    position_control(counter &cnt) : cnt(cnt) {}
+    std::tuple<bool, int8_t, float> poll(uint32_t dt_ms) {
+        if (!activated)
+            return {false, msg_control::STOP, 0.0f};
+        float control{0.0f};
+        int32_t diff_position{target_position - cnt.get_location()};
+        int8_t direction{diff_position < 0 ? msg_control::DOWN : msg_control::UP};
+        if (activated) {
+            float dt{dt_ms * 1e-3f};
+            int32_t target_velocity{static_cast<int32_t>(diff_position * POS_P)};
+            if (target_velocity < 0 && target_velocity > -vel_min)
+                target_velocity = -vel_min;
+            if (target_velocity > 0 && target_velocity < vel_min)
+                target_velocity = vel_min;
+            target_velocity = constrain(target_velocity, -vel_max, vel_max);
+            int32_t diff_velocity{target_velocity - cnt.get_velocity()};
+            float control_p{diff_velocity * VEL_P};
+            control_i += diff_velocity * dt * VEL_I;
+            control_p = constrain(control_p, -1.0f, 1.0f);
+            control_i = constrain(control_i, -1.0f, 1.0f);
+            control = control_p + control_i;
+            control = constrain(control, -1.0f, 1.0f);
+            control *= 0.3f;
+            control += direction == msg_control::UP ? 0.7f : -0.7f;
+        }
+        return {activated, direction, control};
+    }
+    void on(int32_t target_position, int32_t target_power) {
+        this->target_position = target_position;
+        this->vel_max = 20 * target_power / 100;
+        this->vel_min = 10 * target_power / 100;
+        activated = true;
+    }
+    void off() {
+        control_i = 0.0f;
+        target_position = 0;
+        vel_max = 20;
+        vel_min = 10;
+        activated = false;
+    }
+    bool is_near(int32_t thres_mm = 2) const {
+        return cnt.is_near(target_position, thres_mm);
+    }
+    // void set_param(float pp, float vp, float vi) {
+    //     POS_P = pp;
+    //     VEL_P = vp;
+    //     VEL_I = vi;
+    // }
+private:
+    counter &cnt;
+    float control_i{0.0f};
+    int32_t target_position{0}, vel_max{20}, vel_min{10};
+    bool activated{false};
+    static constexpr float POS_P{1.0f}, VEL_P{0.0f}, VEL_I{0.13f};
+};
+
+class actuator {
+public:
+    int init(POS pos) {
+        if (pwm.init(pos) != 0)
+            return -1;
+        cnt.init(pos);
+        switch (pos) {
+        case POS::LEFT:
+            current_adc = adc_reader::ACTUATOR_0;
+            fail_checker.init("GPIOF", 12);
+            break;
+        case POS::CENTER:
+            current_adc = adc_reader::ACTUATOR_1;
+            fail_checker.init("GPIOF", 11);
+            break;
+        case POS::RIGHT:
+            current_adc = adc_reader::ACTUATOR_2;
+            fail_checker.init("GPIOJ", 4);
+            break;
+        }
+        if (!fail_checker.ready())
+            return -1;
+        return 0;
+    }
+    void poll() {
+        uint32_t now_cycle{k_cycle_get_32()}, dt_ms{0};
+        if (prev_cycle != 0)
+            dt_ms = k_cyc_to_ms_near32(now_cycle - prev_cycle);
+        prev_cycle = now_cycle;
+        if (dt_ms > 0) {
+            cnt.poll(dt_ms);
+            auto [activated, direction, control]{posctl.poll(dt_ms)};
+            if (activated) {
+                if (float control_abs{fabsf(control)}; control_abs < 0.1f || posctl.is_near()) {
+                    posctl.off();
+                    pwm.set_duty(msg_control::STOP);
+                } else {
+                    uint8_t duty{static_cast<uint8_t>(control_abs * 100)};
+                    pwm.set_duty(direction, duty);
+                }
+            }
+        }
+    }
+    void to_location(int32_t location, int32_t power) {
+        posctl.on(location, power);
+    }
+    void direct(int direction, uint8_t duty) {
+        posctl.off();
+        pwm.set_duty(direction, duty);
+    }
+    bool is_moving() {
+        return cnt.get_delta_pulse() != 0;
+    }
+    void reset() {
+        cnt.reset();
+    }
+    std::tuple<int32_t, int32_t, bool> get_info() const {
+        return {
+            cnt.get_pulse(),
+            current_adc >= 0 ? adc_reader::get(current_adc) : 0,
+            fail_checker.is_failed()
+        };
+    }
+    // void set_param(float pp, float vp, float vi) {
+    //     posctl.set_param(pp, vp, vi);
+    // }
+private:
+    counter cnt;
+    pwm_driver pwm;
+    position_control posctl{cnt};
+    uint32_t prev_cycle{0};
+    int32_t current_adc{-1};
+    class {
+    public:
+        void init(const char *devname, uint32_t pin) {
+            dev = device_get_binding(devname);
+            if (device_is_ready(dev))
+                gpio_pin_configure(dev, pin, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            this->pin = pin;
+        }
+        bool ready() const {return device_is_ready(dev);}
+        bool is_failed() const {
+            return ready() ? gpio_pin_get(dev, pin) == 0 : false;
+        }
+    private:
+        uint32_t pin{0};
+        const device *dev{nullptr};
+    } fail_checker;
 };
 
 class actuator_controller_impl {
@@ -224,60 +380,48 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        prev_cycle = k_cycle_get_32();
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-            for (uint32_t j{0}; j < 2; ++j) {
-                dev_pwm[i][j] = device_get_binding(config[i][j].name);
-                if (dev_pwm[i][j] == nullptr)
-                    return -1;
-            }
-        }
-        dev_power = device_get_binding("GPIOB");
-        dev_fail_01 = device_get_binding("GPIOF");
-        dev_fail_2 = device_get_binding("GPIOJ");
-        if (dev_power == nullptr || dev_fail_01 == nullptr || dev_fail_2 == nullptr)
+        if (act[0].init(POS::LEFT) != 0 ||
+            act[1].init(POS::CENTER) != 0 ||
+            act[2].init(POS::RIGHT) != 0)
             return -1;
-        gpio_pin_configure(dev_power, 1, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(dev_fail_01, 11, GPIO_INPUT | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(dev_fail_01, 12, GPIO_INPUT | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(dev_fail_2, 4, GPIO_INPUT | GPIO_ACTIVE_HIGH);
-        return calculator.init();
+        return 0;
     }
     void run() {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-            for (uint32_t j{0}; j < 2; ++j) {
-                if (!device_is_ready(dev_pwm[i][j]))
-                    return;
-            }
-        }
-        pwm_control_all(msg_control::STOP);
-        wait_encoder_stabilize();
+
+        if (const device *dev_enable = device_get_binding("GPIOB"); device_is_ready(dev_enable))
+            gpio_pin_configure(dev_enable, 1, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         const device *gpiok = device_get_binding("GPIOK");
-        if (gpiok != nullptr)
+        if (device_is_ready(gpiok))
             gpio_pin_configure(gpiok, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         int heartbeat_led{1};
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            act[i].reset();
+        uint32_t prev_cycle{k_cycle_get_32()};
         while (true) {
+            for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+                act[i].poll();
             bool is_emergency{can_controller::is_emergency()};
             msg_control ros2actuator;
             if (k_msgq_get(&msgq_control, &ros2actuator, K_NO_WAIT) == 0 && !is_emergency)
                 handle_control(ros2actuator);
-            msg_pwmdirect pwmdirect;
-            if (k_msgq_get(&msgq_pwmdirect, &pwmdirect, K_NO_WAIT) == 0 && !is_emergency)
-                handle_pwmdirect(pwmdirect);
+            msg_pwmtrampoline pwmtrampoline;
+            if (k_msgq_get(&msgq_pwmtrampoline, &pwmtrampoline, K_NO_WAIT) == 0 && !is_emergency)
+                handle_pwmtrampoline(pwmtrampoline);
             if (is_emergency)
-                pwm_control_all(msg_control::STOP);
-            calculator.poll();
+                pwm_direct_all(msg_control::STOP);
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
             if (dt_ms > 100) {
                 prev_cycle = now_cycle;
-                calculator.get_pulse(actuator2ros.encoder_count);
-                get_current(actuator2ros.current);
-                actuator2ros.connect = get_trolley();
-                get_fail(actuator2ros.fail);
+                for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+                    std::tie(actuator2ros.encoder_count[i],
+                             actuator2ros.current[i],
+                             actuator2ros.fail[i]) = act[i].get_info();
+                }
+                actuator2ros.connect = adc_reader::get(adc_reader::TROLLEY);
                 while (k_msgq_put(&msgq, &actuator2ros, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
-                if (gpiok != nullptr) {
+                if (device_is_ready(gpiok)) {
                     gpio_pin_set(gpiok, 4, heartbeat_led);
                     heartbeat_led = !heartbeat_led;
                 }
@@ -293,48 +437,22 @@ public:
             k_msleep(5000);
         }
     }
-    void wait_encoder_stabilize() {
-        for (int i{0}; i < 10; ++i) {
-            int32_t value[ACTUATOR_NUM];
-            calculator.poll();
-            calculator.get_delta_pulse(value);
-            if (value[0] == 0 && value[1] == 0 && value[2] == 0)
-                break;
-            k_msleep(100);
-        }
-        calculator.reset();
-    }
     int init_location() {
         LOG_INF("initialize location.");
         location_initialized = false;
-        pwm_call_all(msg_control::DOWN, 100);
-        static constexpr uint32_t timeout_ms{30000}, sleep_ms{500};
-        int remaining{3};
-        for (uint32_t i{0}, end{timeout_ms / sleep_ms}; i < end; ++i) {
-            int32_t value[ACTUATOR_NUM];
-            calculator.get_delta_pulse(value);
-            remaining = 3;
-            for (uint32_t j{0}; j < ACTUATOR_NUM; ++j) {
-                if (i >= 2 && value[j] == 0) {
-                    pwm_call(j, msg_control::STOP, 0);
-                    --remaining;
-                }
-            }
-            if (remaining <= 0)
-                break;
-            k_msleep(sleep_ms);
-        }
-        pwm_call_all(msg_control::STOP);
-        if (remaining <= 0 && !can_controller::is_emergency()) {
-            calculator.reset();
-            location_initialized = true;
-            return 0;
-        } else {
+        pwm_trampoline_all(msg_control::DOWN, 100);
+        bool stopped{wait_actuator_stop(30000, 500)};
+        pwm_trampoline_all(msg_control::STOP);
+        if (!stopped || can_controller::is_emergency()) {
             LOG_WRN("can not initialize location.");
             return -1;
         }
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            act[i].reset();
+        location_initialized = true;
+        return 0;
     }
-    int to_location(const uint8_t location[ACTUATOR_NUM], const uint8_t power[ACTUATOR_NUM], uint8_t detail[ACTUATOR_NUM]) {
+    int to_location(const uint8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[ACTUATOR_NUM], uint8_t (&detail)[ACTUATOR_NUM]) {
         LOG_INF("move location.");
         if (!location_initialized) {
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
@@ -342,35 +460,67 @@ public:
             LOG_WRN("location not initialized.");
             return -1;
         }
-        int direction[ACTUATOR_NUM];
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-            if (power[i] != 0) {
-                int32_t diff{static_cast<int32_t>(location[i]) - calculator.get_location(i)};
-                direction[i] = diff < 0 ? msg_control::DOWN : msg_control::UP;
-                pwm_call(i, direction[i], power[i]);
-                detail[i] = 1;
-            } else {
-                direction[i] = msg_control::STOP;
-                detail[i] = 0;
-            }
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            act[i].to_location(location[i], power[i]);
+        bool stopped{wait_actuator_stop(30000, 20)};
+        pwm_trampoline_all(msg_control::STOP);
+        if (!stopped || can_controller::is_emergency()) {
+            LOG_WRN("unable to move location.");
+            return -1;
         }
-        static constexpr uint32_t timeout_ms{30000}, sleep_ms{20};
+        return 0;
+    }
+    void set_current_monitor() {
+    }
+    void info(const shell *shell) const {
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+            auto [pulse, current, fail] = act[i].get_info();
+            shell_print(shell, "actuator: %d encoder: %d pulse current: %d mV", i, pulse, current);
+        }
+    }
+    void pwm_trampoline(int index, int direction, uint8_t pwm_duty = 0) const {
+        msg_pwmtrampoline message;
+        message.all = false;
+        message.index = index;
+        message.direction = direction;
+        message.duty = pwm_duty;
+        while (k_msgq_put(&msgq_pwmtrampoline, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq_pwmtrampoline);
+    }
+    // void set_param(float pp, float vp, float vi) {
+    //     for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+    //         act[i].set_param(pp, vp, vi);
+    // }
+private:
+    void handle_control(const msg_control &msg) {
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            act[i].direct(msg.actuators[i].direction, msg.actuators[i].power);
+    }
+    void handle_pwmtrampoline(const msg_pwmtrampoline &msg) {
+        if (msg.all)
+            pwm_direct_all(msg.direction, msg.duty);
+        else
+            act[msg.index].direct(msg.direction, msg.duty);
+    }
+    void pwm_direct_all(int direction, uint8_t pwm_duty = 0) {
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            act[i].direct(direction, pwm_duty);
+    }
+    void pwm_trampoline_all(int direction, uint8_t pwm_duty = 0) const {
+        msg_pwmtrampoline message;
+        message.all = true;
+        message.direction = direction;
+        message.duty = pwm_duty;
+        while (k_msgq_put(&msgq_pwmtrampoline, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq_pwmtrampoline);
+    }
+    bool wait_actuator_stop(uint32_t timeout_ms, uint32_t sleep_ms) {
         int remaining{3};
         for (uint32_t i{0}, end{timeout_ms / sleep_ms}; i < end; ++i) {
-            int32_t value[ACTUATOR_NUM];
-            calculator.get_delta_pulse(value);
             remaining = 3;
             for (uint32_t j{0}; j < ACTUATOR_NUM; ++j) {
-                int32_t diff{static_cast<int32_t>(location[j]) - calculator.get_location(j)};
-                if ((direction[j] == msg_control::DOWN && diff >= 0) ||
-                    (direction[j] == msg_control::UP   && diff <= 0) ||
-                    (direction[j] != msg_control::STOP && i >= 5 && value[j] == 0)) {
-                    direction[j] = msg_control::STOP;
-                    pwm_call(j, msg_control::STOP, 0);
-                    if (calculator.is_near(j, location[j]))
-                        detail[j] = 0;
-                    --remaining;
-                } else if (direction[j] == msg_control::STOP) {
+                if (i >= 2 && !act[j].is_moving()) {
+                    pwm_trampoline(j, msg_control::STOP);
                     --remaining;
                 }
             }
@@ -378,100 +528,27 @@ public:
                 break;
             k_msleep(sleep_ms);
         }
-        pwm_call_all(msg_control::STOP);
-        int result{0};
-        if (can_controller::is_emergency()) {
-            result = -1;
-        } else {
-            for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-                if (detail[i] != 0)
-                    result = -1;
-            }
-        }
-        if (result != 0)
-            LOG_WRN("unable to move location.");
-        return result;
+        return remaining <= 0;
     }
-    void set_current_monitor() {
-        current_monitor = !current_monitor;
-    }
-    void info(const shell *shell) const {
-        int32_t encoder[ACTUATOR_NUM], current[ACTUATOR_NUM];
-        calculator.get_pulse(encoder);
-        get_current(current);
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-            shell_print(shell, "actuator: %d encoder: %dpulse current: %dmV", i, encoder[i], current[i]);
-    }
-private:
-    void handle_control(const msg_control &msg) {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-            pwm_control(i, msg.actuators[i].direction, msg.actuators[i].power);
-    }
-    void handle_pwmdirect(const msg_pwmdirect &msg) {
-        if (msg.all)
-            pwm_control_all(msg.direction, msg.duty);
-        else
-            pwm_control(msg.index, msg.direction, msg.duty);
-    }
-    void pwm_control_all(int direction, uint8_t pwm_duty = 0) const {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-            pwm_control(i, direction, pwm_duty);
-    }
-    void pwm_control(int index, int direction, uint8_t pwm_duty) const {
-        if (direction == msg_control::STOP || pwm_duty == 0) {
-            for (uint32_t i{0}; i < 2; ++i)
-                pwm_pin_set_nsec(dev_pwm[index][i], config[index][i].pin, CONTROL_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
-        } else {
-            uint32_t pulse_ns{pwm_duty * CONTROL_PERIOD_NS / 100};
-            if (direction < msg_control::STOP) {
-                pwm_pin_set_nsec(dev_pwm[index][0], config[index][0].pin, CONTROL_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
-                pwm_pin_set_nsec(dev_pwm[index][1], config[index][1].pin, CONTROL_PERIOD_NS, pulse_ns, PWM_POLARITY_NORMAL);
-            } else {
-                pwm_pin_set_nsec(dev_pwm[index][0], config[index][0].pin, CONTROL_PERIOD_NS, pulse_ns, PWM_POLARITY_NORMAL);
-                pwm_pin_set_nsec(dev_pwm[index][1], config[index][1].pin, CONTROL_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
-            }
-        }
-    }
-    void pwm_call_all(int direction, uint8_t pwm_duty = 0) const {
-        msg_pwmdirect message;
-        message.all = true;
-        message.direction = direction;
-        message.duty = pwm_duty;
-        while (k_msgq_put(&msgq_pwmdirect, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&msgq_pwmdirect);
-    }
-    void pwm_call(int index, int direction, uint8_t pwm_duty) const {
-        msg_pwmdirect message;
-        message.index = index;
-        message.direction = direction;
-        message.duty = pwm_duty;
-        while (k_msgq_put(&msgq_pwmdirect, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&msgq_pwmdirect);
-    }
-    void get_current(int32_t (&data)[ACTUATOR_NUM]) const {
-        data[0] = adc_reader::get(adc_reader::ACTUATOR_0);
-        data[1] = adc_reader::get(adc_reader::ACTUATOR_1);
-        data[2] = adc_reader::get(adc_reader::ACTUATOR_2);
-        if (current_monitor)
-            LOG_INF("current: %8d %8d %8d", data[0], data[1], data[2]);
-    }
-    int32_t get_trolley() const {
-        return adc_reader::get(adc_reader::TROLLEY);
-    }
-    void get_fail(bool (&fail)[ACTUATOR_NUM]) const {
-        fail[0] = gpio_pin_get(dev_fail_01, 11) == 0;
-        fail[1] = gpio_pin_get(dev_fail_01, 12) == 0;
-        fail[2] = gpio_pin_get(dev_fail_2, 4) == 0;
-    }
-    location_calculator calculator;
     msg actuator2ros;
-    uint32_t prev_cycle{0};
-    bool location_initialized{false}, current_monitor{false};
-    const device *dev_pwm[ACTUATOR_NUM][2]{{nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}};
-    const device *dev_power{nullptr}, *dev_fail_01{nullptr}, *dev_fail_2{nullptr};
-    static constexpr uint32_t CONTROL_HZ{5000};
-    static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
+    actuator act[3];
+    bool location_initialized{false};
 } impl;
+
+int cmd_duty(const shell *shell, size_t argc, char **argv)
+{
+    if (argc != 3 && argc != 5 && argc != 7) {
+        shell_error(shell, "Usage: %s %s <duty> <power> ...\n", argv[-1], argv[0]);
+        return 1;
+    }
+    for (size_t i{0}, end{argc / 2}; i < end; ++i) {
+        uint8_t direction, duty;
+        direction = atoi(argv[i * 2 + 1]);
+        duty      = atoi(argv[i * 2 + 2]);
+        impl.pwm_trampoline(i, direction, duty);
+    }
+    return 0;
+}
 
 int cmd_init(const shell *shell, size_t argc, char **argv)
 {
@@ -483,27 +560,13 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
 int locate(const shell *shell, size_t argc, char **argv)
 {
     uint8_t location[ACTUATOR_NUM]{0, 0, 0}, power[ACTUATOR_NUM]{0, 0, 0}, detail[ACTUATOR_NUM]{0, 0, 0};
-    if (argc < 3) {
+    if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <location> <power> ...\n", argv[-1], argv[0]);
         return 1;
-    } else if (argc == 3) {
-        location[0] = atoi(argv[1]);
-        power[0]    = atoi(argv[2]);
-    } else if (argc == 5) {
-        location[0] = atoi(argv[1]);
-        power[0]    = atoi(argv[2]);
-        location[1] = atoi(argv[3]);
-        power[1]    = atoi(argv[4]);
-    } else if (argc == 7) {
-        location[0] = atoi(argv[1]);
-        power[0]    = atoi(argv[2]);
-        location[1] = atoi(argv[3]);
-        power[1]    = atoi(argv[4]);
-        location[2] = atoi(argv[5]);
-        power[2]    = atoi(argv[6]);
-    } else {
-        shell_error(shell, "Usage: %s %s <location> <power> ...\n", argv[-1], argv[0]);
-        return 1;
+    }
+    for (size_t i{0}, end{argc / 2}; i < end; ++i) {
+        location[i] = atoi(argv[i * 2 + 1]);
+        power[i]    = atoi(argv[i * 2 + 2]);
     }
     if (impl.to_location(location, power, detail) != 0)
         shell_print(shell, "location error.");
@@ -522,11 +585,26 @@ int info(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+// int set_param(const shell *shell, size_t argc, char **argv)
+// {
+//     float pp{0.0f}, vp{0.0f}, vi{0.0f};
+//     if (argc > 1)
+//         pp = atof(argv[1]);
+//     if (argc > 2)
+//         vp = atof(argv[2]);
+//     if (argc > 3)
+//         vi = atof(argv[3]);
+//     impl.set_param(pp, vp, vi);
+//     return 0;
+// }
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(duty, NULL, "Actuator duty command", cmd_duty),
     SHELL_CMD(init, NULL, "Actuator initialize command", cmd_init),
     SHELL_CMD(loc, NULL, "Actuator locate command", locate),
     SHELL_CMD(current, NULL, "Actuator current monitor", current),
     SHELL_CMD(info, NULL, "Actuator information", info),
+    // SHELL_CMD(param, NULL, "Actuator param", set_param),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(act, &sub, "Actuator commands", NULL);
@@ -547,7 +625,7 @@ int init_location()
     return impl.init_location();
 }
 
-int to_location(const uint8_t location[ACTUATOR_NUM], const uint8_t power[ACTUATOR_NUM], uint8_t detail[ACTUATOR_NUM])
+int to_location(const uint8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[ACTUATOR_NUM], uint8_t (&detail)[ACTUATOR_NUM])
 {
     return impl.to_location(location, power, detail);
 }
