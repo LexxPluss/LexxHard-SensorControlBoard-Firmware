@@ -1,0 +1,64 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: zephyrprojectrtos/zephyr-build:latest
+      options: --user root
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Checkout private zephyr
+        uses: actions/checkout@v2
+        with:
+          repository: LexxPluss/zephyr
+          token: ${{ secrets.GH_PAT }}
+          path: zephyr
+      - name: Checkout private LexxAuto
+        uses: actions/checkout@v2
+        with:
+          repository: LexxPluss/LexxAuto
+          token: ${{ secrets.GH_PAT }}
+          path: LexxAuto
+      - name: build
+        id: build
+        run: |
+          set -e
+          west init -l zephyr
+          west update
+          west config --global zephyr.base-prefer configfile
+          west zephyr-export
+          ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb01 lexxpluss_apps
+      - name: release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+      - name: upload
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./build/zephyr/zephyr.bin
+          asset_name: zephyr.bin
+          asset_content_type: application/octet-stream
+      - name: Notification
+        uses: act10ns/slack@v1
+        with:
+          status: ${{ job.status }}
+          steps: ${{ toJson(steps) }}
+          channel: '#div-02-robotics-ci'
+        if: always()
