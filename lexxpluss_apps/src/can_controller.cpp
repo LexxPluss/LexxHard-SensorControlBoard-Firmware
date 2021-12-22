@@ -3,6 +3,7 @@
 #include <drivers/can.h>
 #include <drivers/gpio.h>
 #include <logging/log.h>
+#include <shell/shell.h>
 #include "led_controller.hpp"
 #include "misc_controller.hpp"
 #include "can_controller.hpp"
@@ -114,6 +115,53 @@ public:
         return board2ros.emergency_switch[0] ||
                board2ros.emergency_switch[1] ||
                ros2board.emergency_stop;
+    }
+    void bmu_info(const shell *shell) const {
+        shell_print(shell,
+                    "MOD:0x%02x/%02x BMU:0x%02x\n"
+                    "ASOC:%u RSOC:%u SOH:%u\n"
+                    "FET:%d Current:%d ChargeCurrent:%u\n"
+                    "Voltage:%u Capacity(design):%u Capacity(full):%u Capacity(remain):%u\n"
+                    "Max Voltage:%u/%u Min Voltage:%u/%u\n"
+                    "Max Temp:%d/%u Min Temp:%d/%u\n"
+                    "Max Current:%d/%u Min Current:%d/%u\n"
+                    "BMUFW:0x%02x MODFW:0x%02x SER:0x%02x PAR:0x%02x\n"
+                    "ALM1:0x%02x ALM2:0x%02x\n"
+                    "Max Cell Voltage:%u/%u Min Cell Voltage:%u/%u\n"
+                    "Manufacture:%u Inspection:%u Serial:%u\n",
+                    bmu2ros.mod_status1, bmu2ros.mod_status2, bmu2ros.bmu_status,
+                    bmu2ros.asoc, bmu2ros.rsoc, bmu2ros.soh,
+                    bmu2ros.fet_temp, bmu2ros.pack_current, bmu2ros.charging_current,
+                    bmu2ros.pack_voltage, bmu2ros.design_capacity, bmu2ros.full_charge_capacity, bmu2ros.remain_capacity,
+                    bmu2ros.max_voltage.value, bmu2ros.max_voltage.id, bmu2ros.min_voltage.value, bmu2ros.min_voltage.id,
+                    bmu2ros.max_temp.value, bmu2ros.max_temp.id, bmu2ros.min_temp.value, bmu2ros.min_temp.id,
+                    bmu2ros.max_current.value, bmu2ros.max_current.id, bmu2ros.min_current.value, bmu2ros.min_current.id,
+                    bmu2ros.bmu_fw_ver, bmu2ros.mod_fw_ver, bmu2ros.serial_config, bmu2ros.parallel_config,
+                    bmu2ros.bmu_alarm1, bmu2ros.bmu_alarm2,
+                    bmu2ros.max_cell_voltage.value, bmu2ros.max_cell_voltage.id, bmu2ros.min_cell_voltage.value, bmu2ros.min_cell_voltage.id,
+                    bmu2ros.manufacturing, bmu2ros.inspection, bmu2ros.serial);
+    }
+    void brd_emgoff() {
+        ros2board.emergency_stop = false;
+    }
+    void brd_info(const shell *shell) const {
+        shell_print(shell,
+                    "Bumper:%d/%d Emergency:%d/%d Power:%d\n"
+                    "Shutdown:%d AutoCharge:%d ManualCharge:%d\n"
+                    "CFET:%d DFET:%d PDSG:%d\n"
+                    "5VFAIL:%d 16VFAIL:%d\n"
+                    "WHEEL:%d/%d\n"
+                    "FAN:%u\n"
+                    "ConnTemp:%d/%d PBTemp:%d\n"
+                    "MBTemp:%f ActTemp:%f/%f/%f\n",
+                    board2ros.bumper_switch[0], board2ros.bumper_switch[1], board2ros.emergency_switch[0], board2ros.emergency_switch[1], board2ros.power_switch,
+                    board2ros.wait_shutdown, board2ros.auto_charging, board2ros.manual_charging,
+                    board2ros.c_fet, board2ros.d_fet, board2ros.p_dsg,
+                    board2ros.v5_fail, board2ros.v16_fail,
+                    board2ros.wheel_disable[0], board2ros.wheel_disable[1],
+                    board2ros.fan_duty,
+                    board2ros.charge_connector_temp[0], board2ros.charge_connector_temp[1], board2ros.power_board_temp,
+                    board2ros.main_board_temp, board2ros.actuator_board_temp[0], board2ros.actuator_board_temp[1], board2ros.actuator_board_temp[2]);
     }
 private:
     void setup_can_filter() const {
@@ -259,6 +307,37 @@ private:
     const device *dev{nullptr};
     bool heartbeat_timeout{true};
 } impl;
+
+static int cmd_bmu_info(const shell *shell, size_t argc, char **argv)
+{
+    impl.bmu_info(shell);
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_bmu,
+    SHELL_CMD(info, NULL, "BMU information", cmd_bmu_info),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(bmu, &sub_bmu, "BMU commands", NULL);
+
+static int cmd_brd_emgoff(const shell *shell, size_t argc, char **argv)
+{
+    impl.brd_emgoff();
+    return 0;
+}
+
+static int cmd_brd_info(const shell *shell, size_t argc, char **argv)
+{
+    impl.brd_info(shell);
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_brd,
+    SHELL_CMD(emgoff, NULL, "ROS emergency stop off", cmd_brd_emgoff),
+    SHELL_CMD(info, NULL, "Board information", cmd_brd_info),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(brd, &sub_brd, "Board commands", NULL);
 
 }
 
