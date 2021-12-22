@@ -84,7 +84,7 @@ public:
             uint32_t now_cycle{k_cycle_get_32()};
             if (prev_cycle_ros != 0) {
                 uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle_ros)};
-                heartbeat_timeout = dt_ms > 1000;
+                heartbeat_timeout = dt_ms > 3000;
             }
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle_send)};
             if (dt_ms > 100) {
