@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "log_controller.hpp"
+#include "rosdiagnostic.hpp"
 
 k_msgq msgq_log;
 
@@ -76,6 +77,12 @@ private:
 
 class log_util {
 public:
+    void init(const char *root) {
+        snprintf(workpath, sizeof workpath, "%s/log", root);
+        struct fs_dirent ent;
+        if (fs_stat(workpath, &ent) == -ENOENT)
+            fs_mkdir(workpath);
+    }
     void maintain_log_area(const char *root) {
         reduce_file_count(root);
         reduce_disk_volume(root);
@@ -173,6 +180,7 @@ public:
             mount.fs_data = &fatfs;
             mount.mnt_point = sdroot;
             if (fs_mount(&mount) == 0) {
+                util.init(sdroot);
                 util.maintain_log_area(sdroot);
                 util.setup_new_log(sdroot);
                 fs_ok = true;
@@ -184,6 +192,14 @@ public:
             msg_log message;
             if (k_msgq_get(&msgq_log, &message, K_MSEC(1000)) == 0)
                 util.write(message.message);
+        }
+    }
+    void run_error() const {
+        msg_rosdiag message{msg_rosdiag::ERROR, "log", "no SD"};
+        while (true) {
+            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&msgq_rosdiag);
+            k_msleep(5000);
         }
     }
 private:
@@ -205,6 +221,7 @@ void log_controller::init()
 void log_controller::run(void *p1, void *p2, void *p3)
 {
     impl.run();
+    impl.run_error();
 }
 
 k_thread log_controller::thread;
