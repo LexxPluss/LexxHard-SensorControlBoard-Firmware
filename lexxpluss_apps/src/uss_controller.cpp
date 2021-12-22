@@ -6,13 +6,11 @@
 #include "rosdiagnostic.hpp"
 #include "uss_controller.hpp"
 
-k_msgq msgq_uss2ros;
-
-namespace {
+namespace lexxfirm::uss_controller {
 
 LOG_MODULE_REGISTER(uss);
 
-char __aligned(4) msgq_uss2ros_buffer[8 * sizeof (msg_uss2ros)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
 class uss_fetcher {
 public:
@@ -58,10 +56,10 @@ private:
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "uss", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "uss", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
@@ -78,74 +76,61 @@ K_THREAD_STACK_DEFINE(fetcher_stack_3, 2048);
     k_thread_create(&fetcher[x].thread, fetcher_stack_##x, K_THREAD_STACK_SIZEOF(fetcher_stack_##x), \
                     &uss_fetcher::runner, &fetcher[x], nullptr, nullptr, 3, K_FP_REGS, K_NO_WAIT);
 
-class uss_controller_impl {
-public:
-    int init() const {
-        k_msgq_init(&msgq_uss2ros, msgq_uss2ros_buffer, sizeof (msg_uss2ros), 8);
-        fetcher[0].init("MB1604_0", "MB1604_1");
-        fetcher[1].init("MB1604_2", nullptr);
-        fetcher[2].init("MB1604_3", nullptr);
-        fetcher[3].init("MB1604_4", nullptr);
-        return 0;
-    }
-    void run() const {
-        RUN(0);
-        RUN(1);
-        RUN(2);
-        RUN(3);
-        while (true) {
-            msg_uss2ros message;
-            uint32_t distance[2];
-            fetcher[0].get_distance(distance);
-            message.front_left = distance[0];
-            message.front_right = distance[1];
-            fetcher[1].get_distance(distance);
-            message.left = distance[0];
-            fetcher[2].get_distance(distance);
-            message.right = distance[0];
-            fetcher[3].get_distance(distance);
-            message.back = distance[0];
-            while (k_msgq_put(&msgq_uss2ros, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_uss2ros);
-            k_msleep(100);
-        }
-    }
-    void info(const shell *shell) const {
-        uint32_t front[2], left[2], right[2], back[2];
-        fetcher[0].get_distance(front);
-        fetcher[1].get_distance(left);
-        fetcher[2].get_distance(right);
-        fetcher[3].get_distance(back);
-        shell_print(shell, "FL:%umm FR:%umm L:%umm R:%umm B:%umm\n",
-                    front[0], front[1],
-                    left[0], right[0], back[0]);
-    }
-} impl;
-
-static int cmd_info(const shell *shell, size_t argc, char **argv)
+int info(const shell *shell, size_t argc, char **argv)
 {
-    impl.info(shell);
+    uint32_t front[2], left[2], right[2], back[2];
+    fetcher[0].get_distance(front);
+    fetcher[1].get_distance(left);
+    fetcher[2].get_distance(right);
+    fetcher[3].get_distance(back);
+    shell_print(shell, "FL:%umm FR:%umm L:%umm R:%umm B:%umm\n",
+                front[0], front[1],
+                left[0], right[0], back[0]);
     return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_uss,
-    SHELL_CMD(info, NULL, "USS information", cmd_info),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(info, NULL, "USS information", info),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(uss, &sub_uss, "USS commands", NULL);
+SHELL_CMD_REGISTER(uss, &sub, "USS commands", NULL);
 
-}
-
-void uss_controller::init()
+void init()
 {
-    impl.init();
+    k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
+    fetcher[0].init("MB1604_0", "MB1604_1");
+    fetcher[1].init("MB1604_2", nullptr);
+    fetcher[2].init("MB1604_3", nullptr);
+    fetcher[3].init("MB1604_4", nullptr);
 }
 
-void uss_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
-    impl.run();
+    RUN(0);
+    RUN(1);
+    RUN(2);
+    RUN(3);
+    while (true) {
+        msg message;
+        uint32_t distance[2];
+        fetcher[0].get_distance(distance);
+        message.front_left = distance[0];
+        message.front_right = distance[1];
+        fetcher[1].get_distance(distance);
+        message.left = distance[0];
+        fetcher[2].get_distance(distance);
+        message.right = distance[0];
+        fetcher[3].get_distance(distance);
+        message.back = distance[0];
+        while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq);
+        k_msleep(100);
+    }
 }
 
-k_thread uss_controller::thread;
+k_thread thread;
+k_msgq msgq;
+
+}
 
 // vim: set expandtab shiftwidth=4:

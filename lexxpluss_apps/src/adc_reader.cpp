@@ -4,11 +4,11 @@
 #include "adc_reader.hpp"
 #include "rosdiagnostic.hpp"
 
-namespace {
+namespace lexxfirm::adc_reader {
 
 LOG_MODULE_REGISTER(adc);
 
-class adc_reader_impl {
+class {
 public:
     int init() {
         dev = device_get_binding("ADC_1");
@@ -23,10 +23,10 @@ public:
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "adc", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "adc", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
@@ -62,29 +62,28 @@ private:
             adc_read(dev, &sequence);
         }
     }
-    static constexpr int NUM_CHANNELS{6};
     const device *dev{nullptr};
     uint16_t buffer[NUM_CHANNELS];
 } impl;
 
-}
-
-void adc_reader::init()
+void init()
 {
     impl.init();
 }
 
-void adc_reader::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-int32_t adc_reader::get(int index)
+int32_t get(int index)
 {
     return impl.get(index);
 }
 
-k_thread adc_reader::thread;
+k_thread thread;
+
+}
 
 // vim: set expandtab shiftwidth=4:

@@ -5,6 +5,8 @@
 #include "std_msgs/Float64MultiArray.h"
 #include "uss_controller.hpp"
 
+namespace lexxfirm {
+
 class ros_uss {
 public:
     void init(ros::NodeHandle &nh) {
@@ -13,8 +15,8 @@ public:
         msg.data_length = sizeof msg_data / sizeof msg_data[0];
     }
     void poll() {
-        msg_uss2ros message;
-        while (k_msgq_get(&msgq_uss2ros, &message, K_NO_WAIT) == 0) {
+        uss_controller::msg message;
+        while (k_msgq_get(&uss_controller::msgq, &message, K_NO_WAIT) == 0) {
             msg.data[0] = message.front_left * 1e-3f;
             msg.data[1] = message.front_right * 1e-3f;
             msg.data[2] = message.left * 1e-3f;
@@ -28,5 +30,7 @@ private:
     float msg_data[5];
     ros::Publisher pub{"/sensor_set/ultrasonic", &msg};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

@@ -5,11 +5,11 @@
 #include "misc_controller.hpp"
 #include "rosdiagnostic.hpp"
 
-namespace {
+namespace lexxfirm::misc_controller {
 
 LOG_MODULE_REGISTER(misc);
 
-class misc_controller_impl {
+class impl {
 public:
     int init() {
         dev = device_get_binding("I2C_1");
@@ -40,10 +40,10 @@ public:
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "misc", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "misc", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
@@ -68,41 +68,41 @@ private:
     static constexpr uint8_t ADDR{0b1001000};
 } impl;
 
-static int cmd_info(const shell *shell, size_t argc, char **argv)
+int info(const shell *shell, size_t argc, char **argv)
 {
     impl.info(shell);
     return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_misc,
-    SHELL_CMD(info, NULL, "Misc information", cmd_info),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(info, NULL, "Misc information", info),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(misc, &sub_misc, "Misc commands", NULL);
+SHELL_CMD_REGISTER(misc, &sub, "Misc commands", NULL);
 
-}
-
-void misc_controller::init()
+void init()
 {
     impl.init();
 }
 
-void misc_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-float misc_controller::get_main_board_temp()
+float get_main_board_temp()
 {
     return impl.get_main_board_temp();
 }
 
-float misc_controller::get_actuator_board_temp(int index)
+float get_actuator_board_temp(int index)
 {
     return impl.get_actuator_board_temp(index);
 }
 
-k_thread misc_controller::thread;
+k_thread thread;
+
+}
 
 // vim: set expandtab shiftwidth=4:

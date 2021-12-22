@@ -10,9 +10,9 @@
 #include "rosserial_uss.hpp"
 #include "rosserial.hpp"
 
-namespace {
+namespace lexxfirm::rosserial {
 
-class rosserial_impl {
+class {
 public:
     int init() {
         nh.getHardware()->set_baudrate(921600);
@@ -56,18 +56,18 @@ private:
     ros_uss uss;
 } impl;
 
-}
-
-void rosserial::init()
+void init()
 {
     impl.init();
 }
 
-void rosserial::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
 }
 
-k_thread rosserial::thread;
+k_thread thread;
+
+}
 
 // vim: set expandtab shiftwidth=4:

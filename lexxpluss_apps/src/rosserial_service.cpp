@@ -2,9 +2,9 @@
 #include "rosserial_actuator_service.hpp"
 #include "rosserial_service.hpp"
 
-namespace {
+namespace lexxfirm::rosserial_service {
 
-class rosserial_service_impl {
+class {
 public:
     int init() {
         nh.initNode(const_cast<char*>("UART_2"));
@@ -22,18 +22,18 @@ private:
     ros_actuator_service actuator_service;
 } impl;
 
-}
-
-void rosserial_service::init()
+void init()
 {
     impl.init();
 }
 
-void rosserial_service::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
 }
 
-k_thread rosserial_service::thread;
+k_thread thread;
+
+}
 
 // vim: set expandtab shiftwidth=4:

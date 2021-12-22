@@ -6,6 +6,8 @@
 #include "lexxauto_msgs/LinearActuatorLocation.h"
 #include "actuator_controller.hpp"
 
+namespace lexxfirm {
+
 class ros_actuator_service {
 public:
     void init(ros::NodeHandle &nh) {
@@ -27,5 +29,7 @@ private:
     ros::ServiceServer<lexxauto_msgs::InitLinearActuatorRequest, lexxauto_msgs::InitLinearActuatorResponse, ros_actuator_service>
         service_init{"/body_control/init_linear_actuator", &ros_actuator_service::callback_init, this};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

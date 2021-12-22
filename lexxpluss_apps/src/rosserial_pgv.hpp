@@ -7,6 +7,8 @@
 #include "lexxauto_msgs/PositionGuideVision.h"
 #include "pgv_controller.hpp"
 
+namespace lexxfirm {
+
 #define M_PI 3.14159265358979323846
 
 class ros_pgv {
@@ -16,12 +18,12 @@ public:
         nh.subscribe(sub);
     }
     void poll() {
-        msg_pgv2ros message;
-        while (k_msgq_get(&msgq_pgv2ros, &message, K_NO_WAIT) == 0)
+        pgv_controller::msg message;
+        while (k_msgq_get(&pgv_controller::msgq, &message, K_NO_WAIT) == 0)
             publish(message);
     }
 private:
-    void publish(const msg_pgv2ros &message) {
+    void publish(const pgv_controller::msg &message) {
         float ang{static_cast<float>(message.ang) * 1.0f};
         if (ang < 180.0f)
             ang *= -1.0f;
@@ -58,15 +60,17 @@ private:
             snprintf(direction, sizeof direction, "Straight Ahead");
             break;
         }
-        msg_ros2pgv ros2pgv;
+        pgv_controller::msg_control ros2pgv;
         ros2pgv.dir_command = req.data;
-        while (k_msgq_put(&msgq_ros2pgv, &ros2pgv, K_NO_WAIT) != 0)
-            k_msgq_purge(&msgq_ros2pgv);
+        while (k_msgq_put(&pgv_controller::msgq_control, &ros2pgv, K_NO_WAIT) != 0)
+            k_msgq_purge(&pgv_controller::msgq_control);
     }
     lexxauto_msgs::PositionGuideVision msg;
     ros::Publisher pub{"/sensor_set/pgv", &msg};
     ros::Subscriber<std_msgs::UInt8, ros_pgv> sub{"/sensor_set/pgv_dir", &ros_pgv::callback, this};
     char direction[64]{"Straight Ahead"};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

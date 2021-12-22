@@ -2,7 +2,9 @@
 
 #include <zephyr.h>
 
-struct msg_pgv2ros {
+namespace lexxfirm::pgv_controller {
+
+struct msg {
     uint32_t xp, tag;
     int32_t xps;
     int16_t yps;
@@ -13,17 +15,15 @@ struct msg_pgv2ros {
     } f;
 } __attribute__((aligned(4)));
 
-struct msg_ros2pgv {
+struct msg_control {
     uint8_t dir_command;
 } __attribute__((aligned(4)));
 
-struct pgv_controller {
-    static void init();
-    static void run(void *p1, void *p2, void *p3);
-    static k_thread thread;
-};
+void init();
+void run(void *p1, void *p2, void *p3);
+extern k_thread thread;
+extern k_msgq msgq, msgq_control;
 
-extern k_msgq msgq_pgv2ros;
-extern k_msgq msgq_ros2pgv;
+}
 
 // vim: set expandtab shiftwidth=4:

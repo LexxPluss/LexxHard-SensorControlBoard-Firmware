@@ -6,6 +6,8 @@
 #include <sys/ring_buffer.h>
 #include "ros/node_handle.h"
 
+namespace {
+
 class rosserial_hardware_zephyr {
 public:
     void init(const char *name) {
@@ -77,6 +79,8 @@ private:
     uint32_t baudrate{57600};
     const device* uart_dev{nullptr};
 };
+
+}
 
 namespace ros {
 

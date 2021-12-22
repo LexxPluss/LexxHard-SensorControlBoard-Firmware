@@ -8,21 +8,18 @@
 #include "pgv_controller.hpp"
 #include "rosdiagnostic.hpp"
 
-k_msgq msgq_pgv2ros;
-k_msgq msgq_ros2pgv;
-
-namespace {
+namespace lexxfirm::pgv_controller {
 
 LOG_MODULE_REGISTER(pgv);
 
-char __aligned(4) msgq_pgv2ros_buffer[8 * sizeof (msg_pgv2ros)];
-char __aligned(4) msgq_ros2pgv_buffer[8 * sizeof (msg_ros2pgv)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
+char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
 class pgv_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_pgv2ros, msgq_pgv2ros_buffer, sizeof (msg_pgv2ros), 8);
-        k_msgq_init(&msgq_ros2pgv, msgq_ros2pgv_buffer, sizeof (msg_ros2pgv), 8);
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
+        k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
         ring_buf_init(&rxbuf.rb, sizeof rxbuf.buf, rxbuf.buf);
         ring_buf_init(&txbuf.rb, sizeof txbuf.buf, txbuf.buf);
         dev_485 = device_get_binding("UART_6");
@@ -66,11 +63,11 @@ public:
             gpio_pin_set(dev_en, 13, heartbeat_led);
             heartbeat_led = !heartbeat_led;
             if (get_position(pgv2ros)) {
-                while (k_msgq_put(&msgq_pgv2ros, &pgv2ros, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq_pgv2ros);
+                while (k_msgq_put(&msgq, &pgv2ros, K_NO_WAIT) != 0)
+                    k_msgq_purge(&msgq);
             }
-            msg_ros2pgv ros2pgv;
-            if (k_msgq_get(&msgq_ros2pgv, &ros2pgv, K_NO_WAIT) == 0) {
+            msg_control ros2pgv;
+            if (k_msgq_get(&msgq_control, &ros2pgv, K_NO_WAIT) == 0) {
                 switch (ros2pgv.dir_command) {
                     case 0: set_direction_decision(DIR::NOLANE);   break;
                     case 1: set_direction_decision(DIR::RIGHT);    break;
@@ -86,15 +83,15 @@ public:
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "pgv", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "pgv", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
     void info(const shell *shell) const {
-        msg_pgv2ros m{pgv2ros};
+        msg m{pgv2ros};
         shell_print(shell,
                     "x: %umm %dmm\n"
                     "y: %dmm\n"
@@ -107,7 +104,7 @@ private:
         LEFT,
         STRAIGHT
     };
-    bool get_position(msg_pgv2ros &data) {
+    bool get_position(msg &data) {
         ring_buf_reset(&rxbuf.rb);
         uint8_t req[2];
         req[0] = 0xc8;
@@ -132,7 +129,7 @@ private:
         req[1] = ~req[0];
         send(req, sizeof req);
     }
-    void decode(const uint8_t *buf, msg_pgv2ros &data) const {
+    void decode(const uint8_t *buf, msg &data) const {
         data.f.cc2 =  (buf[ 0] & 0x40) != 0;
         data.addr  =  (buf[ 0] & 0x30) >> 4;
         data.f.cc1 =  (buf[ 0] & 0x08) != 0;
@@ -250,35 +247,36 @@ private:
         uint32_t buf[256 / sizeof (uint32_t)];
     } txbuf, rxbuf;
     const device *dev_485{nullptr}, *dev_en{nullptr};
-    msg_pgv2ros pgv2ros;
+    msg pgv2ros;
     k_sem sem;
 } impl;
 
-static int cmd_info(const shell *shell, size_t argc, char **argv)
+int info(const shell *shell, size_t argc, char **argv)
 {
     impl.info(shell);
     return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_pgv,
-    SHELL_CMD(info, NULL, "PGV information", cmd_info),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(info, NULL, "PGV information", info),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(pgv, &sub_pgv, "PGV commands", NULL);
+SHELL_CMD_REGISTER(pgv, &sub, "PGV commands", NULL);
 
-}
-
-void pgv_controller::init()
+void init()
 {
     impl.init();
 }
 
-void pgv_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-k_thread pgv_controller::thread;
+k_thread thread;
+k_msgq msgq, msgq_control;
+
+}
 
 // vim: set expandtab shiftwidth=4:

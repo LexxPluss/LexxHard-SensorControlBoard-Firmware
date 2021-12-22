@@ -2,7 +2,9 @@
 
 #include <zephyr.h>
 
-struct msg_bmu2ros {
+namespace lexxfirm::can_controller {
+
+struct msg_bmu {
     struct {
         uint16_t value;
         uint8_t id;
@@ -18,7 +20,7 @@ struct msg_bmu2ros {
     uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
 } __attribute__((aligned(4)));
 
-struct msg_board2ros {
+struct msg_board {
     float main_board_temp, actuator_board_temp[3];
     int16_t charge_connector_temp[2], power_board_temp;
     uint8_t fan_duty;
@@ -29,20 +31,17 @@ struct msg_board2ros {
     bool wheel_disable[2];
 } __attribute__((aligned(4)));
 
-struct msg_ros2board {
+struct msg_control {
     bool emergency_stop, power_off;
 } __attribute__((aligned(4)));
 
-struct can_controller {
-    static void init();
-    static void run(void *p1, void *p2, void *p3);
-    static uint32_t get_rsoc();
-    static bool is_emergency();
-    static k_thread thread;
-};
+void init();
+void run(void *p1, void *p2, void *p3);
+uint32_t get_rsoc();
+bool is_emergency();
+extern k_thread thread;
+extern k_msgq msgq_bmu, msgq_board, msgq_control;
 
-extern k_msgq msgq_bmu2ros;
-extern k_msgq msgq_board2ros;
-extern k_msgq msgq_ros2board;
+}
 
 // vim: set expandtab shiftwidth=4:

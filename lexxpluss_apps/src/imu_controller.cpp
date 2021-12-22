@@ -5,18 +5,16 @@
 #include "imu_controller.hpp"
 #include "rosdiagnostic.hpp"
 
-k_msgq msgq_imu2ros;
-
-namespace {
+namespace lexxfirm::imu_controller {
 
 LOG_MODULE_REGISTER(imu);
 
-char __aligned(4) msgq_imu2ros_buffer[8 * sizeof (msg_imu2ros)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
-class imu_controller_impl {
+class {
 public:
     int init() {
-        k_msgq_init(&msgq_imu2ros, msgq_imu2ros_buffer, sizeof (msg_imu2ros), 8);
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         dev = device_get_binding("ADIS16470");
         if (dev == nullptr)
             return -1;
@@ -48,22 +46,22 @@ public:
                 message.delta_vel[0] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 3);
                 message.delta_vel[1] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 4);
                 message.delta_vel[2] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 5);
-                while (k_msgq_put(&msgq_imu2ros, &message, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq_imu2ros);
+                while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+                    k_msgq_purge(&msgq);
             }
             k_msleep(1);
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "imu", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "imu", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
     void info(const shell *shell) {
-        msg_imu2ros m{message};
+        msg m{message};
         shell_print(shell,
                     "accel: %f %f %f (m/s/s)\n"
                     "gyro: %f %f %f (deg/s)\n"
@@ -87,34 +85,35 @@ private:
         return static_cast<float>(v.val1) + static_cast<float>(v.val2) * 1e-6f;
     }
     const device *dev{nullptr};
-    msg_imu2ros message;
+    msg message;
 } impl;
 
-static int cmd_info(const shell *shell, size_t argc, char **argv)
+int info(const shell *shell, size_t argc, char **argv)
 {
     impl.info(shell);
     return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
-    SHELL_CMD(info, NULL, "IMU information", cmd_info),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(info, NULL, "IMU information", info),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(imu, &sub_imu, "IMU commands", NULL);
+SHELL_CMD_REGISTER(imu, &sub, "IMU commands", NULL);
 
-}
-
-void imu_controller::init()
+void init()
 {
     impl.init();
 }
 
-void imu_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-k_thread imu_controller::thread;
+k_thread thread;
+k_msgq msgq;
+
+}
 
 // vim: set expandtab shiftwidth=4:

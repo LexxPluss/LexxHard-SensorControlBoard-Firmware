@@ -9,17 +9,13 @@
 #include "can_controller.hpp"
 #include "rosdiagnostic.hpp"
 
-k_msgq msgq_bmu2ros;
-k_msgq msgq_board2ros;
-k_msgq msgq_ros2board;
-
-namespace {
+namespace lexxfirm::can_controller {
 
 LOG_MODULE_REGISTER(can);
 
-char __aligned(4) msgq_bmu2ros_buffer[8 * sizeof (msg_bmu2ros)];
-char __aligned(4) msgq_board2ros_buffer[8 * sizeof (msg_board2ros)];
-char __aligned(4) msgq_ros2board_buffer[8 * sizeof (msg_ros2board)];
+char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
+char __aligned(4) msgq_board_buffer[8 * sizeof (msg_board)];
+char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
 CAN_DEFINE_MSGQ(msgq_can_bmu, 16);
 CAN_DEFINE_MSGQ(msgq_can_board, 4);
@@ -41,12 +37,12 @@ private:
     char buffer[128];
 };
 
-class can_controller_impl {
+class {
 public:
     int init() {
-        k_msgq_init(&msgq_bmu2ros, msgq_bmu2ros_buffer, sizeof (msg_bmu2ros), 8);
-        k_msgq_init(&msgq_board2ros, msgq_board2ros_buffer, sizeof (msg_board2ros), 8);
-        k_msgq_init(&msgq_ros2board, msgq_ros2board_buffer, sizeof (msg_ros2board), 8);
+        k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
+        k_msgq_init(&msgq_board, msgq_board_buffer, sizeof (msg_board), 8);
+        k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
         dev = device_get_binding("CAN_1");
         if (dev != nullptr)
             can_configure(dev, CAN_NORMAL_MODE, 500000);
@@ -65,20 +61,20 @@ public:
             zcan_frame frame;
             if (k_msgq_get(&msgq_can_bmu, &frame, K_NO_WAIT) == 0) {
                 if (handler_bmu(frame)) {
-                    while (k_msgq_put(&msgq_bmu2ros, &bmu2ros, K_NO_WAIT) != 0)
-                        k_msgq_purge(&msgq_bmu2ros);
+                    while (k_msgq_put(&msgq_bmu, &bmu2ros, K_NO_WAIT) != 0)
+                        k_msgq_purge(&msgq_bmu);
                 }
                 handled = true;
             }
             if (k_msgq_get(&msgq_can_board, &frame, K_NO_WAIT) == 0) {
                 handler_board(frame);
-                while (k_msgq_put(&msgq_board2ros, &board2ros, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq_board2ros);
+                while (k_msgq_put(&msgq_board, &board2ros, K_NO_WAIT) != 0)
+                    k_msgq_purge(&msgq_board);
                 handled = true;
             }
             if (k_msgq_get(&msgq_can_log, &frame, K_NO_WAIT) == 0)
                 handler_log(frame);
-            if (k_msgq_get(&msgq_ros2board, &ros2board, K_NO_WAIT) == 0) {
+            if (k_msgq_get(&msgq_control, &ros2board, K_NO_WAIT) == 0) {
                 prev_cycle_ros = k_cycle_get_32();
                 handled = true;
             }
@@ -101,10 +97,10 @@ public:
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "can", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "can", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
@@ -269,15 +265,15 @@ private:
             for (auto i{0}; i < 3; ++i)
                 board2ros.actuator_board_temp[i] = misc_controller::get_actuator_board_temp(i);
             if (!prev_wait_shutdown && board2ros.wait_shutdown) {
-                msg_ros2led message{msg_ros2led::SHOWTIME, 60000};
-                while (k_msgq_put(&msgq_ros2led, &message, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq_ros2led);
+                led_controller::msg message{led_controller::msg::SHOWTIME, 60000};
+                while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
+                    k_msgq_purge(&led_controller::msgq);
             }
         } else if (frame.id == 0x202) {
             if (frame.data[0] == 1) {
-                msg_ros2led message{msg_ros2led::CHARGE_LEVEL, 2000};
-                while (k_msgq_put(&msgq_ros2led, &message, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq_ros2led);
+                led_controller::msg message{led_controller::msg::CHARGE_LEVEL, 2000};
+                while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
+                    k_msgq_purge(&led_controller::msgq);
             }
             if (board2ros.emergency_switch[0] && board2ros.emergency_switch[1])
                 brd_emgoff();
@@ -301,69 +297,70 @@ private:
         };
         can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
     }
-    msg_bmu2ros bmu2ros{0};
-    msg_board2ros board2ros{0};
-    msg_ros2board ros2board{true, false};
+    msg_bmu bmu2ros{0};
+    msg_board board2ros{0};
+    msg_control ros2board{true, false};
     log_printer log;
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     const device *dev{nullptr};
     bool heartbeat_timeout{true};
 } impl;
 
-static int cmd_bmu_info(const shell *shell, size_t argc, char **argv)
+int bmu_info(const shell *shell, size_t argc, char **argv)
 {
     impl.bmu_info(shell);
     return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_bmu,
-    SHELL_CMD(info, NULL, "BMU information", cmd_bmu_info),
+    SHELL_CMD(info, NULL, "BMU information", bmu_info),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(bmu, &sub_bmu, "BMU commands", NULL);
 
-static int cmd_brd_emgoff(const shell *shell, size_t argc, char **argv)
+int brd_emgoff(const shell *shell, size_t argc, char **argv)
 {
     impl.brd_emgoff();
     return 0;
 }
 
-static int cmd_brd_info(const shell *shell, size_t argc, char **argv)
+int brd_info(const shell *shell, size_t argc, char **argv)
 {
     impl.brd_info(shell);
     return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_brd,
-    SHELL_CMD(emgoff, NULL, "ROS emergency stop off", cmd_brd_emgoff),
-    SHELL_CMD(info, NULL, "Board information", cmd_brd_info),
+    SHELL_CMD(emgoff, NULL, "ROS emergency stop off", brd_emgoff),
+    SHELL_CMD(info, NULL, "Board information", brd_info),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(brd, &sub_brd, "Board commands", NULL);
 
-}
-
-void can_controller::init()
+void init()
 {
     impl.init();
 }
 
-void can_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-uint32_t can_controller::get_rsoc()
+uint32_t get_rsoc()
 {
     return impl.get_rsoc();
 }
 
-bool can_controller::is_emergency()
+bool is_emergency()
 {
     return impl.is_emergency();
 }
 
-k_thread can_controller::thread;
+k_thread thread;
+k_msgq msgq_bmu, msgq_board, msgq_control;
+
+}
 
 // vim: set expandtab shiftwidth=4:
