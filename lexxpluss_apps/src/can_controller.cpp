@@ -279,6 +279,8 @@ private:
                 while (k_msgq_put(&msgq_ros2led, &message, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq_ros2led);
             }
+            if (board2ros.emergency_switch[0] && board2ros.emergency_switch[1])
+                brd_emgoff();
         }
     }
     void handler_log(zcan_frame &frame) {
