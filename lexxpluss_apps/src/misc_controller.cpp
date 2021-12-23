@@ -57,7 +57,10 @@ public:
                     get_actuator_board_temp(2));
     }
     float get_main_board_temp() const {return temperature[0];}
-    float get_actuator_board_temp(int index) const {return temperature[index];}
+    float get_actuator_board_temp(int index) const {
+        ++index;
+        return index > 0 && index < TEMPERATURE_NUM ? temperature[index] : 0.0f;
+    }
 private:
     const device *dev{nullptr};
     static constexpr int TEMPERATURE_NUM{4};
