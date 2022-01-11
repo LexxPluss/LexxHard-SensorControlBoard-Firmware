@@ -1,5 +1,8 @@
 # LexxPluss Main Board Software
 
+[![CI](https://github.com/LexxPluss/mainboard/actions/workflows/main.yml/badge.svg)](https://github.com/LexxPluss/mainboard/actions/workflows/main.yml)
+[![release](https://github.com/LexxPluss/mainboard/actions/workflows/release.yml/badge.svg)](https://github.com/LexxPluss/mainboard/actions/workflows/release.yml)
+
 ## Install dependencies
 
 https://docs.zephyrproject.org/latest/getting_started/
