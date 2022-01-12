@@ -4,61 +4,46 @@
 #include "adc_reader.hpp"
 #include "tof_controller.hpp"
 
-k_msgq msgq_tof2ros;
-
-namespace {
+namespace lexxfirm::tof_controller {
 
 LOG_MODULE_REGISTER(tof);
 
-char __aligned(4) msgq_tof2ros_buffer[8 * sizeof (msg_tof2ros)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
-class tof_controller_impl {
-public:
-    int init() const {
-        k_msgq_init(&msgq_tof2ros, msgq_tof2ros_buffer, sizeof (msg_tof2ros), 8);
-        return 0;
-    }
-    void run() const {
-        while (true) {
-            msg_tof2ros message;
-            message.left = adc_reader::get(adc_reader::INDEX_DOWNWARD_L);
-            message.right = adc_reader::get(adc_reader::INDEX_DOWNWARD_R);
-            while (k_msgq_put(&msgq_tof2ros, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_tof2ros);
-            k_msleep(20);
-        }
-    }
-    void info(const shell *shell) const {
-        shell_print(shell, "L:%dmV R:%dmV",
-                    adc_reader::get(adc_reader::INDEX_DOWNWARD_L),
-                    adc_reader::get(adc_reader::INDEX_DOWNWARD_R));
-    }
-} impl;
-
-static int cmd_info(const shell *shell, size_t argc, char **argv)
+int info(const shell *shell, size_t argc, char **argv)
 {
-    impl.info(shell);
+    shell_print(shell, "L:%dmV R:%dmV",
+                adc_reader::get(adc_reader::DOWNWARD_L),
+                adc_reader::get(adc_reader::DOWNWARD_R));
     return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
-    SHELL_CMD(info, NULL, "ToF information", cmd_info),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(info, NULL, "ToF information", info),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(tof, &sub_tof, "ToF commands", NULL);
+SHELL_CMD_REGISTER(tof, &sub, "ToF commands", NULL);
 
-}
-
-void tof_controller::init()
+void init()
 {
-    impl.init();
+    k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 }
 
-void tof_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
-    impl.run();
+    while (true) {
+        msg message;
+        message.left = adc_reader::get(adc_reader::DOWNWARD_L);
+        message.right = adc_reader::get(adc_reader::DOWNWARD_R);
+        while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq);
+        k_msleep(20);
+    }
 }
 
-k_thread tof_controller::thread;
+k_thread thread;
+k_msgq msgq;
+
+}
 
 // vim: set expandtab shiftwidth=4:

@@ -8,24 +8,22 @@
 #include "led_controller.hpp"
 #include "rosdiagnostic.hpp"
 
-k_msgq msgq_ros2led;
-
-namespace {
+namespace lexxfirm::led_controller {
 
 LOG_MODULE_REGISTER(led);
 
-char __aligned(4) msgq_ros2led_buffer[8 * sizeof (msg_ros2led)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
-class led_message {
+class led_message_receiver {
 public:
-    led_message() {
-        message.pattern = msg_ros2led::SHOWTIME;
+    led_message_receiver() {
+        message.pattern = msg::SHOWTIME;
         message.interrupt_ms = 0;
     }
-    bool get_message(msg_ros2led &output) {
+    bool get_message(msg &output) {
         bool updated{false};
-        msg_ros2led message_new;
-        if (k_msgq_get(&msgq_ros2led, &message_new, K_MSEC(DELAY_MS)) == 0) {
+        msg message_new;
+        if (k_msgq_get(&msgq, &message_new, K_MSEC(DELAY_MS)) == 0) {
             if (message.interrupt_ms > 0) {
                 if (message_new.interrupt_ms > 0) {
                     if (is_new_pattern(message_new.pattern)) {
@@ -61,16 +59,16 @@ public:
     static constexpr uint32_t DELAY_MS{25};
 private:
     bool is_new_pattern(uint32_t pattern) {
-        return pattern == msg_ros2led::RGB || message.pattern != pattern;
+        return pattern == msg::RGB || message.pattern != pattern;
     }
-    msg_ros2led message, message_interrupted;
+    msg message, message_interrupted;
     uint32_t cycle_interrupted{0};
 };
 
 class led_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_ros2led, msgq_ros2led_buffer, sizeof (msg_ros2led), 8);
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         dev[LED_LEFT] = device_get_binding("WS2812_0");
         dev[LED_RIGHT] = device_get_binding("WS2812_1");
         if (dev[LED_LEFT] == nullptr || dev[LED_RIGHT] == nullptr)
@@ -83,40 +81,40 @@ public:
         if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]))
             return;
         while (true) {
-            msg_ros2led message;
-            if (msg.get_message(message))
+            msg message;
+            if (rec.get_message(message))
                 counter = 0;
             poll(message);
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "led", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "led", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
 private:
-    void poll(const msg_ros2led &message) {
+    void poll(const msg &message) {
         switch (message.pattern) {
         default:
-        case msg_ros2led::NONE:            fill(black); break;
-        case msg_ros2led::EMERGENCY_STOP:  fill_strobe(emergency_stop, 10, 50, 1000); break;
-        case msg_ros2led::AMR_MODE:        fill(amr_mode); break;
-        case msg_ros2led::AGV_MODE:        fill(agv_mode); break;
-        case msg_ros2led::MISSION_PAUSE:   fill(mission_pause); break;
-        case msg_ros2led::PATH_BLOCKED:    fill(path_blocked); break;
-        case msg_ros2led::MANUAL_DRIVE:    fill(manual_drive); break;
-        case msg_ros2led::CHARGING:        fill_rainbow(); break;
-        case msg_ros2led::WAITING_FOR_JOB: fill_fade(waiting_for_job); break;
-        case msg_ros2led::LEFT_WINKER:     fill_blink_sequence(sequence, LED_LEFT); break;
-        case msg_ros2led::RIGHT_WINKER:    fill_blink_sequence(sequence, LED_RIGHT); break;
-        case msg_ros2led::BOTH_WINKER:     fill_blink_sequence(sequence, LED_BOTH); break;
-        case msg_ros2led::MOVE_ACTUATOR:   fill_strobe(move_actuator, 10, 200, 200); break;
-        case msg_ros2led::CHARGE_LEVEL:    fill_charge_level(); break;
-        case msg_ros2led::SHOWTIME:        fill_knight_industries_two_thousand(); break;
-        case msg_ros2led::RGB:             fill(led_rgb{.r{message.rgb[0]}, .g{message.rgb[1]}, .b{message.rgb[2]}}); break;
+        case msg::NONE:            fill(black); break;
+        case msg::EMERGENCY_STOP:  fill_strobe(emergency_stop, 10, 50, 1000); break;
+        case msg::AMR_MODE:        fill(amr_mode); break;
+        case msg::AGV_MODE:        fill(agv_mode); break;
+        case msg::MISSION_PAUSE:   fill(mission_pause); break;
+        case msg::PATH_BLOCKED:    fill(path_blocked); break;
+        case msg::MANUAL_DRIVE:    fill(manual_drive); break;
+        case msg::CHARGING:        fill_rainbow(); break;
+        case msg::WAITING_FOR_JOB: fill_fade(waiting_for_job); break;
+        case msg::LEFT_WINKER:     fill_blink_sequence(sequence, LED_LEFT); break;
+        case msg::RIGHT_WINKER:    fill_blink_sequence(sequence, LED_RIGHT); break;
+        case msg::BOTH_WINKER:     fill_blink_sequence(sequence, LED_BOTH); break;
+        case msg::MOVE_ACTUATOR:   fill_strobe(move_actuator, 10, 200, 200); break;
+        case msg::CHARGE_LEVEL:    fill_charge_level(); break;
+        case msg::SHOWTIME:        fill_knight_industries_two_thousand(); break;
+        case msg::RGB:             fill(led_rgb{.r{message.rgb[0]}, .g{message.rgb[1]}, .b{message.rgb[2]}}); break;
         }
         update();
         ++counter;
@@ -135,7 +133,7 @@ private:
         }
     }
     void fill_strobe(const led_rgb &color, uint32_t nstrobe, uint32_t strobedelay, uint32_t endpause) {
-        static constexpr auto delay{led_message::DELAY_MS};
+        static constexpr auto delay{led_message_receiver::DELAY_MS};
         if (counter < nstrobe * strobedelay / delay) {
             if ((counter % (strobedelay * 2 / delay)) == 0)
                 fill(color);
@@ -280,7 +278,7 @@ private:
         }
         return color;
     }
-    led_message msg;
+    led_message_receiver rec;
     static constexpr uint32_t PIXELS{DT_PROP(DT_NODELABEL(led_strip0), chain_length)};
     static constexpr uint32_t LED_LEFT{0}, LED_RIGHT{1}, LED_BOTH{2}, LED_NUM{2};
     const device *dev[LED_NUM]{nullptr, nullptr};
@@ -303,53 +301,54 @@ const led_rgb led_controller_impl::move_actuator  {.r{0x45}, .g{0xff}, .b{0x00}}
 const led_rgb led_controller_impl::showtime       {.r{0x0f}, .g{0xb6}, .b{0xc8}};
 const led_rgb led_controller_impl::black          {.r{0x00}, .g{0x00}, .b{0x00}};
 
-static int cmd_pattern(const shell *shell, size_t argc, char **argv)
+int pattern(const shell *shell, size_t argc, char **argv)
 {
     if (argc != 2) {
         shell_error(shell, "Usage: %s %s <pattern>\n", argv[-1], argv[0]);
         return 1;
     }
-    msg_ros2led message{argv[1]};
-    while (k_msgq_put(&msgq_ros2led, &message, K_NO_WAIT) != 0)
-        k_msgq_purge(&msgq_ros2led);
+    msg message{argv[1]};
+    while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+        k_msgq_purge(&msgq);
     return 0;
 }
 
-static int cmd_color(const shell *shell, size_t argc, char **argv)
+int color(const shell *shell, size_t argc, char **argv)
 {
     if (argc != 4) {
         shell_error(shell, "Usage: %s %s <r> <g> <b>\n", argv[-1], argv[0]);
         return 1;
     }
-    msg_ros2led message{msg_ros2led::RGB, 0};
+    msg message{msg::RGB, 0};
     message.rgb[0] = atoi(argv[1]);
     message.rgb[1] = atoi(argv[2]);
     message.rgb[2] = atoi(argv[3]);
-    while (k_msgq_put(&msgq_ros2led, &message, K_NO_WAIT) != 0)
-        k_msgq_purge(&msgq_ros2led);
+    while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+        k_msgq_purge(&msgq);
     return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_led,
-    SHELL_CMD(pattern, NULL, "LED pattern command", cmd_pattern),
-    SHELL_CMD(color, NULL, "LED color command", cmd_color),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(pattern, NULL, "LED pattern command", pattern),
+    SHELL_CMD(color, NULL, "LED color command", color),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(led, &sub_led, "LED commands", NULL);
+SHELL_CMD_REGISTER(led, &sub, "LED commands", NULL);
 
-}
-
-void led_controller::init()
+void init()
 {
     impl.init();
 }
 
-void led_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-k_thread led_controller::thread;
+k_thread thread;
+k_msgq msgq;
+
+}
 
 // vim: set expandtab shiftwidth=4:

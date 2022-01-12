@@ -9,13 +9,11 @@
 #include "log_controller.hpp"
 #include "rosdiagnostic.hpp"
 
-k_msgq msgq_log;
-
-namespace {
+namespace lexxfirm::log_controller {
 
 LOG_MODULE_REGISTER(log);
 
-char __aligned(4) msgq_log_buffer[8 * sizeof (msg_log)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
 class directory_list {
 public:
@@ -170,7 +168,7 @@ private:
 class log_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_log, msgq_log_buffer, sizeof (msg_log), 8);
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         return 0;
     }
     void run() {
@@ -189,16 +187,16 @@ public:
         if (!fs_ok)
             return;
         while (true) {
-            msg_log message;
-            if (k_msgq_get(&msgq_log, &message, K_MSEC(1000)) == 0)
+            msg message;
+            if (k_msgq_get(&msgq, &message, K_MSEC(1000)) == 0)
                 util.write(message.message);
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "log", "no SD"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "log", "no SD"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
@@ -211,19 +209,31 @@ private:
 } impl;
 const char *log_controller_impl::sdroot{"/SD:"};
 
-}
-
-void log_controller::init()
+void init()
 {
     impl.init();
 }
 
-void log_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-k_thread log_controller::thread;
+void output(const char *fmt, ...)
+{
+    msg message;
+    va_list arg;
+    va_start(arg, fmt);
+    vsnprintk(message.message, sizeof message.message, fmt, arg);
+    va_end(arg);
+    while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+        k_msgq_purge(&msgq);
+}
+
+k_thread thread;
+k_msgq msgq;
+
+}
 
 // vim: set expandtab shiftwidth=4:

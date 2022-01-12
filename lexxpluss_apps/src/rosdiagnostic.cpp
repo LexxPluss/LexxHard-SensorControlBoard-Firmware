@@ -1,17 +1,18 @@
 #include <zephyr.h>
 #include "rosdiagnostic.hpp"
 
-k_msgq msgq_rosdiag;
 
-namespace {
+namespace lexxfirm::rosdiagnostic {
 
-char __aligned(4) msgq_rosdiag_buffer[8 * sizeof (msg_rosdiag)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
+void init()
+{
+    k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 }
 
-void rosdiagnostic::init()
-{
-    k_msgq_init(&msgq_rosdiag, msgq_rosdiag_buffer, sizeof (msg_rosdiag), 8);
+k_msgq msgq;
+
 }
 
 // vim: set expandtab shiftwidth=4:

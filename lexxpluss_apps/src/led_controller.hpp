@@ -3,11 +3,13 @@
 #include <zephyr.h>
 #include <cstring>
 
-struct msg_ros2led {
-    msg_ros2led() : pattern(NONE), interrupt_ms(0) {}
-    msg_ros2led(uint32_t pattern, uint32_t interrupt_ms) :
+namespace lexxfirm::led_controller {
+
+struct msg {
+    msg() : pattern(NONE), interrupt_ms(0) {}
+    msg(uint32_t pattern, uint32_t interrupt_ms) :
         pattern(pattern), interrupt_ms(interrupt_ms) {}
-    msg_ros2led(const char *str) {
+    msg(const char *str) {
         if      (strcmp(str, "emergency_stop")  == 0) pattern = EMERGENCY_STOP;
         else if (strcmp(str, "amr_mode")        == 0) pattern = AMR_MODE;
         else if (strcmp(str, "agv_mode")        == 0) pattern = AGV_MODE;
@@ -45,12 +47,11 @@ struct msg_ros2led {
     static constexpr uint32_t RGB{10001};
 } __attribute__((aligned(4)));
 
-struct led_controller {
-    static void init();
-    static void run(void *p1, void *p2, void *p3);
-    static k_thread thread;
-};
+void init();
+void run(void *p1, void *p2, void *p3);
+extern k_thread thread;
+extern k_msgq msgq;
 
-extern k_msgq msgq_ros2led;
+}
 
 // vim: set expandtab shiftwidth=4:

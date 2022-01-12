@@ -6,6 +6,8 @@
 #include "lexxauto_msgs/Led.h"
 #include "led_controller.hpp"
 
+namespace lexxfirm {
+
 class ros_led {
 public:
     void init(ros::NodeHandle &nh) {
@@ -15,22 +17,24 @@ public:
     void poll() {}
 private:
     void callback_string(const std_msgs::String &req) {
-        msg_ros2led message{req.data};
-        while (k_msgq_put(&msgq_ros2led, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&msgq_ros2led);
+        led_controller::msg message{req.data};
+        while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&led_controller::msgq);
     }
     void callback_direct(const lexxauto_msgs::Led &req) {
-        msg_ros2led message;
-        message.pattern = msg_ros2led::RGB;
+        led_controller::msg message;
+        message.pattern = led_controller::msg::RGB;
         message.interrupt_ms = 0;
         message.rgb[0] = req.r;
         message.rgb[1] = req.g;
         message.rgb[2] = req.b;
-        while (k_msgq_put(&msgq_ros2led, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&msgq_ros2led);
+        while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&led_controller::msgq);
     }
     ros::Subscriber<std_msgs::String, ros_led> sub_string{"/body_control/led", &ros_led::callback_string, this};
     ros::Subscriber<lexxauto_msgs::Led, ros_led> sub_direct{"/body_control/led_direct", &ros_led::callback_direct, this};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

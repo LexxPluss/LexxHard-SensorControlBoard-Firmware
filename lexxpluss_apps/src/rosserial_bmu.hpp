@@ -6,6 +6,8 @@
 #include "lexxauto_msgs/Battery.h"
 #include "can_controller.hpp"
 
+namespace lexxfirm {
+
 class ros_bmu {
 public:
     void init(ros::NodeHandle &nh) {
@@ -14,8 +16,8 @@ public:
         msg.temps_length = sizeof temps / sizeof temps[0];
     }
     void poll() {
-        msg_bmu2ros message;
-        while (k_msgq_get(&msgq_bmu2ros, &message, K_NO_WAIT) == 0) {
+        can_controller::msg_bmu message;
+        while (k_msgq_get(&can_controller::msgq_bmu, &message, K_NO_WAIT) == 0) {
             float cell_voltage[2];
             cell_voltage[0] = message.max_cell_voltage.value;
             cell_voltage[1] = message.min_cell_voltage.value;
@@ -69,5 +71,7 @@ private:
     sensor_msgs::Temperature temps[3];
     ros::Publisher pub{"/sensor_set/battery", &msg};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

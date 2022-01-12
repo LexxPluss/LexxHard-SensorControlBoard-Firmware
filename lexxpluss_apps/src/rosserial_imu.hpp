@@ -5,14 +5,16 @@
 #include "lexxauto_msgs/Imu.h"
 #include "imu_controller.hpp"
 
+namespace lexxfirm {
+
 class ros_imu {
 public:
     void init(ros::NodeHandle &nh) {
         nh.advertise(pub);
     }
     void poll() {
-        msg_imu2ros message;
-        while (k_msgq_get(&msgq_imu2ros, &message, K_NO_WAIT) == 0) {
+        imu_controller::msg message;
+        while (k_msgq_get(&imu_controller::msgq, &message, K_NO_WAIT) == 0) {
             msg.gyro.x = message.gyro[0];
             msg.gyro.y = message.gyro[1];
             msg.gyro.z = message.gyro[2];
@@ -32,5 +34,7 @@ private:
     lexxauto_msgs::Imu msg;
     ros::Publisher pub{"/sensor_set/imu", &msg};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

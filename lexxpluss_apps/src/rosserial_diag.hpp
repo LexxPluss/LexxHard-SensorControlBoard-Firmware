@@ -4,6 +4,8 @@
 #include "diagnostic_msgs/DiagnosticArray.h"
 #include "rosdiagnostic.hpp"
 
+namespace lexxfirm {
+
 class ros_diag {
 public:
     void init(ros::NodeHandle &nh) {
@@ -12,8 +14,8 @@ public:
         msg.status = status;
     }
     void poll() {
-        msg_rosdiag message;
-        while (k_msgq_get(&msgq_rosdiag, &message, K_NO_WAIT) == 0) {
+        rosdiagnostic::msg message;
+        while (k_msgq_get(&rosdiagnostic::msgq, &message, K_NO_WAIT) == 0) {
             msg.status[0].level = message.level;
             msg.status[0].name = message.name;
             msg.status[0].message = message.message;
@@ -27,5 +29,7 @@ private:
     diagnostic_msgs::DiagnosticStatus status[1];
     ros::Publisher pub_diag{"/diagnostics", &msg};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

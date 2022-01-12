@@ -2,10 +2,12 @@
 
 #include <zephyr.h>
 
-struct rosserial {
-    static void init();
-    static void run(void *p1, void *p2, void *p3);
-    static k_thread thread;
-};
+namespace lexxfirm::rosserial {
+
+void init();
+void run(void *p1, void *p2, void *p3);
+extern k_thread thread;
+
+}
 
 // vim: set expandtab shiftwidth=4:

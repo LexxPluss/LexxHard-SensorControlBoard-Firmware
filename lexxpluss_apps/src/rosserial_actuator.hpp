@@ -7,6 +7,8 @@
 #include "lexxauto_msgs/LinearActuatorControlArray.h"
 #include "actuator_controller.hpp"
 
+namespace lexxfirm {
+
 class ros_actuator {
 public:
     void init(ros::NodeHandle &nh) {
@@ -19,8 +21,8 @@ public:
         msg_connection.data_length = sizeof msg_connection_data / sizeof msg_connection_data[0];
     }
     void poll() {
-        msg_actuator2ros message;
-        while (k_msgq_get(&msgq_actuator2ros, &message, K_NO_WAIT) == 0) {
+        actuator_controller::msg message;
+        while (k_msgq_get(&actuator_controller::msgq, &message, K_NO_WAIT) == 0) {
             for (int i{0}; i < 3; ++i)
                 msg_encoder.data[i] = message.encoder_count[i];
             pub_encoder.publish(&msg_encoder);
@@ -30,13 +32,13 @@ public:
     }
 private:
     void callback_control(const lexxauto_msgs::LinearActuatorControlArray &req) {
-        msg_ros2actuator message;
+        actuator_controller::msg_control message;
         for (int i{0}; i < 3; ++i) {
             message.actuators[i].direction = req.actuators[i].direction;
             message.actuators[i].power = req.actuators[i].power;
         }
-        while (k_msgq_put(&msgq_ros2actuator, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&msgq_ros2actuator);
+        while (k_msgq_put(&actuator_controller::msgq_control, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&actuator_controller::msgq_control);
     }
     std_msgs::Int32MultiArray msg_encoder;
     std_msgs::Float32MultiArray msg_connection;
@@ -47,5 +49,7 @@ private:
     ros::Subscriber<lexxauto_msgs::LinearActuatorControlArray, ros_actuator>
         sub_control{"/body_control/linear_actuator", &ros_actuator::callback_control, this};
 };
+
+}
 
 // vim: set expandtab shiftwidth=4:

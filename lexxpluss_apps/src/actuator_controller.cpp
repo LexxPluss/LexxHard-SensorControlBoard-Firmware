@@ -9,9 +9,6 @@
 #include "can_controller.hpp"
 #include "rosdiagnostic.hpp"
 
-k_msgq msgq_actuator2ros;
-k_msgq msgq_ros2actuator;
-
 extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
 {
     GPIO_InitTypeDef GPIO_InitStruct{0};
@@ -45,19 +42,19 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
     }
 }
 
-namespace {
+namespace lexxfirm::actuator_controller {
 
 LOG_MODULE_REGISTER(actuator);
 
-char __aligned(4) msgq_actuator2ros_buffer[8 * sizeof (msg_actuator2ros)];
-char __aligned(4) msgq_ros2actuator_buffer[8 * sizeof (msg_ros2actuator)];
+char __aligned(4) msgq_buffer[8 * sizeof (msg)];
+char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
 static constexpr uint32_t ACTUATOR_NUM{3};
 
 struct msg_pwmdirect {
     bool all{false};
     int8_t index{0};
-    int8_t direction{msg_ros2actuator::STOP};
+    int8_t direction{msg_control::STOP};
     uint8_t duty{0};
 };
 K_MSGQ_DEFINE(msgq_pwmdirect, sizeof (msg_pwmdirect), 8, 4);
@@ -225,8 +222,8 @@ static const struct {
 class actuator_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_actuator2ros, msgq_actuator2ros_buffer, sizeof (msg_actuator2ros), 8);
-        k_msgq_init(&msgq_ros2actuator, msgq_ros2actuator_buffer, sizeof (msg_ros2actuator), 8);
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
+        k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
         prev_cycle = k_cycle_get_32();
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             for (uint32_t j{0}; j < 2; ++j) {
@@ -253,7 +250,7 @@ public:
                     return;
             }
         }
-        pwm_control_all(msg_ros2actuator::STOP);
+        pwm_control_all(msg_control::STOP);
         wait_encoder_stabilize();
         const device *gpiok = device_get_binding("GPIOK");
         if (gpiok != nullptr)
@@ -261,14 +258,14 @@ public:
         int heartbeat_led{1};
         while (true) {
             bool is_emergency{can_controller::is_emergency()};
-            msg_ros2actuator ros2actuator;
-            if (k_msgq_get(&msgq_ros2actuator, &ros2actuator, K_NO_WAIT) == 0 && !is_emergency)
+            msg_control ros2actuator;
+            if (k_msgq_get(&msgq_control, &ros2actuator, K_NO_WAIT) == 0 && !is_emergency)
                 handle_control(ros2actuator);
             msg_pwmdirect pwmdirect;
             if (k_msgq_get(&msgq_pwmdirect, &pwmdirect, K_NO_WAIT) == 0 && !is_emergency)
                 handle_pwmdirect(pwmdirect);
             if (is_emergency)
-                pwm_control_all(msg_ros2actuator::STOP);
+                pwm_control_all(msg_control::STOP);
             calculator.poll();
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
@@ -278,8 +275,8 @@ public:
                 get_current(actuator2ros.current);
                 actuator2ros.connect = get_trolley();
                 get_fail(actuator2ros.fail);
-                while (k_msgq_put(&msgq_actuator2ros, &actuator2ros, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq_actuator2ros);
+                while (k_msgq_put(&msgq, &actuator2ros, K_NO_WAIT) != 0)
+                    k_msgq_purge(&msgq);
                 if (gpiok != nullptr) {
                     gpio_pin_set(gpiok, 4, heartbeat_led);
                     heartbeat_led = !heartbeat_led;
@@ -289,10 +286,10 @@ public:
         }
     }
     void run_error() const {
-        msg_rosdiag message{msg_rosdiag::ERROR, "actuator", "no device"};
+        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "actuator", "no device"};
         while (true) {
-            while (k_msgq_put(&msgq_rosdiag, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq_rosdiag);
+            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
+                k_msgq_purge(&rosdiagnostic::msgq);
             k_msleep(5000);
         }
     }
@@ -310,7 +307,7 @@ public:
     int init_location() {
         LOG_INF("initialize location.");
         location_initialized = false;
-        pwm_call_all(msg_ros2actuator::DOWN, 100);
+        pwm_call_all(msg_control::DOWN, 100);
         static constexpr uint32_t timeout_ms{30000}, sleep_ms{500};
         int remaining{3};
         for (uint32_t i{0}, end{timeout_ms / sleep_ms}; i < end; ++i) {
@@ -319,7 +316,7 @@ public:
             remaining = 3;
             for (uint32_t j{0}; j < ACTUATOR_NUM; ++j) {
                 if (i >= 2 && value[j] == 0) {
-                    pwm_call(j, msg_ros2actuator::STOP, 0);
+                    pwm_call(j, msg_control::STOP, 0);
                     --remaining;
                 }
             }
@@ -327,7 +324,7 @@ public:
                 break;
             k_msleep(sleep_ms);
         }
-        pwm_call_all(msg_ros2actuator::STOP);
+        pwm_call_all(msg_control::STOP);
         if (remaining <= 0 && !can_controller::is_emergency()) {
             calculator.reset();
             location_initialized = true;
@@ -349,11 +346,11 @@ public:
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             if (power[i] != 0) {
                 int32_t diff{static_cast<int32_t>(location[i]) - calculator.get_location(i)};
-                direction[i] = diff < 0 ? msg_ros2actuator::DOWN : msg_ros2actuator::UP;
+                direction[i] = diff < 0 ? msg_control::DOWN : msg_control::UP;
                 pwm_call(i, direction[i], power[i]);
                 detail[i] = 1;
             } else {
-                direction[i] = msg_ros2actuator::STOP;
+                direction[i] = msg_control::STOP;
                 detail[i] = 0;
             }
         }
@@ -365,15 +362,15 @@ public:
             remaining = 3;
             for (uint32_t j{0}; j < ACTUATOR_NUM; ++j) {
                 int32_t diff{static_cast<int32_t>(location[j]) - calculator.get_location(j)};
-                if ((direction[j] == msg_ros2actuator::DOWN && diff >= 0) ||
-                    (direction[j] == msg_ros2actuator::UP   && diff <= 0) ||
-                    (direction[j] != msg_ros2actuator::STOP && i >= 5 && value[j] == 0)) {
-                    direction[j] = msg_ros2actuator::STOP;
-                    pwm_call(j, msg_ros2actuator::STOP, 0);
+                if ((direction[j] == msg_control::DOWN && diff >= 0) ||
+                    (direction[j] == msg_control::UP   && diff <= 0) ||
+                    (direction[j] != msg_control::STOP && i >= 5 && value[j] == 0)) {
+                    direction[j] = msg_control::STOP;
+                    pwm_call(j, msg_control::STOP, 0);
                     if (calculator.is_near(j, location[j]))
                         detail[j] = 0;
                     --remaining;
-                } else if (direction[j] == msg_ros2actuator::STOP) {
+                } else if (direction[j] == msg_control::STOP) {
                     --remaining;
                 }
             }
@@ -381,7 +378,7 @@ public:
                 break;
             k_msleep(sleep_ms);
         }
-        pwm_call_all(msg_ros2actuator::STOP);
+        pwm_call_all(msg_control::STOP);
         int result{0};
         if (can_controller::is_emergency()) {
             result = -1;
@@ -406,7 +403,7 @@ public:
             shell_print(shell, "actuator: %d encoder: %dpulse current: %dmV", i, encoder[i], current[i]);
     }
 private:
-    void handle_control(const msg_ros2actuator &msg) {
+    void handle_control(const msg_control &msg) {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
             pwm_control(i, msg.actuators[i].direction, msg.actuators[i].power);
     }
@@ -421,12 +418,12 @@ private:
             pwm_control(i, direction, pwm_duty);
     }
     void pwm_control(int index, int direction, uint8_t pwm_duty) const {
-        if (direction == msg_ros2actuator::STOP || pwm_duty == 0) {
+        if (direction == msg_control::STOP || pwm_duty == 0) {
             for (uint32_t i{0}; i < 2; ++i)
                 pwm_pin_set_nsec(dev_pwm[index][i], config[index][i].pin, CONTROL_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
         } else {
             uint32_t pulse_ns{pwm_duty * CONTROL_PERIOD_NS / 100};
-            if (direction < msg_ros2actuator::STOP) {
+            if (direction < msg_control::STOP) {
                 pwm_pin_set_nsec(dev_pwm[index][0], config[index][0].pin, CONTROL_PERIOD_NS, 0, PWM_POLARITY_NORMAL);
                 pwm_pin_set_nsec(dev_pwm[index][1], config[index][1].pin, CONTROL_PERIOD_NS, pulse_ns, PWM_POLARITY_NORMAL);
             } else {
@@ -452,14 +449,14 @@ private:
             k_msgq_purge(&msgq_pwmdirect);
     }
     void get_current(int32_t (&data)[ACTUATOR_NUM]) const {
-        data[0] = adc_reader::get(adc_reader::INDEX_ACTUATOR_0);
-        data[1] = adc_reader::get(adc_reader::INDEX_ACTUATOR_1);
-        data[2] = adc_reader::get(adc_reader::INDEX_ACTUATOR_2);
+        data[0] = adc_reader::get(adc_reader::ACTUATOR_0);
+        data[1] = adc_reader::get(adc_reader::ACTUATOR_1);
+        data[2] = adc_reader::get(adc_reader::ACTUATOR_2);
         if (current_monitor)
             LOG_INF("current: %8d %8d %8d", data[0], data[1], data[2]);
     }
     int32_t get_trolley() const {
-        return adc_reader::get(adc_reader::INDEX_TROLLEY);
+        return adc_reader::get(adc_reader::TROLLEY);
     }
     void get_fail(bool (&fail)[ACTUATOR_NUM]) const {
         fail[0] = gpio_pin_get(dev_fail_01, 11) == 0;
@@ -467,7 +464,7 @@ private:
         fail[2] = gpio_pin_get(dev_fail_2, 4) == 0;
     }
     location_calculator calculator;
-    msg_actuator2ros actuator2ros;
+    msg actuator2ros;
     uint32_t prev_cycle{0};
     bool location_initialized{false}, current_monitor{false};
     const device *dev_pwm[ACTUATOR_NUM][2]{{nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}};
@@ -476,14 +473,14 @@ private:
     static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
 } impl;
 
-static int cmd_init(const shell *shell, size_t argc, char **argv)
+int cmd_init(const shell *shell, size_t argc, char **argv)
 {
     if (impl.init_location() != 0)
         shell_print(shell, "init error.");
     return 0;
 }
 
-static int cmd_locate(const shell *shell, size_t argc, char **argv)
+int locate(const shell *shell, size_t argc, char **argv)
 {
     uint8_t location[ACTUATOR_NUM]{0, 0, 0}, power[ACTUATOR_NUM]{0, 0, 0}, detail[ACTUATOR_NUM]{0, 0, 0};
     if (argc < 3) {
@@ -513,50 +510,51 @@ static int cmd_locate(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
-static int cmd_current(const shell *shell, size_t argc, char **argv)
+int current(const shell *shell, size_t argc, char **argv)
 {
     impl.set_current_monitor();
     return 0;
 }
 
-static int cmd_info(const shell *shell, size_t argc, char **argv)
+int info(const shell *shell, size_t argc, char **argv)
 {
     impl.info(shell);
     return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_act,
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(init, NULL, "Actuator initialize command", cmd_init),
-    SHELL_CMD(loc, NULL, "Actuator locate command", cmd_locate),
-    SHELL_CMD(current, NULL, "Actuator current monitor", cmd_current),
-    SHELL_CMD(info, NULL, "Actuator information", cmd_info),
+    SHELL_CMD(loc, NULL, "Actuator locate command", locate),
+    SHELL_CMD(current, NULL, "Actuator current monitor", current),
+    SHELL_CMD(info, NULL, "Actuator information", info),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(act, &sub_act, "Actuator commands", NULL);
+SHELL_CMD_REGISTER(act, &sub, "Actuator commands", NULL);
 
-}
-
-void actuator_controller::init()
+void init()
 {
     impl.init();
 }
 
-void actuator_controller::run(void *p1, void *p2, void *p3)
+void run(void *p1, void *p2, void *p3)
 {
     impl.run();
     impl.run_error();
 }
 
-int actuator_controller::init_location()
+int init_location()
 {
     return impl.init_location();
 }
 
-int actuator_controller::to_location(const uint8_t location[ACTUATOR_NUM], const uint8_t power[ACTUATOR_NUM], uint8_t detail[ACTUATOR_NUM])
+int to_location(const uint8_t location[ACTUATOR_NUM], const uint8_t power[ACTUATOR_NUM], uint8_t detail[ACTUATOR_NUM])
 {
     return impl.to_location(location, power, detail);
 }
 
-k_thread actuator_controller::thread;
+k_thread thread;
+k_msgq msgq, msgq_control;
+
+}
 
 // vim: set expandtab shiftwidth=4:
