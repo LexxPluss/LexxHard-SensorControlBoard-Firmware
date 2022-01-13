@@ -203,7 +203,7 @@ public:
     }
 private:
     void update_pulse(int index, int pulse) {
-        pulse_value[index] += -pulse;
+        pulse_value[index] += pulse;
     }
     timer_hal_helper helper;
     int32_t pulse_value[ACTUATOR_NUM]{0, 0, 0}, prev_pulse_value[ACTUATOR_NUM]{0, 0, 0};
