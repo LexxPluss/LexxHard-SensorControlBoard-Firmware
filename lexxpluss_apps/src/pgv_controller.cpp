@@ -93,9 +93,14 @@ public:
     void info(const shell *shell) const {
         msg m{pgv2ros};
         shell_print(shell,
-                    "x: %umm %dmm\n"
-                    "y: %dmm\n"
-                    "ang: %udeg", m.xp, m.xps, m.yps, m.ang);
+                    "flag: err:%d wrn:%d cc1/cc2:%d/%d ll:%d rl:%d nl:%d np:%d rp:%d tag:%d\n"
+                    "xp:%u xps:%d yps:%d ang:%u\n"
+                    "tag:%u cc1/cc2:%u/%u wrn:%u\n"
+                    "addr:%u lane:%u o1/o2:%u/%u s1/s2:%u/%u\n",
+                    m.f.err, m.f.wrn, m.f.cc1, m.f.cc2, m.f.ll, m.f.rl, m.f.nl, m.f.np, m.f.rp, m.f.tag,
+                    m.xp, m.xps, m.yps, m.ang,
+                    m.tag, m.cc1, m.cc2, m.wrn,
+                    m.addr, m.lane, m.o1, m.o2, m.s1, m.s2);
     }
 private:
     enum class DIR {
