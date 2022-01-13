@@ -33,9 +33,9 @@ private:
         if (!message.f.tag)
             xpos = message.xp;
         float ypos{static_cast<float>(message.yps)};
-        msg.angle = ang * M_PI / 180.0f;
-        msg.x_pos = xpos * 1e-3f;
-        msg.y_pos = ypos * 1e-3f;
+        msg.angle = ang / 10.0f * M_PI / 180.0f;
+        msg.x_pos = xpos * 1e-4f;
+        msg.y_pos = ypos * 1e-4f;
         msg.direction = direction;
         msg.color_lane_count = message.lane;
         msg.no_color_lane = message.f.nl;
