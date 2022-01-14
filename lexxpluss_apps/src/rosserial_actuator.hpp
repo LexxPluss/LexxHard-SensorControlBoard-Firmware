@@ -23,8 +23,10 @@ public:
     void poll() {
         actuator_controller::msg message;
         while (k_msgq_get(&actuator_controller::msgq, &message, K_NO_WAIT) == 0) {
-            for (int i{0}; i < 3; ++i)
-                msg_encoder.data[i] = message.encoder_count[i];
+            // ROS:[center,left,right], ROBOT:[left,center,right]
+            msg_encoder.data[0] = message.encoder_count[1];
+            msg_encoder.data[1] = message.encoder_count[0];
+            msg_encoder.data[2] = message.encoder_count[2];
             pub_encoder.publish(&msg_encoder);
             msg_connection.data[0] = message.connect * 1e-3f;
             pub_connection.publish(&msg_connection);
@@ -33,10 +35,13 @@ public:
 private:
     void callback_control(const lexxauto_msgs::LinearActuatorControlArray &req) {
         actuator_controller::msg_control message;
-        for (int i{0}; i < 3; ++i) {
-            message.actuators[i].direction = req.actuators[i].direction;
-            message.actuators[i].power = req.actuators[i].power;
-        }
+        // ROS:[center,left,right], ROBOT:[left,center,right]
+        message.actuators[0].direction = req.actuators[1].direction;
+        message.actuators[1].direction = req.actuators[0].direction;
+        message.actuators[2].direction = req.actuators[2].direction;
+        message.actuators[0].power = req.actuators[1].power;
+        message.actuators[1].power = req.actuators[0].power;
+        message.actuators[2].power = req.actuators[2].power;
         while (k_msgq_put(&actuator_controller::msgq_control, &message, K_NO_WAIT) != 0)
             k_msgq_purge(&actuator_controller::msgq_control);
     }

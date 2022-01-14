@@ -166,9 +166,9 @@ private:
 class location_calculator {
 public:
     location_calculator() {
-        mm_per_pulse[0] = 50.0f / 1054.0f;
-        mm_per_pulse[1] = 50.0f / 538.0f;
-        mm_per_pulse[2] = 50.0f / 538.0f;
+        mm_per_pulse[0] = 50.0f / 525.0f;
+        mm_per_pulse[1] = 50.0f / 1050.0f;
+        mm_per_pulse[2] = 50.0f / 525.0f;
     }
     int init() {
         reset();
