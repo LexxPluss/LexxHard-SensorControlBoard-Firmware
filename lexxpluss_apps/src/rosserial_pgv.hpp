@@ -24,7 +24,7 @@ public:
     }
 private:
     void publish(const pgv_controller::msg &message) {
-        float ang{static_cast<float>(message.ang) * 1.0f};
+        float ang{static_cast<float>(message.ang) * 0.1f};
         if (ang < 180.0f)
             ang *= -1.0f;
         else
@@ -33,7 +33,7 @@ private:
         if (!message.f.tag)
             xpos = message.xp;
         float ypos{static_cast<float>(message.yps)};
-        msg.angle = ang / 10.0f * M_PI / 180.0f;
+        msg.angle = ang * M_PI / 180.0f;
         msg.x_pos = xpos * 1e-4f;
         msg.y_pos = ypos * 1e-4f;
         msg.direction = direction;
