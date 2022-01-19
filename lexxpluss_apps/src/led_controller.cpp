@@ -22,8 +22,7 @@ public:
     }
     bool get_message(msg &output) {
         bool updated{false};
-        msg message_new;
-        if (k_msgq_get(&msgq, &message_new, K_MSEC(DELAY_MS)) == 0) {
+        if (msg message_new; k_msgq_get(&msgq, &message_new, K_MSEC(DELAY_MS)) == 0) {
             if (message.interrupt_ms > 0) {
                 if (message_new.interrupt_ms > 0) {
                     if (is_new_pattern(message_new.pattern)) {

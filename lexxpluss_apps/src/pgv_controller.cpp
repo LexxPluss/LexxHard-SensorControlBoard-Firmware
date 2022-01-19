@@ -115,8 +115,7 @@ private:
         send(req, sizeof req);
         wait_data(23);
         uint8_t buf[64];
-        int n{recv(buf, sizeof buf)};
-        if (n < 23 || !validate(buf + 2, 21))
+        if (int n{recv(buf, sizeof buf)}; n < 23 || !validate(buf + 2, 21))
             return false;
         decode(buf + 2, data);
         return true;

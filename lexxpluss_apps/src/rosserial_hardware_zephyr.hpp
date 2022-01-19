@@ -55,13 +55,11 @@ private:
         while (uart_irq_update(uart_dev) && uart_irq_is_pending(uart_dev)) {
             uint8_t buf[64];
             if (uart_irq_rx_ready(uart_dev)) {
-                int n{uart_fifo_read(uart_dev, buf, sizeof buf)};
-                if (n > 0)
+                if (int n{uart_fifo_read(uart_dev, buf, sizeof buf)}; n > 0)
                     ring_buf_put(&ringbuf.rx, buf, n);
             }
             if (uart_irq_tx_ready(uart_dev)) {
-                uint32_t n{ring_buf_get(&ringbuf.tx, buf, 1)};
-                if (n > 0)
+                if (uint32_t n{ring_buf_get(&ringbuf.tx, buf, 1)}; n > 0)
                     uart_fifo_fill(uart_dev, buf, n);
             }
             if (uart_irq_tx_complete(uart_dev))

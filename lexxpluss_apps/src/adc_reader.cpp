@@ -31,9 +31,8 @@ public:
         }
     }
     int32_t get(int index) const {
-        int32_t ref{adc_ref_internal(dev)};
         int32_t value{buffer[index]};
-        if (ref > 0)
+        if (int32_t ref{adc_ref_internal(dev)}; ref > 0)
             adc_raw_to_millivolts(ref, ADC_GAIN_1, 12, &value);
         return value;
     }
