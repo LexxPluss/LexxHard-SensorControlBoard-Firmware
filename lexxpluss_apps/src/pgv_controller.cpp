@@ -36,6 +36,10 @@ public:
         uart_configure(dev_485, &config);
         uart_irq_rx_disable(dev_485);
         uart_irq_tx_disable(dev_485);
+        static const auto uart_isr_trampoline{[](const device *dev, void *user_data){
+            pgv_controller_impl *self{static_cast<pgv_controller_impl*>(user_data)};
+            self->uart_isr();
+        }};
         uart_irq_callback_user_data_set(dev_485, uart_isr_trampoline, this);
         uart_irq_rx_enable(dev_485);
         gpio_pin_configure(dev_en, 10, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
@@ -239,10 +243,6 @@ private:
                 k_sem_give(&sem);
             }
         }
-    }
-    static void uart_isr_trampoline(const device *dev, void *user_data) {
-        pgv_controller_impl *self{static_cast<pgv_controller_impl*>(user_data)};
-        self->uart_isr();
     }
     struct {
         ring_buf rb;

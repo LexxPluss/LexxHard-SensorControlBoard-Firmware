@@ -25,6 +25,10 @@ public:
             uart_configure(uart_dev, &config);
             uart_irq_rx_disable(uart_dev);
             uart_irq_tx_disable(uart_dev);
+            static const auto uart_isr_trampoline{[](const device* dev, void* user_data){
+                rosserial_hardware_zephyr* self{static_cast<rosserial_hardware_zephyr*>(user_data)};
+                self->uart_isr();
+            }};
             uart_irq_callback_user_data_set(uart_dev, uart_isr_trampoline, this);
             uart_irq_rx_enable(uart_dev);
         }
@@ -65,10 +69,6 @@ private:
             if (uart_irq_tx_complete(uart_dev))
                 uart_irq_tx_disable(uart_dev);
         }
-    }
-    static void uart_isr_trampoline(const device* dev, void* user_data) {
-        rosserial_hardware_zephyr* self{static_cast<rosserial_hardware_zephyr*>(user_data)};
-        self->uart_isr();
     }
     struct {
         ring_buf rx, tx;
