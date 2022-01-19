@@ -14,7 +14,7 @@ public:
         ring_buf_init(&ringbuf.rx, sizeof ringbuf.rbuf, ringbuf.rbuf);
         ring_buf_init(&ringbuf.tx, sizeof ringbuf.tbuf, ringbuf.tbuf);
         uart_dev = device_get_binding(name);
-        if (uart_dev != nullptr) {
+        if (device_is_ready(uart_dev)) {
             uart_config config{
                 .baudrate{baudrate},
                 .parity{UART_CFG_PARITY_NONE},
@@ -38,7 +38,7 @@ public:
         return n > 0 ? c : -1;
     }
     void write(uint8_t* data, int length) {
-        if (uart_dev != nullptr) {
+        if (device_is_ready(uart_dev)) {
             while (length > 0) {
                 uint32_t n{ring_buf_put(&ringbuf.tx, data, length)};
                 uart_irq_tx_enable(uart_dev);

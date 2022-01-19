@@ -13,17 +13,17 @@ class impl {
 public:
     int init() {
         dev = device_get_binding("I2C_1");
-        if (dev != nullptr) {
-            for (int i{0}; i < TEMPERATURE_NUM; ++i) {
-                uint8_t wbuf[1]{0x0b}, rbuf[2];
-                if (i2c_write_read(dev, ADDR + i, wbuf, sizeof wbuf, rbuf, sizeof rbuf) == 0 &&
-                    (rbuf[0] & 0b11111000) == 0b11001000) {
-                    static constexpr uint8_t initbuf[2]{0x03, 0b10000000};
-                    i2c_write(dev, initbuf, sizeof initbuf, ADDR + i);
-                }
+        if (!device_is_ready(dev))
+            return -1;
+        for (int i{0}; i < TEMPERATURE_NUM; ++i) {
+            uint8_t wbuf[1]{0x0b}, rbuf[2];
+            if (i2c_write_read(dev, ADDR + i, wbuf, sizeof wbuf, rbuf, sizeof rbuf) == 0 &&
+                (rbuf[0] & 0b11111000) == 0b11001000) {
+                static constexpr uint8_t initbuf[2]{0x03, 0b10000000};
+                i2c_write(dev, initbuf, sizeof initbuf, ADDR + i);
             }
         }
-        return dev == nullptr ? -1 : 0;
+        return 0;
     }
     void run() {
         if (!device_is_ready(dev))

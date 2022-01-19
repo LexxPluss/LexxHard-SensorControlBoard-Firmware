@@ -71,7 +71,7 @@ public:
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         dev[LED_LEFT] = device_get_binding("WS2812_0");
         dev[LED_RIGHT] = device_get_binding("WS2812_1");
-        if (dev[LED_LEFT] == nullptr || dev[LED_RIGHT] == nullptr)
+        if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]))
             return -1;
         fill(black);
         update();

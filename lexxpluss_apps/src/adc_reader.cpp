@@ -12,7 +12,7 @@ class {
 public:
     int init() {
         dev = device_get_binding("ADC_1");
-        return dev == nullptr ? -1 : 0;
+        return device_is_ready(dev) ? 0 : -1;
     }
     void run() {
         if (!device_is_ready(dev))

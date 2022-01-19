@@ -16,7 +16,7 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         dev = device_get_binding("ADIS16470");
-        if (dev == nullptr)
+        if (!device_is_ready(dev))
             return -1;
         for (int i{0}; i < 3; ++i) {
             message.accel[i] = 0;

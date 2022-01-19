@@ -23,29 +23,27 @@ public:
         ring_buf_init(&rxbuf.rb, sizeof rxbuf.buf, rxbuf.buf);
         ring_buf_init(&txbuf.rb, sizeof txbuf.buf, txbuf.buf);
         dev_485 = device_get_binding("UART_6");
-        if (dev_485 != nullptr) {
-            uart_config config{
-                .baudrate{115200},
-                .parity{UART_CFG_PARITY_EVEN},
-                .stop_bits{UART_CFG_STOP_BITS_1},
-                .data_bits{UART_CFG_DATA_BITS_8},
-                .flow_ctrl{UART_CFG_FLOW_CTRL_NONE}
-            };
-            uart_configure(dev_485, &config);
-            uart_irq_rx_disable(dev_485);
-            uart_irq_tx_disable(dev_485);
-            uart_irq_callback_user_data_set(dev_485, uart_isr_trampoline, this);
-            uart_irq_rx_enable(dev_485);
-        }
         dev_en = device_get_binding("GPIOG");
-        if (dev_en != nullptr) {
-            gpio_pin_configure(dev_en, 10, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-            gpio_pin_configure(dev_en, 11, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-            gpio_pin_configure(dev_en, 13, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-            gpio_pin_set(dev_en, 10, 0);
-        }
+        if (!device_is_ready(dev_485) || !device_is_ready(dev_en))
+            return -1;
+        uart_config config{
+            .baudrate{115200},
+            .parity{UART_CFG_PARITY_EVEN},
+            .stop_bits{UART_CFG_STOP_BITS_1},
+            .data_bits{UART_CFG_DATA_BITS_8},
+            .flow_ctrl{UART_CFG_FLOW_CTRL_NONE}
+        };
+        uart_configure(dev_485, &config);
+        uart_irq_rx_disable(dev_485);
+        uart_irq_tx_disable(dev_485);
+        uart_irq_callback_user_data_set(dev_485, uart_isr_trampoline, this);
+        uart_irq_rx_enable(dev_485);
+        gpio_pin_configure(dev_en, 10, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(dev_en, 11, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(dev_en, 13, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_set(dev_en, 10, 0);
         k_sem_init(&sem, 0, 1);
-        return dev_485 == nullptr || dev_en == nullptr ? -1 : 0;
+        return 0;
     }
     void run() {
         if (!device_is_ready(dev_485) || !device_is_ready(dev_en))
@@ -199,7 +197,7 @@ private:
         return rb->tail - rb->head;
     }
     void send(const uint8_t *buf, uint32_t length) {
-        if (dev_485 != nullptr) {
+        if (device_is_ready(dev_485)) {
             gpio_pin_set(dev_en, 11, 1);
             k_busy_wait(100);
             while (length > 0) {

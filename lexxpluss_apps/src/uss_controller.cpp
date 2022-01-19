@@ -16,11 +16,11 @@ class uss_fetcher {
 public:
     int init(const char *label0, const char *label1) {
         dev[0] = device_get_binding(label0);
-        if (dev[0] == nullptr)
+        if (!device_is_ready(dev[0]))
             return -1;
         if (label1 != nullptr) {
             dev[1] = device_get_binding(label1);
-            if (dev[1] == nullptr)
+            if (!device_is_ready(dev[1]))
                 return -1;
         }
         return 0;
@@ -45,7 +45,7 @@ private:
                 sensor_channel_get(dev[0], SENSOR_CHAN_DISTANCE, &v);
                 distance[0] = v.val1 * 1000 + v.val2 / 1000;
             }
-            if (dev[1] != nullptr) {
+            if (device_is_ready(dev[1])) {
                 if (sensor_sample_fetch_chan(dev[1], SENSOR_CHAN_ALL) == 0) {
                     sensor_value v;
                     sensor_channel_get(dev[1], SENSOR_CHAN_DISTANCE, &v);

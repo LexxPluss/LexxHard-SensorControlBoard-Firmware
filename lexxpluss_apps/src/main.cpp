@@ -34,7 +34,7 @@ K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 void reset_usb_hub()
 {
     const device *gpioa = device_get_binding("GPIOA");
-    if (gpioa != nullptr) {
+    if (device_is_ready(gpioa)) {
         gpio_pin_configure(gpioa, 3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         gpio_pin_set(gpioa, 3, 0);
         k_usleep(200);
