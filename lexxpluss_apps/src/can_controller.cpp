@@ -37,7 +37,7 @@ private:
     char buffer[128];
 };
 
-class {
+class can_controller_impl {
 public:
     int init() {
         k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
@@ -150,7 +150,8 @@ public:
                     "WHEEL:%d/%d\n"
                     "FAN:%u\n"
                     "ConnTemp:%d/%d PBTemp:%d\n"
-                    "MBTemp:%f ActTemp:%f/%f/%f\n",
+                    "MBTemp:%f ActTemp:%f/%f/%f\n"
+                    "Version:%s PowerBoard Version:%s\n",
                     board2ros.bumper_switch[0], board2ros.bumper_switch[1], board2ros.emergency_switch[0], board2ros.emergency_switch[1], board2ros.power_switch,
                     board2ros.wait_shutdown, board2ros.auto_charging, board2ros.manual_charging,
                     board2ros.c_fet, board2ros.d_fet, board2ros.p_dsg,
@@ -158,7 +159,8 @@ public:
                     board2ros.wheel_disable[0], board2ros.wheel_disable[1],
                     board2ros.fan_duty,
                     board2ros.charge_connector_temp[0], board2ros.charge_connector_temp[1], board2ros.power_board_temp,
-                    board2ros.main_board_temp, board2ros.actuator_board_temp[0], board2ros.actuator_board_temp[1], board2ros.actuator_board_temp[2]);
+                    board2ros.main_board_temp, board2ros.actuator_board_temp[0], board2ros.actuator_board_temp[1], board2ros.actuator_board_temp[2],
+                    version, version_powerboard);
     }
 private:
     void setup_can_filter() const {
@@ -278,6 +280,15 @@ private:
             }
             if (board2ros.emergency_switch[0] && board2ros.emergency_switch[1])
                 brd_emgoff();
+        } else if (frame.id == 0x203) {
+            for (uint32_t i{0}, n{0}; i < frame.dlc && n < sizeof version_powerboard - 2; ++i) {
+                char data{frame.data[i]};
+                version_powerboard[n++] = data;
+                if (data == '\0')
+                    break;
+                version_powerboard[n++] = '.';
+            }
+            version_powerboard[frame.dlc] = '\0';
         }
     }
     void handler_log(zcan_frame &frame) {
@@ -305,7 +316,9 @@ private:
     log_printer log;
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     const device *dev{nullptr};
+    char version_powerboard[32] = "";
     bool heartbeat_timeout{true};
+    static constexpr char version[] = "1.0.2";
 } impl;
 
 int bmu_info(const shell *shell, size_t argc, char **argv)
