@@ -157,10 +157,6 @@ public:
         prev_pulse_value = pulse_value;
         return value;
     }
-    bool is_near(int32_t location, int32_t thres_mm = 2) const {
-        int32_t diff_abs{abs(location - get_location())};
-        return diff_abs < thres_mm;
-    }
 private:
     void reset_pulse() {
         pulse_value = prev_pulse_value = 0;
@@ -269,8 +265,9 @@ public:
         vel_min = 10;
         activated = false;
     }
-    bool is_near(int32_t thres_mm = 2) const {
-        return cnt.is_near(target_position, thres_mm);
+    bool is_near(int32_t thres_mm = 1) const {
+        int32_t diff_abs{abs(target_position - cnt.get_location())};
+        return diff_abs < thres_mm;
     }
     // void set_param(float pp, float vp, float vi) {
     //     POS_P = pp;
@@ -462,7 +459,7 @@ public:
         }
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
             act[i].to_location(location[i], power[i]);
-        bool stopped{wait_actuator_stop(30000, 20)};
+        bool stopped{wait_actuator_stop(30000, 100)};
         pwm_trampoline_all(msg_control::STOP);
         if (!stopped || can_controller::is_emergency()) {
             LOG_WRN("unable to move location.");
@@ -519,7 +516,7 @@ private:
         for (uint32_t i{0}, end{timeout_ms / sleep_ms}; i < end; ++i) {
             remaining = 3;
             for (uint32_t j{0}; j < ACTUATOR_NUM; ++j) {
-                if (i >= 2 && !act[j].is_moving()) {
+                if (i >= 4 && !act[j].is_moving()) {
                     pwm_trampoline(j, msg_control::STOP);
                     --remaining;
                 }
