@@ -535,7 +535,7 @@ private:
 int cmd_duty(const shell *shell, size_t argc, char **argv)
 {
     if (argc != 3 && argc != 5 && argc != 7) {
-        shell_error(shell, "Usage: %s %s <duty> <power> ...\n", argv[-1], argv[0]);
+        shell_error(shell, "Usage: %s %s <direction> <power> ...\n", argv[-1], argv[0]);
         return 1;
     }
     for (size_t i{0}, end{argc / 2}; i < end; ++i) {
