@@ -300,12 +300,18 @@ private:
         }
     }
     void send_message() const {
+        bool main_overheat{board2ros.main_board_temp > 75.0f};
+        bool actuator_overheat{false};
+        for (const auto &i: board2ros.actuator_board_temp) {
+            if (i > 75.0f)
+                actuator_overheat = true;
+        }
         zcan_frame frame{
             .id{0x201},
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
-            .dlc{3},
-            .data{ros2board.emergency_stop, ros2board.power_off, false}
+            .dlc{5},
+            .data{ros2board.emergency_stop, ros2board.power_off, false, main_overheat, actuator_overheat}
             // .data{ros2board.emergency_stop, ros2board.power_off, heartbeat_timeout}
         };
         can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
