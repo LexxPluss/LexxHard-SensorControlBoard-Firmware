@@ -242,7 +242,7 @@ private:
             if (no_color) {
                 pixeldata[LED_LEFT][i] = pixeldata[LED_RIGHT][i] = black;
             } else {
-                static constexpr led_rgb color{.r{0x80}, .g{0x00}, .b{0x00}};
+                static constexpr led_rgb color{.r{0x00}, .g{0x80}, .b{0x20}};
                 int gain{(width - abs(pos - i)) * 100 / width};
                 gain = gain * gain * gain / 100 / 100;
                 led_rgb dimmed{fader(color, gain)};
