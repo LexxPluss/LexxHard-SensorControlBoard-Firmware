@@ -119,6 +119,14 @@ private:
         ++counter;
     }
     void update() {
+        for (uint32_t i{0}; i < PIXELS; ++i) {
+            pixeldata[LED_LEFT][i].r >>= 2;
+            pixeldata[LED_LEFT][i].g >>= 2;
+            pixeldata[LED_LEFT][i].b >>= 2;
+            pixeldata[LED_RIGHT][i].r >>= 2;
+            pixeldata[LED_RIGHT][i].g >>= 2;
+            pixeldata[LED_RIGHT][i].b >>= 2;
+        }
         led_strip_update_rgb(dev[LED_LEFT], pixeldata[LED_LEFT], PIXELS);
         led_strip_update_rgb(dev[LED_RIGHT], pixeldata[LED_RIGHT], PIXELS);
     }
