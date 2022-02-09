@@ -324,7 +324,7 @@ private:
     const device *dev{nullptr};
     char version_powerboard[32] = "";
     bool heartbeat_timeout{true};
-    static constexpr char version[] = "1.0.3";
+    static constexpr char version[] = "1.0.4";
 } impl;
 
 int bmu_info(const shell *shell, size_t argc, char **argv)
