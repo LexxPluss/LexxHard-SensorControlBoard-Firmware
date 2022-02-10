@@ -278,8 +278,6 @@ private:
                 while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
                     k_msgq_purge(&led_controller::msgq);
             }
-            if (board2ros.emergency_switch[0] && board2ros.emergency_switch[1])
-                brd_emgoff();
         } else if (frame.id == 0x203) {
             for (uint32_t i{0}, n{0}; i < frame.dlc && n < sizeof version_powerboard - 2; ++i) {
                 char data{frame.data[i]};
