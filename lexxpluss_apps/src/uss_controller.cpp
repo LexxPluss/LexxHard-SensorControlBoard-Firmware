@@ -43,13 +43,15 @@ private:
             if (sensor_sample_fetch_chan(dev[0], SENSOR_CHAN_ALL) == 0) {
                 sensor_value v;
                 sensor_channel_get(dev[0], SENSOR_CHAN_DISTANCE, &v);
-                distance[0] = v.val1 * 1000 + v.val2 / 1000;
+                int32_t value{v.val1 * 1000 + v.val2 / 1000};
+                distance[0] = distance[0] / 4 + value * 3 / 4;
             }
             if (device_is_ready(dev[1])) {
                 if (sensor_sample_fetch_chan(dev[1], SENSOR_CHAN_ALL) == 0) {
                     sensor_value v;
                     sensor_channel_get(dev[1], SENSOR_CHAN_DISTANCE, &v);
-                    distance[1] = v.val1 * 1000 + v.val2 / 1000;
+                    int32_t value{v.val1 * 1000 + v.val2 / 1000};
+                    distance[1] = distance[1] / 4 + value * 3 / 4;
                 }
             }
             k_msleep(1);
