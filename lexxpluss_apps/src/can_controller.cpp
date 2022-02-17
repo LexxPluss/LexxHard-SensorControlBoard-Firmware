@@ -140,6 +140,7 @@ public:
     }
     void brd_emgoff() {
         ros2board.emergency_stop = false;
+        heartbeat_timeout = false;
     }
     void brd_info(const shell *shell) const {
         shell_print(shell,
