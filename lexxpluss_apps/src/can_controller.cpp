@@ -245,6 +245,7 @@ private:
     }
     void handler_board(zcan_frame &frame) {
         if (frame.id == 0x200) {
+            uint8_t prev_state{board2ros.state};
             bool prev_wait_shutdown{board2ros.wait_shutdown};
             board2ros.bumper_switch[0] = (frame.data[0] & 0b00001000) != 0;
             board2ros.bumper_switch[1] = (frame.data[0] & 0b00010000) != 0;
@@ -270,6 +271,12 @@ private:
             board2ros.main_board_temp = misc_controller::get_main_board_temp();
             for (auto i{0}; i < 3; ++i)
                 board2ros.actuator_board_temp[i] = misc_controller::get_actuator_board_temp(i);
+            static constexpr uint8_t LOCKDOWN_STATE{7};
+            if (prev_state != LOCKDOWN_STATE && board2ros.state == LOCKDOWN_STATE) {
+                led_controller::msg message{led_controller::msg::LOCKDOWN, 1000000000};
+                while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
+                    k_msgq_purge(&led_controller::msgq);
+            }
             if (!prev_wait_shutdown && board2ros.wait_shutdown) {
                 led_controller::msg message{led_controller::msg::SHOWTIME, 60000};
                 while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)

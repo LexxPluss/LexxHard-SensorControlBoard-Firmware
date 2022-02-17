@@ -24,6 +24,7 @@ struct msg {
         else if (strcmp(str, "move_actuator")   == 0) pattern = MOVE_ACTUATOR;
         else if (strcmp(str, "charge_level")    == 0) pattern = CHARGE_LEVEL;
         else if (strcmp(str, "showtime")        == 0) pattern = SHOWTIME;
+        else if (strcmp(str, "lockdown")        == 0) pattern = LOCKDOWN;
         else                                          pattern = NONE;
         interrupt_ms = 0;
     }
@@ -44,7 +45,8 @@ struct msg {
     static constexpr uint32_t MOVE_ACTUATOR{15};
     static constexpr uint32_t CHARGE_LEVEL{16};
     static constexpr uint32_t SHOWTIME{10000};
-    static constexpr uint32_t RGB{10001};
+    static constexpr uint32_t LOCKDOWN{10001};
+    static constexpr uint32_t RGB{20000};
 } __attribute__((aligned(4)));
 
 void init();

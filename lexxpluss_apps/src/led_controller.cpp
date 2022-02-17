@@ -113,6 +113,7 @@ private:
         case msg::MOVE_ACTUATOR:   fill_strobe(move_actuator, 10, 200, 200); break;
         case msg::CHARGE_LEVEL:    fill_charge_level(); break;
         case msg::SHOWTIME:        fill_knight_industries_two_thousand(); break;
+        case msg::LOCKDOWN:        fill_strobe(lockdown, 10, 200, 0); break;
         case msg::RGB:             fill(led_rgb{.r{message.rgb[0]}, .g{message.rgb[1]}, .b{message.rgb[2]}}); break;
         }
         update();
@@ -292,7 +293,7 @@ private:
     led_rgb pixeldata[LED_NUM][PIXELS];
     uint32_t counter{0};
     static const led_rgb emergency_stop, amr_mode, agv_mode, mission_pause, path_blocked, manual_drive;
-    static const led_rgb dock_mode, waiting_for_job, orange, sequence, move_actuator, black;
+    static const led_rgb dock_mode, waiting_for_job, orange, sequence, move_actuator, lockdown, black;
 } impl;
 const led_rgb led_controller_impl::emergency_stop {.r{0x80}, .g{0x00}, .b{0x00}};
 const led_rgb led_controller_impl::amr_mode       {.r{0x00}, .g{0x80}, .b{0x80}};
@@ -305,6 +306,7 @@ const led_rgb led_controller_impl::waiting_for_job{.r{0xff}, .g{0xff}, .b{0x00}}
 const led_rgb led_controller_impl::orange         {.r{0xff}, .g{0xa5}, .b{0x00}};
 const led_rgb led_controller_impl::sequence       {.r{0x90}, .g{0x20}, .b{0x00}};
 const led_rgb led_controller_impl::move_actuator  {.r{0x45}, .g{0xff}, .b{0x00}};
+const led_rgb led_controller_impl::lockdown       {.r{0x00}, .g{0x00}, .b{0x80}};
 const led_rgb led_controller_impl::black          {.r{0x00}, .g{0x00}, .b{0x00}};
 
 int pattern(const shell *shell, size_t argc, char **argv)
