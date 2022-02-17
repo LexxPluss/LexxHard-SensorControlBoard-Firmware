@@ -144,19 +144,19 @@ public:
     void brd_info(const shell *shell) const {
         shell_print(shell,
                     "Bumper:%d/%d Emergency:%d/%d Power:%d\n"
-                    "Shutdown:%d AutoCharge:%d ManualCharge:%d\n"
+                    "Shutdown:%d Reason:%d AutoCharge:%d ManualCharge:%d\n"
                     "CFET:%d DFET:%d PDSG:%d\n"
                     "5VFAIL:%d 16VFAIL:%d\n"
-                    "WHEEL:%d/%d\n"
+                    "STATE:%u WHEEL:%d/%d\n"
                     "FAN:%u\n"
                     "ConnTemp:%d/%d PBTemp:%d\n"
                     "MBTemp:%f ActTemp:%f/%f/%f\n"
                     "Version:%s PowerBoard Version:%s\n",
                     board2ros.bumper_switch[0], board2ros.bumper_switch[1], board2ros.emergency_switch[0], board2ros.emergency_switch[1], board2ros.power_switch,
-                    board2ros.wait_shutdown, board2ros.auto_charging, board2ros.manual_charging,
+                    board2ros.wait_shutdown, board2ros.shutdown_reason, board2ros.auto_charging, board2ros.manual_charging,
                     board2ros.c_fet, board2ros.d_fet, board2ros.p_dsg,
                     board2ros.v5_fail, board2ros.v16_fail,
-                    board2ros.wheel_disable[0], board2ros.wheel_disable[1],
+                    board2ros.state, board2ros.wheel_disable[0], board2ros.wheel_disable[1],
                     board2ros.fan_duty,
                     board2ros.charge_connector_temp[0], board2ros.charge_connector_temp[1], board2ros.power_board_temp,
                     board2ros.main_board_temp, board2ros.actuator_board_temp[0], board2ros.actuator_board_temp[1], board2ros.actuator_board_temp[2],
@@ -252,6 +252,7 @@ private:
             board2ros.power_switch = (frame.data[0] & 0b00000001) != 0;
             board2ros.wait_shutdown = (frame.data[1] & 0b10000000) != 0;
             board2ros.auto_charging = (frame.data[1] & 0b00000010) != 0;
+            board2ros.shutdown_reason = (frame.data[1] & 0b01111100) >> 2;
             board2ros.manual_charging = (frame.data[1] & 0b00000001) != 0;
             board2ros.c_fet = (frame.data[2] & 0b00010000) != 0;
             board2ros.d_fet = (frame.data[2] & 0b00100000) != 0;
@@ -260,6 +261,7 @@ private:
             board2ros.v16_fail = (frame.data[2] & 0b00000010) != 0;
             board2ros.wheel_disable[0] = (frame.data[3] & 0b00000001) != 0;
             board2ros.wheel_disable[1] = (frame.data[3] & 0b00000010) != 0;
+            board2ros.state = (frame.data[3] & 0b11111100) >> 2;
             board2ros.fan_duty = frame.data[4];
             board2ros.charge_connector_temp[0] = frame.data[5];
             board2ros.charge_connector_temp[1] = frame.data[6];

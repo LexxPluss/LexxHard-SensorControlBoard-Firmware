@@ -72,7 +72,7 @@ private:
         pub_temperature.publish(&msg_temperature);
     }
     void publish_power(const can_controller::msg_board &message) {
-        msg_power.data = message.wait_shutdown ? 1 : 0;
+        msg_power.data = message.wait_shutdown ? message.shutdown_reason : 0;
         pub_power.publish(&msg_power);
     }
     void callback_emergency(const std_msgs::Bool &req) {
