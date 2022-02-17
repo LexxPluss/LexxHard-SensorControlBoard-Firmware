@@ -33,7 +33,7 @@ public:
                 uint8_t wbuf[1]{0x00}, rbuf[2];
                 if (i2c_write_read(dev, ADDR + i, wbuf, sizeof wbuf, rbuf, sizeof rbuf) == 0) {
                     int16_t value = (rbuf[0] << 8) | rbuf[1];
-                    temperature[i] = value / 128.0f;
+                    temperature[i] = temperature[i] * 0.5f + value / 128.0f * 0.5f;
                 }
             }
             k_msleep(100);
