@@ -142,6 +142,9 @@ public:
         ros2board.emergency_stop = false;
         heartbeat_timeout = false;
     }
+    void brd_lockdown(bool enable) {
+        enable_lockdown = enable;
+    }
     void brd_info(const shell *shell) const {
         shell_print(shell,
                     "Bumper:%d/%d Emergency:%d/%d Power:%d\n"
@@ -152,6 +155,7 @@ public:
                     "FAN:%u\n"
                     "ConnTemp:%d/%d PBTemp:%d\n"
                     "MBTemp:%f ActTemp:%f/%f/%f\n"
+                    "Lockdown:%s\n"
                     "Version:%s PowerBoard Version:%s\n",
                     board2ros.bumper_switch[0], board2ros.bumper_switch[1], board2ros.emergency_switch[0], board2ros.emergency_switch[1], board2ros.power_switch,
                     board2ros.wait_shutdown, board2ros.shutdown_reason, board2ros.auto_charging, board2ros.manual_charging,
@@ -161,6 +165,7 @@ public:
                     board2ros.fan_duty,
                     board2ros.charge_connector_temp[0], board2ros.charge_connector_temp[1], board2ros.power_board_temp,
                     board2ros.main_board_temp, board2ros.actuator_board_temp[0], board2ros.actuator_board_temp[1], board2ros.actuator_board_temp[2],
+                    enable_lockdown ? "enable" : "disable",
                     version, version_powerboard);
     }
 private:
@@ -319,7 +324,7 @@ private:
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
             .dlc{5},
-            .data{ros2board.emergency_stop, ros2board.power_off, heartbeat_timeout, main_overheat, actuator_overheat}
+            .data{ros2board.emergency_stop, ros2board.power_off, enable_lockdown && heartbeat_timeout, main_overheat, actuator_overheat}
         };
         can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
     }
@@ -330,7 +335,7 @@ private:
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     const device *dev{nullptr};
     char version_powerboard[32] = "";
-    bool heartbeat_timeout{true};
+    bool heartbeat_timeout{true}, enable_lockdown{true};
     static constexpr char version[] = "1.0.7";
 } impl;
 
@@ -352,6 +357,17 @@ int brd_emgoff(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int brd_lockdown(const shell *shell, size_t argc, char **argv)
+{
+    if (argc != 2) {
+        shell_error(shell, "Usage: %s %s <disable | enable>\n", argv[-1], argv[0]);
+        return 1;
+    }
+    bool enable{strcmp(argv[1], "disable") != 0};
+    impl.brd_lockdown(enable);
+    return 0;
+}
+
 int brd_info(const shell *shell, size_t argc, char **argv)
 {
     impl.brd_info(shell);
@@ -360,6 +376,7 @@ int brd_info(const shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_brd,
     SHELL_CMD(emgoff, NULL, "ROS emergency stop off", brd_emgoff),
+    SHELL_CMD(lockdown, NULL, "Lockdown control feature", brd_lockdown),
     SHELL_CMD(info, NULL, "Board information", brd_info),
     SHELL_SUBCMD_SET_END
 );
