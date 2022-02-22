@@ -21,14 +21,15 @@ struct msg_bmu {
 } __attribute__((aligned(4)));
 
 struct msg_board {
-    float main_board_temp, actuator_board_temp[3];
+    float main_board_temp, actuator_board_temp[3], charge_connector_voltage;
     int16_t charge_connector_temp[2], power_board_temp;
-    uint8_t fan_duty, shutdown_reason, state;
+    uint8_t fan_duty, shutdown_reason, state, charge_check_count, charge_heartbeat_delay;
     bool bumper_switch[2];
     bool emergency_switch[2];
     bool power_switch, wait_shutdown, auto_charging, manual_charging;
     bool c_fet, d_fet, p_dsg, v5_fail, v16_fail;
     bool wheel_disable[2];
+    bool charge_temperature_error;
 } __attribute__((aligned(4)));
 
 struct msg_control {

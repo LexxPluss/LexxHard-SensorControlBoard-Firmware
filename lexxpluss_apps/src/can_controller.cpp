@@ -156,6 +156,7 @@ public:
                     "ConnTemp:%d/%d PBTemp:%d\n"
                     "MBTemp:%f ActTemp:%f/%f/%f\n"
                     "Lockdown:%s\n"
+                    "Charge Connector Voltage:%f Count:%u Delay:%u TempError:%d\n"
                     "Version:%s PowerBoard Version:%s\n",
                     board2ros.bumper_switch[0], board2ros.bumper_switch[1], board2ros.emergency_switch[0], board2ros.emergency_switch[1], board2ros.power_switch,
                     board2ros.wait_shutdown, board2ros.shutdown_reason, board2ros.auto_charging, board2ros.manual_charging,
@@ -166,6 +167,7 @@ public:
                     board2ros.charge_connector_temp[0], board2ros.charge_connector_temp[1], board2ros.power_board_temp,
                     board2ros.main_board_temp, board2ros.actuator_board_temp[0], board2ros.actuator_board_temp[1], board2ros.actuator_board_temp[2],
                     enable_lockdown ? "enable" : "disable",
+                    board2ros.charge_connector_voltage, board2ros.charge_check_count, board2ros.charge_heartbeat_delay, board2ros.charge_temperature_error,
                     version, version_powerboard);
     }
 private:
@@ -181,7 +183,7 @@ private:
             .id{0x200},
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7fc},
+            .id_mask{0x7f8},
             .rtr_mask{1}
         };
         static const zcan_filter filter_log{
@@ -302,6 +304,12 @@ private:
                 version_powerboard[n++] = '.';
             }
             version_powerboard[frame.dlc] = '\0';
+        } else if (frame.id == 0x204) {
+            uint16_t voltage_mv{static_cast<uint16_t>(frame.data[0] | (frame.data[1] << 8))};
+            board2ros.charge_connector_voltage = voltage_mv * 1e-3f;
+            board2ros.charge_check_count = frame.data[2];
+            board2ros.charge_heartbeat_delay = frame.data[3];
+            board2ros.charge_temperature_error = frame.data[4];
         }
     }
     void handler_log(zcan_frame &frame) {
