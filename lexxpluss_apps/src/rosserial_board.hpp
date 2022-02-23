@@ -53,9 +53,10 @@ private:
         pub_emergency.publish(&msg_emergency);
     }
     void publish_charge(const can_controller::msg_board &message) {
-        if (message.manual_charging)
+        static constexpr uint8_t MANUAL_CHARGE_STATE{6}, AUTO_CHARGE_STATE{5};
+        if (message.state == MANUAL_CHARGE_STATE)
             msg_charge.data = 2;
-        else if (message.auto_charging)
+        else if (message.state == AUTO_CHARGE_STATE)
             msg_charge.data = 1;
         else
             msg_charge.data = 0;
