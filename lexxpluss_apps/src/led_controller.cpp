@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include "can_controller.hpp"
 #include "led_controller.hpp"
-#include "rosdiagnostic.hpp"
 
 namespace lexxfirm::led_controller {
 
@@ -84,14 +83,6 @@ public:
             if (rec.get_message(message))
                 counter = 0;
             poll(message);
-        }
-    }
-    void run_error() const {
-        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "led", "no device"};
-        while (true) {
-            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&rosdiagnostic::msgq);
-            k_msleep(5000);
         }
     }
 private:
@@ -351,7 +342,6 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
-    impl.run_error();
 }
 
 k_thread thread;

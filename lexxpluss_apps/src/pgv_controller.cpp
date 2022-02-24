@@ -6,7 +6,6 @@
 #include <shell/shell.h>
 #include <sys/ring_buffer.h>
 #include "pgv_controller.hpp"
-#include "rosdiagnostic.hpp"
 
 namespace lexxfirm::pgv_controller {
 
@@ -82,14 +81,6 @@ public:
                 recv(buf, sizeof buf);
             }
             k_msleep(10);
-        }
-    }
-    void run_error() const {
-        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "pgv", "no device"};
-        while (true) {
-            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&rosdiagnostic::msgq);
-            k_msleep(5000);
         }
     }
     void info(const shell *shell) const {
@@ -273,7 +264,6 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
-    impl.run_error();
 }
 
 k_thread thread;

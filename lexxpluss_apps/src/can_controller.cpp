@@ -7,7 +7,6 @@
 #include "led_controller.hpp"
 #include "misc_controller.hpp"
 #include "can_controller.hpp"
-#include "rosdiagnostic.hpp"
 
 namespace lexxfirm::can_controller {
 
@@ -95,14 +94,6 @@ public:
             }
             if (!handled)
                 k_msleep(1);
-        }
-    }
-    void run_error() const {
-        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "can", "no device"};
-        while (true) {
-            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&rosdiagnostic::msgq);
-            k_msleep(5000);
         }
     }
     uint32_t get_rsoc() const {
@@ -344,7 +335,7 @@ private:
     const device *dev{nullptr};
     char version_powerboard[32] = "";
     bool heartbeat_timeout{true}, enable_lockdown{true};
-    static constexpr char version[] = "1.0.9";
+    static constexpr char version[] = "1.0.10";
 } impl;
 
 int bmu_info(const shell *shell, size_t argc, char **argv)
@@ -398,7 +389,6 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
-    impl.run_error();
 }
 
 uint32_t get_rsoc()

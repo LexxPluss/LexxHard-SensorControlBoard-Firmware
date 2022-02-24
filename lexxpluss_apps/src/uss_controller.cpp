@@ -3,7 +3,6 @@
 #include <drivers/sensor.h>
 #include <logging/log.h>
 #include <shell/shell.h>
-#include "rosdiagnostic.hpp"
 #include "uss_controller.hpp"
 
 namespace lexxfirm::uss_controller {
@@ -32,7 +31,6 @@ public:
     static void runner(void *p1, void *p2, void *p3) {
         uss_fetcher *self{static_cast<uss_fetcher*>(p1)};
         self->run();
-        self->run_error();
     }
     k_thread thread;
 private:
@@ -55,14 +53,6 @@ private:
                 }
             }
             k_msleep(1);
-        }
-    }
-    void run_error() const {
-        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "uss", "no device"};
-        while (true) {
-            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&rosdiagnostic::msgq);
-            k_msleep(5000);
         }
     }
     const device *dev[2]{nullptr, nullptr};

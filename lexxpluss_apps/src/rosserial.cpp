@@ -2,7 +2,6 @@
 #include "rosserial_actuator.hpp"
 #include "rosserial_bmu.hpp"
 #include "rosserial_board.hpp"
-#include "rosserial_diag.hpp"
 #include "rosserial_imu.hpp"
 #include "rosserial_led.hpp"
 #include "rosserial_pgv.hpp"
@@ -20,7 +19,6 @@ public:
         actuator.init(nh);
         bmu.init(nh);
         board.init(nh);
-        diag.init(nh);
         imu.init(nh);
         led.init(nh);
         pgv.init(nh);
@@ -34,7 +32,6 @@ public:
             actuator.poll();
             bmu.poll();
             board.poll();
-            diag.poll();
             imu.poll();
             led.poll();
             pgv.poll();
@@ -48,7 +45,6 @@ private:
     ros_actuator actuator;
     ros_bmu bmu;
     ros_board board;
-    ros_diag diag;
     ros_imu imu;
     ros_led led;
     ros_pgv pgv;

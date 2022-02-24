@@ -10,7 +10,6 @@
 #include "actuator_controller.hpp"
 #include "adc_reader.hpp"
 #include "can_controller.hpp"
-#include "rosdiagnostic.hpp"
 
 extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
 {
@@ -426,14 +425,6 @@ public:
             k_msleep(10);
         }
     }
-    void run_error() const {
-        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "actuator", "no device"};
-        while (true) {
-            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&rosdiagnostic::msgq);
-            k_msleep(5000);
-        }
-    }
     int init_location() {
         LOG_INF("initialize location.");
         location_initialized = false;
@@ -614,7 +605,6 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
-    impl.run_error();
 }
 
 int init_location()

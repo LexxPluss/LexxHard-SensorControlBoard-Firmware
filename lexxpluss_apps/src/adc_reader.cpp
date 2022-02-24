@@ -2,7 +2,6 @@
 #include <drivers/adc.h>
 #include <logging/log.h>
 #include "adc_reader.hpp"
-#include "rosdiagnostic.hpp"
 
 namespace lexxfirm::adc_reader {
 
@@ -20,14 +19,6 @@ public:
         while (true) {
             read_all_channels();
             k_msleep(20);
-        }
-    }
-    void run_error() const {
-        rosdiagnostic::msg message{rosdiagnostic::msg::ERROR, "adc", "no device"};
-        while (true) {
-            while (k_msgq_put(&rosdiagnostic::msgq, &message, K_NO_WAIT) != 0)
-                k_msgq_purge(&rosdiagnostic::msgq);
-            k_msleep(5000);
         }
     }
     int32_t get(int index) const {
@@ -73,7 +64,6 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
-    impl.run_error();
 }
 
 int32_t get(int index)

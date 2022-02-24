@@ -7,7 +7,6 @@
 #include "led_controller.hpp"
 #include "misc_controller.hpp"
 #include "pgv_controller.hpp"
-#include "rosdiagnostic.hpp"
 #include "rosserial.hpp"
 #include "rosserial_service.hpp"
 #include "tof_controller.hpp"
@@ -53,7 +52,6 @@ void main()
     lexxfirm::led_controller::init();
     lexxfirm::misc_controller::init();
     lexxfirm::pgv_controller::init();
-    lexxfirm::rosdiagnostic::init();
     lexxfirm::rosserial::init();
     lexxfirm::rosserial_service::init();
     lexxfirm::tof_controller::init();
