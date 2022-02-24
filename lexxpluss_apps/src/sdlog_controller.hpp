@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::log_controller {
+namespace lexxfirm::sdlog_controller {
 
 struct msg {
     char message[64];
@@ -15,7 +15,7 @@ void output(const char *fmt, ...);
 extern k_thread thread;
 extern k_msgq msgq;
 
-#define sdlog(fmt, ...) log_controller::output(__VA_ARGS__)
+#define sdlog(fmt, ...) sdlog_controller::output(__VA_ARGS__)
 
 }
 

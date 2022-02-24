@@ -6,9 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include "log_controller.hpp"
+#include "sdlog_controller.hpp"
 
-namespace lexxfirm::log_controller {
+namespace lexxfirm::sdlog_controller {
 
 LOG_MODULE_REGISTER(log);
 
@@ -164,7 +164,7 @@ private:
     static constexpr uint32_t MAX_FILE_COUNT{500};
 };
 
-class log_controller_impl {
+class sdlog_controller_impl {
 public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
@@ -198,7 +198,7 @@ private:
     bool fs_ok{false};
     static const char *sdroot;
 } impl;
-const char *log_controller_impl::sdroot{"/SD:"};
+const char *sdlog_controller_impl::sdroot{"/SD:"};
 
 void init()
 {
