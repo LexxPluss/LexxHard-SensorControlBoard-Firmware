@@ -34,8 +34,9 @@ void reset_usb_hub()
 {
     if (const device *gpioa = device_get_binding("GPIOA"); device_is_ready(gpioa)) {
         gpio_pin_configure(gpioa, 3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+        k_msleep(1);
         gpio_pin_set(gpioa, 3, 0);
-        k_usleep(200);
+        k_msleep(1);
         gpio_pin_set(gpioa, 3, 1);
     }
 }
