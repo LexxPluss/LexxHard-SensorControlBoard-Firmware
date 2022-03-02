@@ -36,7 +36,7 @@ private:
                 .gain{ADC_GAIN_1},
                 .reference{ADC_REF_INTERNAL},
                 .acquisition_time{ADC_ACQ_TIME_DEFAULT},
-                .channel_id = ch[i],
+                .channel_id{ch[i]},
                 .differential{0}
             };
             adc_channel_setup(dev, &channel_cfg);

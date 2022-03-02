@@ -384,9 +384,9 @@ public:
     }
     void run() {
 
-        if (const device *dev_enable = device_get_binding("GPIOB"); device_is_ready(dev_enable))
+        if (const device *dev_enable{device_get_binding("GPIOB")}; device_is_ready(dev_enable))
             gpio_pin_configure(dev_enable, 1, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        const device *gpiok = device_get_binding("GPIOK");
+        const device *gpiok{device_get_binding("GPIOK")};
         if (device_is_ready(gpiok))
             gpio_pin_configure(gpiok, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         int heartbeat_led{1};
@@ -462,7 +462,7 @@ public:
     }
     void info(const shell *shell) const {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-            auto [pulse, current, fail] = act[i].get_info();
+            auto [pulse, current, fail]{act[i].get_info()};
             shell_print(shell, "actuator: %d encoder: %d pulse current: %d mV", i, pulse, current);
         }
     }

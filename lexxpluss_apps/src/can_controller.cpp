@@ -51,7 +51,7 @@ public:
     void run() {
         if (!device_is_ready(dev))
             return;
-        const device *gpiok = device_get_binding("GPIOK");
+        const device *gpiok{device_get_binding("GPIOK")};
         if (device_is_ready(gpiok))
             gpio_pin_configure(gpiok, 3, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         setup_can_filter();
@@ -333,9 +333,9 @@ private:
     log_printer log;
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     const device *dev{nullptr};
-    char version_powerboard[32] = "";
+    char version_powerboard[32]{""};
     bool heartbeat_timeout{true}, enable_lockdown{true};
-    static constexpr char version[] = "1.0.10";
+    static constexpr char version[]{"1.0.10"};
 } impl;
 
 int bmu_info(const shell *shell, size_t argc, char **argv)
