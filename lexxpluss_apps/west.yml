@@ -7,8 +7,9 @@ manifest:
       remote: lexxpluss
       revision: lexxpluss/main
       import: true
-    - name: LexxAuto
+    - name: ros_msgs
       remote: lexxpluss
-      path: LexxAuto
+      revision: main
+      path: ros_msgs
   self:
     path: lexxpluss_apps

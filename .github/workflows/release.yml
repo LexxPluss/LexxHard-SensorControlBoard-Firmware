@@ -20,12 +20,12 @@ jobs:
           repository: LexxPluss/zephyr
           token: ${{ secrets.GH_PAT }}
           path: zephyr
-      - name: Checkout private LexxAuto
+      - name: Checkout private ros_msgs
         uses: actions/checkout@v2
         with:
-          repository: LexxPluss/LexxAuto
+          repository: LexxPluss/ros_msgs
           token: ${{ secrets.GH_PAT }}
-          path: LexxAuto
+          path: ros_msgs
       - name: build
         id: build
         run: |
