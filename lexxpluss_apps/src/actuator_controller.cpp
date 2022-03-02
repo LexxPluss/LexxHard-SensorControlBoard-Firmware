@@ -4,6 +4,7 @@
 #include <drivers/pwm.h>
 #include <logging/log.h>
 #include <shell/shell.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <tuple>
@@ -60,12 +61,6 @@ struct msg_pwmtrampoline {
     uint8_t duty{0};
 };
 K_MSGQ_DEFINE(msgq_pwmtrampoline, sizeof (msg_pwmtrampoline), 8, 4);
-
-template<typename T>
-inline const T &constrain(const T &val, const T &min, const T &max)
-{
-    return val < min ? min : (val > max ? max : val);
-}
 
 enum class POS {
     LEFT, CENTER, RIGHT
@@ -238,14 +233,14 @@ public:
                 target_velocity = -vel_min;
             if (target_velocity > 0 && target_velocity < vel_min)
                 target_velocity = vel_min;
-            target_velocity = constrain(target_velocity, -vel_max, vel_max);
+            target_velocity = std::clamp(target_velocity, -vel_max, vel_max);
             int32_t diff_velocity{target_velocity - cnt.get_velocity()};
             float control_p{diff_velocity * VEL_P};
             control_i += diff_velocity * dt * VEL_I;
-            control_p = constrain(control_p, -1.0f, 1.0f);
-            control_i = constrain(control_i, -1.0f, 1.0f);
+            control_p = std::clamp(control_p, -1.0f, 1.0f);
+            control_i = std::clamp(control_i, -1.0f, 1.0f);
             control = control_p + control_i;
-            control = constrain(control, -1.0f, 1.0f);
+            control = std::clamp(control, -1.0f, 1.0f);
             control *= 0.3f;
             control += direction == msg_control::UP ? 0.7f : -0.7f;
         }
