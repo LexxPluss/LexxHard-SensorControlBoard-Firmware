@@ -77,7 +77,7 @@ SHELL_CMD_REGISTER(uss, &sub, "USS commands", NULL);
 void init()
 {
     k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-    fetcher[0].init("MB1604_0");
+    // fetcher[0].init("MB1604_0");
     fetcher[1].init("MB1604_1");
     fetcher[2].init("MB1604_2");
     fetcher[3].init("MB1604_3");
@@ -86,14 +86,14 @@ void init()
 
 void run(void *p1, void *p2, void *p3)
 {
-    RUN(0);
+    // RUN(0);
     RUN(1);
     RUN(2);
     RUN(3);
     RUN(4);
     while (true) {
         msg message;
-        message.front_left  = fetcher[0].get_distance();
+        message.front_left  = 4950; //fetcher[0].get_distance();
         message.front_right = fetcher[1].get_distance();
         message.left        = fetcher[2].get_distance();
         message.right       = fetcher[3].get_distance();
