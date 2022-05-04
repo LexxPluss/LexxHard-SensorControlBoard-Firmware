@@ -35,6 +35,7 @@
 #include "pgv_controller.hpp"
 #include "rosserial.hpp"
 #include "rosserial_service.hpp"
+#include "runaway_detector.hpp"
 #include "tof_controller.hpp"
 #include "uss_controller.hpp"
 
@@ -50,6 +51,7 @@ K_THREAD_STACK_DEFINE(misc_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(rosserial_stack, 2048);
 K_THREAD_STACK_DEFINE(rosserial_service_stack, 2048);
+K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(tof_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 
@@ -83,6 +85,7 @@ void main()
     lexxhard::pgv_controller::init();
     lexxhard::rosserial::init();
     lexxhard::rosserial_service::init();
+    lexxhard::runaway_detector::init();
     lexxhard::tof_controller::init();
     lexxhard::uss_controller::init();
     RUN(actuator_controller, 2);
@@ -95,6 +98,7 @@ void main()
     RUN(pgv_controller, 1);
     RUN(tof_controller, 2);
     RUN(uss_controller, 2);
+    RUN(runaway_detector, 4);
     RUN(rosserial, 5); // The rosserial thread will be started last.
     RUN(rosserial_service, 6); // The rosserial thread will be started last.
     const device *gpiog{device_get_binding("GPIOG")};

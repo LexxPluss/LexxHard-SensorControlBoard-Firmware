@@ -30,11 +30,10 @@
 #include "ros/node_handle.h"
 #include "std_msgs/UInt8.h"
 #include "lexxauto_msgs/PositionGuideVision.h"
+#include "common.hpp"
 #include "pgv_controller.hpp"
 
 namespace lexxhard {
-
-#define M_PI 3.14159265358979323846
 
 class ros_pgv {
 public:

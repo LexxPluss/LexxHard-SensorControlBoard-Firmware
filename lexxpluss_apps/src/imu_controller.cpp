@@ -28,6 +28,7 @@
 #include <logging/log.h>
 #include <shell/shell.h>
 #include "imu_controller.hpp"
+#include "runaway_detector.hpp"
 
 namespace lexxhard::imu_controller {
 
@@ -72,6 +73,12 @@ public:
                 message.delta_vel[2] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 5);
                 while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
+                runaway_detector::msg message_runaway{
+                    .accel{message.accel[0], message.accel[1], message.accel[2]},
+                    .gyro{message.gyro[0], message.gyro[1], message.gyro[2]}
+                };
+                while (k_msgq_put(&runaway_detector::msgq, &message_runaway, K_NO_WAIT) != 0)
+                    k_msgq_purge(&runaway_detector::msgq);
             }
             k_msleep(1);
         }
