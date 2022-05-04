@@ -3,7 +3,7 @@
 #include <zephyr.h>
 #include <cstring>
 
-namespace lexxfirm::led_controller {
+namespace lexxhard::led_controller {
 
 struct msg {
     msg() : pattern(NONE), interrupt_ms(0) {}

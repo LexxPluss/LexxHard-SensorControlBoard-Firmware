@@ -9,7 +9,7 @@
 #include "lexxauto_msgs/BoardTemperatures.h"
 #include "can_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 class ros_board {
 public:

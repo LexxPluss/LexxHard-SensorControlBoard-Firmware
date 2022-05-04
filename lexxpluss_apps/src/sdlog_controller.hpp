@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::sdlog_controller {
+namespace lexxhard::sdlog_controller {
 
 struct msg {
     char message[64];

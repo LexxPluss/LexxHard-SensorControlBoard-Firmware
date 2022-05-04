@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::misc_controller {
+namespace lexxhard::misc_controller {
 
 void init();
 void run(void *p1, void *p2, void *p3);

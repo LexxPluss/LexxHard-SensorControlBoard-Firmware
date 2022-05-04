@@ -5,7 +5,7 @@
 #include "lexxauto_msgs/Imu.h"
 #include "imu_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 class ros_imu {
 public:

@@ -3,7 +3,7 @@
 #include <logging/log_backend_std.h>
 #include <shell/shell.h>
 
-namespace lexxfirm::log_controller {
+namespace lexxhard::log_controller {
 
 class overwrap_ring_buf {
 public:

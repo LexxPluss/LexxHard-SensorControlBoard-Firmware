@@ -8,7 +8,7 @@
 #include <cstring>
 #include "sdlog_controller.hpp"
 
-namespace lexxfirm::sdlog_controller {
+namespace lexxhard::sdlog_controller {
 
 LOG_MODULE_REGISTER(log);
 

@@ -2,7 +2,7 @@
 #include "rosserial_actuator_service.hpp"
 #include "rosserial_service.hpp"
 
-namespace lexxfirm::rosserial_service {
+namespace lexxhard::rosserial_service {
 
 class {
 public:

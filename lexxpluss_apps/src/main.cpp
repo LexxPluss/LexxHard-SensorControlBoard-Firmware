@@ -27,8 +27,8 @@ K_THREAD_STACK_DEFINE(tof_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 
 #define RUN(name, prio) \
-    k_thread_create(&lexxfirm::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
-                    lexxfirm::name::run, nullptr, nullptr, nullptr, prio, K_FP_REGS, K_MSEC(2000));
+    k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
+                    lexxhard::name::run, nullptr, nullptr, nullptr, prio, K_FP_REGS, K_MSEC(2000));
 
 void reset_usb_hub()
 {
@@ -46,17 +46,17 @@ void reset_usb_hub()
 void main()
 {
     reset_usb_hub();
-    lexxfirm::actuator_controller::init();
-    lexxfirm::adc_reader::init();
-    lexxfirm::can_controller::init();
-    lexxfirm::imu_controller::init();
-    lexxfirm::led_controller::init();
-    lexxfirm::misc_controller::init();
-    lexxfirm::pgv_controller::init();
-    lexxfirm::rosserial::init();
-    lexxfirm::rosserial_service::init();
-    lexxfirm::tof_controller::init();
-    lexxfirm::uss_controller::init();
+    lexxhard::actuator_controller::init();
+    lexxhard::adc_reader::init();
+    lexxhard::can_controller::init();
+    lexxhard::imu_controller::init();
+    lexxhard::led_controller::init();
+    lexxhard::misc_controller::init();
+    lexxhard::pgv_controller::init();
+    lexxhard::rosserial::init();
+    lexxhard::rosserial_service::init();
+    lexxhard::tof_controller::init();
+    lexxhard::uss_controller::init();
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
     RUN(can_controller, 4);

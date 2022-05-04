@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::tof_controller {
+namespace lexxhard::tof_controller {
 
 struct msg {
     int32_t left, right;

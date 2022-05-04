@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::pgv_controller {
+namespace lexxhard::pgv_controller {
 
 struct msg {
     uint32_t xp, tag;

@@ -4,7 +4,7 @@
 #include <shell/shell.h>
 #include "imu_controller.hpp"
 
-namespace lexxfirm::imu_controller {
+namespace lexxhard::imu_controller {
 
 LOG_MODULE_REGISTER(imu);
 

@@ -8,7 +8,7 @@
 #include "misc_controller.hpp"
 #include "can_controller.hpp"
 
-namespace lexxfirm::can_controller {
+namespace lexxhard::can_controller {
 
 LOG_MODULE_REGISTER(can);
 

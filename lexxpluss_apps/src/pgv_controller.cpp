@@ -7,7 +7,7 @@
 #include <sys/ring_buffer.h>
 #include "pgv_controller.hpp"
 
-namespace lexxfirm::pgv_controller {
+namespace lexxhard::pgv_controller {
 
 LOG_MODULE_REGISTER(pgv);
 

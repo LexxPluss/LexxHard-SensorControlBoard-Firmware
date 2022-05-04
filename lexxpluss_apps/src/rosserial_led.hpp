@@ -6,7 +6,7 @@
 #include "lexxauto_msgs/Led.h"
 #include "led_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 class ros_led {
 public:

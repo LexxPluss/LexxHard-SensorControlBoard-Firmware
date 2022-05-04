@@ -5,7 +5,7 @@
 #include <shell/shell.h>
 #include "uss_controller.hpp"
 
-namespace lexxfirm::uss_controller {
+namespace lexxhard::uss_controller {
 
 LOG_MODULE_REGISTER(uss);
 

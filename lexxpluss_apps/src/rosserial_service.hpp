@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::rosserial_service {
+namespace lexxhard::rosserial_service {
 
 void init();
 void run(void *p1, void *p2, void *p3);

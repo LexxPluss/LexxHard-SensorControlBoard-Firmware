@@ -7,7 +7,7 @@
 #include "lexxauto_msgs/PositionGuideVision.h"
 #include "pgv_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 #define M_PI 3.14159265358979323846
 

@@ -45,7 +45,7 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
     }
 }
 
-namespace lexxfirm::actuator_controller {
+namespace lexxhard::actuator_controller {
 
 LOG_MODULE_REGISTER(actuator);
 

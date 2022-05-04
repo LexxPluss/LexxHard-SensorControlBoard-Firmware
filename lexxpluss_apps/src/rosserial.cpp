@@ -9,7 +9,7 @@
 #include "rosserial_uss.hpp"
 #include "rosserial.hpp"
 
-namespace lexxfirm::rosserial {
+namespace lexxhard::rosserial {
 
 class {
 public:

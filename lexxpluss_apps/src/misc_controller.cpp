@@ -4,7 +4,7 @@
 #include <shell/shell.h>
 #include "misc_controller.hpp"
 
-namespace lexxfirm::misc_controller {
+namespace lexxhard::misc_controller {
 
 LOG_MODULE_REGISTER(misc);
 

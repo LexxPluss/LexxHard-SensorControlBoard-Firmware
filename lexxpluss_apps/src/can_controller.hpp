@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::can_controller {
+namespace lexxhard::can_controller {
 
 struct msg_bmu {
     struct {

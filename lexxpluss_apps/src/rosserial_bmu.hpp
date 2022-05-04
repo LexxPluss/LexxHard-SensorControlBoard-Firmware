@@ -6,7 +6,7 @@
 #include "lexxauto_msgs/Battery.h"
 #include "can_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 class ros_bmu {
 public:

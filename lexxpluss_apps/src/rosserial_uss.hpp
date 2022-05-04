@@ -5,7 +5,7 @@
 #include "std_msgs/Float64MultiArray.h"
 #include "uss_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 class ros_uss {
 public:

@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::actuator_controller {
+namespace lexxhard::actuator_controller {
 
 struct msg_control {
     struct {

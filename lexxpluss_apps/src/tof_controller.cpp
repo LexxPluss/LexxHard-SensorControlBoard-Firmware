@@ -4,7 +4,7 @@
 #include "adc_reader.hpp"
 #include "tof_controller.hpp"
 
-namespace lexxfirm::tof_controller {
+namespace lexxhard::tof_controller {
 
 LOG_MODULE_REGISTER(tof);
 

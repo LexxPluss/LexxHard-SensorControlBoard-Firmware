@@ -7,7 +7,7 @@
 #include "lexxauto_msgs/LinearActuatorControlArray.h"
 #include "actuator_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 class ros_actuator {
 public:

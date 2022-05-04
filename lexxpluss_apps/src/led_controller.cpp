@@ -7,7 +7,7 @@
 #include "can_controller.hpp"
 #include "led_controller.hpp"
 
-namespace lexxfirm::led_controller {
+namespace lexxhard::led_controller {
 
 LOG_MODULE_REGISTER(led);
 

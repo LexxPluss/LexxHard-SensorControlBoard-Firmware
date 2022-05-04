@@ -3,7 +3,7 @@
 #include <logging/log.h>
 #include "adc_reader.hpp"
 
-namespace lexxfirm::adc_reader {
+namespace lexxhard::adc_reader {
 
 LOG_MODULE_REGISTER(adc);
 

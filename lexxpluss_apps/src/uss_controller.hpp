@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::uss_controller {
+namespace lexxhard::uss_controller {
 
 struct msg {
     uint32_t front_left, front_right;

@@ -6,7 +6,7 @@
 #include "lexxauto_msgs/LinearActuatorLocation.h"
 #include "actuator_controller.hpp"
 
-namespace lexxfirm {
+namespace lexxhard {
 
 class ros_actuator_service {
 public:

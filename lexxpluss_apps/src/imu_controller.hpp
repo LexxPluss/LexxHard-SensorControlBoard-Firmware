@@ -2,7 +2,7 @@
 
 #include <zephyr.h>
 
-namespace lexxfirm::imu_controller {
+namespace lexxhard::imu_controller {
 
 struct msg {
     float accel[3];
