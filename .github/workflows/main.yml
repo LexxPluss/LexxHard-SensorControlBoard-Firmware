@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: zephyrprojectrtos/zephyr-build:latest
+      image: zephyrprojectrtos/zephyr-build:v0.22.2
       options: --user root
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
