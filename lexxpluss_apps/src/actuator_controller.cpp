@@ -378,9 +378,31 @@ public:
         return 0;
     }
     void run() {
-
-        if (const device *dev_enable{device_get_binding("GPIOB")}; device_is_ready(dev_enable))
-            gpio_pin_configure(dev_enable, 1, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+        const device *dev_enable{device_get_binding("GPIOB")};
+        if (device_is_ready(dev_enable))
+            gpio_pin_configure(dev_enable, 1, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        auto reset_actuator = [&]() {
+            if (device_is_ready(dev_enable)) {
+                gpio_pin_set(dev_enable, 1, 0);
+                k_msleep(100);
+                gpio_pin_set(dev_enable, 1, 1);
+            }
+        };
+        int fail_count{0};
+        auto fail_check = [&](bool failed) {
+            if (failed) {
+                if (fail_count < 10) {
+                    LOG_WRN("fail of actuator detected. reset.");
+                    reset_actuator();
+                    ++fail_count;
+                } else {
+                    LOG_WRN("fail of repetitive actuator detected.");
+                }
+            } else {
+                ++fail_count;
+            }
+        };
+        reset_actuator();
         const device *gpiok{device_get_binding("GPIOK")};
         if (device_is_ready(gpiok))
             gpio_pin_configure(gpiok, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
@@ -404,11 +426,15 @@ public:
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
             if (dt_ms > 100) {
                 prev_cycle = now_cycle;
+                bool failed{false};
                 for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
                     std::tie(actuator2ros.encoder_count[i],
                              actuator2ros.current[i],
                              actuator2ros.fail[i]) = act[i].get_info();
+                    if (actuator2ros.fail[i])
+                        failed = true;
                 }
+                fail_check(failed);
                 actuator2ros.connect = adc_reader::get(adc_reader::TROLLEY);
                 while (k_msgq_put(&msgq, &actuator2ros, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
@@ -458,7 +484,7 @@ public:
     void info(const shell *shell) const {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             auto [pulse, current, fail]{act[i].get_info()};
-            shell_print(shell, "actuator: %d encoder: %d pulse current: %d mV", i, pulse, current);
+            shell_print(shell, "actuator: %d encoder: %d pulse current: %d mV, fail: %d", i, pulse, current, fail);
         }
     }
     void pwm_trampoline(int index, int direction, uint8_t pwm_duty = 0) const {
