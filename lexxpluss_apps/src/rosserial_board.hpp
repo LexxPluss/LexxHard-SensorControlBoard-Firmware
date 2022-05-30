@@ -100,8 +100,12 @@ private:
     ros::Publisher pub_charge{"/body_control/charge_status", &msg_charge};
     ros::Publisher pub_temperature{"/sensor_set/temperature", &msg_temperature};
     ros::Publisher pub_power{"/body_control/power_state", &msg_power};
-    ros::Subscriber<std_msgs::Bool, ros_board> sub_emergency{"/control/request_emergency_stop", &ros_board::callback_emergency, this};
-    ros::Subscriber<std_msgs::Bool, ros_board> sub_poweroff{"/control/request_power_off", &ros_board::callback_poweroff, this};
+    ros::Subscriber<std_msgs::Bool, ros_board> sub_emergency{
+        "/control/request_emergency_stop", &ros_board::callback_emergency, this
+    };
+    ros::Subscriber<std_msgs::Bool, ros_board> sub_poweroff{
+        "/control/request_power_off", &ros_board::callback_poweroff, this
+    };
 };
 
 }
