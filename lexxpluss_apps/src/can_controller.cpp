@@ -322,8 +322,15 @@ private:
             .id{0x201},
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
-            .dlc{5},
-            .data{ros2board.emergency_stop, ros2board.power_off, enable_lockdown && heartbeat_timeout, main_overheat, actuator_overheat}
+            .dlc{6},
+            .data{
+                ros2board.emergency_stop,
+                ros2board.power_off,
+                enable_lockdown && heartbeat_timeout,
+                main_overheat,
+                actuator_overheat,
+                ros2board.wheel_power_off
+            }
         };
         can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
     }

@@ -5,6 +5,7 @@
 #include "std_msgs/Bool.h"
 #include "std_msgs/Byte.h"
 #include "std_msgs/ByteMultiArray.h"
+#include "std_msgs/String.h"
 #include "std_msgs/UInt8MultiArray.h"
 #include "lexxauto_msgs/BoardTemperatures.h"
 #include "can_controller.hpp"
@@ -22,6 +23,7 @@ public:
         nh.advertise(pub_power);
         nh.subscribe(sub_emergency);
         nh.subscribe(sub_poweroff);
+        nh.subscribe(sub_lexxhard);
         msg_fan.data = msg_fan_data;
         msg_fan.data_length = sizeof msg_fan_data / sizeof msg_fan_data[0];
         msg_bumper.data = msg_bumper_data;
@@ -86,6 +88,12 @@ private:
         while (k_msgq_put(&can_controller::msgq_control, &ros2board, K_NO_WAIT) != 0)
             k_msgq_purge(&can_controller::msgq_control);
     }
+    void callback_lexxhard(const std_msgs::String &req) {
+        if (strncmp(req.data, "wheel_", 6) == 0)
+            ros2board.wheel_power_off = strcmp(req.data, "wheel_poweroff") == 0;
+        while (k_msgq_put(&can_controller::msgq_control, &ros2board, K_NO_WAIT) != 0)
+            k_msgq_purge(&can_controller::msgq_control);
+    }
     std_msgs::UInt8MultiArray msg_fan;
     std_msgs::ByteMultiArray msg_bumper;
     std_msgs::Bool msg_emergency;
@@ -105,6 +113,9 @@ private:
     };
     ros::Subscriber<std_msgs::Bool, ros_board> sub_poweroff{
         "/control/request_power_off", &ros_board::callback_poweroff, this
+    };
+    ros::Subscriber<std_msgs::String, ros_board> sub_lexxhard{
+        "/lexxhard/setup", &ros_board::callback_lexxhard, this
     };
 };
 
