@@ -5,7 +5,7 @@
 
 ## Install dependencies
 
-https://docs.zephyrproject.org/latest/getting_started/
+https://docs.zephyrproject.org/2.7.0/getting_started/
 を参考に開発環境を準備する。
 
 macOSだとたぶんこんな感じ。
