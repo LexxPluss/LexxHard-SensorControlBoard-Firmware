@@ -1,7 +1,7 @@
 # LexxPluss Main Board Software
 
-[![CI](https://github.com/LexxPluss/mainboard/actions/workflows/main.yml/badge.svg)](https://github.com/LexxPluss/mainboard/actions/workflows/main.yml)
-[![release](https://github.com/LexxPluss/mainboard/actions/workflows/release.yml/badge.svg)](https://github.com/LexxPluss/mainboard/actions/workflows/release.yml)
+[![CI](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/main.yml/badge.svg)](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/main.yml)
+[![release](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/release.yml/badge.svg)](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/release.yml)
 
 ## Install dependencies
 
