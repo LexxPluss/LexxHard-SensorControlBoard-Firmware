@@ -36,6 +36,7 @@
 #include "rosserial_service.hpp"
 #include "tof_controller.hpp"
 #include "uss_controller.hpp"
+#include "firmware_updater.hpp"
 
 namespace {
 
@@ -50,6 +51,7 @@ K_THREAD_STACK_DEFINE(rosserial_stack, 2048);
 K_THREAD_STACK_DEFINE(rosserial_service_stack, 2048);
 K_THREAD_STACK_DEFINE(tof_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 
 #define RUN(name, prio) \
     k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
@@ -82,6 +84,7 @@ void main()
     lexxhard::rosserial_service::init();
     lexxhard::tof_controller::init();
     lexxhard::uss_controller::init();
+    lexxhard::firmware_updater::init();
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
     RUN(can_controller, 4);
@@ -91,6 +94,7 @@ void main()
     RUN(pgv_controller, 1);
     RUN(tof_controller, 2);
     RUN(uss_controller, 2);
+    RUN(firmware_updater, 7);
     RUN(rosserial, 5); // The rosserial thread will be started last.
     RUN(rosserial_service, 6); // The rosserial thread will be started last.
     const device *gpiog{device_get_binding("GPIOG")};

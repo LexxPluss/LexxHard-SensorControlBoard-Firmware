@@ -33,6 +33,7 @@
 #include "rosserial_tof.hpp"
 #include "rosserial_uss.hpp"
 #include "rosserial.hpp"
+#include "rosserial_dfu.hpp"
 
 namespace lexxhard::rosserial {
 
@@ -49,6 +50,7 @@ public:
         pgv.init(nh);
         tof.init(nh);
         uss.init(nh);
+        dfu.init(nh);
         return 0;
     }
     void run() {
@@ -62,6 +64,7 @@ public:
             pgv.poll();
             tof.poll();
             uss.poll();
+            dfu.poll();
             k_usleep(1);
         }
     }
@@ -75,6 +78,7 @@ private:
     ros_pgv pgv;
     ros_tof tof;
     ros_uss uss;
+    ros_dfu dfu;
 } impl;
 
 void init()
