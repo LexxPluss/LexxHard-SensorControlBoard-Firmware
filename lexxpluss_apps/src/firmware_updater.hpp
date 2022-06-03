@@ -23,75 +23,25 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "rosserial_hardware_zephyr.hpp"
-#include "rosserial_actuator.hpp"
-#include "rosserial_bmu.hpp"
-#include "rosserial_board.hpp"
-#include "rosserial_dfu.hpp"
-#include "rosserial_imu.hpp"
-#include "rosserial_led.hpp"
-#include "rosserial_pgv.hpp"
-#include "rosserial_tof.hpp"
-#include "rosserial_uss.hpp"
-#include "rosserial.hpp"
+#pragma once
 
-namespace lexxhard::rosserial {
+#include <zephyr.h>
+#include <cstdint>
 
-class {
-public:
-    int init() {
-        nh.getHardware()->set_baudrate(921600);
-        nh.initNode(const_cast<char*>("UART_6"));
-        actuator.init(nh);
-        bmu.init(nh);
-        board.init(nh);
-        dfu.init(nh);
-        imu.init(nh);
-        led.init(nh);
-        pgv.init(nh);
-        tof.init(nh);
-        uss.init(nh);
-        return 0;
-    }
-    void run() {
-        while (true) {
-            nh.spinOnce();
-            actuator.poll();
-            bmu.poll();
-            board.poll();
-            dfu.poll();
-            imu.poll();
-            led.poll();
-            pgv.poll();
-            tof.poll();
-            uss.poll();
-            k_usleep(1);
-        }
-    }
-private:
-    ros::NodeHandle nh;
-    ros_actuator actuator;
-    ros_bmu bmu;
-    ros_board board;
-    ros_dfu dfu;
-    ros_imu imu;
-    ros_led led;
-    ros_pgv pgv;
-    ros_tof tof;
-    ros_uss uss;
-} impl;
+namespace lexxhard::firmware_updater {
 
-void init()
-{
-    impl.init();
-}
+struct packet_array {
+    uint8_t data[256 + 4];
+} __attribute__((aligned(4)));
 
-void run(void *p1, void *p2, void *p3)
-{
-    impl.run();
-}
+struct response_array {
+    uint16_t data[2];
+} __attribute__((aligned(4)));
 
-k_thread thread;
+void init();
+void run(void *p1, void *p2, void *p3);
+extern k_thread thread;
+extern k_msgq msgq_data, msgq_response;
 
 }
 
