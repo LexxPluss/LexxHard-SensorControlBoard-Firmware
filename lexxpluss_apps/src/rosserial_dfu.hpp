@@ -23,75 +23,38 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "rosserial_hardware_zephyr.hpp"
-#include "rosserial_actuator.hpp"
-#include "rosserial_bmu.hpp"
-#include "rosserial_board.hpp"
-#include "rosserial_dfu.hpp"
-#include "rosserial_imu.hpp"
-#include "rosserial_led.hpp"
-#include "rosserial_pgv.hpp"
-#include "rosserial_tof.hpp"
-#include "rosserial_uss.hpp"
-#include "rosserial.hpp"
+#pragma once
 
-namespace lexxhard::rosserial {
+#include <zephyr.h>
+#include "ros/node_handle.h"
+#include "std_msgs/UInt8MultiArray.h"
+#include "std_msgs/UInt16MultiArray.h"
+#include "firmware_updater.hpp"
 
-class {
+namespace lexxhard {
+
+class ros_dfu {
 public:
-    int init() {
-        nh.getHardware()->set_baudrate(921600);
-        nh.initNode(const_cast<char*>("UART_1"));
-        actuator.init(nh);
-        bmu.init(nh);
-        board.init(nh);
-        dfu.init(nh);
-        imu.init(nh);
-        led.init(nh);
-        pgv.init(nh);
-        tof.init(nh);
-        uss.init(nh);
-        return 0;
+    void init(ros::NodeHandle &nh) {
+        nh.advertise(pub);
+        nh.subscribe(sub);
+        response.data = response_data;
+        response.data_length = sizeof response_data / sizeof response_data[0];
     }
-    void run() {
-        while (true) {
-            nh.spinOnce();
-            actuator.poll();
-            bmu.poll();
-            board.poll();
-            dfu.poll();
-            imu.poll();
-            led.poll();
-            pgv.poll();
-            tof.poll();
-            uss.poll();
-            k_usleep(1);
-        }
+    void poll() {
+        if (k_msgq_get(&firmware_updater::msgq_response, response.data, K_NO_WAIT) == 0)
+            pub.publish(&response);
     }
 private:
-    ros::NodeHandle nh;
-    ros_actuator actuator;
-    ros_bmu bmu;
-    ros_board board;
-    ros_dfu dfu;
-    ros_imu imu;
-    ros_led led;
-    ros_pgv pgv;
-    ros_tof tof;
-    ros_uss uss;
-} impl;
-
-void init()
-{
-    impl.init();
-}
-
-void run(void *p1, void *p2, void *p3)
-{
-    impl.run();
-}
-
-k_thread thread;
+    void callback(const std_msgs::UInt8MultiArray &packet) {
+        while (k_msgq_put(&firmware_updater::msgq_data, packet.data, K_NO_WAIT) != 0)
+            k_msgq_purge(&firmware_updater::msgq_data);
+    }
+    ros::Publisher pub{"/lexxhard/dfu_response", &response};
+    ros::Subscriber<std_msgs::UInt8MultiArray, ros_dfu> sub{"/lexxhard/dfu_data", &ros_dfu::callback, this};
+    std_msgs::UInt16MultiArray response;
+    uint16_t response_data[2];
+};
 
 }
 
