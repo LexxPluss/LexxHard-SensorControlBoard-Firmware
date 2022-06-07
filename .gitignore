@@ -1,6 +1,7 @@
 /.west/
 /bootloader/
 /build/
+/build-mcuboot/
 /modules/
 /ros_msgs/
 /tools/

@@ -44,6 +44,14 @@ export GNUARMEMB_TOOLCHAIN_PATH=/Applications/ARM
 
 ## Build
 
+### Build bootloader (MCUboot)
+
+```bash
+$ west build -b lexxpluss_mb01 bootloader/mcuboot/boot/zephyr -d build-mcuboot
+```
+
+### Build firmware
+
 ```bash
 $ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
 ```
@@ -52,7 +60,23 @@ $ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
 
 ### STLINK Tools (Open souce version)
 
+#### 最初の書き込み
+
+Flash ROM全領域を消去後にbootloaderと署名済みファームウェアを書き込んでいる。
+
 ```bash
 $ brew install stlink
-$ st-flash --reset --connect-under-reset write build/zephyr/zephyr.bin  0x8000000
+$ st-flash --reset --connect-under-reset erase
+$ st-flash --reset --connect-under-reset write build-mcuboot/zephyr/zephyr.bin 0x8000000
+$ st-flash --reset --connect-under-reset write build/zephyr/zephyr.signed.bin 0x8040000
 ```
+
+#### アップデート
+
+アップデート用ファームウェアをアップデート領域に書き込んでいる。
+
+```bash
+$ st-flash --reset --connect-under-reset write build/zephyr/zephyr.signed.confirmed.bin 0x8080000
+```
+
+アップデート用ファームウェアはROS経由で書き込めるようになる予定。
