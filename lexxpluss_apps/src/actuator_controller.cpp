@@ -233,8 +233,8 @@ public:
             uint32_t ns{duty_rev * CONTROL_PERIOD_NS / 100};
             pulse_ns[direction < msg_control::STOP ? 0 : 1] = ns;
         }
-        pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
-        pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
+        pwm_set_cycles(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
+        pwm_set_cycles(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
     }
 private:
     uint32_t pin[2]{0, 0};

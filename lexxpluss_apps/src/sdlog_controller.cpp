@@ -24,7 +24,7 @@
  */
 
 #include <zephyr.h>
-#include <disk/disk_access.h>
+#include <storage/disk_access.h>
 #include <fs/fs.h>
 #include <ff.h>
 #include <logging/log.h>

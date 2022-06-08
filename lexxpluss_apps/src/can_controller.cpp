@@ -41,9 +41,9 @@ char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
 char __aligned(4) msgq_board_buffer[8 * sizeof (msg_board)];
 char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
-CAN_DEFINE_MSGQ(msgq_can_bmu, 16);
-CAN_DEFINE_MSGQ(msgq_can_board, 4);
-CAN_DEFINE_MSGQ(msgq_can_log, 8);
+CAN_MSGQ_DEFINE(msgq_can_bmu, 16);
+CAN_MSGQ_DEFINE(msgq_can_board, 4);
+CAN_MSGQ_DEFINE(msgq_can_log, 8);
 
 class log_printer {
 public:
@@ -70,7 +70,8 @@ public:
         dev = device_get_binding("CAN_1");
         if (!device_is_ready(dev))
             return -1;
-        can_configure(dev, CAN_NORMAL_MODE, 500000);
+        can_set_mode(dev, CAN_MODE_NORMAL);
+        can_set_bitrate(dev, 500000);
         return 0;
     }
     void run() {
@@ -209,9 +210,9 @@ private:
             .id_mask{CAN_STD_ID_MASK},
             .rtr_mask{1}
         };
-        can_attach_msgq(dev, &msgq_can_bmu, &filter_bmu);
-        can_attach_msgq(dev, &msgq_can_board, &filter_board);
-        can_attach_msgq(dev, &msgq_can_log, &filter_log);
+        can_add_rx_filter_msgq(dev, &msgq_can_bmu, &filter_bmu);
+        can_add_rx_filter_msgq(dev, &msgq_can_board, &filter_board);
+        can_add_rx_filter_msgq(dev, &msgq_can_log, &filter_log);
     }
     bool handler_bmu(zcan_frame &frame) {
         bool result{false};

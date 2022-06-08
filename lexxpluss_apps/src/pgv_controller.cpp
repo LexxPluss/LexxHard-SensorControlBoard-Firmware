@@ -44,8 +44,8 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        ring_buf_init(&rxbuf.rb, sizeof rxbuf.buf, rxbuf.buf);
-        ring_buf_init(&txbuf.rb, sizeof txbuf.buf, txbuf.buf);
+        ring_buf_init(&rxbuf.rb, sizeof rxbuf.buf, (uint8_t*)rxbuf.buf);
+        ring_buf_init(&txbuf.rb, sizeof txbuf.buf, (uint8_t*)txbuf.buf);
         dev_485 = device_get_binding("UART_6");
         dev_en = device_get_binding("GPIOG");
         if (!device_is_ready(dev_485) || !device_is_ready(dev_en))
@@ -212,9 +212,6 @@ private:
             check ^= buf[i];
         return check == buf[tail];
     }
-    uint32_t rb_count(const ring_buf *rb) const {
-        return rb->tail - rb->head;
-    }
     void send(const uint8_t *buf, uint32_t length) {
         if (device_is_ready(dev_485)) {
             gpio_pin_set(dev_en, 11, 1);
@@ -230,9 +227,9 @@ private:
             gpio_pin_set(dev_en, 11, 0);
         }
     }
-    bool wait_data(uint32_t length) const {
+    bool wait_data(uint32_t length) {
         for (int i{0}; i < 100; ++i) {
-            if (rb_count(&rxbuf.rb) >= length)
+            if (ring_buf_space_get(&rxbuf.rb) >= length)
                 return true;
             k_msleep(10);
         }
