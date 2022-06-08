@@ -34,6 +34,7 @@ jobs:
           west update
           west config --global zephyr.base-prefer configfile
           west zephyr-export
+          ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb01 bootloader/mcuboot/boot/zephyr -d build-mcuboot
           ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb01 lexxpluss_apps
       - name: release
         id: create_release
@@ -45,15 +46,35 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
-      - name: upload
+      - name: upload bootloader
         id: upload-release-asset 
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./build/zephyr/zephyr.bin
-          asset_name: LexxHard-MainBoard-Firmware-${{ github.ref_name }}.bin
+          asset_path: ./build-mcuboot/zephyr/zephyr.bin
+          asset_name: LexxHard-MainBoard-Bootloader-${{ github.ref_name }}.bin
+          asset_content_type: application/octet-stream
+      - name: upload base firmware
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./build/zephyr/zephyr.signed.bin
+          asset_name: LexxHard-MainBoard-Firmware-Base-${{ github.ref_name }}.bin
+          asset_content_type: application/octet-stream
+      - name: upload update firmware
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./build/zephyr/zephyr.signed.confirmed.bin
+          asset_name: LexxHard-MainBoard-Firmware-Update-${{ github.ref_name }}.bin
           asset_content_type: application/octet-stream
       - name: Notification
         uses: act10ns/slack@v1
