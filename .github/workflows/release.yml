@@ -47,7 +47,7 @@ jobs:
           draft: false
           prerelease: false
       - name: upload bootloader
-        id: upload-release-asset 
+        id: upload-release-asset-bootloader
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,7 +57,7 @@ jobs:
           asset_name: LexxHard-MainBoard-Bootloader-${{ github.ref_name }}.bin
           asset_content_type: application/octet-stream
       - name: upload base firmware
-        id: upload-release-asset 
+        id: upload-release-asset-firmware
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,7 +67,7 @@ jobs:
           asset_name: LexxHard-MainBoard-Firmware-Base-${{ github.ref_name }}.bin
           asset_content_type: application/octet-stream
       - name: upload update firmware
-        id: upload-release-asset 
+        id: upload-release-asset-updator
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
