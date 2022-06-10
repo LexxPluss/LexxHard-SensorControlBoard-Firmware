@@ -5,10 +5,10 @@
 
 ## Install dependencies
 
+Prepare a development environment referring to
 https://docs.zephyrproject.org/2.7.0/getting_started/
-を参考に開発環境を準備する。
 
-macOSだとたぶんこんな感じ。
+In macOS, it probably looks like this.
 
 ### Install Homebrew
 
@@ -34,8 +34,8 @@ $ pip3 install -r zephyr/scripts/requirements.txt
 
 ### Install Toolchain
 
+Install Toolchain and set environment variables referring to
 https://docs.zephyrproject.org/latest/getting_started/toolchain_3rd_party_x_compilers.html#gnu-arm-embedded
-を参考にToolchainをインストールして環境変数を設定する。
 
 ```bash
 export ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb
@@ -58,11 +58,9 @@ $ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
 
 ## Program
 
-### STLINK Tools (Open souce version)
+### First time program
 
-#### 最初の書き込み
-
-Flash ROM全領域を消去後にbootloaderと署名済みファームウェアを書き込んでいる。
+Program the bootloader and signed firmware after erasing the entire Flash ROM.
 
 ```bash
 $ brew install stlink
@@ -71,12 +69,12 @@ $ st-flash --reset --connect-under-reset write build-mcuboot/zephyr/zephyr.bin 0
 $ st-flash --reset --connect-under-reset write build/zephyr/zephyr.signed.bin 0x8040000
 ```
 
-#### アップデート
+### Update
 
-アップデート用ファームウェアをアップデート領域に書き込んでいる。
+Program the firmware for update to the update area.
 
 ```bash
 $ st-flash --reset --connect-under-reset write build/zephyr/zephyr.signed.confirmed.bin 0x8080000
 ```
 
-アップデート用ファームウェアはROS経由で書き込めるようになる予定。
+Programming firmware for update via ROS will be supported soon.
