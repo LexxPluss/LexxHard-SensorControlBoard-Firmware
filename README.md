@@ -81,4 +81,4 @@ Programming firmware for update via ROS will be supported soon.
 
 ## License
 
-Copyright (c) 2022, LexxPluss Inc. Released under the [BSD License](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/blob/main/LICENSE).
+Copyright (c) 2022, LexxPluss Inc. Released under the [BSD License](LICENSE).
