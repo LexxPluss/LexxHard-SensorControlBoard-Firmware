@@ -227,10 +227,11 @@ public:
         return 0;
     }
     void set_duty(int8_t direction, uint8_t duty = 0) const {
-        uint32_t pulse_ns[2]{0, 0};
+        uint32_t pulse_ns[2]{CONTROL_PERIOD_NS, CONTROL_PERIOD_NS};
         if (direction != msg_control::STOP && duty != 0) {
-            uint32_t ns{duty * CONTROL_PERIOD_NS / 100};
-            pulse_ns[direction > msg_control::STOP ? 0 : 1] = ns;
+            uint32_t duty_rev{std::clamp(100U - duty, 0U, 100U)};
+            uint32_t ns{duty_rev * CONTROL_PERIOD_NS / 100};
+            pulse_ns[direction < msg_control::STOP ? 0 : 1] = ns;
         }
         pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
         pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
