@@ -49,24 +49,24 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
         GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
         HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-    } else if(htim_encoder->Instance == TIM5) {
-        __HAL_RCC_TIM5_CLK_ENABLE();
-        __HAL_RCC_GPIOH_CLK_ENABLE();
-        GPIO_InitStruct.Pin = GPIO_PIN_10 | GPIO_PIN_11;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-        GPIO_InitStruct.Alternate = GPIO_AF2_TIM5;
-        HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
-    } else if(htim_encoder->Instance == TIM8) {
-        __HAL_RCC_TIM8_CLK_ENABLE();
+    } else if(htim_encoder->Instance == TIM3) {
+        __HAL_RCC_TIM3_CLK_ENABLE();
         __HAL_RCC_GPIOC_CLK_ENABLE();
         GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-        GPIO_InitStruct.Alternate = GPIO_AF3_TIM8;
+        GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
         HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    } else if(htim_encoder->Instance == TIM4) {
+        __HAL_RCC_TIM4_CLK_ENABLE();
+        __HAL_RCC_GPIOD_CLK_ENABLE();
+        GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+        GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+        HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
     }
 }
 
@@ -97,16 +97,14 @@ public:
         this->tim = tim;
         TIM_Encoder_InitTypeDef sConfig{0};
         TIM_MasterConfigTypeDef sMasterConfig{0};
-        if (tim == TIM1 || tim == TIM8) {
-            timh.Init.Period = 65535;
+        if (tim == TIM1) {
             timh.Init.RepetitionCounter = 0;
             sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
-        } else if (tim == TIM5) {
-            timh.Init.Period = 4294967295;
         }
         timh.Instance = tim;
         timh.Init.Prescaler = 0;
         timh.Init.CounterMode = TIM_COUNTERMODE_UP;
+        timh.Init.Period = 65535;
         timh.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
         timh.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
         sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
@@ -143,15 +141,15 @@ public:
         int result{0};
         switch (pos) {
         case POS::LEFT:
-            result = enc.init(TIM1);
+            result = enc.init(TIM3);
             mm_per_pulse = 50.0f / 538.0f;
             break;
         case POS::CENTER:
-            result = enc.init(TIM8);
+            result = enc.init(TIM4);
             mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::RIGHT:
-            result = enc.init(TIM5);
+            result = enc.init(TIM1);
             mm_per_pulse = 50.0f / 538.0f;
             break;
         }
@@ -203,22 +201,22 @@ public:
     int init(POS pos) {
         switch (pos) {
         case POS::LEFT:
-            dev[0] = device_get_binding("PWM_12");
-            dev[1] = device_get_binding("PWM_2");
+            dev[0] = device_get_binding("PWM_8");
+            dev[1] = dev[0];
             pin[0] = 1;
-            pin[1] = 3;
+            pin[1] = 2;
             break;
         case POS::CENTER:
-            dev[0] = device_get_binding("PWM_14");
-            dev[1] = device_get_binding("PWM_4");
+            dev[0] = device_get_binding("PWM_5");
+            dev[1] = dev[0];
             pin[0] = 1;
-            pin[1] = 1;
+            pin[1] = 2;
             break;
         case POS::RIGHT:
-            dev[0] = device_get_binding("PWM_3");
-            dev[1] = device_get_binding("PWM_9");
+            dev[0] = device_get_binding("PWM_2");
+            dev[1] = dev[0];
             pin[0] = 3;
-            pin[1] = 1;
+            pin[1] = 4;
             break;
         }
         if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
@@ -318,15 +316,15 @@ public:
         switch (pos) {
         case POS::LEFT:
             current_adc = adc_reader::ACTUATOR_0;
-            fail_checker.init("GPIOF", 12);
+            fail_checker.init("GPIOG", 8);
             break;
         case POS::CENTER:
             current_adc = adc_reader::ACTUATOR_1;
-            fail_checker.init("GPIOF", 11);
+            fail_checker.init("GPIOD", 10);
             break;
         case POS::RIGHT:
             current_adc = adc_reader::ACTUATOR_2;
-            fail_checker.init("GPIOJ", 4);
+            fail_checker.init("GPIOE", 10);
             break;
         }
         if (!fail_checker.ready())
@@ -414,14 +412,14 @@ public:
         return 0;
     }
     void run() {
-        const device *dev_enable{device_get_binding("GPIOB")};
+        const device *dev_enable{device_get_binding("GPIOJ")};
         if (device_is_ready(dev_enable))
-            gpio_pin_configure(dev_enable, 1, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+            gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         auto reset_actuator = [&]() {
             if (device_is_ready(dev_enable)) {
-                gpio_pin_set(dev_enable, 1, 0);
+                gpio_pin_set(dev_enable, 0, 0);
                 k_msleep(100);
-                gpio_pin_set(dev_enable, 1, 1);
+                gpio_pin_set(dev_enable, 0, 1);
             }
         };
         int fail_count{0};
@@ -443,9 +441,9 @@ public:
             }
         };
         reset_actuator();
-        const device *gpiok{device_get_binding("GPIOK")};
-        if (device_is_ready(gpiok))
-            gpio_pin_configure(gpiok, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        const device *gpiog{device_get_binding("GPIOG")};
+        if (device_is_ready(gpiog))
+            gpio_pin_configure(gpiog, 5, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         int heartbeat_led{1};
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
             act[i].reset();
@@ -482,8 +480,8 @@ public:
                 actuator2ros.connect = adc_reader::get(adc_reader::TROLLEY);
                 while (k_msgq_put(&msgq, &actuator2ros, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
-                if (device_is_ready(gpiok)) {
-                    gpio_pin_set(gpiok, 4, heartbeat_led);
+                if (device_is_ready(gpiog)) {
+                    gpio_pin_set(gpiog, 5, heartbeat_led);
                     heartbeat_led = !heartbeat_led;
                 }
             }

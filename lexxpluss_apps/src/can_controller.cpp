@@ -67,7 +67,7 @@ public:
         k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
         k_msgq_init(&msgq_board, msgq_board_buffer, sizeof (msg_board), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        dev = device_get_binding("CAN_1");
+        dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
             return -1;
         can_configure(dev, CAN_NORMAL_MODE, 500000);
@@ -76,9 +76,9 @@ public:
     void run() {
         if (!device_is_ready(dev))
             return;
-        const device *gpiok{device_get_binding("GPIOK")};
-        if (device_is_ready(gpiok))
-            gpio_pin_configure(gpiok, 3, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        const device *gpiog{device_get_binding("GPIOG")};
+        if (device_is_ready(gpiog))
+            gpio_pin_configure(gpiog, 6, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         setup_can_filter();
         int heartbeat_led{1};
         while (true) {
@@ -112,8 +112,8 @@ public:
             if (dt_ms > 100) {
                 prev_cycle_send = now_cycle;
                 send_message();
-                if (device_is_ready(gpiok)) {
-                    gpio_pin_set(gpiok, 3, heartbeat_led);
+                if (device_is_ready(gpiog)) {
+                    gpio_pin_set(gpiog, 6, heartbeat_led);
                     heartbeat_led = !heartbeat_led;
                 }
             }

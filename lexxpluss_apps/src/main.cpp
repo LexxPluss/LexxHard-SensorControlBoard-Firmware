@@ -57,12 +57,12 @@ K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 
 void reset_usb_hub()
 {
-    if (const device *gpioa{device_get_binding("GPIOA")}; device_is_ready(gpioa)) {
-        gpio_pin_configure(gpioa, 3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    if (const device *gpioj{device_get_binding("GPIOJ")}; device_is_ready(gpioj)) {
+        gpio_pin_configure(gpioj, 3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(1);
-        gpio_pin_set(gpioa, 3, 0);
+        gpio_pin_set(gpioj, 13, 0);
         k_msleep(1);
-        gpio_pin_set(gpioa, 3, 1);
+        gpio_pin_set(gpioj, 13, 1);
     }
 }
 
@@ -95,11 +95,11 @@ void main()
     RUN(rosserial_service, 6); // The rosserial thread will be started last.
     const device *gpiog{device_get_binding("GPIOG")};
     if (gpiog != nullptr)
-        gpio_pin_configure(gpiog, 12, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(gpiog, 7, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
     int heartbeat_led{1};
     while (true) {
         if (gpiog != nullptr) {
-            gpio_pin_set(gpiog, 12, heartbeat_led);
+            gpio_pin_set(gpiog, 7, heartbeat_led);
             heartbeat_led = !heartbeat_led;
         }
         k_msleep(1000);

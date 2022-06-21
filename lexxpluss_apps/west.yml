@@ -28,7 +28,7 @@ manifest:
   projects:
     - name: zephyr
       remote: lexxpluss
-      revision: lexxpluss/main
+      revision: lexxpluss/feature/mb02
       import: true
     - name: ros_msgs
       remote: lexxpluss

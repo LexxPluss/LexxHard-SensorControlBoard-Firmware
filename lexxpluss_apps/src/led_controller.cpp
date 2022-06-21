@@ -89,14 +89,18 @@ public:
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         dev[LED_LEFT] = device_get_binding("WS2812_0");
         dev[LED_RIGHT] = device_get_binding("WS2812_1");
-        if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]))
+        dev[2] = device_get_binding("WS2812_2");
+        dev[3] = device_get_binding("WS2812_3");
+        if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]) ||
+            !device_is_ready(dev[2]) || !device_is_ready(dev[3]))
             return -1;
         fill(black);
         update();
         return 0;
     }
     void run() {
-        if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]))
+        if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]) ||
+            !device_is_ready(dev[2]) || !device_is_ready(dev[3]))
             return;
         while (true) {
             msg message;
@@ -132,15 +136,19 @@ private:
     }
     void update() {
         for (uint32_t i{0}; i < PIXELS; ++i) {
-            pixeldata[LED_LEFT][i].r >>= 2;
-            pixeldata[LED_LEFT][i].g >>= 2;
-            pixeldata[LED_LEFT][i].b >>= 2;
-            pixeldata[LED_RIGHT][i].r >>= 2;
-            pixeldata[LED_RIGHT][i].g >>= 2;
-            pixeldata[LED_RIGHT][i].b >>= 2;
+            // pixeldata[LED_LEFT][i].r >>= 1;
+            // pixeldata[LED_LEFT][i].g >>= 1;
+            // pixeldata[LED_LEFT][i].b >>= 1;
+            // pixeldata[LED_RIGHT][i].r >>= 1;
+            // pixeldata[LED_RIGHT][i].g >>= 1;
+            // pixeldata[LED_RIGHT][i].b >>= 1;
+            pixeldata[2][i] = pixeldata[LED_LEFT][i];
+            pixeldata[3][i] = pixeldata[LED_RIGHT][i];
         }
         led_strip_update_rgb(dev[LED_LEFT], pixeldata[LED_LEFT], PIXELS);
         led_strip_update_rgb(dev[LED_RIGHT], pixeldata[LED_RIGHT], PIXELS);
+        led_strip_update_rgb(dev[2], pixeldata[2], PIXELS);
+        led_strip_update_rgb(dev[3], pixeldata[3], PIXELS);
     }
     void fill(const led_rgb &color, uint32_t select = LED_BOTH) {
         if (select == LED_BOTH) {
@@ -299,8 +307,8 @@ private:
     }
     led_message_receiver rec;
     static constexpr uint32_t PIXELS{DT_PROP(DT_NODELABEL(led_strip0), chain_length)};
-    static constexpr uint32_t LED_LEFT{0}, LED_RIGHT{1}, LED_BOTH{2}, LED_NUM{2};
-    const device *dev[LED_NUM]{nullptr, nullptr};
+    static constexpr uint32_t LED_LEFT{0}, LED_RIGHT{1}, LED_BOTH{2}, LED_NUM{4};
+    const device *dev[LED_NUM]{nullptr, nullptr, nullptr, nullptr};
     led_rgb pixeldata[LED_NUM][PIXELS];
     uint32_t counter{0};
     static const led_rgb emergency_stop, amr_mode, agv_mode, mission_pause, path_blocked, manual_drive;

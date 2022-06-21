@@ -40,7 +40,7 @@ class {
 public:
     int init() {
         nh.getHardware()->set_baudrate(921600);
-        nh.initNode(const_cast<char*>("UART_1"));
+        nh.initNode(const_cast<char*>("UART_6"));
         actuator.init(nh);
         bmu.init(nh);
         board.init(nh);

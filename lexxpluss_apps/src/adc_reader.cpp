@@ -54,7 +54,7 @@ public:
     }
 private:
     void read_all_channels() {
-        static constexpr uint8_t ch[NUM_CHANNELS]{0, 1, 10, 11, 12, 13};
+        static constexpr uint8_t ch[NUM_CHANNELS]{8, 9, 10, 11, 12, 13};
         for (int i{0}; i < NUM_CHANNELS; ++i) {
             // Only single channel supported
             adc_channel_cfg channel_cfg{

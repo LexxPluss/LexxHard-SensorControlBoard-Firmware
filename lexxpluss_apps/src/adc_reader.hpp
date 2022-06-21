@@ -35,12 +35,12 @@ int32_t get(int index);
 extern k_thread thread;
 
 enum {
-    DOWNWARD_R = 0,
-    DOWNWARD_L,
+    DOWNWARD_L = 0,
+    DOWNWARD_R,
+    TROLLEY,
     ACTUATOR_0,
     ACTUATOR_1,
     ACTUATOR_2,
-    TROLLEY,
     NUM_CHANNELS
 };
 

@@ -46,9 +46,12 @@ public:
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
         ring_buf_init(&rxbuf.rb, sizeof rxbuf.buf, rxbuf.buf);
         ring_buf_init(&txbuf.rb, sizeof txbuf.buf, txbuf.buf);
-        dev_485 = device_get_binding("UART_6");
-        dev_en = device_get_binding("GPIOG");
-        if (!device_is_ready(dev_485) || !device_is_ready(dev_en))
+        dev_485 = device_get_binding("UART_4");
+        dev_en = device_get_binding("GPIOH");
+        dev_en_n = device_get_binding("GPIOA");
+        if (!device_is_ready(dev_485) ||
+            !device_is_ready(dev_en) ||
+            !device_is_ready(dev_en_n))
             return -1;
         uart_config config{
             .baudrate{115200},
@@ -66,15 +69,17 @@ public:
         }};
         uart_irq_callback_user_data_set(dev_485, uart_isr_trampoline, this);
         uart_irq_rx_enable(dev_485);
-        gpio_pin_configure(dev_en, 10, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(dev_en, 11, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(dev_en, 13, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(dev_en, 10, 0);
+        gpio_pin_configure(dev_en, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(dev_en_n, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_set(dev_en, 2, 0);
+        gpio_pin_set(dev_en_n, 2, 0);
         k_sem_init(&sem, 0, 1);
         return 0;
     }
     void run() {
-        if (!device_is_ready(dev_485) || !device_is_ready(dev_en))
+        if (!device_is_ready(dev_485) ||
+            !device_is_ready(dev_en) ||
+            !device_is_ready(dev_en_n))
             return;
         for (int i{0}; i < 30; ++i) {
             ring_buf_reset(&rxbuf.rb);
@@ -84,10 +89,15 @@ public:
             uint8_t buf[8];
             recv(buf, sizeof buf);
         }
+        const device *gpiog{device_get_binding("GPIOG")};
+        if (device_is_ready(gpiog))
+            gpio_pin_configure(gpiog, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         int heartbeat_led{1};
         while (true) {
-            gpio_pin_set(dev_en, 13, heartbeat_led);
-            heartbeat_led = !heartbeat_led;
+            if (device_is_ready(gpiog)) {
+                gpio_pin_set(gpiog, 4, heartbeat_led);
+                heartbeat_led = !heartbeat_led;
+            }
             if (get_position(pgv2ros)) {
                 while (k_msgq_put(&msgq, &pgv2ros, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
@@ -217,7 +227,7 @@ private:
     }
     void send(const uint8_t *buf, uint32_t length) {
         if (device_is_ready(dev_485)) {
-            gpio_pin_set(dev_en, 11, 1);
+            gpio_pin_set(dev_en, 2, 1);
             k_busy_wait(100);
             while (length > 0) {
                 uint32_t n{ring_buf_put(&txbuf.rb, buf, length)};
@@ -227,7 +237,7 @@ private:
             }
             k_sem_take(&sem, K_USEC(500));
             k_busy_wait(280); // 180 - 380, At 115200 bps, the transmission of one octet requires 96us.
-            gpio_pin_set(dev_en, 11, 0);
+            gpio_pin_set(dev_en, 2, 0);
         }
     }
     bool wait_data(uint32_t length) const {
@@ -264,7 +274,7 @@ private:
         ring_buf rb;
         uint32_t buf[256 / sizeof (uint32_t)];
     } txbuf, rxbuf;
-    const device *dev_485{nullptr}, *dev_en{nullptr};
+    const device *dev_485{nullptr}, *dev_en{nullptr}, *dev_en_n{nullptr};
     msg pgv2ros;
     k_sem sem;
 } impl;
