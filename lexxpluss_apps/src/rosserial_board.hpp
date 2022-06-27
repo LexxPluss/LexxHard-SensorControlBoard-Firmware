@@ -92,8 +92,9 @@ private:
     void publish_temperature(const can_controller::msg_board &message) {
         msg_temperature.main.temperature = message.main_board_temp;
         msg_temperature.power.temperature = message.power_board_temp;
-        msg_temperature.linear_actuator_center.temperature = message.actuator_board_temp[0];
-        msg_temperature.linear_actuator_left.temperature = message.actuator_board_temp[1];
+        // ROS:[center,left,right], ROBOT:[left,center,right]
+        msg_temperature.linear_actuator_center.temperature = message.actuator_board_temp[1];
+        msg_temperature.linear_actuator_left.temperature = message.actuator_board_temp[0];
         msg_temperature.linear_actuator_right.temperature = message.actuator_board_temp[2];
         msg_temperature.charge_plus.temperature = message.charge_connector_temp[0];
         msg_temperature.charge_minus.temperature = message.charge_connector_temp[1];
