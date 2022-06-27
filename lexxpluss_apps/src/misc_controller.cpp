@@ -72,10 +72,14 @@ public:
                     get_actuator_board_temp(1),
                     get_actuator_board_temp(2));
     }
-    float get_main_board_temp() const {return temperature[0];}
+    float get_main_board_temp() const {return temperature[3];}
     float get_actuator_board_temp(int index) const {
-        ++index;
-        return index > 0 && index < TEMPERATURE_NUM ? temperature[index] : 0.0f;
+        switch (index) {
+        case 0:  return temperature[0];
+        case 1:  return temperature[2];
+        case 2:  return temperature[1];
+        default: return 0.0f;
+        }
     }
 private:
     const device *dev{nullptr};
