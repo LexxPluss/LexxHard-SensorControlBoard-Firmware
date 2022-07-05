@@ -417,15 +417,19 @@ public:
         int fail_count{0};
         auto fail_check = [&](bool failed) {
             if (failed) {
-                if (fail_count < 10) {
-                    LOG_WRN("fail of actuator detected. reset.");
+                static constexpr int fail_max{10};
+                if (fail_count < fail_max) {
+                    LOG_WRN("fail of actuator detected, reset.");
                     reset_actuator();
                     ++fail_count;
-                } else {
-                    LOG_WRN("fail of repetitive actuator detected.");
+                } else if (fail_count == fail_max) {
+                    LOG_WRN("continued fail of actuator detected.");
+                    fail_count = fail_max + 1;
                 }
             } else {
-                ++fail_count;
+                if (fail_count > 0)
+                    LOG_WRN("recovered from actuator fail.");
+                fail_count = 0;
             }
         };
         reset_actuator();
