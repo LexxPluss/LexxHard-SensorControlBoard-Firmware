@@ -226,7 +226,7 @@ public:
         set_duty(msg_control::STOP);
         return 0;
     }
-    void set_duty(int8_t direction, uint8_t duty = 0) const {
+    void set_duty(int8_t direction, uint8_t duty = 0) {
         uint32_t pulse_ns[2]{CONTROL_PERIOD_NS, CONTROL_PERIOD_NS};
         if (direction != msg_control::STOP && duty != 0) {
             uint32_t duty_rev{std::clamp(100U - duty, 0U, 100U)};
@@ -235,9 +235,16 @@ public:
         }
         pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
         pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
+        this->direction = direction;
+        this->duty = duty;
+    }
+    std::tuple<int8_t, uint8_t> get_duty() const {
+        return {direction, duty};
     }
 private:
     uint32_t pin[2]{0, 0};
+    int8_t direction{msg_control::STOP};
+    uint8_t duty{0};
     const device *dev[2]{nullptr, nullptr};
     static constexpr uint32_t CONTROL_HZ{10000};
     static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
@@ -358,11 +365,14 @@ public:
     void reset() {
         cnt.reset();
     }
-    std::tuple<int32_t, int32_t, bool> get_info() const {
+    std::tuple<int32_t, int32_t, bool, int8_t, uint8_t> get_info() const {
+        auto [direction, duty]{pwm.get_duty()};
         return {
             cnt.get_pulse(),
             current_adc >= 0 ? adc_reader::get(current_adc) : 0,
-            fail_checker.is_failed()
+            fail_checker.is_failed(),
+            direction,
+            duty
         };
     }
     // void set_param(float pp, float vp, float vi) {
@@ -458,9 +468,13 @@ public:
                 prev_cycle = now_cycle;
                 bool failed{false};
                 for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+                    int8_t direction;
+                    uint8_t duty;
                     std::tie(actuator2ros.encoder_count[i],
                              actuator2ros.current[i],
-                             actuator2ros.fail[i]) = act[i].get_info();
+                             actuator2ros.fail[i],
+                             direction,
+                             duty) = act[i].get_info();
                     if (actuator2ros.fail[i])
                         failed = true;
                 }
@@ -513,8 +527,10 @@ public:
     }
     void info(const shell *shell) const {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-            auto [pulse, current, fail]{act[i].get_info()};
-            shell_print(shell, "actuator: %d encoder: %d pulse current: %d mV, fail: %d", i, pulse, current, fail);
+            auto [pulse, current, fail, direction, duty]{act[i].get_info()};
+            shell_print(shell,
+                        "actuator: %d encoder: %d pulse current: %d mV fail: %d dir: %d duty: %u",
+                        i, pulse, current, fail, direction, duty);
         }
     }
     void pwm_trampoline(int index, int direction, uint8_t pwm_duty = 0) const {
