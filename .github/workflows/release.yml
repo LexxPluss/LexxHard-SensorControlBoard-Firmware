@@ -37,23 +37,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
-      - name: Checkout private zephyr
-        uses: actions/checkout@v2
-        with:
-          repository: LexxPluss/zephyr
-          token: ${{ secrets.GH_PAT }}
-          path: zephyr
-      - name: Checkout private ros_msgs
-        uses: actions/checkout@v2
-        with:
-          repository: LexxPluss/ros_msgs
-          token: ${{ secrets.GH_PAT }}
-          path: ros_msgs
       - name: build
         id: build
         run: |
           set -e
-          west init -l zephyr
+          west init -l lexxpluss_apps
           west update
           west config --global zephyr.base-prefer configfile
           west zephyr-export
