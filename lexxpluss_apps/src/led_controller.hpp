@@ -26,6 +26,7 @@
 #pragma once
 
 #include <zephyr.h>
+#include <cstdlib>
 #include <cstring>
 
 namespace lexxhard::led_controller {
@@ -50,10 +51,49 @@ struct msg {
         else if (strcmp(str, "charge_level")    == 0) pattern = CHARGE_LEVEL;
         else if (strcmp(str, "showtime")        == 0) pattern = SHOWTIME;
         else if (strcmp(str, "lockdown")        == 0) pattern = LOCKDOWN;
-        else                                          pattern = NONE;
+        else if (*str == '#') setup_cpm_breath(str);
+        else pattern = NONE;
         interrupt_ms = 0;
     }
-    uint32_t pattern{NONE}, interrupt_ms{0};
+    void setup_cpm_breath(const char *str) {
+        pattern = NONE;
+        cpm = 0;
+        int r{dec2(&str[1])};
+        int g{dec2(&str[3])};
+        int b{dec2(&str[5])};
+        if (r < 0 || g < 0 || b < 0)
+            return;
+        rgb[0] = r;
+        rgb[1] = g;
+        rgb[2] = b;
+        if (str[7] != ' ')
+            return;
+        if (strncmp(&str[8], "breath", 6) == 0 && str[14] == ' ') {
+            pattern = RGB_BREATH;
+            cpm = atoi(&str[15]);
+        } else if (strncmp(&str[8], "blink", 5) == 0 && str[13] == ' ') {
+            pattern = RGB_BLINK;
+            cpm = atoi(&str[14]);
+        } else {
+            return;
+        }
+        if (cpm == 0)
+            pattern = RGB;
+    }
+    int dec2(const char *str) {
+        int h{dec1(str[0])};
+        int l{dec1(str[1])};
+        if (h < 0 || l < 0)
+            return -1;
+        return h << 4 | l;
+    }
+    int dec1(char c) {
+        return (c >= '0' && c <= '9') ? c - '0'
+             : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+             : (c >= 'A' && c <= 'F') ? c - 'A' + 10
+                                      : -1;
+    }
+    uint32_t pattern{NONE}, interrupt_ms{0}, cpm{0};
     uint8_t rgb[3]{0, 0, 0};
     static constexpr uint32_t NONE{0};
     static constexpr uint32_t EMERGENCY_STOP{1};
@@ -72,6 +112,8 @@ struct msg {
     static constexpr uint32_t SHOWTIME{10000};
     static constexpr uint32_t LOCKDOWN{10001};
     static constexpr uint32_t RGB{20000};
+    static constexpr uint32_t RGB_BLINK{20001};
+    static constexpr uint32_t RGB_BREATH{20002};
 } __attribute__((aligned(4)));
 
 void init();
