@@ -77,7 +77,10 @@ public:
     static constexpr uint32_t DELAY_MS{25};
 private:
     bool is_new_pattern(uint32_t pattern) {
-        return pattern == msg::RGB || message.pattern != pattern;
+        return pattern == msg::RGB ||
+               pattern == msg::RGB_BLINK ||
+               pattern == msg::RGB_BREATH ||
+               message.pattern != pattern;
     }
     msg message, message_interrupted;
     uint32_t cycle_interrupted{0};
@@ -121,7 +124,7 @@ private:
         case msg::PATH_BLOCKED:    fill(path_blocked); break;
         case msg::MANUAL_DRIVE:    fill(manual_drive); break;
         case msg::CHARGING:        fill_rainbow(); break;
-        case msg::WAITING_FOR_JOB: fill_fade(waiting_for_job); break;
+        case msg::WAITING_FOR_JOB: fill_fade(waiting_for_job, 9); break;
         case msg::LEFT_WINKER:     fill_blink_sequence(sequence, LED_LEFT); break;
         case msg::RIGHT_WINKER:    fill_blink_sequence(sequence, LED_RIGHT); break;
         case msg::BOTH_WINKER:     fill_blink_sequence(sequence, LED_BOTH); break;
@@ -130,6 +133,8 @@ private:
         case msg::SHOWTIME:        fill_knight_industries_two_thousand(); break;
         case msg::LOCKDOWN:        fill_strobe(lockdown, 10, 200, 0); break;
         case msg::RGB:             fill(led_rgb{.r{message.rgb[0]}, .g{message.rgb[1]}, .b{message.rgb[2]}}); break;
+        case msg::RGB_BLINK:       fill_blink(led_rgb{.r{message.rgb[0]}, .g{message.rgb[1]}, .b{message.rgb[2]}}, message.cpm); break;
+        case msg::RGB_BREATH:      fill_fade(led_rgb{.r{message.rgb[0]}, .g{message.rgb[1]}, .b{message.rgb[2]}}, message.cpm);break;
         }
         update();
         ++counter;
@@ -184,16 +189,24 @@ private:
                 pixeldata[select][i] = wheel(((i * 256 / PIXELS) + counter / 3) & 255);
         }
     }
-    void fill_fade(const led_rgb &color) {
-        static constexpr uint32_t thres{130};
-        if (counter >= thres * 2)
+    void fill_fade(const led_rgb &color, uint32_t count_per_min) {
+        uint32_t hz{1000 / led_message_receiver::DELAY_MS};
+        uint32_t thres{60 * hz / count_per_min};
+        if (counter >= thres)
             counter = 0;
         int percent;
-        if (counter < thres)
-            percent = counter * 100 / thres;
+        if (counter < thres / 2)
+            percent = counter * 100 / (thres / 2);
         else
-            percent = (thres * 2 - counter) * 100 / thres;
+            percent = (thres - counter) * 100 / (thres / 2);
         fill(fader(color, percent));
+    }
+    void fill_blink(const led_rgb &color, int count_per_min) {
+        uint32_t hz{1000 / led_message_receiver::DELAY_MS};
+        uint32_t thres{60 * hz / count_per_min};
+        if (counter >= thres)
+            counter = 0;
+        fill(counter < thres / 2 ? color : black);
     }
     void fill_blink_sequence(const led_rgb &color, uint32_t select = LED_BOTH) {
         uint32_t n{0};
