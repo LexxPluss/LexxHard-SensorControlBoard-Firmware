@@ -52,7 +52,7 @@ public:
                     message_interrupted = message_new;
                 }
             } else {
-                if (is_new_pattern(message_new.pattern)) {
+                if (is_new_message(message_new)) {
                     if (message_new.interrupt_ms > 0) {
                         LOG_INF("interrupted pattern %u %ums", message_new.pattern, message_new.interrupt_ms);
                         message_interrupted = message;
@@ -76,11 +76,19 @@ public:
     }
     static constexpr uint32_t DELAY_MS{25};
 private:
-    bool is_new_pattern(uint32_t pattern) {
-        return pattern == msg::RGB ||
-               pattern == msg::RGB_BLINK ||
-               pattern == msg::RGB_BREATH ||
-               message.pattern != pattern;
+    bool is_new_message(const msg &message_new) {
+        if (message_new.pattern != message.pattern)
+            return true;
+        if (message_new.pattern == msg::RGB ||
+            message_new.pattern == msg::RGB_BLINK ||
+            message_new.pattern == msg::RGB_BREATH) {
+            if (message_new.cpm != message.cpm ||
+                message_new.rgb[0] != message.rgb[0] ||
+                message_new.rgb[1] != message.rgb[1] ||
+                message_new.rgb[2] != message.rgb[2])
+                return true;
+        }
+        return false;
     }
     msg message, message_interrupted;
     uint32_t cycle_interrupted{0};
