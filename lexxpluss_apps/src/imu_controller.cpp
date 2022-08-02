@@ -76,7 +76,7 @@ public:
             k_msleep(1);
         }
     }
-    void info(const shell *shell) {
+    void info(const shell *shell) const {
         msg m{message};
         shell_print(shell,
                     "accel: %f %f %f (m/s/s)\n"
