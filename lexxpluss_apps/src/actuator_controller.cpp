@@ -523,7 +523,7 @@ public:
         }
         return 0;
     }
-    void set_current_monitor() {
+    void set_current_monitor() const {
     }
     void info(const shell *shell) const {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {

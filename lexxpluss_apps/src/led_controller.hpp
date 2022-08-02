@@ -80,14 +80,14 @@ struct msg {
         if (cpm == 0)
             pattern = RGB;
     }
-    int dec2(const char *str) {
+    int dec2(const char *str) const {
         int h{dec1(str[0])};
         int l{dec1(str[1])};
         if (h < 0 || l < 0)
             return -1;
         return h << 4 | l;
     }
-    int dec1(char c) {
+    int dec1(char c) const {
         return (c >= '0' && c <= '9') ? c - '0'
              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
              : (c >= 'A' && c <= 'F') ? c - 'A' + 10

@@ -76,7 +76,7 @@ public:
     }
     static constexpr uint32_t DELAY_MS{25};
 private:
-    bool is_new_message(const msg &message_new) {
+    bool is_new_message(const msg &message_new) const {
         if (message_new.pattern != message.pattern)
             return true;
         if (message_new.pattern == msg::RGB ||
