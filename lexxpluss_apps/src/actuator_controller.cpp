@@ -369,7 +369,7 @@ public:
         auto [direction, duty]{pwm.get_duty()};
         return {
             cnt.get_pulse(),
-            current_adc >= 0 ? adc_reader::get(current_adc) : 0,
+            calc_current(current_adc >= 0 ? adc_reader::get(current_adc) : 0),
             fail_checker.is_failed(),
             direction,
             duty
@@ -379,6 +379,11 @@ public:
     //     posctl.set_param(pp, vp, vi);
     // }
 private:
+    int32_t calc_current(int32_t adc_voltage_mv) const {
+        static constexpr float AMP_GAIN{20.0f}, VOLTAGE_DIVIDER{3.0f}, SHUNT_REGISTER{0.1f};
+        float current_a{adc_voltage_mv * 1e-3f / AMP_GAIN * VOLTAGE_DIVIDER / SHUNT_REGISTER};
+        return static_cast<int32_t>(current_a * 1e+3f);
+    }
     counter cnt;
     pwm_driver pwm;
     position_control posctl{cnt};
