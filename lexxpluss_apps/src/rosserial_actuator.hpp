@@ -39,11 +39,14 @@ public:
     void init(ros::NodeHandle &nh) {
         nh.advertise(pub_encoder);
         nh.advertise(pub_connection);
+        nh.advertise(pub_current);
         nh.subscribe(sub_control);
         msg_encoder.data = msg_encoder_data;
         msg_encoder.data_length = sizeof msg_encoder_data / sizeof msg_encoder_data[0];
         msg_connection.data = msg_connection_data;
         msg_connection.data_length = sizeof msg_connection_data / sizeof msg_connection_data[0];
+        msg_current.data = msg_current_data;
+        msg_current.data_length = sizeof msg_current_data / sizeof msg_current_data[0];
     }
     void poll() {
         actuator_controller::msg message;
@@ -55,6 +58,10 @@ public:
             pub_encoder.publish(&msg_encoder);
             msg_connection.data[0] = message.connect * 1e-3f;
             pub_connection.publish(&msg_connection);
+            msg_current.data[0] = message.current[1] * 1e-3f;
+            msg_current.data[1] = message.current[0] * 1e-3f;
+            msg_current.data[2] = message.current[2] * 1e-3f;
+            pub_current.publish(&msg_current);
         }
     }
 private:
@@ -71,11 +78,12 @@ private:
             k_msgq_purge(&actuator_controller::msgq_control);
     }
     std_msgs::Int32MultiArray msg_encoder;
-    std_msgs::Float32MultiArray msg_connection;
+    std_msgs::Float32MultiArray msg_connection, msg_current;
     int32_t msg_encoder_data[3];
-    float msg_connection_data[1];
+    float msg_connection_data[1], msg_current_data[3];
     ros::Publisher pub_encoder{"/body_control/encoder_count", &msg_encoder};
     ros::Publisher pub_connection{"/body_control/shelf_connection", &msg_connection};
+    ros::Publisher pub_current{"/body_control/linear_actuator_current", &msg_current};
     ros::Subscriber<lexxauto_msgs::LinearActuatorControlArray, ros_actuator>
         sub_control{"/body_control/linear_actuator", &ros_actuator::callback_control, this};
 };
