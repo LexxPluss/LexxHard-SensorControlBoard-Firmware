@@ -56,7 +56,7 @@ $ west build -b lexxpluss_mb01 bootloader/mcuboot/boot/zephyr -d build-mcuboot
 $ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
 ```
 
-## Program
+## Program of the built firmware
 
 ### First time program
 
@@ -77,7 +77,21 @@ Program the firmware for update to the update area.
 $ st-flash --reset --connect-under-reset write build/zephyr/zephyr.signed.confirmed.bin 0x8080000
 ```
 
-Programming firmware for update via ROS will be supported soon.
+## Program of the released firmware
+
+```bash
+$ st-flash --reset --connect-under-reset erase
+$ st-flash --reset --connect-under-reset write LexxHard-MainBoard-Firmware-Initial-v?.?.? 0x8000000
+```
+
+## Update via ROS
+
+Use [LexxPluss/LexxHard-MainBoard-Updator](https://github.com/LexxPluss/LexxHard-MainBoard-Updator.git).
+
+The firmware is automatically updated when the robot is turned on again after executing the following command.
+```bash
+$ rosrun mainboard_updator mainboard_updator LexxHard-MainBoard-Firmware-Update-v?.?.?.bin
+```
 
 ## License
 
