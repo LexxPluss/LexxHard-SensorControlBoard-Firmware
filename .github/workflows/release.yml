@@ -47,6 +47,9 @@ jobs:
           west zephyr-export
           ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb01 bootloader/mcuboot/boot/zephyr -d build-mcuboot
           ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb01 lexxpluss_apps
+          dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
+          dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
+          cat bl_with_ff.bin build/zephyr/zephyr.signed.bin > firmware.bin
       - name: release
         id: create_release
         uses: actions/create-release@v1
@@ -57,25 +60,15 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
-      - name: upload bootloader
-        id: upload-release-asset-bootloader
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./build-mcuboot/zephyr/zephyr.bin
-          asset_name: LexxHard-MainBoard-Bootloader-${{ github.ref_name }}.bin
-          asset_content_type: application/octet-stream
-      - name: upload base firmware
+      - name: upload initial firmware
         id: upload-release-asset-firmware
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./build/zephyr/zephyr.signed.bin
-          asset_name: LexxHard-MainBoard-Firmware-Base-${{ github.ref_name }}.bin
+          asset_path: ./firmware.bin
+          asset_name: LexxHard-MainBoard-Firmware-Initial-${{ github.ref_name }}.bin
           asset_content_type: application/octet-stream
       - name: upload update firmware
         id: upload-release-asset-updator
