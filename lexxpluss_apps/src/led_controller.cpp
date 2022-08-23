@@ -148,20 +148,10 @@ private:
         ++counter;
     }
     void update() {
-        for (uint32_t i{0}; i < PIXELS; ++i) {
-            // pixeldata[LED_LEFT][i].r >>= 1;
-            // pixeldata[LED_LEFT][i].g >>= 1;
-            // pixeldata[LED_LEFT][i].b >>= 1;
-            // pixeldata[LED_RIGHT][i].r >>= 1;
-            // pixeldata[LED_RIGHT][i].g >>= 1;
-            // pixeldata[LED_RIGHT][i].b >>= 1;
-            pixeldata[2][i] = pixeldata[LED_LEFT][i];
-            pixeldata[3][i] = pixeldata[LED_RIGHT][i];
-        }
         led_strip_update_rgb(dev[LED_LEFT], pixeldata[LED_LEFT], PIXELS);
         led_strip_update_rgb(dev[LED_RIGHT], pixeldata[LED_RIGHT], PIXELS);
-        led_strip_update_rgb(dev[2], pixeldata[2], PIXELS);
-        led_strip_update_rgb(dev[3], pixeldata[3], PIXELS);
+        led_strip_update_rgb(dev[2], pixeldata[LED_LEFT], PIXELS);
+        led_strip_update_rgb(dev[3], pixeldata[LED_RIGHT], PIXELS);
     }
     void fill(const led_rgb &color, uint32_t select = LED_BOTH) {
         if (select == LED_BOTH) {
@@ -328,9 +318,9 @@ private:
     }
     led_message_receiver rec;
     static constexpr uint32_t PIXELS{DT_PROP(DT_NODELABEL(led_strip0), chain_length)};
-    static constexpr uint32_t LED_LEFT{0}, LED_RIGHT{1}, LED_BOTH{2}, LED_NUM{4};
-    const device *dev[LED_NUM]{nullptr, nullptr, nullptr, nullptr};
-    led_rgb pixeldata[LED_NUM][PIXELS];
+    static constexpr uint32_t LED_LEFT{0}, LED_RIGHT{1}, LED_BOTH{2};
+    const device *dev[4]{nullptr, nullptr, nullptr, nullptr};
+    led_rgb pixeldata[2][PIXELS];
     uint32_t counter{0};
     static const led_rgb emergency_stop, amr_mode, agv_mode, mission_pause, path_blocked, manual_drive;
     static const led_rgb dock_mode, waiting_for_job, orange, sequence, move_actuator, lockdown, black;
