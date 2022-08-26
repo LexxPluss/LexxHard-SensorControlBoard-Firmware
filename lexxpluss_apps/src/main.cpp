@@ -60,7 +60,7 @@ K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 void reset_usb_hub()
 {
     if (const device *gpioj{device_get_binding("GPIOJ")}; device_is_ready(gpioj)) {
-        gpio_pin_configure(gpioj, 3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(gpioj, 13, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(1);
         gpio_pin_set(gpioj, 13, 0);
         k_msleep(1);
