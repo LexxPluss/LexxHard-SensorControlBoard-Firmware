@@ -128,7 +128,7 @@ public:
     int16_t get() const {
         int16_t count{static_cast<int16_t>(tim->CNT)};
         tim->CNT = 0;
-        return -count;
+        return count;
     }
 private:
     TIM_TypeDef *tim{nullptr};
