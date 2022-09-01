@@ -24,9 +24,9 @@
 name: CI
 on:
   push:
-    branches: [ main ]
+    branches: [ board_v2_reverse_enc ]
   pull_request:
-    branches: [ main ]
+    branches: [ board_v2_reverse_enc ]
   workflow_dispatch:
 jobs:
   build:
