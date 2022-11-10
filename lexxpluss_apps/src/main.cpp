@@ -30,7 +30,9 @@
 #include "can_controller.hpp"
 #include "firmware_updater.hpp"
 #include "imu_controller.hpp"
+#ifdef ENABLE_INTERLOCK
 #include "interlock_controller.hpp"
+#endif  // ENABLE_INTERLOCK
 #include "led_controller.hpp"
 #include "misc_controller.hpp"
 #include "pgv_controller.hpp"
@@ -47,7 +49,9 @@ K_THREAD_STACK_DEFINE(adc_reader_stack, 2048);
 K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
+#ifdef ENABLE_INTERLOCK
 K_THREAD_STACK_DEFINE(interlock_controller_stack, 2048);
+#endif  // ENABLE_INTERLOCK
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(misc_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
@@ -82,7 +86,9 @@ void main()
     lexxhard::can_controller::init();
     lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
+#ifdef ENABLE_INTERLOCK
     lexxhard::interlock_controller::init();
+#endif  // ENABLE_INTERLOCK
     lexxhard::led_controller::init();
     lexxhard::misc_controller::init();
     lexxhard::pgv_controller::init();
@@ -96,7 +102,9 @@ void main()
     RUN(can_controller, 4);
     RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
+#ifdef ENABLE_INTERLOCK
     RUN(interlock_controller, 5);
+#endif  // ENABLE_INTERLOCK
     RUN(led_controller, 1);
     RUN(misc_controller, 2);
     RUN(pgv_controller, 1);

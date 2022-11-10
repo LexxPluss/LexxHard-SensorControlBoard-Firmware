@@ -56,6 +56,12 @@ $ west build -b lexxpluss_mb01 bootloader/mcuboot/boot/zephyr -d build-mcuboot
 $ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
 ```
 
+### Build firmware ( enable interlock )
+
+```bash
+$ west build -p auto -b lexxpluss_mb01 lexxpluss_apps -- -DENABLE_INTERLOCK=1
+```
+
 ## Program of the built firmware
 
 ### First time program
