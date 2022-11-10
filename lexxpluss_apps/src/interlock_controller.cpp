@@ -53,6 +53,7 @@ public:
         }
 
         while (true) {
+#ifdef ENABLE_INTERLOCK
             if (device_is_ready(gpioc) && gpio_pin_get(gpioc, 4) == 1) {
                 connected_robot_is_operational = false;
  
@@ -82,6 +83,13 @@ public:
                     gpio_pin_set(gpioc, 5, 0);
                 }
             }
+#else
+            msg_enable message;
+            message.enable = true;
+            while (k_msgq_put(&msgq_enable_amr, &message, K_NO_WAIT) != 0) {
+                k_msgq_purge(&msgq_enable_amr);
+            }
+#endif  // ENABLE_INTERLOCK
 
             k_msleep(200);
         }

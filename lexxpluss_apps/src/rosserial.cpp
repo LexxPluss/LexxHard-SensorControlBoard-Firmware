@@ -29,9 +29,7 @@
 #include "rosserial_board.hpp"
 #include "rosserial_dfu.hpp"
 #include "rosserial_imu.hpp"
-#ifdef ENABLE_INTERLOCK
 #include "rosserial_interlock.hpp"
-#endif  // ENABLE_INTERLOCK
 #include "rosserial_led.hpp"
 #include "rosserial_pgv.hpp"
 #include "rosserial_tof.hpp"
@@ -50,9 +48,7 @@ public:
         board.init(nh);
         dfu.init(nh);
         imu.init(nh);
-#ifdef ENABLE_INTERLOCK
         interlock.init(nh);
-#endif  // ENABLE_INTERLOCK
         led.init(nh);
         pgv.init(nh);
         tof.init(nh);
@@ -67,9 +63,7 @@ public:
             board.poll();
             dfu.poll();
             imu.poll();
-#ifdef ENABLE_INTERLOCK
             interlock.poll();
-#endif  // ENABLE_INTERLOCK
             led.poll();
             pgv.poll();
             tof.poll();
@@ -84,9 +78,7 @@ private:
     ros_board board;
     ros_dfu dfu;
     ros_imu imu;
-#ifdef ENABLE_INTERLOCK
     ros_interlock interlock;
-#endif  // ENABLE_INTERLOCK
     ros_led led;
     ros_pgv pgv;
     ros_tof tof;
