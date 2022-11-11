@@ -41,7 +41,7 @@ public:
     int init() {
         k_msgq_init(&msgq_enable_amr, msgq_enable_amr_buffer, sizeof (msg_enable), 8);
         k_msgq_init(&msgq_done_amr, msgq_done_amr_buffer, sizeof (msg_done), 8);
-	amr_is_operational = false;
+        amr_is_operational = false;
         connected_robot_is_operational = false;
         return 0;
     }
@@ -59,16 +59,11 @@ public:
  
                 if (!amr_is_operational) {
                     amr_is_operational = true;
-                    msg_enable message;
-		    message.enable = true;
-		    while (k_msgq_put(&msgq_enable_amr, &message, K_NO_WAIT) != 0) {
-                        k_msgq_purge(&msgq_enable_amr);
-                    }
                 }
-	    }
+            }
        
-	    msg_done message;
-            if (k_msgq_get(&msgq_done_amr, &message, K_NO_WAIT) == 0 && message.done) {
+            msg_done message_done;
+            if (k_msgq_get(&msgq_done_amr, &message_done, K_NO_WAIT) == 0 && message_done.done) {
                 amr_is_operational = false;
 
                 if (!connected_robot_is_operational) {
@@ -76,10 +71,16 @@ public:
                 }
             }
 
+            msg_enable message_enable;
+            message_enable.enable = amr_is_operational;
+            while (k_msgq_put(&msgq_enable_amr, &message_enable, K_NO_WAIT) != 0) {
+                k_msgq_purge(&msgq_enable_amr);
+            }
+
             if (device_is_ready(gpioc)) {
                 if (connected_robot_is_operational) {
                     gpio_pin_set(gpioc, 5, 1);
-		} else {
+                } else {
                     gpio_pin_set(gpioc, 5, 0);
                 }
             }
