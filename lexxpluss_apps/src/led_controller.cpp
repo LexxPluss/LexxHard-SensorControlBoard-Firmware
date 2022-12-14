@@ -28,6 +28,7 @@
 #include <drivers/led_strip.h>
 #include <logging/log.h>
 #include <shell/shell.h>
+#include <algorithm>
 #include <cstdlib>
 #include "can_controller.hpp"
 #include "led_controller.hpp"
@@ -148,10 +149,23 @@ private:
         ++counter;
     }
     void update() {
+        std::copy(&pixeldata[LED_LEFT][0],  &pixeldata[LED_LEFT][PIXELS_BACK],  &pixeldata_back[LED_LEFT][0]);
+        std::copy(&pixeldata[LED_RIGHT][0], &pixeldata[LED_RIGHT][PIXELS_BACK], &pixeldata_back[LED_RIGHT][0]);
+        if (can_controller::is_emergency()) {
+            static uint32_t blink_counter{0};
+            ++blink_counter;
+            if (blink_counter < 20) {
+                led_rgb red{.r{0xff}, .g{0x00}, .b{0x00}};
+                for (uint32_t i{PIXELS_BACK - 4}; i < PIXELS_BACK; ++i)
+                    pixeldata_back[LED_LEFT][i] = pixeldata_back[LED_RIGHT][i] = red;
+            } else if (blink_counter >= 40) {
+                blink_counter = 0;
+            }
+        }
         led_strip_update_rgb(dev[LED_LEFT], pixeldata[LED_LEFT], PIXELS);
         led_strip_update_rgb(dev[LED_RIGHT], pixeldata[LED_RIGHT], PIXELS);
-        led_strip_update_rgb(dev[2], pixeldata[LED_LEFT], PIXELS);
-        led_strip_update_rgb(dev[3], pixeldata[LED_RIGHT], PIXELS);
+        led_strip_update_rgb(dev[2], pixeldata_back[LED_LEFT], PIXELS_BACK);
+        led_strip_update_rgb(dev[3], pixeldata_back[LED_RIGHT], PIXELS_BACK);
     }
     void fill(const led_rgb &color, uint32_t select = LED_BOTH) {
         if (select == LED_BOTH) {
@@ -318,9 +332,10 @@ private:
     }
     led_message_receiver rec;
     static constexpr uint32_t PIXELS{DT_PROP(DT_NODELABEL(led_strip0), chain_length)};
+    static constexpr uint32_t PIXELS_BACK{DT_PROP(DT_NODELABEL(led_strip2), chain_length)};
     static constexpr uint32_t LED_LEFT{0}, LED_RIGHT{1}, LED_BOTH{2};
     const device *dev[4]{nullptr, nullptr, nullptr, nullptr};
-    led_rgb pixeldata[2][PIXELS];
+    led_rgb pixeldata[2][PIXELS], pixeldata_back[2][PIXELS_BACK];
     uint32_t counter{0};
     static const led_rgb emergency_stop, amr_mode, agv_mode, mission_pause, path_blocked, manual_drive;
     static const led_rgb dock_mode, waiting_for_job, orange, sequence, move_actuator, lockdown, black;
