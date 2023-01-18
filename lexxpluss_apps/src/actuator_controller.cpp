@@ -467,7 +467,7 @@ public:
                 pwm_direct_all(msg_control::STOP);
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
-            if (dt_ms > 100) {
+            if (dt_ms > 20) {
                 prev_cycle = now_cycle;
                 bool failed{false};
                 for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
