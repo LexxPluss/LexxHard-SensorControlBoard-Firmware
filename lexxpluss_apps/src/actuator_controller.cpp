@@ -497,7 +497,7 @@ public:
         LOG_INF("initialize location.");
         location_initialized = false;
         pwm_trampoline_all(msg_control::DOWN, 100);
-        bool stopped{wait_actuator_stop(30000, 500)};
+        bool stopped{wait_actuator_stop(30000, 100)};
         pwm_trampoline_all(msg_control::STOP);
         if (!stopped || can_controller::is_emergency()) {
             LOG_WRN("can not initialize location.");
