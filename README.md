@@ -3,12 +3,58 @@
 [![CI](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/main.yml/badge.svg)](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/main.yml)
 [![release](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/release.yml/badge.svg)](https://github.com/LexxPluss/LexxHard-MainBoard-Firmware/actions/workflows/release.yml)
 
-## Install dependencies
+## For Docker (Ubuntu)
+
+## Install dependencies 
+
+```bash
+$ mkdir -p $HOME/zephyrproject/
+$ cd $HOME/zephyrproject/
+$ git clone https://github.com/LexxPluss/LexxHard-MainBoard-Firmware
+$ docker pull zephyrprojectrtos/zephyr-build:v0.21.0
+$ docker run -it -v $HOME/zephyrproject:/workdir docker.io/zephyrprojectrtos/zephyr-build:v0.21.0
+
+```
+## Setup Zephyr
+
+```bash
+$ cd /workdir/LexxHard-MainBoard-Firmware
+$ west init -l lexxpluss_apps
+$ west update
+$ west config --global zephyr.base-prefer configfile
+$ west zephyr-export
+```
+## Build
+### Build bootloader (MCUboot)
+
+```bash
+$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 bootloader/mcuboot/boot/zephyr -d build-mcuboot
+```
+### Build firmware
+
+```bash
+$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps
+```
+```bash
+$ cp ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-MainBoard-Firmware-Update-v2.6.1.bin
+
+$ dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
+$ dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
+$ cat bl_with_ff.bin build/zephyr/zephyr.signed.bin >  LexxHard-MainBoard-Firmware-Initial-v2.6.1.bin
+```
+
+### Build firmware ( enable interlock )
+
+```bash
+$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps -- -DENABLE_INTERLOCK=1
+```
+
+---
+## For macOS (old)
+## Install dependencies　
 
 Prepare a development environment referring to
 https://docs.zephyrproject.org/2.7.0/getting_started/
-
-In macOS, it probably looks like this.
 
 ### Install Homebrew
 
@@ -61,7 +107,7 @@ $ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
 ```bash
 $ west build -p auto -b lexxpluss_mb01 lexxpluss_apps -- -DENABLE_INTERLOCK=1
 ```
-
+---
 ## Program of the built firmware
 
 ### First time program
