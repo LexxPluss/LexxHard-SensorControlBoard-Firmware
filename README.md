@@ -50,7 +50,8 @@ $ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps
 ```
 
 ---
-## For macOS (old)
+## For macOS
+
 ## Install dependencies　
 
 Prepare a development environment referring to
@@ -81,7 +82,7 @@ $ pip3 install -r zephyr/scripts/requirements.txt
 ### Install Toolchain
 
 Install Toolchain and set environment variables referring to
-https://docs.zephyrproject.org/latest/getting_started/toolchain_3rd_party_x_compilers.html#gnu-arm-embedded
+https://docs.zephyrproject.org/2.7.0/getting_started/toolchain_3rd_party_x_compilers.html
 
 ```bash
 export ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb
@@ -93,19 +94,19 @@ export GNUARMEMB_TOOLCHAIN_PATH=/Applications/ARM
 ### Build bootloader (MCUboot)
 
 ```bash
-$ west build -b lexxpluss_mb01 bootloader/mcuboot/boot/zephyr -d build-mcuboot
+$ west build -b lexxpluss_mb02 bootloader/mcuboot/boot/zephyr -d build-mcuboot
 ```
 
 ### Build firmware
 
 ```bash
-$ west build -p auto -b lexxpluss_mb01 lexxpluss_apps
+$ west build -p auto -b lexxpluss_mb02 lexxpluss_apps
 ```
 
 ### Build firmware ( enable interlock )
 
 ```bash
-$ west build -p auto -b lexxpluss_mb01 lexxpluss_apps -- -DENABLE_INTERLOCK=1
+$ west build -p auto -b lexxpluss_mb02 lexxpluss_apps -- -DENABLE_INTERLOCK=1
 ```
 ---
 ## Program of the built firmware
