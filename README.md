@@ -36,11 +36,11 @@ $ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 bootloader/mcu
 $ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps
 ```
 ```bash
-$ cp ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-MainBoard-Firmware-Update-v2.6.1.bin
+$ cp ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-MainBoard-Firmware-Update-?.?.?.bin
 
 $ dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
 $ dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
-$ cat bl_with_ff.bin build/zephyr/zephyr.signed.bin >  LexxHard-MainBoard-Firmware-Initial-v2.6.1.bin
+$ cat bl_with_ff.bin build/zephyr/zephyr.signed.bin >  LexxHard-MainBoard-Firmware-Initial-?.?.?.bin
 ```
 
 ### Build firmware ( enable interlock )
