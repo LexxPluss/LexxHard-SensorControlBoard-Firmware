@@ -27,22 +27,25 @@
 #include <device.h>
 #include <drivers/gpio.h>
 #include <logging/log.h>
+#include "can_controller.hpp"
 #include "interlock_controller.hpp"
 
 namespace lexxhard::interlock_controller {
 
 LOG_MODULE_REGISTER(interlock);
 
-char __aligned(4) msgq_enable_amr_buffer[8 * sizeof (msg_enable)];
-char __aligned(4) msgq_done_amr_buffer[8 * sizeof (msg_done)];
+char __aligned(4) msgq_connected_robot_status_buffer[8 * sizeof (msg_connected_robot_status)];
+char __aligned(4) msgq_amr_status_buffer[8 * sizeof (msg_amr_status)];
+char __aligned(4) msgq_can_interlock_buffer[8 * sizeof (msg_can_interlock)];
 
 class interlock_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_enable_amr, msgq_enable_amr_buffer, sizeof (msg_enable), 8);
-        k_msgq_init(&msgq_done_amr, msgq_done_amr_buffer, sizeof (msg_done), 8);
-        amr_is_operational = false;
-        connected_robot_is_operational = false;
+        k_msgq_init(&msgq_connected_robot_status, msgq_connected_robot_status_buffer, sizeof (msg_connected_robot_status), 8);
+        k_msgq_init(&msgq_amr_status, msgq_amr_status_buffer, sizeof (msg_amr_status), 8);
+        k_msgq_init(&msgq_can_interlock, msgq_can_interlock_buffer, sizeof (msg_can_interlock), 8);
+        is_emergency_stop_at_amr = false;
+        is_emergency_stop_at_connected_robot = false;
         return 0;
     }
     void run() {
@@ -54,41 +57,44 @@ public:
 
         while (true) {
 #ifdef ENABLE_INTERLOCK
-            if (device_is_ready(gpioc) && gpio_pin_get(gpioc, 4) == 1) {
-                connected_robot_is_operational = false;
- 
-                if (!amr_is_operational) {
-                    amr_is_operational = true;
-                }
-            }
-       
-            msg_done message_done;
-            if (k_msgq_get(&msgq_done_amr, &message_done, K_NO_WAIT) == 0 && message_done.done) {
-                amr_is_operational = false;
-
-                if (!connected_robot_is_operational) {
-                    connected_robot_is_operational = true;
-                }
+            if (device_is_ready(gpioc)) {
+                is_emergency_stop_at_connected_robot = (gpio_pin_get(gpioc, 4) == 0);
+            } else {
+                is_emergency_stop_at_connected_robot = true;
             }
 
-            msg_enable message_enable;
-            message_enable.enable = amr_is_operational;
-            while (k_msgq_put(&msgq_enable_amr, &message_enable, K_NO_WAIT) != 0) {
-                k_msgq_purge(&msgq_enable_amr);
+            msg_connected_robot_status message_connected_robot_status;
+            message_connected_robot_status.is_emergency_stop = is_emergency_stop_at_connected_robot;
+            while (k_msgq_put(&msgq_connected_robot_status, &message_connected_robot_status, K_NO_WAIT) != 0) {
+                k_msgq_purge(&msgq_connected_robot_status);
+            }
+
+            msg_amr_status message_amr_status;
+            if (k_msgq_get(&msgq_amr_status, &message_amr_status, K_NO_WAIT) == 0) {
+                is_emergency_stop_at_amr = message_amr_status.is_emergency_stop   ||
+                                           can_controller::get_emergency_switch() ||
+					   can_controller::get_bumper_switch();
+            } else {
+                is_emergency_stop_at_amr = true;
             }
 
             if (device_is_ready(gpioc)) {
-                if (connected_robot_is_operational) {
-                    gpio_pin_set(gpioc, 5, 1);
-                } else {
+                if (is_emergency_stop_at_amr) {
                     gpio_pin_set(gpioc, 5, 0);
+                } else {
+                    gpio_pin_set(gpioc, 5, 1);
                 }
             }
 #else
-            msg_enable message;
-            message.enable = true;
-            while (k_msgq_put(&msgq_enable_amr, &message, K_NO_WAIT) != 0) {
-                k_msgq_purge(&msgq_enable_amr);
+            msg_connected_robot_status message_connected_robot_status;
+            message_connected_robot_status.is_emergency_stop = false;
+            while (k_msgq_put(&msgq_connected_robot_status, &message_connected_robot_status, K_NO_WAIT) != 0) {
+                k_msgq_purge(&msgq_connected_robot_status);
+            }
+            msg_can_interlock message_can_interlock;
+            message_can_interlock.is_emergency_stop = false;
+            while (k_msgq_put(&msgq_can_interlock, &message_can_interlock, K_NO_WAIT) != 0) {
+                k_msgq_purge(&msgq_can_interlock);
             }
 #endif  // ENABLE_INTERLOCK
 
@@ -96,8 +102,8 @@ public:
         }
     }
 private:
-    bool amr_is_operational;
-    bool connected_robot_is_operational;
+    bool is_emergency_stop_at_amr;
+    bool is_emergency_stop_at_connected_robot;
 } impl;
 
 void init()
@@ -111,7 +117,9 @@ void run(void *p1, void *p2, void *p3)
 }
 
 k_thread thread;
-k_msgq msgq_enable_amr, msgq_done_amr;
+k_msgq msgq_amr_status;
+k_msgq msgq_connected_robot_status;
+k_msgq msgq_can_interlock;
 
 }  // namespace lexxhard::interlock_controller
 
