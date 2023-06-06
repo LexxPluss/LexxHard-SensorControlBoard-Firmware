@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -29,6 +29,7 @@
 #include <drivers/gpio.h>
 #include <logging/log.h>
 #include <shell/shell.h>
+#include "interlock_controller.hpp"
 #include "led_controller.hpp"
 #include "misc_controller.hpp"
 #include "can_controller.hpp"
@@ -103,6 +104,10 @@ public:
                 prev_cycle_ros = k_cycle_get_32();
                 handled = true;
             }
+            interlock_controller::msg_can_interlock message;
+            if (k_msgq_get(&interlock_controller::msgq_can_interlock, &message, K_NO_WAIT) == 0) {
+	        ros2board.emergency_stop |= message.is_emergency_stop;
+            }
             uint32_t now_cycle{k_cycle_get_32()};
             if (prev_cycle_ros != 0) {
                 uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle_ros)};
@@ -124,9 +129,19 @@ public:
     uint32_t get_rsoc() const {
         return bmu2ros.rsoc;
     }
+    bool get_emergency_switch() const {
+        return board2ros.emergency_switch[0] ||
+               board2ros.emergency_switch[1];
+    }
+    bool get_bumper_switch() const {
+	return board2ros.bumper_switch[0] ||
+	       board2ros.bumper_switch[1];
+    }
     bool is_emergency() const {
         return board2ros.emergency_switch[0] ||
                board2ros.emergency_switch[1] ||
+               board2ros.bumper_switch[0] ||
+               board2ros.bumper_switch[1] ||
                ros2board.emergency_stop;
     }
     void bmu_info(const shell *shell) const {
@@ -426,6 +441,16 @@ void run(void *p1, void *p2, void *p3)
 uint32_t get_rsoc()
 {
     return impl.get_rsoc();
+}
+
+bool get_emergency_switch()
+{
+    return impl.get_emergency_switch();
+}
+
+bool get_bumper_switch()
+{
+    return impl.get_bumper_switch();
 }
 
 bool is_emergency()

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,26 +35,26 @@ namespace lexxhard {
 class ros_interlock {
 public:
     void init(ros::NodeHandle &nh) {
-        nh.subscribe(sub_done_operation);
-        nh.advertise(pub_enable_operation);
-        msg_enable_operation.data = false;
+        nh.subscribe(sub_emergency_stop_at_amr);
+        nh.advertise(pub_emergency_stop_at_connected_robot);
+        msg_emergency_stop_at_connected_robot.data = false;
     }
     void poll() {
-        interlock_controller::msg_enable message;
-        while (k_msgq_get(&interlock_controller::msgq_enable_amr, &message, K_NO_WAIT) == 0) {
-            msg_enable_operation.data = message.enable;
-            pub_enable_operation.publish(&msg_enable_operation);
+        interlock_controller::msg_connected_robot_status message;
+        while (k_msgq_get(&interlock_controller::msgq_connected_robot_status, &message, K_NO_WAIT) == 0) {
+            msg_emergency_stop_at_connected_robot.data = message.is_emergency_stop;
+            pub_emergency_stop_at_connected_robot.publish(&msg_emergency_stop_at_connected_robot);
         }
     }
 private:
-    void callback_done(const std_msgs::Bool &msg) {
-        interlock_controller::msg_done message{msg.data};
-	while (k_msgq_put(&interlock_controller::msgq_done_amr, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&interlock_controller::msgq_done_amr);
+    void callback_emergency_stop_at_amr(const std_msgs::Bool &msg) {
+        interlock_controller::msg_amr_status message{msg.data};
+	while (k_msgq_put(&interlock_controller::msgq_amr_status, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&interlock_controller::msgq_amr_status);
     }
-    std_msgs::Bool msg_enable_operation;
-    ros::Publisher pub_enable_operation{"/control/enable_operation", &msg_enable_operation};
-    ros::Subscriber<std_msgs::Bool, ros_interlock> sub_done_operation{"/control/done_operation", &ros_interlock::callback_done, this};
+    std_msgs::Bool msg_emergency_stop_at_connected_robot;
+    ros::Publisher pub_emergency_stop_at_connected_robot{"/control/emergency_stop_at_connected_robot", &msg_emergency_stop_at_connected_robot};
+    ros::Subscriber<std_msgs::Bool, ros_interlock> sub_emergency_stop_at_amr{"/control/emergency_stop_at_amr", &ros_interlock::callback_emergency_stop_at_amr, this};
 };  // class ros_interlock
 
 }  // namespace lexxhard
