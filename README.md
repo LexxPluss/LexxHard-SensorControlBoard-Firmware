@@ -18,6 +18,7 @@ $ docker run -it -v $HOME/zephyrproject:/workdir docker.io/zephyrprojectrtos/zep
 ## Setup Zephyr
 
 ```bash
+$ export ZEPHYR_BASE=/workdir/LexxHard-MainBoard-Firmware/zephyr
 $ cd /workdir/LexxHard-MainBoard-Firmware
 $ west init -l lexxpluss_apps
 $ west update
