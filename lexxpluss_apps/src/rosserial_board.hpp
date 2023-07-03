@@ -32,6 +32,7 @@
 #include "std_msgs/ByteMultiArray.h"
 #include "std_msgs/String.h"
 #include "std_msgs/UInt8MultiArray.h"
+#include "std_msgs/UInt8.h"
 #include "lexxauto_msgs/BoardTemperatures.h"
 #include "can_controller.hpp"
 
@@ -46,6 +47,7 @@ public:
         nh.advertise(pub_charge);
         nh.advertise(pub_temperature);
         nh.advertise(pub_power);
+        nh.advertise(pub_charge_delay);
         nh.subscribe(sub_emergency);
         nh.subscribe(sub_poweroff);
         nh.subscribe(sub_lexxhard);
@@ -63,6 +65,7 @@ public:
             publish_charge(message);
             publish_temperature(message);
             publish_power(message);
+            publish_charge_delay(message);
         }
     }
 private:
@@ -104,6 +107,10 @@ private:
         msg_power.data = message.wait_shutdown ? message.shutdown_reason : 0;
         pub_power.publish(&msg_power);
     }
+    void publish_charge_delay(const can_controller::msg_board &message) {
+        msg_charge_delay.data = message.charge_heartbeat_delay;
+        pub_charge_delay.publish(&msg_charge_delay);
+    }
     void callback_emergency(const std_msgs::Bool &req) {
         ros2board.emergency_stop = req.data;
         while (k_msgq_put(&can_controller::msgq_control, &ros2board, K_NO_WAIT) != 0)
@@ -125,6 +132,7 @@ private:
     std_msgs::Bool msg_emergency;
     std_msgs::Byte msg_charge, msg_power;
     lexxauto_msgs::BoardTemperatures msg_temperature;
+    std_msgs::UInt8 msg_charge_delay;
     can_controller::msg_control ros2board{0};
     uint8_t msg_fan_data[1];
     int8_t msg_bumper_data[2];
@@ -134,6 +142,7 @@ private:
     ros::Publisher pub_charge{"/body_control/charge_status", &msg_charge};
     ros::Publisher pub_temperature{"/sensor_set/temperature", &msg_temperature};
     ros::Publisher pub_power{"/body_control/power_state", &msg_power};
+    ros::Publisher pub_charge_delay{"/body_control/charge_heartbeat_delay", &msg_charge_delay};
     ros::Subscriber<std_msgs::Bool, ros_board> sub_emergency{
         "/control/request_emergency_stop", &ros_board::callback_emergency, this
     };
