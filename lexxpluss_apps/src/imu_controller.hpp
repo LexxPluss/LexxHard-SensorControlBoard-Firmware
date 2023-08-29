@@ -35,6 +35,8 @@ struct msg {
     float delta_ang[3];
     float delta_vel[3];
     float temp;
+    float accel_max[3];
+    float accel_min[3];
 } __attribute__((aligned(4)));
 
 void init();

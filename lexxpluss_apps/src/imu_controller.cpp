@@ -29,6 +29,7 @@
 #include <shell/shell.h>
 #include "imu_controller.hpp"
 #include "runaway_detector.hpp"
+#include <limits>
 
 namespace lexxhard::imu_controller {
 
@@ -48,39 +49,113 @@ public:
             message.gyro[i] = 0;
             message.delta_ang[i] = 0;
             message.delta_vel[i] = 0;
+            message.accel_max[i] = std::numeric_limits<float>::min();
+            message.accel_min[i] = std::numeric_limits<float>::max();
         }
         message.temp = 0;
         LOG_INF("IMU controller for LexxPluss board. (%p)", dev);
         return 0;
     }
     void run() {
-        if (!device_is_ready(dev))
+        if (!device_is_ready(dev)){
+            LOG_INF("IMU Not Ready");
             return;
+        }
         while (true) {
-            if (sensor_sample_fetch_chan(dev, SENSOR_CHAN_ALL) == 0) {
-                message.accel[0] = get_sensor_value_as_float(SENSOR_CHAN_ACCEL_X);
-                message.accel[1] = get_sensor_value_as_float(SENSOR_CHAN_ACCEL_Y);
-                message.accel[2] = get_sensor_value_as_float(SENSOR_CHAN_ACCEL_Z);
-                message.gyro[0] = get_sensor_value_as_float(SENSOR_CHAN_GYRO_X);
-                message.gyro[1] = get_sensor_value_as_float(SENSOR_CHAN_GYRO_Y);
-                message.gyro[2] = get_sensor_value_as_float(SENSOR_CHAN_GYRO_Z);
-                message.temp = get_sensor_value_as_float(SENSOR_CHAN_DIE_TEMP);
-                message.delta_ang[0] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START);
-                message.delta_ang[1] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 1);
-                message.delta_ang[2] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 2);
-                message.delta_vel[0] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 3);
-                message.delta_vel[1] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 4);
-                message.delta_vel[2] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 5);
-                while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq);
-                runaway_detector::msg message_runaway{
-                    .accel{message.accel[0], message.accel[1], message.accel[2]},
-                    .gyro{message.gyro[0], message.gyro[1], message.gyro[2]}
-                };
-                while (k_msgq_put(&runaway_detector::msgq, &message_runaway, K_NO_WAIT) != 0)
-                    k_msgq_purge(&runaway_detector::msgq);
+            // if (sensor_sample_fetch_chan(dev, SENSOR_CHAN_ALL) == 0) {
+            //     message.accel[0] = get_sensor_value_as_float(SENSOR_CHAN_ACCEL_X);
+            //     message.accel[1] = get_sensor_value_as_float(SENSOR_CHAN_ACCEL_Y);
+            //     message.accel[2] = get_sensor_value_as_float(SENSOR_CHAN_ACCEL_Z);
+            //     message.gyro[0] = get_sensor_value_as_float(SENSOR_CHAN_GYRO_X);
+            //     message.gyro[1] = get_sensor_value_as_float(SENSOR_CHAN_GYRO_Y);
+            //     message.gyro[2] = get_sensor_value_as_float(SENSOR_CHAN_GYRO_Z);
+            //     message.temp = get_sensor_value_as_float(SENSOR_CHAN_DIE_TEMP);
+            //     message.delta_ang[0] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START);
+            //     message.delta_ang[1] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 1);
+            //     message.delta_ang[2] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 2);
+            //     message.delta_vel[0] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 3);
+            //     message.delta_vel[1] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 4);
+            //     message.delta_vel[2] = get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 5);
+            //     while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+            //         k_msgq_purge(&msgq);
+            //     runaway_detector::msg message_runaway{
+            //         .accel{message.accel[0], message.accel[1], message.accel[2]},
+            //         .gyro{message.gyro[0], message.gyro[1], message.gyro[2]}
+            //     };
+            //     while (k_msgq_put(&runaway_detector::msgq, &message_runaway, K_NO_WAIT) != 0)
+            //         k_msgq_purge(&runaway_detector::msgq);
+            // }
+            // k_msleep(1);
+
+            //Initialize Variables
+            for (int i{0}; i < 3; ++i) {
+                message.accel[i] = 0;
+                message.gyro[i] = 0;
+                message.delta_ang[i] = 0;
+                message.delta_vel[i] = 0;
+                message.accel_max[i] = std::numeric_limits<float>::min();
+                message.accel_min[i] = std::numeric_limits<float>::max();
             }
-            k_msleep(1);
+            message.temp = 0;
+
+            int ave_num = 10; //Base freq 50Hz, if sampling freq is 500Hz(configured in adis16470_configure), ave_num = 10
+
+            for (int ii{0}; ii < ave_num; ii++){
+                if (sensor_sample_fetch_chan(dev, SENSOR_CHAN_ALL) == 0) {
+                    float temp_acc[3] = {get_sensor_value_as_float(SENSOR_CHAN_ACCEL_X), get_sensor_value_as_float(SENSOR_CHAN_ACCEL_Y), get_sensor_value_as_float(SENSOR_CHAN_ACCEL_Z)};
+
+                    message.accel[0] += temp_acc[0];
+                    message.accel[1] += temp_acc[1];
+                    message.accel[2] += temp_acc[2];
+                    message.gyro[0] += get_sensor_value_as_float(SENSOR_CHAN_GYRO_X);
+                    message.gyro[1] += get_sensor_value_as_float(SENSOR_CHAN_GYRO_Y);
+                    message.gyro[2] += get_sensor_value_as_float(SENSOR_CHAN_GYRO_Z);
+                    message.temp += get_sensor_value_as_float(SENSOR_CHAN_DIE_TEMP);
+                    message.delta_ang[0] += get_sensor_value_as_float(SENSOR_CHAN_PRIV_START);
+                    message.delta_ang[1] += get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 1);
+                    message.delta_ang[2] += get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 2);
+                    message.delta_vel[0] += get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 3);
+                    message.delta_vel[1] += get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 4);
+                    message.delta_vel[2] += get_sensor_value_as_float(SENSOR_CHAN_PRIV_START, 5);
+
+                    for(int jj{0}; jj < 3; jj++){
+                        //MAX
+                        if(message.accel_max[jj] < temp_acc[jj]){
+                            message.accel_max[jj] = temp_acc[jj];
+                        }
+                        //MIN
+                        if(message.accel_min[jj] > temp_acc[jj]){
+                            message.accel_min[jj] = temp_acc[jj];
+                        }
+                    }
+
+                    //Last Data for the cycle
+                    if(ii == 9){
+                        message.accel[0]        /= ave_num;
+                        message.accel[1]        /= ave_num;
+                        message.accel[2]        /= ave_num;
+                        message.gyro[0]         /= ave_num;
+                        message.gyro[1]         /= ave_num;
+                        message.gyro[2]         /= ave_num;
+                        message.temp            /= ave_num;
+                        message.delta_ang[0]    /= ave_num;
+                        message.delta_ang[1]    /= ave_num;
+                        message.delta_ang[2]    /= ave_num;
+                        message.delta_vel[0]    /= ave_num;
+                        message.delta_vel[1]    /= ave_num;
+                        message.delta_vel[2]    /= ave_num;
+                        while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+                            k_msgq_purge(&msgq);
+                        runaway_detector::msg message_runaway{
+                            .accel{message.accel[0], message.accel[1], message.accel[2]},
+                            .gyro{message.gyro[0], message.gyro[1], message.gyro[2]}
+                        };
+                        while (k_msgq_put(&runaway_detector::msgq, &message_runaway, K_NO_WAIT) != 0)
+                            k_msgq_purge(&runaway_detector::msgq);
+                    }
+                }
+                k_msleep(1);
+            }
         }
     }
     void info(const shell *shell) const {
@@ -90,12 +165,16 @@ public:
                     "gyro: %f %f %f (deg/s)\n"
                     "vel: %f %f %f (m/s)\n"
                     "ang: %f %f %f (deg)\n"
-                    "temp: %fdeg",
+                    "temp: %fdeg\n"
+                    "accel_max: %f %f %f (m/s/s)\n"
+                    "accel_min: %f %f %f (m/s/s)\n",
                     m.accel[0], m.accel[1], m.accel[2],
                     m.gyro[0], m.gyro[1], m.gyro[2],
                     m.delta_vel[0], m.delta_vel[1], m.delta_vel[2],
                     m.delta_ang[0], m.delta_ang[1], m.delta_ang[2],
-                    m.temp);
+                    m.temp,
+                    m.accel_max[0], m.accel_max[1], m.accel_max[2],
+                    m.accel_min[0], m.accel_min[1], m.accel_min[2]);
     }
 private:
     float get_sensor_value_as_float(enum sensor_channel chan, uint32_t offset) const {

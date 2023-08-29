@@ -52,6 +52,12 @@ public:
             msg.vel.x = message.delta_vel[0];
             msg.vel.y = message.delta_vel[1];
             msg.vel.z = message.delta_vel[2];
+            msg.accel_max.x = message.accel_max[0];
+            msg.accel_max.y = message.accel_max[1];
+            msg.accel_max.z = message.accel_max[2];
+            msg.accel_min.x = message.accel_min[0];
+            msg.accel_min.y = message.accel_min[1];
+            msg.accel_min.z = message.accel_min[2];
             pub.publish(&msg);
         }
     }
