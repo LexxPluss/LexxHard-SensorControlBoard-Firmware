@@ -49,7 +49,7 @@ public:
             message_towing_unit_status.right_sw = message.right_sw;
             message_towing_unit_status.power_good = message.power_good;
             message_towing_unit_status.power_on = message.power_on;
-            pub_towing_unit_status.publish(&msg_towing_unit_status);
+            pub_towing_unit_status.publish(&message_towing_unit_status);
         }
     }
 private:
