@@ -30,14 +30,25 @@
 namespace lexxhard::towing_unit_controller {
 
 struct msg_towing_unit_status {
-    bool left_sw, right_sw, power_good;
-    bool power_on;
+    uint8_t left_sw, right_sw, power_good;
+    uint8_t power_on;
 } __attribute__((aligned(4)));
 
 void init();
 void run(void *p1, void *p2, void *p3);
 extern k_thread thread;
 extern k_msgq msgq_towing_unit_status;
+
+#define LOADED 1
+#define UNLOADED 0
+
+#define V12_OK 1
+#define V12_NG 0
+
+#define V12_ON 1
+#define V12_OFF 0
+
+#define DEVICE_NOT_READY 255
 
 }  // namespace lexxhard::towing_unit_controller
 

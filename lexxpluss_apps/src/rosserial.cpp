@@ -35,6 +35,7 @@
 #include "rosserial_tof.hpp"
 #include "rosserial_uss.hpp"
 #include "rosserial.hpp"
+#include "rosserial_towing_unit.hpp"
 
 namespace lexxhard::rosserial {
 
@@ -53,6 +54,7 @@ public:
         pgv.init(nh);
         tof.init(nh);
         uss.init(nh);
+        // towing_unit.init(nh);
         return 0;
     }
     void run() {
@@ -68,6 +70,7 @@ public:
             pgv.poll();
             tof.poll();
             uss.poll();
+            // towing_unit.poll();
             k_usleep(1);
         }
     }
@@ -83,6 +86,7 @@ private:
     ros_pgv pgv;
     ros_tof tof;
     ros_uss uss;
+    ros_towing_unit towing_unit;
 } impl;
 
 void init()

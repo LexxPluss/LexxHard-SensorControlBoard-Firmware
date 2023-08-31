@@ -31,3 +31,15 @@
 /tools/
 /zephyr/
 /compile_commands.json
+._.vscode
+._.west
+._bootloader
+._build
+._modules
+._ros_msgs
+._tools
+._zephyr
+docker_start.sh
+start.sh
+.vscode/._settings.json
+.vscode/settings.json

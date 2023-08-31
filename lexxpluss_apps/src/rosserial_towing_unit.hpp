@@ -27,8 +27,9 @@
 
 #include <zephyr.h>
 #include "ros/node_handle.h"
-#include "std_msgs/Bool.h"
-#include "towing_unit.hpp"
+#include "std_msgs/UInt8.h"
+#include "std_msgs/UInt8MultiArray.h"
+#include "towing_unit_controller.hpp"
 
 namespace lexxhard {
 
@@ -37,32 +38,32 @@ public:
     void init(ros::NodeHandle &nh) {
         nh.subscribe(sub_towing_unit_power_on);
         nh.advertise(pub_towing_unit_status);
-        message_towing_unit_status.left_sw = false;
-        message_towing_unit_status.right_sw = false;
-        message_towing_unit_status.power_good = false;
-        message_towing_unit_status.power_on = true;
+        msg_pub[0] = UNLOADED;
+        msg_pub[1] = UNLOADED;
+        msg_pub[2] = V12_NG;  
+        msg_pub[3] = V12_ON;
     }
     void poll() {
         //ユニットの値をPUB
         while (k_msgq_get(&towing_unit_controller::msg_towing_unit_status, &message, K_NO_WAIT) == 0) {
-            message_towing_unit_status.left_sw = message.left_sw;
-            message_towing_unit_status.right_sw = message.right_sw;
-            message_towing_unit_status.power_good = message.power_good;
-            message_towing_unit_status.power_on = message.power_on;
-            pub_towing_unit_status.publish(&message_towing_unit_status);
+            msg_pub[0] = message.left_sw;
+            msg_pub[1] = message.right_sw;
+            msg_pub[2] = message.power_good;
+            msg_pub[3] = message.power_on;
+            pub_towing_unit_status.publish(&msg_pub);
         }
     }
 private:
-    void callback_towing_unit_power_on(const std_msgs::Bool &msg) {
+    void callback_towing_unit_power_on(const std_msgs::uint8_t &msg) {
         message_towing_unit_status.power_on = msg.data;
         //SUBで値を受け取ってPUB
         while (k_msgq_put(&towing_unit::msgq_towing_unit_status, &message_towing_unit_status, K_NO_WAIT) != 0){
             k_msgq_purge(&towing_unit::msgq_towing_unit_status);
         }
     }
-    lexxhard::towing_unit_controller::msg_towing_unit_status message_towing_unit_status;
-    ros::Publisher pub_towing_unit_status{"/control/towing_unit_loading_status", &msg_towing_unit_status};
-    ros::Subscriber<std_msgs::Bool, ros_towing_unit> sub_towing_unit_power_on{"/control/towing_unit_power_on", &ros_towing_unit::callback_towing_unit_power_on, this};
+    std_msgs::UInt8MultiArray msg_pub;
+    ros::Publisher pub_towing_unit_status{"/sensor_set/towing_unit", &msg_towing_unit_status};
+    ros::Subscriber<std_msgs::uint8_t, ros_towing_unit> sub_towing_unit_power_on{"/control/towing_unit_power_on", &ros_towing_unit::callback_towing_unit_power_on, this};
 };  // class ros_towing_unit
 
 }  // namespace lexxhard

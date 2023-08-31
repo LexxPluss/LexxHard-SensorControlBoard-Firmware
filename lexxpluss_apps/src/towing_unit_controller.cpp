@@ -40,16 +40,16 @@ class towing_unit_controller_impl {
 public:
     int init() {
         k_msgq_init(&msgq_towing_unit_status, msgq_towing_unit_status_buffer, sizeof (msg_towing_unit_status), 8);
-        is_towing_unit_power_on = false;
+        is_towing_unit_power_on = V12_ON;
         return 0;
     }
     void run() {
         const device *gpioj{device_get_binding("GPIOJ")};
         if (device_is_ready(gpioj)) {
-            gpio_pin_configure(gpioj, 1, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //Switch 1
-            gpio_pin_configure(gpioj, 2, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //Switch 2
-            gpio_pin_configure(gpioj, 3, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //PowerGood +12V
-            gpio_pin_configure(gpioj, 4, GPIO_OUTPUT_LOW    | GPIO_ACTIVE_LOW);   //Power ON Output
+            gpio_pin_configure(gpioj, 1, GPIO_OUTPUT_LOW    | GPIO_ACTIVE_LOW);   //Power ON Output SPRGPIO4
+            gpio_pin_configure(gpioj, 2, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //Switch 1 SPRGPIO5
+            gpio_pin_configure(gpioj, 3, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //Switch 2 SPRGPIO6
+            gpio_pin_configure(gpioj, 4, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //PowerGood +12V SPRGPIO7
         }
 
         while (true) {
@@ -57,24 +57,27 @@ public:
             if (device_is_ready(gpioj)) {
                 /* SW_L */ 
                 if(gpio_pin_get(gpioj, 1) == 0){
-                    is_towing_unit_sw_l_loading = true;  //Loading
+                    is_towing_unit_sw_l_loading = LOADED;  //Loading
                 }else{
-                    is_towing_unit_sw_l_loading = false; //Not Loading
+                    is_towing_unit_sw_l_loading = UNLOADED; //Not Loading
                 }
                 /* SW_R */ 
                 if(gpio_pin_get(gpioj, 2) == 0){
-                    is_towing_unit_sw_r_loading = true;  //Loading
+                    is_towing_unit_sw_r_loading = LOADED;  //Loading
                 }else{
-                    is_towing_unit_sw_r_loading = false; //Not Loading
+                    is_towing_unit_sw_r_loading = UNLOADED; //Not Loading
                 }
                 /* Power Good */ 
                 if(gpio_pin_get(gpioj, 3) == 0){
-                    is_towing_unit_power_good = true;  //+12V is on
+                    is_towing_unit_power_good = V12_OK;  //+12V is on
                 }else{
-                    is_towing_unit_power_good = false; //+12V is off
-                }
-                
-            } 
+                    is_towing_unit_power_good = V12_NG; //+12V is off
+                } 
+            } else{
+                is_towing_unit_sw_l_loading = DEVICE_NOT_READY
+                is_towing_unit_sw_r_loading = DEVICE_NOT_READY
+                is_towing_unit_power_good = DEVICE_NOT_READY
+            }
 
             //Get Power ON Output Status
             if (k_msgq_get(&message_towing_status, &message_towing_status_rx, K_NO_WAIT) == 0) {
@@ -82,12 +85,12 @@ public:
             } 
             /* Power ON */
             if (device_is_ready(gpioj)) {
-                if (is_towing_unit_power_on == true) {
-                    gpio_pin_set(gpioj, 4, 0);  //Set 12V Power ON
+                if (is_towing_unit_power_on == V12_ON) {
+                    gpio_pin_set(gpioj, 4, 0);  //Set 12V Power ON(active low)
                 } else {
                     gpio_pin_set(gpioj, 4, 1);  //Set 12V Power OFF
                 }
-            }
+            } 
 
             /* Set Status to PUB message */
             message_towing_status_tx.left_sw = is_towing_unit_sw_l_loading;
@@ -105,10 +108,10 @@ public:
     }
 private:
     msg_towing_unit_status message_towing_status_rx, message_towing_status_tx;
-    bool is_towing_unit_power_on;
-    bool is_towing_unit_power_good;
-    bool is_towing_unit_sw_l_loading;
-    bool is_towing_unit_sw_r_loading;
+    uint8_t is_towing_unit_power_on;
+    uint8_t is_towing_unit_power_good;
+    uint8_t is_towing_unit_sw_l_loading;
+    uint8_t is_towing_unit_sw_r_loading;
 } impl;
 
 void init()
