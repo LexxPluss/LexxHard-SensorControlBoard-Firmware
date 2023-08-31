@@ -27,7 +27,6 @@
 #include <device.h>
 #include <drivers/gpio.h>
 #include <logging/log.h>
-#include "can_controller.hpp"
 #include "towing_unit_controller.hpp"
 
 namespace lexxhard::towing_unit_controller {
@@ -35,11 +34,13 @@ namespace lexxhard::towing_unit_controller {
 LOG_MODULE_REGISTER(towing_unit);
 
 char __aligned(4) msgq_towing_unit_status_buffer[8 * sizeof (msg_towing_unit_status)];
+char __aligned(4) msgq_towing_unit_power_on_buffer[8 * sizeof (msg_towing_unit_status)];
 
 class towing_unit_controller_impl {
 public:
     int init() {
         k_msgq_init(&msgq_towing_unit_status, msgq_towing_unit_status_buffer, sizeof (msg_towing_unit_status), 8);
+        k_msgq_init(&msgq_towing_unit_power_on, msgq_towing_unit_power_on_buffer, sizeof (msg_towing_unit_status), 8);
         is_towing_unit_power_on = V12_ON;
         return 0;
     }
@@ -74,13 +75,13 @@ public:
                     is_towing_unit_power_good = V12_NG; //+12V is off
                 } 
             } else{
-                is_towing_unit_sw_l_loading = DEVICE_NOT_READY
-                is_towing_unit_sw_r_loading = DEVICE_NOT_READY
-                is_towing_unit_power_good = DEVICE_NOT_READY
+                is_towing_unit_sw_l_loading = DEVICE_NOT_READY;
+                is_towing_unit_sw_r_loading = DEVICE_NOT_READY;
+                is_towing_unit_power_good = DEVICE_NOT_READY;
             }
 
             //Get Power ON Output Status
-            if (k_msgq_get(&message_towing_status, &message_towing_status_rx, K_NO_WAIT) == 0) {
+            if (k_msgq_get(&msgq_towing_unit_power_on, &message_towing_status_rx, K_NO_WAIT) == 0) {
                 is_towing_unit_power_on = message_towing_status_rx.power_on;
             } 
             /* Power ON */
@@ -126,6 +127,7 @@ void run(void *p1, void *p2, void *p3)
 
 k_thread thread;
 k_msgq msgq_towing_unit_status;
+k_msgq msgq_towing_unit_power_on;
 
 }  // namespace lexxhard::towing_unit_controller
 

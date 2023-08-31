@@ -54,7 +54,7 @@ public:
         pgv.init(nh);
         tof.init(nh);
         uss.init(nh);
-        // towing_unit.init(nh);
+        towing_unit.init(nh);
         return 0;
     }
     void run() {
@@ -70,7 +70,7 @@ public:
             pgv.poll();
             tof.poll();
             uss.poll();
-            // towing_unit.poll();
+            towing_unit.poll();
             k_usleep(1);
         }
     }

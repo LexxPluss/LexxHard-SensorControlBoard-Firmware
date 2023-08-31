@@ -39,6 +39,7 @@
 #include "runaway_detector.hpp"
 #include "tof_controller.hpp"
 #include "uss_controller.hpp"
+#include "towing_unit_controller.hpp"
 
 namespace {
 
@@ -56,6 +57,7 @@ K_THREAD_STACK_DEFINE(rosserial_service_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(tof_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(towing_unit_controller_stack, 2048);
 
 #define RUN(name, prio) \
     k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
@@ -91,6 +93,7 @@ void main()
     lexxhard::runaway_detector::init();
     lexxhard::tof_controller::init();
     lexxhard::uss_controller::init();
+    lexxhard::towing_unit_controller::init();
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
     RUN(can_controller, 4);
@@ -102,6 +105,7 @@ void main()
     RUN(pgv_controller, 1);
     RUN(tof_controller, 2);
     RUN(uss_controller, 2);
+    RUN(towing_unit_controller, 2);
     RUN(runaway_detector, 4);
     RUN(rosserial, 5); // The rosserial thread will be started last.
     RUN(rosserial_service, 6); // The rosserial thread will be started last.
