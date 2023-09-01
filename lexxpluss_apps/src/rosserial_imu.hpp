@@ -36,10 +36,12 @@ class ros_imu {
 public:
     void init(ros::NodeHandle &nh) {
         nh.advertise(pub);
+        nh.advertise(pub_min_max);
     }
     void poll() {
         imu_controller::msg message;
         while (k_msgq_get(&imu_controller::msgq, &message, K_NO_WAIT) == 0) {
+            //NORMAL Message
             msg.gyro.x = message.gyro[0];
             msg.gyro.y = message.gyro[1];
             msg.gyro.z = message.gyro[2];
@@ -52,18 +54,27 @@ public:
             msg.vel.x = message.delta_vel[0];
             msg.vel.y = message.delta_vel[1];
             msg.vel.z = message.delta_vel[2];
-            msg.accel_max.x = message.accel_max[0];
-            msg.accel_max.y = message.accel_max[1];
-            msg.accel_max.z = message.accel_max[2];
-            msg.accel_min.x = message.accel_min[0];
-            msg.accel_min.y = message.accel_min[1];
-            msg.accel_min.z = message.accel_min[2];
+            //ACCEL MIN/MAX
+            msg_min_max.gyro.x = message.accel_max[0];
+            msg_min_max.gyro.y = message.accel_max[1];
+            msg_min_max.gyro.z = message.accel_max[2];
+            msg_min_max.accel.x = message.accel_min[0];
+            msg_min_max.accel.y = message.accel_min[1];
+            msg_min_max.accel.z = message.accel_min[2];
+            msg_min_max.ang.x = 0;
+            msg_min_max.ang.y = 0;
+            msg_min_max.ang.z = 0;
+            msg_min_max.vel.x = 0;
+            msg_min_max.vel.y = 0;
+            msg_min_max.vel.z = 0;
             pub.publish(&msg);
+            pub.publish(&msg_min_max);
         }
     }
 private:
-    lexxauto_msgs::Imu msg;
+    lexxauto_msgs::Imu msg, msg_min_max;
     ros::Publisher pub{"/sensor_set/imu", &msg};
+    ros::Publisher pub_min_max{"/sensor_set/imu_min_max", &msg_min_max};
 };
 
 }
