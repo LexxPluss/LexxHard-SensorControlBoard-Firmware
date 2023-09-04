@@ -154,7 +154,7 @@ public:
                             k_msgq_purge(&runaway_detector::msgq);
                     }
                 }
-                k_msleep(1);
+                k_msleep(2); //sampling freq is 500Hz = 2ms
             }
         }
     }
