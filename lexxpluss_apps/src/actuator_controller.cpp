@@ -77,7 +77,7 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
         __HAL_RCC_TIM1_CLK_ENABLE();
         __HAL_RCC_GPIOE_CLK_ENABLE();
         GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_11;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_PULLUP;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
         GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
@@ -86,7 +86,7 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
         __HAL_RCC_TIM3_CLK_ENABLE();
         __HAL_RCC_GPIOC_CLK_ENABLE();
         GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_PULLUP;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
         GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
@@ -95,7 +95,7 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
         __HAL_RCC_TIM4_CLK_ENABLE();
         __HAL_RCC_GPIOD_CLK_ENABLE();
         GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_PULLUP;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
         GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
