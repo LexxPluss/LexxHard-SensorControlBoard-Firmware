@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, LexxPluss Inc.
+ * Copyright (c) 2023-2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,12 +23,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <device.h>
-#include <drivers/can.h>
-#include <drivers/gpio.h>
-#include <logging/log.h>
-#include <shell/shell.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include "interlock_controller.hpp"
 #include "led_controller.hpp"
 #include "misc_controller.hpp"
@@ -42,9 +42,9 @@ char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
 char __aligned(4) msgq_board_buffer[8 * sizeof (msg_board)];
 char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
-CAN_DEFINE_MSGQ(msgq_can_bmu, 16);
-CAN_DEFINE_MSGQ(msgq_can_board, 4);
-CAN_DEFINE_MSGQ(msgq_can_log, 8);
+CAN_MSGQ_DEFINE(msgq_can_bmu, 16);
+CAN_MSGQ_DEFINE(msgq_can_board, 4);
+CAN_MSGQ_DEFINE(msgq_can_log, 8);
 
 class log_printer {
 public:
@@ -53,7 +53,7 @@ public:
             buffer[index++] = c;
         if (c == '\n' || index >= 80) {
             buffer[index] = '\0';
-            LOG_INF("%s", log_strdup(buffer));
+            LOG_INF("%s", buffer);
             index = 0;
         }
     }
@@ -71,7 +71,8 @@ public:
         dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
             return -1;
-        can_configure(dev, CAN_NORMAL_MODE, 500000);
+        can_set_bitrate(dev, 500000);
+        can_set_mode(dev, CAN_MODE_NORMAL);
         return 0;
     }
     void run() {
@@ -84,7 +85,7 @@ public:
         int heartbeat_led{1};
         while (true) {
             bool handled{false};
-            zcan_frame frame;
+            can_frame frame;
             if (k_msgq_get(&msgq_can_bmu, &frame, K_NO_WAIT) == 0) {
                 if (handler_bmu(frame)) {
                     while (k_msgq_put(&msgq_bmu, &bmu2ros, K_NO_WAIT) != 0)
@@ -203,32 +204,23 @@ public:
     }
 private:
     void setup_can_filter() const {
-        static const zcan_filter filter_bmu{
+        static const can_filter filter_bmu{
             .id{0x100},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7c0},
-            .rtr_mask{1}
+            .mask{0x7c0}
         };
-        static const zcan_filter filter_board{
+        static const can_filter filter_board{
             .id{0x200},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7f8},
-            .rtr_mask{1}
+            .mask{0x7f8}
         };
-        static const zcan_filter filter_log{
+        static const can_filter filter_log{
             .id{0x300},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{CAN_STD_ID_MASK},
-            .rtr_mask{1}
+            .mask{CAN_STD_ID_MASK}
         };
-        can_attach_msgq(dev, &msgq_can_bmu, &filter_bmu);
-        can_attach_msgq(dev, &msgq_can_board, &filter_board);
-        can_attach_msgq(dev, &msgq_can_log, &filter_log);
+        can_add_rx_filter_msgq(dev, &msgq_can_bmu, &filter_bmu);
+        can_add_rx_filter_msgq(dev, &msgq_can_board, &filter_board);
+        can_add_rx_filter_msgq(dev, &msgq_can_log, &filter_log);
     }
-    bool handler_bmu(zcan_frame &frame) {
+    bool handler_bmu(can_frame &frame) {
         bool result{false};
         if (frame.id == 0x100) {
             bmu2ros.mod_status1 = frame.data[0];
@@ -281,7 +273,7 @@ private:
         }
         return result;
     }
-    void handler_board(zcan_frame &frame) {
+    void handler_board(can_frame &frame) {
         if (frame.id == 0x200) {
             uint8_t prev_state{board2ros.state};
             bool prev_wait_shutdown{board2ros.wait_shutdown};
@@ -343,7 +335,7 @@ private:
             board2ros.charge_temperature_error = frame.data[4];
         }
     }
-    void handler_log(zcan_frame &frame) {
+    void handler_log(can_frame &frame) {
         for (uint32_t i{0}; i < frame.dlc; ++i) {
             uint8_t data{frame.data[i]};
             if (data == 0)
@@ -358,10 +350,8 @@ private:
             if (i > 75.0f)
                 actuator_overheat = true;
         }
-        zcan_frame frame{
+        can_frame frame{
             .id{0x201},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
             .dlc{6},
             .data{
                 ros2board.emergency_stop,

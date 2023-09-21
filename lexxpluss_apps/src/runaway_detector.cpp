@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2022-2023, LexxPluss Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -23,8 +23,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <cstdio>
 #include <cmath>
 #include <queue>
@@ -41,7 +41,7 @@ public:
         bool detected{yaw_error_detected(vz, current_cycle)};
         if (!last_detected && detected) {
             snprintf(log_buffer, sizeof log_buffer, "Emergency! ACC:%4.2f VEL:%4.2f DELTA:%4.2f\n", avg_yaw_accel, avg_yaw_velocity, sum_yaw_delta_theta);
-            LOG_ERR("%s", log_strdup(log_buffer));
+            LOG_ERR("%s", log_buffer);
             // @@ do something. (emergency stop, etc.)
         }
         last_detected = detected;

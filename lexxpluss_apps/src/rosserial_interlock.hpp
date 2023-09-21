@@ -25,7 +25,7 @@
 
 #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
 #include "ros/node_handle.h"
 #include "std_msgs/Bool.h"
 #include "interlock_controller.hpp"

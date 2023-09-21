@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2022-2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,10 +23,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <devicetree.h>
-#include <storage/flash_map.h>
-#include <sys/reboot.h>
+#include <zephyr/kernel.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/storage/flash_map.h>
+#include <zephyr/sys/reboot.h>
 #include "firmware_updater.hpp"
 
 namespace lexxhard::firmware_updater {
@@ -102,11 +102,11 @@ private:
         if (fa != nullptr)
             flash_area_reset();
         dfu_start_cycle = k_cycle_get_32();
-        if (!DT_NODE_EXISTS(DT_NODELABEL(image_0_secondary_partition))) {
+        if (!DT_NODE_EXISTS(DT_NODELABEL(slot1_partition))) {
             respond(RESP::ERR_PARTITION);
             return;
         }
-        if (flash_area_open(FLASH_AREA_ID(image_1), &fa) != 0) {
+        if (flash_area_open(FIXED_PARTITION_ID(slot1_partition), &fa) != 0) {
             respond(RESP::ERR_FLASH_AREA);
             return;
         }

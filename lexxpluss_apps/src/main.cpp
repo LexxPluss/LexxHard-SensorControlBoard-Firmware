@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2022-2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,8 +23,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <drivers/gpio.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
 #include "actuator_controller.hpp"
 #include "adc_reader.hpp"
 #include "can_controller.hpp"
@@ -74,7 +74,7 @@ void reset_usb_hub()
 
 }
 
-void main()
+int main()
 {
     reset_usb_hub();
     lexxhard::actuator_controller::init();
@@ -116,6 +116,7 @@ void main()
         }
         k_msleep(1000);
     }
+    return 0;
 }
 
 // vim: set expandtab shiftwidth=4:

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2022-2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,11 +23,11 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <device.h>
-#include <devicetree.h>
-#include <drivers/led_strip.h>
-#include <logging/log.h>
-#include <shell/shell.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/led_strip.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include <algorithm>
 #include <cstdlib>
 #include "can_controller.hpp"

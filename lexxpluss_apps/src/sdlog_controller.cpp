@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2022-2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,11 +23,11 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <disk/disk_access.h>
-#include <fs/fs.h>
+#include <zephyr/kernel.h>
+#include <zephyr/storage/disk_access.h>
+#include <zephyr/fs/fs.h>
+#include <zephyr/logging/log.h>
 #include <ff.h>
-#include <logging/log.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
