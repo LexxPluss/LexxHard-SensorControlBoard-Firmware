@@ -98,7 +98,8 @@ public:
             }
             message.temp = 0;
 
-            int ave_num = 10; //Base freq 50Hz, if sampling freq is 500Hz(configured in adis16470_configure), ave_num = 10
+            int ave_num = 5; //Base freq 50Hz, if sampling freq is 500Hz(configured in adis16470_configure), ave_num = 10
+            int delay_ms = int(2 * ave_num) //2ms(500Hz) * ave_num = delay_ms
 
             for (int ii{0}; ii < ave_num; ii++){
                 if (sensor_sample_fetch_chan(dev, SENSOR_CHAN_ALL) == 0) {
@@ -130,7 +131,7 @@ public:
                     }
 
                     //Last Data for the cycle
-                    if(ii == 9){
+                    if(ii == (ave_num - 1)){
                         message.accel[0]        /= ave_num;
                         message.accel[1]        /= ave_num;
                         message.accel[2]        /= ave_num;
@@ -154,7 +155,7 @@ public:
                             k_msgq_purge(&runaway_detector::msgq);
                     }
                 }
-                k_msleep(2); //sampling freq is 500Hz = 2ms
+                k_msleep(delay_ms); //sampling freq is 500Hz = 2ms
             }
         }
     }
