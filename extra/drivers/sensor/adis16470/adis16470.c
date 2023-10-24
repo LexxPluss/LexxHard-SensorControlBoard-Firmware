@@ -164,6 +164,7 @@ static int adis16470_trigger_init(const struct device *dev)
         LOG_ERR("gpio_int gpio not ready");
         return -ENODEV;
     }
+    k_sem_init(&data->cb_data.sem, 0, 1);
     gpio_pin_configure_dt(&cfg->gpio_int, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     gpio_init_callback(&data->cb_data.gpio_cb, adis16470_gpio_callback, BIT(cfg->gpio_int.pin));
     int err = gpio_add_callback(cfg->gpio_int.port, &data->cb_data.gpio_cb);

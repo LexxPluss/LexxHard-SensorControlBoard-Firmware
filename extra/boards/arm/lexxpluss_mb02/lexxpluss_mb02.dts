@@ -160,6 +160,7 @@
 		compatible = "adi,adis16470";
 		reg = <0>;
 		spi-max-frequency = <2000000>;
+		int-gpios = <&gpiof 2 0>;
 	};
 };
 
