@@ -115,10 +115,10 @@ SHELL_CMD_REGISTER(uss, &sub, "USS commands", NULL);
 void init()
 {
     k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-    fetcher[0].init("MB1604_0", "MB1604_1");
-    fetcher[1].init("MB1604_2", nullptr);
-    fetcher[2].init("MB1604_3", nullptr);
-    fetcher[3].init("MB1604_4", nullptr);
+    fetcher[0].init("mb1604-0", "mb1604-1");
+    fetcher[1].init("mb1604-2", nullptr);
+    fetcher[2].init("mb1604-3", nullptr);
+    fetcher[3].init("mb1604-4", nullptr);
 }
 
 void run(void *p1, void *p2, void *p3)

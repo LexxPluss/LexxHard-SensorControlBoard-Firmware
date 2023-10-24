@@ -46,9 +46,9 @@ public:
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
         ring_buf_init(&rxbuf.rb, sizeof rxbuf.buf, rxbuf.buf);
         ring_buf_init(&txbuf.rb, sizeof txbuf.buf, txbuf.buf);
-        dev_485 = device_get_binding("UART_4");
-        dev_en = device_get_binding("GPIOH");
-        dev_en_n = device_get_binding("GPIOA");
+        dev_485 = device_get_binding("serial@40004c00");
+        dev_en = device_get_binding("gpio@40021C00");
+        dev_en_n = device_get_binding("gpio@40020000");
         if (!device_is_ready(dev_485) ||
             !device_is_ready(dev_en) ||
             !device_is_ready(dev_en_n))
@@ -89,7 +89,7 @@ public:
             uint8_t buf[8];
             recv(buf, sizeof buf);
         }
-        const device *gpiog{device_get_binding("GPIOG")};
+        const device *gpiog{device_get_binding("gpio@40021800")};
         if (device_is_ready(gpiog))
             gpio_pin_configure(gpiog, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         int heartbeat_led{1};

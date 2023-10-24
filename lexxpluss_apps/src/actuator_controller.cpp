@@ -201,19 +201,19 @@ public:
     int init(POS pos) {
         switch (pos) {
         case POS::LEFT:
-            dev[0] = device_get_binding("PWM_8");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm8));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::CENTER:
-            dev[0] = device_get_binding("PWM_5");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm5));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::RIGHT:
-            dev[0] = device_get_binding("PWM_2");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm2));
             dev[1] = dev[0];
             pin[0] = 3;
             pin[1] = 4;
@@ -316,15 +316,15 @@ public:
         switch (pos) {
         case POS::LEFT:
             current_adc = adc_reader::ACTUATOR_0;
-            fail_checker.init("GPIOG", 8);
+            fail_checker.init("gpio@40021800", 8);
             break;
         case POS::CENTER:
             current_adc = adc_reader::ACTUATOR_1;
-            fail_checker.init("GPIOD", 10);
+            fail_checker.init("gpio@40020C00", 10);
             break;
         case POS::RIGHT:
             current_adc = adc_reader::ACTUATOR_2;
-            fail_checker.init("GPIOE", 10);
+            fail_checker.init("gpio@40021000", 10);
             break;
         }
         if (!fail_checker.ready())
@@ -417,7 +417,7 @@ public:
         return 0;
     }
     void run() {
-        const device *dev_enable{device_get_binding("GPIOJ")};
+        const device *dev_enable{device_get_binding("gpio@40022400")};
         if (device_is_ready(dev_enable))
             gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         auto reset_actuator = [&]() {
@@ -446,7 +446,7 @@ public:
             }
         };
         reset_actuator();
-        const device *gpiog{device_get_binding("GPIOG")};
+        const device *gpiog{device_get_binding("gpio@40021800")};
         if (device_is_ready(gpiog))
             gpio_pin_configure(gpiog, 5, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         int heartbeat_led{1};

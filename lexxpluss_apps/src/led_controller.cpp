@@ -99,10 +99,10 @@ class led_controller_impl {
 public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-        dev[LED_LEFT] = device_get_binding("WS2812_0");
-        dev[LED_RIGHT] = device_get_binding("WS2812_1");
-        dev[2] = device_get_binding("WS2812_3");
-        dev[3] = device_get_binding("WS2812_2");
+        dev[LED_LEFT] = device_get_binding("ws2812@0");
+        dev[LED_RIGHT] = device_get_binding("ws2812@1");
+        dev[2] = device_get_binding("ws2812@3");
+        dev[3] = device_get_binding("ws2812@2");
         if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]) ||
             !device_is_ready(dev[2]) || !device_is_ready(dev[3]))
             return -1;

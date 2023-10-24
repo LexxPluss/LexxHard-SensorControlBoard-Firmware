@@ -68,7 +68,7 @@ public:
         k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
         k_msgq_init(&msgq_board, msgq_board_buffer, sizeof (msg_board), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        dev = device_get_binding("CAN_2");
+        dev = device_get_binding("can@40006800");
         if (!device_is_ready(dev))
             return -1;
         can_set_bitrate(dev, 500000);
@@ -78,7 +78,7 @@ public:
     void run() {
         if (!device_is_ready(dev))
             return;
-        const device *gpiog{device_get_binding("GPIOG")};
+        const device *gpiog{device_get_binding("gpio@40021800")};
         if (device_is_ready(gpiog))
             gpio_pin_configure(gpiog, 6, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         setup_can_filter();

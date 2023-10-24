@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2022-2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,7 +42,7 @@ class {
 public:
     int init() {
         nh.getHardware()->set_baudrate(921600);
-        nh.initNode(const_cast<char*>("UART_6"));
+        nh.initNode(const_cast<char*>("serial@40011400"));
         actuator.init(nh);
         bmu.init(nh);
         board.init(nh);

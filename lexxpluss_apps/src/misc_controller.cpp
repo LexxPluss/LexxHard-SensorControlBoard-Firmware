@@ -36,7 +36,7 @@ LOG_MODULE_REGISTER(misc);
 class impl {
 public:
     int init() {
-        dev = device_get_binding("I2C_4");
+        dev = device_get_binding("i2c@40006000");
         if (!device_is_ready(dev))
             return -1;
         for (int i{0}; i < TEMPERATURE_NUM; ++i) {

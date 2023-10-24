@@ -49,7 +49,7 @@ public:
         return 0;
     }
     void run() {
-        const device *gpioc{device_get_binding("GPIOC")};
+        const device *gpioc{device_get_binding("gpio@40020800")};
         if (device_is_ready(gpioc)) {
             gpio_pin_configure(gpioc, 4, GPIO_INPUT      | GPIO_ACTIVE_HIGH);
             gpio_pin_configure(gpioc, 5, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);

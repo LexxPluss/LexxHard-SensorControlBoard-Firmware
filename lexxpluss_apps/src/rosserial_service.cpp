@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2022-2023, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,7 +32,7 @@ namespace lexxhard::rosserial_service {
 class {
 public:
     int init() {
-        nh.initNode(const_cast<char*>("UART_2"));
+        nh.initNode(const_cast<char*>("serial@40004400"));
         actuator_service.init(nh);
         return 0;
     }
