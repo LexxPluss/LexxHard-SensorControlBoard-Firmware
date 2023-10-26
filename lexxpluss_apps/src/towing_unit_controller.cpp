@@ -41,10 +41,7 @@ public:
     int init() {
         k_msgq_init(&msgq_towing_unit_status, msgq_towing_unit_status_buffer, sizeof (msg_towing_unit_status), 8);
         k_msgq_init(&msgq_towing_unit_power_on, msgq_towing_unit_power_on_buffer, sizeof (msg_towing_unit_status), 8);
-        is_towing_unit_power_on = V12_ON;
-        return 0;
-    }
-    void run() {
+
         const device *gpioj{device_get_binding("GPIOJ")};
         if (device_is_ready(gpioj)) {
             gpio_pin_configure(gpioj, 1, GPIO_OUTPUT_LOW    | GPIO_ACTIVE_LOW);   //Power ON Output SPRGPIO4
@@ -53,23 +50,29 @@ public:
             gpio_pin_configure(gpioj, 4, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //PowerGood +12V SPRGPIO7
         }
 
+        gpio_pin_set(gpioj, 1, 0);  //Set 12V Power ON(active low)
+        is_towing_unit_power_on = V12_ON;
+
+        return 0;
+    }
+    void run() {
         while (true) {
             //Get Switch & Power Good Status
             if (device_is_ready(gpioj)) {
                 /* SW_L */ 
-                if(gpio_pin_get(gpioj, 1) == 0){
+                if(gpio_pin_get(gpioj, 2) == 0){
                     is_towing_unit_sw_l_loading = LOADED;  //Loading
                 }else{
                     is_towing_unit_sw_l_loading = UNLOADED; //Not Loading
                 }
                 /* SW_R */ 
-                if(gpio_pin_get(gpioj, 2) == 0){
+                if(gpio_pin_get(gpioj, 3) == 0){
                     is_towing_unit_sw_r_loading = LOADED;  //Loading
                 }else{
                     is_towing_unit_sw_r_loading = UNLOADED; //Not Loading
                 }
                 /* Power Good */ 
-                if(gpio_pin_get(gpioj, 3) == 0){
+                if(gpio_pin_get(gpioj, 4) == 0){
                     is_towing_unit_power_good = V12_OK;  //+12V is on
                 }else{
                     is_towing_unit_power_good = V12_NG; //+12V is off
@@ -87,9 +90,9 @@ public:
             /* Power ON */
             if (device_is_ready(gpioj)) {
                 if (is_towing_unit_power_on == V12_ON) {
-                    gpio_pin_set(gpioj, 4, 0);  //Set 12V Power ON(active low)
+                    gpio_pin_set(gpioj, 1, 0);  //Set 12V Power ON(active low)
                 } else {
-                    gpio_pin_set(gpioj, 4, 1);  //Set 12V Power OFF
+                    gpio_pin_set(gpioj, 1, 1);  //Set 12V Power OFF
                 }
             } 
 
