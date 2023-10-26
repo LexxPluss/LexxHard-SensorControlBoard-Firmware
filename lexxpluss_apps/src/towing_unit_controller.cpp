@@ -27,6 +27,7 @@
 #include <device.h>
 #include <drivers/gpio.h>
 #include <logging/log.h>
+#include <shell/shell.h>
 #include "towing_unit_controller.hpp"
 
 namespace lexxhard::towing_unit_controller {
@@ -44,18 +45,28 @@ public:
 
         const device *gpioj{device_get_binding("GPIOJ")};
         if (device_is_ready(gpioj)) {
-            gpio_pin_configure(gpioj, 1, GPIO_OUTPUT_LOW    | GPIO_ACTIVE_LOW);   //Power ON Output SPRGPIO4
-            gpio_pin_configure(gpioj, 2, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //Switch 1 SPRGPIO5
-            gpio_pin_configure(gpioj, 3, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //Switch 2 SPRGPIO6
-            gpio_pin_configure(gpioj, 4, GPIO_INPUT         | GPIO_ACTIVE_LOW);   //PowerGood +12V SPRGPIO7
+            gpio_pin_configure(gpioj, 1, GPIO_OUTPUT);  //Power ON Output SPRGPIO4
+            gpio_pin_configure(gpioj, 2, GPIO_INPUT);   //Switch 1 SPRGPIO5
+            gpio_pin_configure(gpioj, 3, GPIO_INPUT);   //Switch 2 SPRGPIO6
+            gpio_pin_configure(gpioj, 4, GPIO_INPUT);   //PowerGood +12V SPRGPIO7
         }
 
         gpio_pin_set(gpioj, 1, 0);  //Set 12V Power ON(active low)
         is_towing_unit_power_on = V12_ON;
 
+        // Debug LED5 is ON
+        const device *gpiog{device_get_binding("GPIOG")};
+        if (device_is_ready(gpiog)) {
+            gpio_pin_configure(gpiog, 3, GPIO_OUTPUT_HIGH    | GPIO_ACTIVE_HIGH);
+        }
+
+        LOG_INF("Towing Unit Init Done");
+
         return 0;
     }
     void run() {
+        const device *gpioj{device_get_binding("GPIOJ")};
+        
         while (true) {
             //Get Switch & Power Good Status
             if (device_is_ready(gpioj)) {
