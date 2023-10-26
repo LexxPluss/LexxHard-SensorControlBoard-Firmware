@@ -46,9 +46,9 @@ public:
         const device *gpioj{device_get_binding("GPIOJ")};
         if (device_is_ready(gpioj)) {
             gpio_pin_configure(gpioj, 1, GPIO_OUTPUT);  //Power ON Output SPRGPIO4
-            gpio_pin_configure(gpioj, 2, GPIO_INPUT);   //Switch 1 SPRGPIO5
-            gpio_pin_configure(gpioj, 3, GPIO_INPUT);   //Switch 2 SPRGPIO6
-            gpio_pin_configure(gpioj, 4, GPIO_INPUT);   //PowerGood +12V SPRGPIO7
+            gpio_pin_configure(gpioj, 2, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);   //Switch 1 SPRGPIO5
+            gpio_pin_configure(gpioj, 3, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);   //Switch 2 SPRGPIO6
+            gpio_pin_configure(gpioj, 4, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);   //PowerGood +12V SPRGPIO7
         }
 
         gpio_pin_set(gpioj, 1, 0);  //Set 12V Power ON(active low)
