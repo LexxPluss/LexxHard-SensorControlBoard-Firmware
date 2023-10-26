@@ -57,7 +57,7 @@ public:
         // Debug LED5 is ON
         const device *gpiog{device_get_binding("GPIOG")};
         if (device_is_ready(gpiog)) {
-            gpio_pin_configure(gpiog, 3, GPIO_OUTPUT_HIGH    | GPIO_ACTIVE_HIGH);
+            gpio_pin_configure(gpiog, 3, GPIO_OUTPUT_HIGH);
         }
 
         LOG_INF("Towing Unit Init Done");
@@ -65,10 +65,19 @@ public:
         return 0;
     }
     void run() {
-        const device *gpioj{device_get_binding("GPIOJ")};
+        LOG_INF("Towing Unit run() started");
         
         while (true) {
             //Get Switch & Power Good Status
+            const device *gpioj{device_get_binding("GPIOJ")};
+
+            if (device_is_ready(gpioj)) {
+                if (is_towing_unit_power_on == V12_ON) {
+                    gpio_pin_set(gpioj, 1, 0);  //Set 12V Power ON(active low)
+                } else {
+                    gpio_pin_set(gpioj, 1, 1);  //Set 12V Power OFF
+                }
+            }
             if (device_is_ready(gpioj)) {
                 /* SW_L */ 
                 if(gpio_pin_get(gpioj, 2) == 0){
@@ -76,35 +85,27 @@ public:
                 }else{
                     is_towing_unit_sw_l_loading = UNLOADED; //Not Loading
                 }
+            }
+            if (device_is_ready(gpioj)) {
                 /* SW_R */ 
                 if(gpio_pin_get(gpioj, 3) == 0){
                     is_towing_unit_sw_r_loading = LOADED;  //Loading
                 }else{
                     is_towing_unit_sw_r_loading = UNLOADED; //Not Loading
                 }
+            }
+            if (device_is_ready(gpioj)) {
                 /* Power Good */ 
                 if(gpio_pin_get(gpioj, 4) == 0){
                     is_towing_unit_power_good = V12_OK;  //+12V is on
                 }else{
                     is_towing_unit_power_good = V12_NG; //+12V is off
                 } 
-            } else{
-                is_towing_unit_sw_l_loading = DEVICE_NOT_READY;
-                is_towing_unit_sw_r_loading = DEVICE_NOT_READY;
-                is_towing_unit_power_good = DEVICE_NOT_READY;
             }
 
             //Get Power ON Output Status
             if (k_msgq_get(&msgq_towing_unit_power_on, &message_towing_status_rx, K_NO_WAIT) == 0) {
                 is_towing_unit_power_on = message_towing_status_rx.power_on;
-            } 
-            /* Power ON */
-            if (device_is_ready(gpioj)) {
-                if (is_towing_unit_power_on == V12_ON) {
-                    gpio_pin_set(gpioj, 1, 0);  //Set 12V Power ON(active low)
-                } else {
-                    gpio_pin_set(gpioj, 1, 1);  //Set 12V Power OFF
-                }
             } 
 
             /* Set Status to PUB message */
@@ -121,6 +122,20 @@ public:
             k_msleep(200);
         }
     }
+    void cmd_v12_on(const shell *shell) {
+        is_towing_unit_power_on = V12_ON;
+        shell_print(shell, "is_towing_unit_power_on[1:ON 0:OFF]: %d", is_towing_unit_power_on);
+    }
+    void cmd_v12_off(const shell *shell) {
+        is_towing_unit_power_on = V12_OFF;
+        shell_print(shell, "is_towing_unit_power_on[1:ON 0:OFF]: %d", is_towing_unit_power_on);
+    }
+    void cmd_info(const shell *shell) {
+        shell_print(shell,
+                        "is_towing_unit_power_on[1:ON 0:OFF]: %d\nis_towing_unit_power_good[1:GOOD 0:NG]: %d\nis_towing_unit_sw_l_loading[1:LOADED 0:NOTLOADED]: %d\nis_towing_unit_sw_r_loading[[1:LOADED 0:NOTLOADED]]: %d",
+                        is_towing_unit_power_on, is_towing_unit_power_good, is_towing_unit_sw_l_loading, is_towing_unit_sw_r_loading);
+    }
+    
 private:
     msg_towing_unit_status message_towing_status_rx, message_towing_status_tx;
     uint8_t is_towing_unit_power_on;
@@ -128,6 +143,27 @@ private:
     uint8_t is_towing_unit_sw_l_loading;
     uint8_t is_towing_unit_sw_r_loading;
 } impl;
+
+void v12_on(const shell *shell, size_t argc, char **argv) 
+{
+    impl.cmd_v12_on(shell);
+}
+void v12_off(const shell *shell, size_t argc, char **argv)
+{
+    impl.cmd_v12_off(shell);
+}
+void info(const shell *shell, size_t argc, char **argv)
+{
+    impl.cmd_info(shell);
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(v12_on, NULL,     "Wani v12_on command", v12_on),
+    SHELL_CMD(v12_off, NULL,    "Wani v12_off command", v12_off),
+    SHELL_CMD(info, NULL,       "Wani information", info),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(wani, &sub, "Wani commands", NULL);
 
 void init()
 {
