@@ -1,15 +1,15 @@
 # Copyright (c) 2022, LexxPluss Inc.
 # All rights reserved.
-#
+# 
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
-#
+# 
 # 1. Redistributions of source code must retain the above copyright notice,
 #    this list of conditions and the following disclaimer.
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 #    this list of conditions and the following disclaimer in the documentation
 #    and/or other materials provided with the distribution.
-#
+# 
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
 # WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -21,14 +21,31 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-manifest:
-  projects:
-    - name: zephyr
-      url: https://github.com/zephyrproject-rtos/zephyr.git
-      revision: refs/tags/v2.7.5
-      import: true
-    - name: ros_msgs
-      url: https://github.com/LexxPluss/ros_msgs.git
-      revision: main
-  self:
-    path: lexxpluss_apps
+CONFIG_SOC_SERIES_STM32F7X=y
+CONFIG_SOC_STM32F769XX=y
+
+CONFIG_ARM_MPU=y
+
+CONFIG_HW_STACK_PROTECTION=y
+
+CONFIG_SERIAL=y
+
+CONFIG_CONSOLE=y
+CONFIG_UART_CONSOLE=y
+
+CONFIG_PINMUX=y
+
+CONFIG_GPIO=y
+CONFIG_SPI=y
+CONFIG_ADC=y
+CONFIG_PWM=y
+CONFIG_CAN=y
+CONFIG_I2C=y
+
+CONFIG_CLOCK_CONTROL=y
+
+CONFIG_LOG=y
+
+CONFIG_LED_STRIP=y
+CONFIG_WS2812_STRIP=y
+CONFIG_SENSOR=y
