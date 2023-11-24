@@ -53,6 +53,7 @@ public:
         nh.subscribe(sub_emergency);
         nh.subscribe(sub_poweroff);
         nh.subscribe(sub_lexxhard);
+        nh.subscribe(sub_messenger);
         msg_fan.data = msg_fan_data;
         msg_fan.data_length = sizeof msg_fan_data / sizeof msg_fan_data[0];
         msg_bumper.data = msg_bumper_data;
@@ -134,6 +135,10 @@ private:
         while (k_msgq_put(&can_controller::msgq_control, &ros2board, K_NO_WAIT) != 0)
             k_msgq_purge(&can_controller::msgq_control);
     }
+    void callback_messenger(const std_msgs::Bool &req) {
+        while (k_msgq_put(&can_controller::msgq_control, &ros2board, K_NO_WAIT) != 0)
+            k_msgq_purge(&can_controller::msgq_control);
+    }
     std_msgs::UInt8MultiArray msg_fan;
     std_msgs::ByteMultiArray msg_bumper;
     std_msgs::Bool msg_emergency;
@@ -160,6 +165,9 @@ private:
     };
     ros::Subscriber<std_msgs::String, ros_board> sub_lexxhard{
         "/lexxhard/setup", &ros_board::callback_lexxhard, this
+    };
+    ros::Subscriber<std_msgs::Bool, ros_board> sub_messenger{
+        "/lexxhard/mainboard_messenger_heartbeat", &ros_board::callback_messenger, this
     };
 };
 
