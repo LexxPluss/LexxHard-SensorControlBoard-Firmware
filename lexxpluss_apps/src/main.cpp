@@ -74,6 +74,25 @@ void reset_usb_hub()
     }
 }
 
+uint8_t get_board_setting()
+{
+    uint8_t brd_setting{0}, temp{0};
+
+    const device *gpiof{device_get_binding("GPIOF")};
+
+    if (device_is_ready(gpiof)) {
+        gpio_pin_configure(gpiof, 12, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);   //SPRGPI09
+        gpio_pin_configure(gpiof, 13, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);   //SPRGPI10
+
+        brd_setting = uint8_t(gpio_pin_get(gpiof, 12));
+        temp = uint8_t(gpio_pin_get(gpiof, 13));
+        temp = temp << 1;
+        brd_setting = brd_setting | temp;
+    }
+
+    return brd_setting;
+}
+
 }
 
 void main()
@@ -93,7 +112,7 @@ void main()
     lexxhard::runaway_detector::init();
     lexxhard::tof_controller::init();
     lexxhard::uss_controller::init();
-    lexxhard::towing_unit_controller::init();
+    
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
     RUN(can_controller, 4);
@@ -105,8 +124,21 @@ void main()
     RUN(pgv_controller, 1);
     RUN(tof_controller, 2);
     RUN(uss_controller, 2);
-    RUN(towing_unit_controller, 2);
     RUN(runaway_detector, 4);
+
+    switch (get_board_setting()) {
+        case 0: //Wani Unit
+            lexxhard::towing_unit_controller::init();
+            RUN(towing_unit_controller, 2);
+            break;
+        case 1: //Reserved
+            break;
+        case 2: //Reserved
+            break;
+        default:
+            break;
+    }
+
     RUN(rosserial, 5); // The rosserial thread will be started last.
     RUN(rosserial_service, 6); // The rosserial thread will be started last.
     const device *gpiog{device_get_binding("GPIOG")};
