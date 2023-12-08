@@ -50,7 +50,7 @@ public:
     }
 private:
     std_msgs::Float64MultiArray msg;
-    double msg_data[2];
+    float msg_data[2];
     ros::Publisher pub{"/sensor_set/downward", &msg};
 };
 
