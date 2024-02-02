@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2024, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,47 +23,14 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#pragma once
+
 #include <zephyr.h>
-#include <drivers/gpio.h>
-#include "can_dummy_v7.hpp"
 
-namespace {
+namespace lexxhard::can_dummy_v7 {
 
-K_THREAD_STACK_DEFINE(can_dummy_v7_stack, 2048);
-
-#define RUN(name, prio) \
-    k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
-                    lexxhard::name::run, nullptr, nullptr, nullptr, prio, K_FP_REGS, K_MSEC(2000));
-
-void reset_usb_hub()
-{
-    if (const device *gpioj{device_get_binding("GPIOJ")}; device_is_ready(gpioj)) {
-        gpio_pin_configure(gpioj, 13, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        k_msleep(1);
-        gpio_pin_set(gpioj, 13, 0);
-        k_msleep(1);
-        gpio_pin_set(gpioj, 13, 1);
-    }
-}
+void init();
+void run(void *p1, void *p2, void *p3);
+extern k_thread thread;
 
 }
-
-void main()
-{
-    reset_usb_hub();
-    lexxhard::can_dummy_v7::init();
-    const device *gpiog{device_get_binding("GPIOG")};
-    if (gpiog != nullptr)
-        gpio_pin_configure(gpiog, 7, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    int heartbeat_led{1};
-    RUN(can_dummy_v7, 4);
-    while (true) {
-        if (gpiog != nullptr) {
-            gpio_pin_set(gpiog, 7, heartbeat_led);
-            heartbeat_led = !heartbeat_led;
-        }
-        k_msleep(1000);
-    }
-}
-
-// vim: set expandtab shiftwidth=4:
