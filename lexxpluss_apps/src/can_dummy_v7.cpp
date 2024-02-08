@@ -122,6 +122,31 @@ void send_current(const device *dev)
     send_can_data(dev, 0x20a, buf, sizeof buf);
 }
 
+void receive_pgv(const uint8_t *data)
+{
+    printk("receive PGV command: %u\n", data[0]);
+}
+
+void receive_led(const uint8_t *data)
+{
+    uint16_t count{static_cast<uint16_t>(data[1] << 8 | data[0])};
+    printk("receive LED command: pattern: %u count: %u rgb: %u/%u/%u\n",
+           data[0], count, data[2], data[3], data[4]);
+}
+
+void receive_actuator(const uint8_t *data)
+{
+    printk("receive actuator command: L: %d/%u C: %d/%u R: %d/%u\n",
+           data[0], data[3], data[1], data[4], data[2], data[5]);
+}
+
+void receive_actuator_init(const uint8_t *data)
+{
+    printk("receive actuator init command: %d\n", data[0]);
+}
+
+CAN_DEFINE_MSGQ(msgq_can, 8);
+
 }
 
 namespace lexxhard::can_dummy_v7 {
@@ -133,6 +158,14 @@ public:
         if (!device_is_ready(dev))
             return -1;
         can_configure(dev, CAN_NORMAL_MODE, 1'000'000);
+        static const zcan_filter filter{
+            .id{0x200},
+            .rtr{CAN_DATAFRAME},
+            .id_type{CAN_STANDARD_IDENTIFIER},
+            .id_mask{0x7f0},
+            .rtr_mask{1}
+        };
+        can_attach_msgq(dev, &msgq_can, &filter);
         return 0;
     }
     void run(void *p1, void *p2, void *p3) {
@@ -149,6 +182,15 @@ public:
                 send_encoder(dev);
                 send_current(dev);
                 ++acc_gyro_counter;
+            }
+            zcan_frame frame;
+            if (k_msgq_get(&msgq_can, &frame, K_NO_WAIT) == 0) {
+                switch (frame.id) {
+                case 0x203: receive_pgv(frame.data); break;
+                case 0x205: receive_led(frame.data); break;
+                case 0x208: receive_actuator(frame.data); break;
+                case 0x20b: receive_actuator_init(frame.data); break;
+                }
             }
             k_msleep(10);
         }
