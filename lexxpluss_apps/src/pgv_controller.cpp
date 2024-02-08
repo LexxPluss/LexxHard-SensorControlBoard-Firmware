@@ -60,21 +60,19 @@ public:
             .data_bits{UART_CFG_DATA_BITS_8},
             .flow_ctrl{UART_CFG_FLOW_CTRL_NONE}
         };
-        uart_configure(dev_485, &config);
-        uart_irq_rx_disable(dev_485);
-        uart_irq_tx_disable(dev_485);
-        static const auto uart_isr_trampoline{[](const device *dev, void *user_data){
-            pgv_controller_impl *self{static_cast<pgv_controller_impl*>(user_data)};
-            self->uart_isr();
-        }};
-        uart_irq_callback_user_data_set(dev_485, uart_isr_trampoline, this);
-        uart_irq_rx_enable(dev_485);
-        gpio_pin_configure(dev_en, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(dev_en_n, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(dev_en, 2, 0);
-        gpio_pin_set(dev_en_n, 2, 0);
-        k_sem_init(&sem, 0, 1);
-        return 0;
+        uart_configure(dev_485, &config);    struct {
+        uint16_t value;
+        uint8_t id;
+    } max_voltage, min_voltage, max_cell_voltage, min_cell_voltage;
+    struct {
+        int16_t value;
+        uint8_t id;
+    } max_temp, min_temp, max_current, min_current;
+    int16_t fet_temp, pack_current;
+    uint16_t charging_current, pack_voltage, design_capacity, full_charge_capacity, remain_capacity;
+    uint16_t manufacturing, inspection, serial;
+    uint8_t mod_status1, mod_status2, bmu_status, asoc, rsoc, soh;
+    uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
     }
     void run() {
         if (!device_is_ready(dev_485) ||
@@ -120,15 +118,16 @@ public:
     }
     void info(const shell *shell) const {
         msg m{pgv2ros};
-        shell_print(shell,
-                    "flag: err:%d wrn:%d cc1/cc2:%d/%d ll:%d rl:%d nl:%d np:%d rp:%d tag:%d\n"
-                    "xp:%u xps:%d yps:%d ang:%u\n"
-                    "tag:%u cc1/cc2:%u/%u wrn:%u\n"
-                    "addr:%u lane:%u o1/o2:%u/%u s1/s2:%u/%u\n",
-                    m.f.err, m.f.wrn, m.f.cc1, m.f.cc2, m.f.ll, m.f.rl, m.f.nl, m.f.np, m.f.rp, m.f.tag,
-                    m.xp, m.xps, m.yps, m.ang,
-                    m.tag, m.cc1, m.cc2, m.wrn,
-                    m.addr, m.lane, m.o1, m.o2, m.s1, m.s2);
+        // shell_print(shell,
+        //             "flag: err:%d wrn:%d cc1/cc2:%d/%d ll:%d rl:%d nl:%d np:%d rp:%d tag:%d\n"
+        //             "xp:%u xps:%d yps:%d ang:%u\n"
+        //             "tag:%u cc1/cc2:%u/%u wrn:%u\n"
+        //             "addr:%u lane:%u o1/o2:%u/%u s1/s2:%u/%u\n",
+        //             m.f.err, m.f.wrn, m.f.cc1, m.f.cc2, m.f.ll, m.f.rl, m.f.nl, m.f.np, m.f.rp, m.f.tag,
+        //             m.xp, m.xps, m.yps, m.ang,
+        //             m.tag, m.cc1, m.cc2, m.wrn,
+        //             m.addr, m.lane, m.o1, m.o2, m.s1, m.s2);
+        shell_print(shell, "pgv info not supported from V7");
     }
 private:
     enum class DIR {
@@ -145,9 +144,9 @@ private:
         send(req, sizeof req);
         wait_data(23);
         uint8_t buf[64];
-        if (int n{recv(buf, sizeof buf)}; n < 23 || !validate(buf + 2, 21))
+        if (int n{recv(buf, sizeof buf)}; n < 23 || !validate(buf + 2, 21)) // 21byte + echo back 2byte (may be)
             return false;
-        decode(buf + 2, data);
+        memcpy(data.rawdata, buf, 21);
         return true;
     }
     void set_direction_decision(DIR dir) {
@@ -160,60 +159,6 @@ private:
         }
         req[1] = ~req[0];
         send(req, sizeof req);
-    }
-    void decode(const uint8_t *buf, msg &data) const {
-        data.f.cc2 =  (buf[ 0] & 0x40) != 0;
-        data.addr  =  (buf[ 0] & 0x30) >> 4;
-        data.f.cc1 =  (buf[ 0] & 0x08) != 0;
-        data.f.wrn =  (buf[ 0] & 0x04) != 0;
-        data.f.np  =  (buf[ 0] & 0x02) != 0;
-        data.f.err =  (buf[ 0] & 0x01) != 0;
-        data.f.tag =  (buf[ 1] & 0x40) != 0;
-        data.lane  =  (buf[ 1] & 0x30) >> 4;
-        data.f.rp  =  (buf[ 1] & 0x08) != 0;
-        data.f.nl  =  (buf[ 1] & 0x04) != 0;
-        data.f.ll  =  (buf[ 1] & 0x02) != 0;
-        data.f.rl  =  (buf[ 1] & 0x01) != 0;
-        data.yps   =  (buf[ 6] & 0x40 ? 0xc000 : 0) |
-                     ((buf[ 6] & 0x7f) << 7) |
-                      (buf[ 7] & 0x7f);
-        data.ang   = ((buf[10] & 0x7f) << 7) |
-                      (buf[11] & 0x7f);
-        data.wrn   = ((buf[18] & 0x7f) << 7) |
-                      (buf[19] & 0x7f);
-        if (data.f.tag) { // data matrix tag
-            data.xp  = 0;
-            data.o1  = 0;
-            data.s1  = 0;
-            data.cc1 = 0;
-            data.o2  = 0;
-            data.s2  = 0;
-            data.cc2 = 0;
-            data.xps =  (buf[ 2] & 0x04 ? 0xff00000000 : 0) |
-                       ((buf[ 2] & 0x07) << 21) |
-                       ((buf[ 3] & 0x7f) << 14) |
-                       ((buf[ 4] & 0x7f) <<  7) |
-                        (buf[ 5] & 0x7f);
-            data.tag = ((buf[14] & 0x7f) << 21) |
-                       ((buf[15] & 0x7f) << 14) |
-                       ((buf[16] & 0x7f) <<  7) |
-                        (buf[17] & 0x7f);
-        } else { // lane tracking
-            data.xp  = ((buf[ 2] & 0x07) << 21) |
-                       ((buf[ 3] & 0x7f) << 14) |
-                       ((buf[ 4] & 0x7f) <<  7) |
-                        (buf[ 5] & 0x7f);
-            data.o1  =  (buf[14] & 0x60) >> 5;
-            data.s1  =  (buf[14] & 0x18) >> 3;
-            data.cc1 = ((buf[14] & 0x07) << 7) |
-                        (buf[15] & 0x7f);
-            data.o2  =  (buf[16] & 0x60) >> 5;
-            data.s2  =  (buf[16] & 0x18) >> 3;
-            data.cc2 = ((buf[16] & 0x07) << 7) |
-                        (buf[17] & 0x7f);
-            data.xps = 0;
-            data.tag = 0;
-        }
     }
     bool validate(const uint8_t *buf, uint32_t length) const {
         uint32_t tail{length - 1};
