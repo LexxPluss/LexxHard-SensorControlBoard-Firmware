@@ -27,6 +27,7 @@
 #include <device.h>
 #include <drivers/can.h>
 #include <shell/shell.h>
+#include <algorithm>
 #include "can_dummy_v7.hpp"
 
 namespace {
@@ -41,13 +42,13 @@ void send_can_data(const device *dev, uint32_t id, const uint8_t *data, uint8_t 
         .id_type{CAN_STANDARD_IDENTIFIER},
         .dlc{dlc}
     };
-    memcpy(frame.data, data, dlc);
+    std::copy(data, data + dlc, frame.data);
     can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
 }
 
 void send_uss(const device *dev)
 {
-    uint32_t data[5]{1000, 1001, 1002, 1003, 1004};
+    static constexpr uint16_t data[5]{1000, 1001, 1002, 1003, 1004};
     uint64_t work{0};
     for (const auto i: data) {
         work <<= 12;
@@ -55,70 +56,70 @@ void send_uss(const device *dev)
     }
     work <<= 4;
     uint8_t buf[8];
-    buf[0] = work >> 56;
-    buf[1] = work >> 48;
-    buf[2] = work >> 40;
-    buf[3] = work >> 32;
-    buf[4] = work >> 24;
-    buf[5] = work >> 16;
-    buf[6] = work >>  8;
-    buf[7] = work;
+    buf[0] = (work >> 56) & 0xff;
+    buf[1] = (work >> 48) & 0xff;
+    buf[2] = (work >> 40) & 0xff;
+    buf[3] = (work >> 32) & 0xff;
+    buf[4] = (work >> 24) & 0xff;
+    buf[5] = (work >> 16) & 0xff;
+    buf[6] = (work >>  8) & 0xff;
+    buf[7] = (work      ) & 0xff;
     send_can_data(dev, 0x204, buf, sizeof buf);
 }
 
 void send_acc(const device *dev, uint8_t counter)
 {
-    uint32_t data[3]{2000, 2001, 2002};
+    static constexpr uint16_t data[3]{2000, 2001, 2002};
     uint8_t buf[7];
-    buf[0] = data[0] >> 8;
-    buf[1] = data[0];
-    buf[2] = data[1] >> 8;
-    buf[3] = data[1];
-    buf[4] = data[2] >> 8;
-    buf[5] = data[2];
+    buf[0] = (data[0] >> 8) & 0xff;
+    buf[1] = (data[0]     ) & 0xff;
+    buf[2] = (data[1] >> 8) & 0xff;
+    buf[3] = (data[1]     ) & 0xff;
+    buf[4] = (data[2] >> 8) & 0xff;
+    buf[5] = (data[2]     ) & 0xff;
     buf[6] = counter;
     send_can_data(dev, 0x206, buf, sizeof buf);
 }
 
 void send_gyro(const device *dev, uint8_t counter)
 {
-    uint32_t data[3]{3000, 3001, 3002};
+    static constexpr uint16_t data[3]{3000, 3001, 3002};
     uint8_t buf[7];
-    buf[0] = data[0] >> 8;
-    buf[1] = data[0];
-    buf[2] = data[1] >> 8;
-    buf[3] = data[1];
-    buf[4] = data[2] >> 8;
-    buf[5] = data[2];
+    buf[0] = (data[0] >> 8) & 0xff;
+    buf[1] = (data[0]     ) & 0xff;
+    buf[2] = (data[1] >> 8) & 0xff;
+    buf[3] = (data[1]     ) & 0xff;
+    buf[4] = (data[2] >> 8) & 0xff;
+    buf[5] = (data[2]     ) & 0xff;
     buf[6] = counter;
     send_can_data(dev, 0x207, buf, sizeof buf);
 }
 
 void send_encoder(const device *dev)
 {
-    uint32_t data[3]{4000, 4001, 4002};
+    static constexpr int16_t data[3]{4000, 4001, 4002};
     uint8_t buf[6];
-    buf[0] = data[0] >> 8;
-    buf[1] = data[0];
-    buf[2] = data[1] >> 8;
-    buf[3] = data[1];
-    buf[4] = data[2] >> 8;
-    buf[5] = data[2];
+    buf[0] = (data[0] >> 8) & 0xff;
+    buf[1] = (data[0]     ) & 0xff;
+    buf[2] = (data[1] >> 8) & 0xff;
+    buf[3] = (data[1]     ) & 0xff;
+    buf[4] = (data[2] >> 8) & 0xff;
+    buf[5] = (data[2]     ) & 0xff;
     send_can_data(dev, 0x209, buf, sizeof buf);
 }
 
 void send_current(const device *dev)
 {
-    uint32_t data[4]{5000, 5001, 5002, 2000};
+    static constexpr int16_t data[4]{5000, 5001, 5002, 2000};
     uint8_t buf[8];
-    buf[0] = data[0] >> 8;
-    buf[1] = data[0];
-    buf[2] = data[1] >> 8;
-    buf[3] = data[1];
-    buf[4] = data[2] >> 8;
-    buf[5] = data[2];
-    buf[6] = data[3] >> 8;
-    buf[7] = data[3];
+    buf[0] = (data[0] >> 8) & 0xff;
+    buf[1] = (data[0]     ) & 0xff;
+    buf[2] = (data[1] >> 8) & 0xff;
+    buf[3] = (data[1]     ) & 0xff;
+    buf[4] = (data[2] >> 8) & 0xff;
+    buf[5] = (data[2]     ) & 0xff;
+    buf[6] = (data[3] >> 8) & 0xff;
+    buf[7] = (data[3]     ) & 0xff;
     send_can_data(dev, 0x20a, buf, sizeof buf);
 }
 
