@@ -422,7 +422,7 @@ int brd_info(const shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_brd,
     SHELL_CMD(emgoff, NULL, "ROS emergency stop off", brd_emgoff),
-    SHELL_CMD(lockdown, NULL, "Lockdown control feature", brd_lockdown),
+    SHELL_CMD(lockdown, NULL, "Lobmuckdown control feature", brd_lockdown),
     SHELL_CMD(info, NULL, "Board information", brd_info),
     SHELL_SUBCMD_SET_END
 );
