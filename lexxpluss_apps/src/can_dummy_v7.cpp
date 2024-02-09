@@ -130,9 +130,9 @@ void receive_pgv(const uint8_t *data)
 
 void receive_led(const uint8_t *data)
 {
-    uint16_t count{static_cast<uint16_t>(data[1] << 8 | data[0])};
+    uint16_t count{static_cast<uint16_t>(data[1] << 8 | data[2])};
     printk("receive LED command: pattern: %u count: %u rgb: %u/%u/%u\n",
-           data[0], count, data[2], data[3], data[4]);
+           data[0], count, data[3], data[4], data[5]);
 }
 
 void receive_actuator(const uint8_t *data)
