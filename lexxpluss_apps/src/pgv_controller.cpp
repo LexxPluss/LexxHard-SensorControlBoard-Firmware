@@ -60,19 +60,21 @@ public:
             .data_bits{UART_CFG_DATA_BITS_8},
             .flow_ctrl{UART_CFG_FLOW_CTRL_NONE}
         };
-        uart_configure(dev_485, &config);    struct {
-        uint16_t value;
-        uint8_t id;
-    } max_voltage, min_voltage, max_cell_voltage, min_cell_voltage;
-    struct {
-        int16_t value;
-        uint8_t id;
-    } max_temp, min_temp, max_current, min_current;
-    int16_t fet_temp, pack_current;
-    uint16_t charging_current, pack_voltage, design_capacity, full_charge_capacity, remain_capacity;
-    uint16_t manufacturing, inspection, serial;
-    uint8_t mod_status1, mod_status2, bmu_status, asoc, rsoc, soh;
-    uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
+        uart_configure(dev_485, &config);
+        uart_irq_rx_disable(dev_485);
+        uart_irq_tx_disable(dev_485);
+        static const auto uart_isr_trampoline{[](const device *dev, void *user_data){
+            pgv_controller_impl *self{static_cast<pgv_controller_impl*>(user_data)};
+            self->uart_isr();
+        }};
+        uart_irq_callback_user_data_set(dev_485, uart_isr_trampoline, this);
+        uart_irq_rx_enable(dev_485);
+        gpio_pin_configure(dev_en, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(dev_en_n, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_set(dev_en, 2, 0);
+        gpio_pin_set(dev_en_n, 2, 0);
+        k_sem_init(&sem, 0, 1);
+        return 0;
     }
     void run() {
         if (!device_is_ready(dev_485) ||
