@@ -68,7 +68,7 @@ jobs:
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ./firmware.bin
-          asset_name: LexxHard-MainBoard-Firmware-Initial-${{ github.ref_name }}.bin
+          asset_name: LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
           asset_content_type: application/octet-stream
       - name: upload update firmware
         id: upload-release-asset-updator
@@ -78,7 +78,7 @@ jobs:
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ./build/zephyr/zephyr.signed.confirmed.bin
-          asset_name: LexxHard-MainBoard-Firmware-Update-${{ github.ref_name }}.bin
+          asset_name: LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
           asset_content_type: application/octet-stream
       - name: Notification
         uses: act10ns/slack@v1
