@@ -153,7 +153,7 @@ private:
         req[1] = ~req[0];
         send(req, sizeof req);
     }
-    bool validate(const uint8_t *buf, uint32_t lepgvgth) const {
+    bool validate(const uint8_t *buf, uint32_t length) const {
         uint32_t tail{length - 1};
         uint8_t check{buf[0]};
         for (uint32_t i{1}; i < tail; ++i)

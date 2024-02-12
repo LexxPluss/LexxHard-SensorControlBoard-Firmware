@@ -28,7 +28,6 @@
 #include <zephyr.h>
 #include <cstdio>
 #include <drivers/can.h>
-//#include "ros/node_handle.h"
 #include "std_msgs/UInt8.h"
 #include "lexxauto_msgs/PositionGuideVision.h"
 #include "common.hpp"
@@ -45,26 +44,26 @@ class can_pgv {
 public:
     void init()
     {
-    void callback(const std_msgs::UInt8 &req) {
-        switch (req.data) {
-        case 0:
-            snprintf(direction, sizeof direction, "No lane is selected");
-            break;
-        case 1:
-            snprintf(direction, sizeof direction, "Right lane is selected");
-            break;
-        case 2:
-            snprintf(direction, sizeof direction, "Left lane is selected");
-            break;
-        case 3:
-            snprintf(direction, sizeof direction, "Straight Ahead");
-            break;
+        void callback(const std_msgs::UInt8 &req) {
+            switch (req.data) {
+            case 0:
+                snprintf(direction, sizeof direction, "No lane is selected");
+                break;
+            case 1:
+                snprintf(direction, sizeof direction, "Right lane is selected");
+                break;
+            case 2:
+                snprintf(direction, sizeof direction, "Left lane is selected");
+                break;
+            case 3:
+                snprintf(direction, sizeof direction, "Straight Ahead");
+                break;
+            }
+            pgv_controller::msg_control can2pgv;
+            can2pgv.dir_command = req.data;
+            while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
+                k_msgq_purge(&pgv_controller::msgq_control);
         }
-        pgv_controller::msg_control can2pgv;
-        can2pgv.dir_command = req.data;
-        while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
-            k_msgq_purge(&pgv_controller::msgq_control);
-    }
         ring_counter=0;
     }
 
@@ -104,7 +103,6 @@ public:
             can_send(dev, &frame_pgv[2], K_MSEC(100), nullptr, nullptr);
 
             ring_counter++;
-        
         }
     }
 private:
