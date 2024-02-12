@@ -140,12 +140,7 @@ $ st-flash --reset --connect-under-reset write LexxHard-SensorControlBoard-Firmw
 
 ## Update via ROS
 
-Use [LexxPluss/LexxHard-SensorControlBoard-Updator](https://github.com/LexxPluss/LexxHard-SensorControlBoard-Updator.git).
-
-The firmware is automatically updated when the robot is turned on again after executing the following command.
-```bash
-$ rosrun SensorControlBoard_updator SensorControlBoard_updator LexxHard-SensorControlBoard-Firmware-Update-v?.?.?.bin
-```
+(There is no updater for SensorControlBoard yet)
 
 ## License
 
