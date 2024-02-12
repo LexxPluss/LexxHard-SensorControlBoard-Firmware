@@ -98,13 +98,13 @@ public:
                 gpio_pin_set(gpiog, 4, heartbeat_led);
                 heartbeat_led = !heartbeat_led;
             }
-            if (get_position(pgv2ros)) {
-                while (k_msgq_put(&msgq, &pgv2ros, K_NO_WAIT) != 0)
+            if (get_position(pgv2can)) {
+                while (k_msgq_put(&msgq, &pgv2can, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
             }
-            msg_control ros2pgv;
-            if (k_msgq_get(&msgq_control, &ros2pgv, K_NO_WAIT) == 0) {
-                switch (ros2pgv.dir_command) {
+            msg_control can2pgv;
+            if (k_msgq_get(&msgq_control, &can2pgv, K_NO_WAIT) == 0) {
+                switch (can2pgv.dir_command) {
                     case 0: set_direction_decision(DIR::NOLANE);   break;
                     case 1: set_direction_decision(DIR::RIGHT);    break;
                     case 2: set_direction_decision(DIR::LEFT);     break;
@@ -119,7 +119,7 @@ public:
         }
     }
     void info(const shell *shell) const {
-        msg m{pgv2ros};
+        msg m{pgv2can};
         // shell_print(shell,
         //             "flag: err:%d wrn:%d cc1/cc2:%d/%d ll:%d rl:%d nl:%d np:%d rp:%d tag:%d\n"
         //             "xp:%u xps:%d yps:%d ang:%u\n"
@@ -222,7 +222,7 @@ private:
         uint32_t buf[256 / sizeof (uint32_t)];
     } txbuf, rxbuf;
     const device *dev_485{nullptr}, *dev_en{nullptr}, *dev_en_n{nullptr};
-    msg pgv2ros;
+    msg pgv2can;
     k_sem sem;
 } impl;
 

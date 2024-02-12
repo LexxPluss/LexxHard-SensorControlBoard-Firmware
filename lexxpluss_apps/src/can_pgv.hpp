@@ -28,7 +28,7 @@
 #include <zephyr.h>
 #include <cstdio>
 #include <drivers/can.h>
-#include "ros/node_handle.h"
+//#include "ros/node_handle.h"
 #include "std_msgs/UInt8.h"
 #include "lexxauto_msgs/PositionGuideVision.h"
 #include "common.hpp"
@@ -60,9 +60,9 @@ public:
             snprintf(direction, sizeof direction, "Straight Ahead");
             break;
         }
-        pgv_controller::msg_control ros2pgv;
-        ros2pgv.dir_command = req.data;
-        while (k_msgq_put(&pgv_controller::msgq_control, &ros2pgv, K_NO_WAIT) != 0)
+        pgv_controller::msg_control can2pgv;
+        can2pgv.dir_command = req.data;
+        while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
             k_msgq_purge(&pgv_controller::msgq_control);
     }
         ring_counter=0;
@@ -72,8 +72,6 @@ public:
         pgv_controller::msg message;
         while (k_msgq_get(&pgv_controller::msgq, &message, K_NO_WAIT) == 0)
         {
-            //publish(message);
-
             zcan_frame frame_pgv[3]{{
                 .id = CAN_ID_PGV_1,
                 .rtr = CAN_DATAFRAME,
@@ -113,6 +111,8 @@ private:
 
     uint8_t ring_counter;
 
+    //THIS FUNCTION SHOULD RE-WRITE WHEN USE BECAUSE STILL NOT CHANGED UNTIL ROS-SERIAL GEN
+    //BUT THIS FUNCTION NOT USED
     void callback(const std_msgs::UInt8 &req) {
         switch (req.data) {
         case 0:
@@ -128,9 +128,9 @@ private:
             snprintf(direction, sizeof direction, "Straight Ahead");
             break;
         }
-        pgv_controller::msg_control ros2pgv;
-        ros2pgv.dir_command = req.data;
-        while (k_msgq_put(&pgv_controller::msgq_control, &ros2pgv, K_NO_WAIT) != 0)
+        pgv_controller::msg_control can2pgv;
+        can2pgv.dir_command = req.data;
+        while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
             k_msgq_purge(&pgv_controller::msgq_control);
     }
     char direction[64]{"Straight Ahead"};
