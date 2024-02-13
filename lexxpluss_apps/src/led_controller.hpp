@@ -109,11 +109,11 @@ struct msg {
     static constexpr uint32_t BOTH_WINKER{14};
     static constexpr uint32_t MOVE_ACTUATOR{15};
     static constexpr uint32_t CHARGE_LEVEL{16};
-    static constexpr uint32_t SHOWTIME{10000};
-    static constexpr uint32_t LOCKDOWN{10001};
-    static constexpr uint32_t RGB{20000};
-    static constexpr uint32_t RGB_BLINK{20001};
-    static constexpr uint32_t RGB_BREATH{20002};
+    static constexpr uint32_t SHOWTIME{100};
+    static constexpr uint32_t LOCKDOWN{101};
+    static constexpr uint32_t RGB{200};
+    static constexpr uint32_t RGB_BLINK{201};
+    static constexpr uint32_t RGB_BREATH{202};
 } __attribute__((aligned(4)));
 
 void init();

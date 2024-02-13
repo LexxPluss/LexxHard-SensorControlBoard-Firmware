@@ -27,53 +27,50 @@
 
 #include <zephyr.h>
 #include <device.h>
-#include <drivers/can.h>
 #include <drivers/gpio.h>
-#include "ros/node_handle.h"
+#include <drivers/can.h>
 #include "std_msgs/String.h"
 #include "lexxauto_msgs/Led.h"
 #include "led_controller.hpp"
+
+#define CAN_ID_LED 0x205 //based on saito-san's CAN ID assignment
 
 namespace lexxhard {
 
 char __aligned(4) msgq_led_buffer[8 * sizeof (msg_led)];
 
-struct msg_led {
-    uint8_t pattern;
-    uint16_t count_per_minutes;
-    uint8_t r,g,b;
-} __attribute__((aligned(4)));
 
-class can_led { //can_led
+class can_led {
 public:
     int init()
     {
-        //canのinit関係をここに記入すr
-        //can device
+        //can device bind
         k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (msg_led), 8);
         dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
             return -1;
-        can_configure(dev, CAN_NORMAL_MODE, 500000); //最後はボーレート 1000000で良いはず
-        return 0;
 
         //setup can filter
         static const zcan_filter filter_led{
-            .id{0x205},  //changed based on saito-san's 
+            .id{CAN_ID_LED},
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
             .id_mask{0x7c0},
             .rtr_mask{1}
         };
         can_attach_msgq(dev, &msgq_can_led, &filter_led);
+        return 0;
     }
+
     void poll()
     {
         while (true) {
-            zcan_frame frame;
-            if (k_msgq_get(&msgq_can_led, &frame, K_NO_WAIT) == 0) {
-                while (k_msgq_put(&msgq_can_led, &bmu2ros, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq_bmu);
+            if (k_msgq_get(&msgq_can_led, &can_led_frame, K_NO_WAIT) == 0) {
+                can2led.pattern = can_led_frame.pattern;
+                can2led.cpm = can_led_frame.count_per_minutes;
+                memcpy(can2led.rgb, can_led_frame.rgb,3);
+                while (k_msgq_put(&led_controller::msgq, &can2led, K_NO_WAIT) != 0)
+                    k_msgq_purge(&led_controller::msgq);
             }
             else
             {
@@ -82,27 +79,15 @@ public:
         }
     }
 private:
-    void callback_string(const std_msgs::String &req) {
-        //
-        led_controller::msg message{req.data};
-        while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&led_controller::msgq);
-    }
-    void callback_direct(const lexxauto_msgs::Led &req) {
-        led_controller::msg message;
-        message.pattern = led_controller::msg::RGB;
-        message.interrupt_ms = 0;
-        message.rgb[0] = req.r;
-        message.rgb[1] = req.g;
-        message.rgb[2] = req.b;
-        while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&led_controller::msgq);
-    }
-    // ros::Subscriber<std_msgs::String, ros_led> sub_string{"/body_control/led", &ros_led::callback_string, this};
-    // ros::Subscriber<lexxauto_msgs::Led, ros_led> sub_direct{"/body_control/led_direct", &ros_led::callback_direct, this};
+
+    struct msg_led {
+        uint8_t pattern;
+        uint16_t count_per_minutes;
+        uint8_t rgb[3];
+    } __attribute__((aligned(4)));
+    msg_led can_led_frame;
+    led_controller::msg can2led;
     const device *dev{nullptr};
-
-
 };
 
 k_thread thread;
