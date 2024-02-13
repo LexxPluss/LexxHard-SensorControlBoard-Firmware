@@ -120,7 +120,7 @@ public:
     }
     void info(const shell *shell) const {
         msg m{pgv2can};
-        shell_print(shell, "pgv info not supported from V7");
+        shell_print(shell, "pgv info is not supported on this firmware version");
     }
 private:
     enum class DIR {
@@ -137,9 +137,9 @@ private:
         send(req, sizeof req);
         wait_data(23);
         uint8_t buf[64];
-        if (int n{recv(buf, sizeof buf)}; n < 23 || !validate(buf + 2, 21)) // 21byte + echo back 2byte (may be)
+        if (int n{recv(buf, sizeof buf)}; n < 23 || !validate(buf + 2, 21)) // echo back 2byte + data 21byte(may be)
             return false;
-        memcpy(data.rawdata, buf, 21);
+        memcpy(data.rawdata, buf + 2, 21);
         return true;
     }
     void set_direction_decision(DIR dir) {

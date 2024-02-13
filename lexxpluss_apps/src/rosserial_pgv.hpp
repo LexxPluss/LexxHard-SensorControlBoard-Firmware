@@ -107,7 +107,7 @@ public:
     }
 private:
 
-    uint8_t ring_counter;
+    uint8_t ring_counter{0};
 
     //THIS FUNCTION SHOULD RE-WRITE WHEN USE BECAUSE STILL NOT CHANGED UNTIL ROS-SERIAL GEN
     //BUT THIS FUNCTION NOT USED
