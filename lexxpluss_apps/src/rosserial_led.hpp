@@ -90,7 +90,6 @@ private:
     const device *dev{nullptr};
 };
 
-k_thread thread;
 k_msgq msgq_can_led;
 }
 

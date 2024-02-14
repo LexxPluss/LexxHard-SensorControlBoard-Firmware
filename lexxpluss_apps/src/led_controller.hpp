@@ -93,27 +93,27 @@ struct msg {
              : (c >= 'A' && c <= 'F') ? c - 'A' + 10
                                       : -1;
     }
-    uint32_t pattern{NONE}, interrupt_ms{0}, cpm{0};
-    uint8_t rgb[3]{0, 0, 0};
-    static constexpr uint32_t NONE{0};
-    static constexpr uint32_t EMERGENCY_STOP{1};
-    static constexpr uint32_t AMR_MODE{2};
-    static constexpr uint32_t AGV_MODE{3};
-    static constexpr uint32_t MISSION_PAUSE{4};
-    static constexpr uint32_t PATH_BLOCKED{5};
-    static constexpr uint32_t MANUAL_DRIVE{6};
-    static constexpr uint32_t CHARGING{10};
-    static constexpr uint32_t WAITING_FOR_JOB{11};
-    static constexpr uint32_t LEFT_WINKER{12};
-    static constexpr uint32_t RIGHT_WINKER{13};
-    static constexpr uint32_t BOTH_WINKER{14};
-    static constexpr uint32_t MOVE_ACTUATOR{15};
-    static constexpr uint32_t CHARGE_LEVEL{16};
-    static constexpr uint32_t SHOWTIME{100};
-    static constexpr uint32_t LOCKDOWN{101};
-    static constexpr uint32_t RGB{200};
-    static constexpr uint32_t RGB_BLINK{201};
-    static constexpr uint32_t RGB_BREATH{202};
+    uint32_t interrupt_ms{0}, cpm{0};
+    uint8_t pattern{NONE}, rgb[3]{0, 0, 0};
+    static constexpr uint8_t NONE{0};
+    static constexpr uint8_t EMERGENCY_STOP{1};
+    static constexpr uint8_t AMR_MODE{2};
+    static constexpr uint8_t AGV_MODE{3};
+    static constexpr uint8_t MISSION_PAUSE{4};
+    static constexpr uint8_t PATH_BLOCKED{5};
+    static constexpr uint8_t MANUAL_DRIVE{6};
+    static constexpr uint8_t CHARGING{10};
+    static constexpr uint8_t WAITING_FOR_JOB{11};
+    static constexpr uint8_t LEFT_WINKER{12};
+    static constexpr uint8_t RIGHT_WINKER{13};
+    static constexpr uint8_t BOTH_WINKER{14};
+    static constexpr uint8_t MOVE_ACTUATOR{15};
+    static constexpr uint8_t CHARGE_LEVEL{16};
+    static constexpr uint8_t SHOWTIME{100};
+    static constexpr uint8_t LOCKDOWN{101};
+    static constexpr uint8_t RGB{200};
+    static constexpr uint8_t RGB_BLINK{201};
+    static constexpr uint8_t RGB_BREATH{202};
 } __attribute__((aligned(4)));
 
 void init();
