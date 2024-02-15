@@ -42,29 +42,14 @@ namespace lexxhard {
 
 class can_pgv {
 public:
-    void init()
+    int init()
     {
-        void callback(const std_msgs::UInt8 &req) {
-            switch (req.data) {
-            case 0:
-                snprintf(direction, sizeof direction, "No lane is selected");
-                break;
-            case 1:
-                snprintf(direction, sizeof direction, "Right lane is selected");
-                break;
-            case 2:
-                snprintf(direction, sizeof direction, "Left lane is selected");
-                break;
-            case 3:
-                snprintf(direction, sizeof direction, "Straight Ahead");
-                break;
-            }
-            pgv_controller::msg_control can2pgv;
-            can2pgv.dir_command = req.data;
-            while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
-                k_msgq_purge(&pgv_controller::msgq_control);
-        }
+        //can device bind
+        dev = device_get_binding("CAN_2");
+        if (!device_is_ready(dev))
+            return -1;
         ring_counter=0;
+        return 0;
     }
 
     void poll() {

@@ -119,7 +119,6 @@ public:
         }
     }
     void info(const shell *shell) const {
-        msg m{pgv2can};
         shell_print(shell, "pgv info is not supported on this firmware version");
     }
 private:
