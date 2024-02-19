@@ -29,8 +29,6 @@
 #include <device.h>
 #include <drivers/gpio.h>
 #include <drivers/can.h>
-#include "std_msgs/String.h"
-#include "lexxauto_msgs/Led.h"
 #include "led_controller.hpp"
 
 #define CAN_ID_LED 0x205 //based on saito-san's CAN ID assignment
