@@ -31,10 +31,24 @@
 
 namespace lexxhard::led_controller {
 
+struct can_format {
+    uint8_t pattern;
+    uint16_t count_per_minutes;
+    uint8_t rgb[3];
+} __attribute__((aligned(4)));
+
 struct msg {
     msg() : pattern(NONE), interrupt_ms(0) {}
     msg(uint32_t pattern, uint32_t interrupt_ms) :
         pattern(pattern), interrupt_ms(interrupt_ms) {}
+    msg(can_format frame) {
+        pattern = frame.pattern;
+        cpm = frame.count_per_minutes;
+        rgb[0] = frame.rgb[0];
+        rgb[1] = frame.rgb[1];
+        rgb[2] = frame.rgb[2];
+    }
+
     msg(const char *str) {
         if      (strcmp(str, "emergency_stop")  == 0) pattern = EMERGENCY_STOP;
         else if (strcmp(str, "amr_mode")        == 0) pattern = AMR_MODE;

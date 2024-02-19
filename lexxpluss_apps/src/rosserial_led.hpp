@@ -44,7 +44,7 @@ class can_led {
 public:
     int init()
     {
-        //can device bind
+        //can device bind`
         k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (msg_led), 8);
         dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
@@ -55,7 +55,7 @@ public:
             .id{CAN_ID_LED},
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7c0},
+            .id_mask{0x7ff},
             .rtr_mask{1}
         };
         can_attach_msgq(dev, &msgq_can_led, &filter_led);
@@ -64,28 +64,14 @@ public:
 
     void poll()
     {
-        while (true) {
-            if (k_msgq_get(&msgq_can_led, &can_led_frame, K_NO_WAIT) == 0) {
-                can2led.pattern = can_led_frame.pattern;
-                can2led.cpm = can_led_frame.count_per_minutes;
-                memcpy(can2led.rgb, can_led_frame.rgb,3);
-                while (k_msgq_put(&led_controller::msgq, &can2led, K_NO_WAIT) != 0)
-                    k_msgq_purge(&led_controller::msgq);
-            }
-            else
-            {
-                k_msleep(1);
-            }
+        while (k_msgq_get(&msgq_can_led, &can_led_frame, K_NO_WAIT) == 0) {
+            can2led = led_controller::msg(can_led_frame);
+            while (k_msgq_put(&led_controller::msgq, &can2led, K_NO_WAIT) != 0)
+                k_msgq_purge(&led_controller::msgq);
         }
     }
 private:
-
-    struct msg_led {
-        uint8_t pattern;
-        uint16_t count_per_minutes;
-        uint8_t rgb[3];
-    } __attribute__((aligned(4)));
-    msg_led can_led_frame;
+    led_controller::can_format can_led_frame;
     led_controller::msg can2led;
     const device *dev{nullptr};
 };
