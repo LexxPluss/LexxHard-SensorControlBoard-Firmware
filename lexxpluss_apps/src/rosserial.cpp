@@ -30,8 +30,6 @@
 #include "rosserial_dfu.hpp"
 #include "rosserial_imu.hpp"
 #include "rosserial_interlock.hpp"
-#include "rosserial_led.hpp"
-#include "rosserial_pgv.hpp"
 #include "rosserial_tof.hpp"
 #include "rosserial_uss.hpp"
 #include "rosserial.hpp"
@@ -49,8 +47,6 @@ public:
         dfu.init(nh);
         imu.init(nh);
         interlock.init(nh);
-        led.init(nh);
-        pgv.init(nh);
         tof.init(nh);
         uss.init(nh);
         return 0;
@@ -64,8 +60,6 @@ public:
             dfu.poll();
             imu.poll();
             interlock.poll();
-            led.poll();
-            pgv.poll();
             tof.poll();
             uss.poll();
             k_usleep(1);
@@ -79,8 +73,6 @@ private:
     ros_dfu dfu;
     ros_imu imu;
     ros_interlock interlock;
-    ros_led led;
-    ros_pgv pgv;
     ros_tof tof;
     ros_uss uss;
 } impl;
