@@ -27,10 +27,13 @@
 #include <device.h>
 #include <drivers/can.h>
 #include <shell/shell.h>
+#include <logging/log.h>
 #include <algorithm>
 #include "can_dummy_v7.hpp"
 
 namespace {
+
+LOG_MODULE_REGISTER(can2_test);
 
 void send_can_data(const device *dev, uint32_t id, const uint8_t *data, uint8_t dlc)
 {
@@ -44,109 +47,29 @@ void send_can_data(const device *dev, uint32_t id, const uint8_t *data, uint8_t 
     };
     std::copy(data, data + dlc, frame.data);
     can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+    LOG_INF("CAN2 send\n");
 }
 
-void send_uss(const device *dev)
+void send_can2_data(const device *dev)
 {
-    static constexpr uint16_t data[5]{1000, 1001, 1002, 1003, 1004};
-    uint64_t work{0};
-    for (const auto i: data) {
-        work <<= 12;
-        work |= i & 0xfff;
-    }
-    work <<= 4;
     uint8_t buf[8];
-    buf[0] = (work >> 56) & 0xff;
-    buf[1] = (work >> 48) & 0xff;
-    buf[2] = (work >> 40) & 0xff;
-    buf[3] = (work >> 32) & 0xff;
-    buf[4] = (work >> 24) & 0xff;
-    buf[5] = (work >> 16) & 0xff;
-    buf[6] = (work >>  8) & 0xff;
-    buf[7] = (work      ) & 0xff;
+    buf[0] = 0;
+    buf[1] = 1;
+    buf[2] = 2;
+    buf[3] = 3;
+    buf[4] = 4;
+    buf[5] = 5;
+    buf[6] = 6;
+    buf[7] = 7;
     send_can_data(dev, 0x204, buf, sizeof buf);
 }
 
-void send_acc(const device *dev, uint8_t counter)
+void receive_can2_data(const uint8_t *data)
 {
-    static constexpr uint16_t data[3]{2000, 2001, 2002};
-    uint8_t buf[7];
-    buf[0] = (data[0] >> 8) & 0xff;
-    buf[1] = (data[0]     ) & 0xff;
-    buf[2] = (data[1] >> 8) & 0xff;
-    buf[3] = (data[1]     ) & 0xff;
-    buf[4] = (data[2] >> 8) & 0xff;
-    buf[5] = (data[2]     ) & 0xff;
-    buf[6] = counter;
-    send_can_data(dev, 0x206, buf, sizeof buf);
+    LOG_INF("receive data: %d %d %d %d %d %d %d %d\n", data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
 }
 
-void send_gyro(const device *dev, uint8_t counter)
-{
-    static constexpr uint16_t data[3]{3000, 3001, 3002};
-    uint8_t buf[7];
-    buf[0] = (data[0] >> 8) & 0xff;
-    buf[1] = (data[0]     ) & 0xff;
-    buf[2] = (data[1] >> 8) & 0xff;
-    buf[3] = (data[1]     ) & 0xff;
-    buf[4] = (data[2] >> 8) & 0xff;
-    buf[5] = (data[2]     ) & 0xff;
-    buf[6] = counter;
-    send_can_data(dev, 0x207, buf, sizeof buf);
-}
-
-void send_encoder(const device *dev)
-{
-    static constexpr int16_t data[3]{4000, 4001, 4002};
-    uint8_t buf[6];
-    buf[0] = (data[0] >> 8) & 0xff;
-    buf[1] = (data[0]     ) & 0xff;
-    buf[2] = (data[1] >> 8) & 0xff;
-    buf[3] = (data[1]     ) & 0xff;
-    buf[4] = (data[2] >> 8) & 0xff;
-    buf[5] = (data[2]     ) & 0xff;
-    send_can_data(dev, 0x209, buf, sizeof buf);
-}
-
-void send_current(const device *dev)
-{
-    static constexpr int16_t data[4]{5000, 5001, 5002, 2000};
-    uint8_t buf[8];
-    buf[0] = (data[0] >> 8) & 0xff;
-    buf[1] = (data[0]     ) & 0xff;
-    buf[2] = (data[1] >> 8) & 0xff;
-    buf[3] = (data[1]     ) & 0xff;
-    buf[4] = (data[2] >> 8) & 0xff;
-    buf[5] = (data[2]     ) & 0xff;
-    buf[6] = (data[3] >> 8) & 0xff;
-    buf[7] = (data[3]     ) & 0xff;
-    send_can_data(dev, 0x20a, buf, sizeof buf);
-}
-
-void receive_pgv(const uint8_t *data)
-{
-    printk("receive PGV command: %u\n", data[0]);
-}
-
-void receive_led(const uint8_t *data)
-{
-    uint16_t count{static_cast<uint16_t>(data[1] << 8 | data[2])};
-    printk("receive LED command: pattern: %u count: %u rgb: %u/%u/%u\n",
-           data[0], count, data[3], data[4], data[5]);
-}
-
-void receive_actuator(const uint8_t *data)
-{
-    printk("receive actuator command: L: %d/%u C: %d/%u R: %d/%u\n",
-           data[0], data[3], data[1], data[4], data[2], data[5]);
-}
-
-void receive_actuator_init(const uint8_t *data)
-{
-    printk("receive actuator init command: %d\n", data[0]);
-}
-
-CAN_DEFINE_MSGQ(msgq_can, 8);
+CAN_DEFINE_MSGQ(msgq_can2, 8);
 
 }
 
@@ -158,39 +81,37 @@ public:
         dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
             return -1;
+
         can_configure(dev, CAN_NORMAL_MODE, 1'000'000);
         static const zcan_filter filter{
-            .id{0x200},
+            .id{0x203},
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7f0},
+            .id_mask{0x7ff},
             .rtr_mask{1}
         };
-        can_attach_msgq(dev, &msgq_can, &filter);
+        can_attach_msgq(dev, &msgq_can2, &filter);
+        LOG_INF("CAN2 init\n");
         return 0;
     }
     void run(void *p1, void *p2, void *p3) {
-        if (!device_is_ready(dev))
+        LOG_INF("CAN2 run\n");
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN2 not ready\n");
             return;
+        }
         while (true) {
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
             if (dt_ms > 1'000) {
                 prev_cycle = now_cycle;
-                send_uss(dev);
-                send_acc(dev, acc_gyro_counter);
-                send_gyro(dev, acc_gyro_counter);
-                send_encoder(dev);
-                send_current(dev);
-                ++acc_gyro_counter;
+                send_can2_data(dev);
+                // ++acc_gyro_counter;
             }
             zcan_frame frame;
-            if (k_msgq_get(&msgq_can, &frame, K_NO_WAIT) == 0) {
+            if (k_msgq_get(&msgq_can2, &frame, K_NO_WAIT) == 0) {
                 switch (frame.id) {
-                case 0x203: receive_pgv(frame.data); break;
-                case 0x205: receive_led(frame.data); break;
-                case 0x208: receive_actuator(frame.data); break;
-                case 0x20b: receive_actuator_init(frame.data); break;
+                case 0x203: receive_can2_data(frame.data); break;
                 }
             }
             k_msleep(10);
@@ -208,10 +129,10 @@ int info(const shell *shell, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_can,
-    SHELL_CMD(info, NULL, "CAN dummy information", info),
+    SHELL_CMD(info, NULL, "CAN2 dummy information", info),
     SHELL_SUBCMD_SET_END
 );
-SHELL_CMD_REGISTER(can, &sub_can, "CAN dummy commands", NULL);
+SHELL_CMD_REGISTER(can2, &sub_can, "CAN2 dummy commands", NULL);
 
 void init()
 {
