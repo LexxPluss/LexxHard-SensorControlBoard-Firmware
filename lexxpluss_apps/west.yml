@@ -22,17 +22,13 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 manifest:
-  remotes:
-    - name: lexxpluss
-      url-base: https://github.com/LexxPluss
   projects:
     - name: zephyr
-      remote: lexxpluss
-      revision: lexxpluss/main
+      url: https://github.com/zephyrproject-rtos/zephyr.git
+      revision: refs/tags/v2.7.5
       import: true
     - name: ros_msgs
-      remote: lexxpluss
+      url: https://github.com/LexxPluss/ros_msgs.git
       revision: main
-      path: ros_msgs
   self:
     path: lexxpluss_apps

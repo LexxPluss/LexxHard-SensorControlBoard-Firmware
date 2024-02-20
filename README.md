@@ -29,12 +29,12 @@ $ west zephyr-export
 ### Build bootloader (MCUboot)
 
 ```bash
-$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 bootloader/mcuboot/boot/zephyr -d build-mcuboot
+$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=$(pwd)/extra
 ```
 ### Build firmware
 
 ```bash
-$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps
+$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps -- -DBOARD_ROOT=$(pwd)/extra -DZEPHYR_EXTRA_MODULES=$(pwd)/extra
 ```
 ```bash
 $ cp ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-?.?.?.bin
@@ -47,7 +47,7 @@ $ cat bl_with_ff.bin build/zephyr/zephyr.signed.bin >  LexxHard-SensorControlBoa
 ### Build firmware ( enable interlock )
 
 ```bash
-$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps -- -DENABLE_INTERLOCK=1
+$ ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb west build -b lexxpluss_mb02 lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=$(pwd)/extra -DZEPHYR_EXTRA_MODULES=$(pwd)/extra
 ```
 
 ---
@@ -95,19 +95,19 @@ export GNUARMEMB_TOOLCHAIN_PATH=/Applications/ARM
 ### Build bootloader (MCUboot)
 
 ```bash
-$ west build -b lexxpluss_mb02 bootloader/mcuboot/boot/zephyr -d build-mcuboot
+$ west build -b lexxpluss_mb02 bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=$(pwd)/extra
 ```
 
 ### Build firmware
 
 ```bash
-$ west build -p auto -b lexxpluss_mb02 lexxpluss_apps
+$ west build -p auto -b lexxpluss_mb02 lexxpluss_apps -- -DBOARD_ROOT=$(pwd)/extra -DZEPHYR_EXTRA_MODULES=$(pwd)/extra
 ```
 
 ### Build firmware ( enable interlock )
 
 ```bash
-$ west build -p auto -b lexxpluss_mb02 lexxpluss_apps -- -DENABLE_INTERLOCK=1
+$ west build -p auto -b lexxpluss_mb02 lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=$(pwd)/extra -DZEPHYR_EXTRA_MODULES=$(pwd)/extra
 ```
 ---
 ## Program of the built firmware

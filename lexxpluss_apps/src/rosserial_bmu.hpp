@@ -57,7 +57,7 @@ public:
             if (message.mod_status1 & 0b00100000 ||
                 message.bmu_status == 0x07 ||
                 message.bmu_status == 0x09 ||
-                message.bmu_alarm1 == 0b10000010)
+                message.bmu_alarm1 & 0b10000010)
                 msg.state.power_supply_health = sensor_msgs::BatteryState::POWER_SUPPLY_HEALTH_OVERHEAT;
             else if (message.mod_status1 & 0b00011000)
                 msg.state.power_supply_health = sensor_msgs::BatteryState::POWER_SUPPLY_HEALTH_OVERVOLTAGE;
@@ -67,8 +67,8 @@ public:
                      message.mod_status2 & 0b00000001 ||
                      message.bmu_status == 0xf0 ||
                      message.bmu_status == 0xf1 ||
-                     message.bmu_alarm1 == 0b01111101 ||
-                     message.bmu_alarm2 == 0b00000001)
+                     message.bmu_alarm1 & 0b01111101 ||
+                     message.bmu_alarm2 & 0b00000001)
                 msg.state.power_supply_health = sensor_msgs::BatteryState::POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
             else
                 msg.state.power_supply_health = sensor_msgs::BatteryState::POWER_SUPPLY_HEALTH_GOOD;

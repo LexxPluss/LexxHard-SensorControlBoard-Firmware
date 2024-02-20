@@ -40,7 +40,6 @@
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 		zephyr,dtcm = &dtcm;
-		/* zephyr,can-primary = &can2; */
 		zephyr,can-primary = &can1;
 		zephyr,can-secondary = &can2;
 	};
