@@ -32,6 +32,8 @@
 
 namespace {
 
+LOG_MODULE_REGISTER(can_dummy);
+
 void send_can_data(const device *dev, uint32_t id, const uint8_t *data, uint8_t dlc)
 {
     if (dlc > CAN_MAX_DLEN)
@@ -155,9 +157,12 @@ namespace lexxhard::can_dummy_v7 {
 class can_dummy_v7_impl {
 public:
     int init() {
-        dev = device_get_binding("CAN_2");
-        if (!device_is_ready(dev))
+        // dev = device_get_binding("CAN_2");
+        dev = device_get_binding("CAN_1");
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN is not ready at init\n");
             return -1;
+        }
         can_configure(dev, CAN_NORMAL_MODE, 1'000'000);
         static const zcan_filter filter{
             .id{0x200},
@@ -170,8 +175,11 @@ public:
         return 0;
     }
     void run(void *p1, void *p2, void *p3) {
-        if (!device_is_ready(dev))
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN is not ready at run\n");
             return;
+        }
+            
         while (true) {
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};

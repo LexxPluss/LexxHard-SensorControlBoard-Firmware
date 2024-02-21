@@ -40,7 +40,7 @@
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 		zephyr,dtcm = &dtcm;
-		zephyr,can-primary = &can2;
+		zephyr,can-primary = &can1;
 	};
 
 	soc {
@@ -48,19 +48,6 @@
 			flash0: flash@8000000 {
 				reg = <0x08000000 DT_SIZE_K(1024)>;
 			};
-		};
-
-		can2: can@40006800 {
-			compatible = "st,stm32-can";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x40006800 0x400>;
-			interrupts = <63 0>, <64 0>, <65 0>, <66 0>;
-			interrupt-names = "TX", "RX0", "RX1", "SCE";
-			clocks = <&rcc STM32_CLOCK_BUS_APB1 0x06000000>;
-			master-can-reg = <0x40006400>;
-			status = "disabled";
-			label = "CAN_2";
 		};
 	};
 
@@ -146,6 +133,7 @@
 	current-speed = <115200>;
 	status = "okay";
 };
+
 
 &usart6 {
 	pinctrl-0 = <&usart6_tx_pg14 &usart6_rx_pg9 &usart6_cts_pg13 &usart6_rts_pg12>;
@@ -284,8 +272,8 @@
 	};
 };
 
-&can2 {
-	pinctrl-0 = <&can2_rx_pb12 &can2_tx_pb13>;
+&can1 {
+	pinctrl-0 = <&can1_rx_ph14 &can1_tx_ph13>;
 	bus-speed = <500000>;
 	sjw = <1>;
 	prop-seg = <0>;
