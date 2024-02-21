@@ -30,6 +30,7 @@
 #include <shell/shell.h>
 #include <algorithm>
 #include <cstdlib>
+#include "bmu_controller.hpp"
 #include "can_controller.hpp"
 #include "led_controller.hpp"
 
@@ -264,7 +265,7 @@ private:
         else
             head = PIXELS - (PIXELS * counter / thres);
         static constexpr led_rgb color{.r{0xff}, .g{0x20}, .b{0x00}};
-        uint32_t rsoc{can_controller::get_rsoc()};
+        uint32_t rsoc{bmu_controller::get_rsoc()};
         uint32_t n;
         if (rsoc < 100) {
             n = PIXELS - (PIXELS * rsoc / 100U);
