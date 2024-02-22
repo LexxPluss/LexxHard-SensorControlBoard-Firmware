@@ -79,8 +79,10 @@ class can_dummy_v7_2_impl {
 public:
     int init() {
         dev = device_get_binding("CAN_1");
-        if (!device_is_ready(dev))
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN1 not ready at init\n");
             return -1;
+        }
         can_configure(dev, CAN_NORMAL_MODE, 1'000'000);
         static const zcan_filter filter{
             .id{0x204},
@@ -96,7 +98,7 @@ public:
     void run(void *p1, void *p2, void *p3) {
         LOG_INF("CAN1 run\n");
         if (!device_is_ready(dev)){
-            LOG_INF("CAN1 not ready\n");
+            LOG_INF("CAN1 not ready at run\n");
             return;
         }
         while (true) {

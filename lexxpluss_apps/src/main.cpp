@@ -26,12 +26,12 @@
 #include <zephyr.h>
 #include <drivers/gpio.h>
 #include "can_dummy_v7.hpp"
-#include "can_dummy_v7_2.hpp"
+// #include "can_dummy_v7_2.hpp"
 
 namespace {
 
 K_THREAD_STACK_DEFINE(can_dummy_v7_stack, 2048);
-K_THREAD_STACK_DEFINE(can_dummy_v7_2_stack, 2048);
+// K_THREAD_STACK_DEFINE(can_dummy_v7_2_stack, 2048);
 
 #define RUN(name, prio) \
     k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
@@ -54,13 +54,13 @@ void main()
 {
     reset_usb_hub();
     lexxhard::can_dummy_v7::init();
-    lexxhard::can_dummy_v7_2::init();
+    // lexxhard::can_dummy_v7_2::init();
     const device *gpiog{device_get_binding("GPIOG")};
     if (gpiog != nullptr)
         gpio_pin_configure(gpiog, 7, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
     int heartbeat_led{1};
     RUN(can_dummy_v7, 4);
-    RUN(can_dummy_v7_2, 4);
+    // RUN(can_dummy_v7_2, 4);
     while (true) {
         if (gpiog != nullptr) {
             gpio_pin_set(gpiog, 7, heartbeat_led);
