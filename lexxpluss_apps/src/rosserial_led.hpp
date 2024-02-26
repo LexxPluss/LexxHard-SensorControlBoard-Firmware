@@ -36,7 +36,7 @@
 namespace lexxhard {
 
 char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
-
+k_msgq msgq_can_led;
 
 class can_led {
 public:
@@ -73,8 +73,6 @@ private:
     led_controller::msg can2led;
     const device *dev{nullptr};
 };
-
-k_msgq msgq_can_led;
 }
 
 // vim: set expandtab shiftwidth=4:
