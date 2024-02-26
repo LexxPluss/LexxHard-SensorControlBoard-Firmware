@@ -85,6 +85,8 @@ int to_location(const uint8_t (&location)[3], const uint8_t (&power)[3], uint8_t
 extern k_thread thread;
 extern k_msgq msgq, msgq_control;
 
+// k_msgq msgq_can_actuator_control;
+
 }
 
 // vim: set expandtab shiftwidth=4:
