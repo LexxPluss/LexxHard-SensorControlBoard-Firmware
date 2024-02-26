@@ -24,7 +24,6 @@
  */
 
 #include "rosserial_hardware_zephyr.hpp"
-#include "rosserial_actuator.hpp"
 #include "rosserial_bmu.hpp"
 #include "rosserial_board.hpp"
 #include "rosserial_dfu.hpp"

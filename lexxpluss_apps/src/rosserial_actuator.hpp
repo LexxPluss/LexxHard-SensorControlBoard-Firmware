@@ -34,7 +34,6 @@
 #define CAN_ID_ACTUATOR_CONTROL 0x208 //based on saito-san's CAN ID assignment
 #define CAN_ID_ACTUATOR_ENCODER 0x209 //based on saito-san's CAN ID assignment
 #define CAN_ID_ACTUATOR_CURRENT 0x20a //based on saito-san's CAN ID assignment
-#define CAN_DATALENGTH_ACTUATOR_CONTROL 6 //sizeof(actuator_controller::can_format_control)
 #define CAN_DATALENGTH_ACTUATOR_ENCODER 6
 #define CAN_DATALENGTH_ACTUATOR_CURRENT 8
 
@@ -42,14 +41,14 @@
 
 namespace lexxhard {
 
-char __aligned(4) msgq_can_actuator_control_buffer[8 * CAN_DATALENGTH_ACTUATOR_CONTROL];
+char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof(actuator_controller::can_format_control)];
 k_msgq msgq_can_actuator_control;
 
 class ros_actuator {
 public:
     int init() {
         //can device bind
-        k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, CAN_DATALENGTH_ACTUATOR_CONTROL, 8);
+        k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
         dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
             return -1;
@@ -107,7 +106,6 @@ private:
     const device *dev{nullptr};
 };
 
-//k_msgq msgq_can_actuator_control;
 }
 
 // vim: set expandtab shiftwidth=4:

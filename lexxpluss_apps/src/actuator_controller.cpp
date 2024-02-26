@@ -34,7 +34,6 @@
 #include <cstdlib>
 #include <tuple>
 #include "actuator_controller.hpp"
-#include "actuator_controller.cpp" // can delete
 #include "adc_reader.hpp"
 #include "can_controller.hpp"
 
@@ -149,18 +148,18 @@ public:
     int init(POS pos) {
         int result{0};
         switch (pos) {
-        // case POS::LEFT:
+        case POS::LEFT:
         //     result = enc.init(TIM3);
         //     mm_per_pulse = 50.0f / 1054.0f;
-        //     break;
+             break;
         case POS::CENTER:
             result = enc.init(TIM4);
             mm_per_pulse = 50.0f / 1054.0f;
             break;
-        // case POS::RIGHT:
+        case POS::RIGHT:
         //     result = enc.init(TIM1);
         //     mm_per_pulse = 50.0f / 1054.0f;
-        //     break;
+             break;
         }
         reset_pulse();
         return result;
@@ -210,24 +209,24 @@ class pwm_driver {
 public:
     int init(POS pos) {
         switch (pos) {
-        // case POS::LEFT:
+        case POS::LEFT:
         //     dev[0] = device_get_binding("PWM_8");
         //     dev[1] = dev[0];
         //     pin[0] = 1;
         //     pin[1] = 2;
-        //     break;
+             break;
         case POS::CENTER:
             dev[0] = device_get_binding("PWM_5");
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
-        // case POS::RIGHT:
+        case POS::RIGHT:
         //     dev[0] = device_get_binding("PWM_2");
         //     dev[1] = dev[0];
         //     pin[0] = 3;
         //     pin[1] = 4;
-        //     break;
+             break;
         }
         if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
             return -1;
@@ -468,15 +467,15 @@ public:
         // int heartbeat_led{1};
         // for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
         //     act[i].reset();
-        // uint32_t prev_cycle{k_cycle_get_32()};
+        uint32_t prev_cycle{k_cycle_get_32()};
 
         while (true) {
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
             bool is_emergency{can_controller::is_emergency()};  // -> board controller
-            msg_control ros2actuator;
-            if (k_msgq_get(&msgq_control, &ros2actuator, K_NO_WAIT) == 0 && !is_emergency)
-                handle_control(ros2actuator);
+            msg_control can2actuator;
+            if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency)
+                handle_control(can2actuator);
             msg_pwmtrampoline pwmtrampoline;
             if (k_msgq_get(&msgq_pwmtrampoline, &pwmtrampoline, K_NO_WAIT) == 0 && !is_emergency)
                 handle_pwmtrampoline(pwmtrampoline);
@@ -490,7 +489,7 @@ public:
                 for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
                     int8_t direction;
                     uint8_t duty;
-                    std::tie(actuator2ros.encoder_count[i],
+                    std::tie(actuator2can.encoder_count[i],
                              actuator2can.current[i],
                              actuator2can.fail[i],
                              direction,

@@ -47,6 +47,7 @@ struct can_format_current {
 
 struct msg_control {
 
+    msg_control(){}
     msg_control(can_format_control frame)
     : actuators
     {
@@ -84,8 +85,6 @@ int init_location();
 int to_location(const uint8_t (&location)[3], const uint8_t (&power)[3], uint8_t (&detail)[3]);
 extern k_thread thread;
 extern k_msgq msgq, msgq_control;
-
-// k_msgq msgq_can_actuator_control;
 
 }
 
