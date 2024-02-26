@@ -40,7 +40,8 @@
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 		zephyr,dtcm = &dtcm;
-		zephyr,can-primary = &can2;
+		zephyr,can-primary = &can1;
+		zephyr,can-secondary = &can2;
 	};
 
 	soc {
@@ -282,6 +283,17 @@
 		pinctrl-0 = <&tim8_ch1_pi5 &tim8_ch2_pi6>;
 		pinctrl-names = "default";
 	};
+};
+
+&can1 {
+	pinctrl-0 = <&can1_rx_ph14 &can1_tx_ph13>;
+	pinctrl-names = "default";
+	bus-speed = <500000>;
+	sjw = <1>;
+	prop-seg = <0>;
+	phase-seg1 = <5>;
+	phase-seg2 = <6>;
+	status = "okay";
 };
 
 &can2 {
