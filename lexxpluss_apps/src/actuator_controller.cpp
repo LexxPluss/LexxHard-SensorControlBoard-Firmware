@@ -389,7 +389,7 @@ public:
     // }
 private:
     int32_t calc_current(int32_t adc_voltage_mv) const {
-        static constexpr float AMP_GAIN{20.0f}, VOLTAGE_DIVIDER{3.0f}, SHUNT_REGISTER{0.1f};
+        static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
         float current_a{adc_voltage_mv * 1e-3f / AMP_GAIN * VOLTAGE_DIVIDER / SHUNT_REGISTER};
         return static_cast<int32_t>(current_a * 1e+3f);
     }
