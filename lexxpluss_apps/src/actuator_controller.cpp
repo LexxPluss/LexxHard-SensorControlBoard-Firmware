@@ -58,7 +58,7 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
     //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     //     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
     //     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-    //} else 
+    // } else 
     if(htim_encoder->Instance == TIM4) {
         __HAL_RCC_TIM4_CLK_ENABLE();
         __HAL_RCC_GPIOD_CLK_ENABLE();
@@ -78,8 +78,6 @@ LOG_MODULE_REGISTER(actuator);
 char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
-// char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof (ms)];
-
 static constexpr uint32_t ACTUATOR_NUM{3};
 
 struct msg_pwmtrampoline {
@@ -94,7 +92,7 @@ enum class POS {
     LEFT, CENTER, RIGHT
 };
 
-//This is the class of the HAL encoder so we will use only for center actuator probably
+// This is the class of the HAL encoder so we will use only for center actuator probably
 class encoder {
 public:
     int init(TIM_TypeDef *tim) {
@@ -139,7 +137,7 @@ private:
     TIM_HandleTypeDef timh;
 };
 
-//This class for encoder count, this calls encoder class
+// This class for encoder count, this calls encoder class
 
 // May be we can add software-encoder features here?
 
@@ -149,17 +147,17 @@ public:
         int result{0};
         switch (pos) {
         case POS::LEFT:
-        //     result = enc.init(TIM3);
-        //     mm_per_pulse = 50.0f / 1054.0f;
-             break;
+            // result = enc.init(TIM3);
+            // mm_per_pulse = 50.0f / 1054.0f;
+            break;
         case POS::CENTER:
             result = enc.init(TIM4);
             mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::RIGHT:
-        //     result = enc.init(TIM1);
-        //     mm_per_pulse = 50.0f / 1054.0f;
-             break;
+            // result = enc.init(TIM1);
+            // mm_per_pulse = 50.0f / 1054.0f;
+            break;
         }
         reset_pulse();
         return result;
@@ -204,17 +202,17 @@ private:
     int32_t velocity{0}, pulse_value{0}, prev_pulse_value{0};
 };
 
-//This class for control 2 GPIOs as PWM
+// This class for control 2 GPIOs as PWM
 class pwm_driver {
 public:
     int init(POS pos) {
         switch (pos) {
         case POS::LEFT:
-        //     dev[0] = device_get_binding("PWM_8");
-        //     dev[1] = dev[0];
-        //     pin[0] = 1;
-        //     pin[1] = 2;
-             break;
+            // dev[0] = device_get_binding("PWM_8");
+            // dev[1] = dev[0];
+            // pin[0] = 1;
+            // pin[1] = 2;
+            break;
         case POS::CENTER:
             dev[0] = device_get_binding("PWM_5");
             dev[1] = dev[0];
@@ -222,11 +220,11 @@ public:
             pin[1] = 2;
             break;
         case POS::RIGHT:
-        //     dev[0] = device_get_binding("PWM_2");
-        //     dev[1] = dev[0];
-        //     pin[0] = 3;
-        //     pin[1] = 4;
-             break;
+            // dev[0] = device_get_binding("PWM_2");
+            // dev[1] = dev[0];
+            // pin[0] = 3;
+            // pin[1] = 4;
+            break;
         }
         if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
             return -1;
@@ -257,7 +255,7 @@ private:
     static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
 };
 
-//This calls counter, 
+// This calls counter
 class position_control {
 public:
     position_control(counter &cnt) : cnt(cnt) {}
@@ -317,7 +315,7 @@ private:
     static constexpr float POS_P{1.0f}, VEL_P{0.0f}, VEL_I{0.13f};
 };
 
-//This calls all
+// This calls all
 class actuator {
 public:
     int init(POS pos) {
@@ -429,7 +427,7 @@ public:
     }
 
     void run() {
-        //Enable Pin, Reset Functions
+        // Enable Pin, Reset Functions
         const device *dev_enable{device_get_binding("GPIOJ")};
         if (device_is_ready(dev_enable))
             gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
@@ -460,7 +458,7 @@ public:
         };
         reset_actuator();
 
-        //Heartbeat LED 5
+        // Heartbeat LED 5
         // const device *gpiog{device_get_binding("GPIOG")};
         // if (device_is_ready(gpiog))
         //     gpio_pin_configure(gpiog, 5, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);

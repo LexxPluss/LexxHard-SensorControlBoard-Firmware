@@ -31,9 +31,9 @@
 #include <drivers/can.h>
 #include "actuator_controller.hpp"
 
-#define CAN_ID_ACTUATOR_CONTROL 0x208 //based on saito-san's CAN ID assignment
-#define CAN_ID_ACTUATOR_ENCODER 0x209 //based on saito-san's CAN ID assignment
-#define CAN_ID_ACTUATOR_CURRENT 0x20a //based on saito-san's CAN ID assignment
+#define CAN_ID_ACTUATOR_CONTROL 0x208 // based on saito-san's CAN ID assignment
+#define CAN_ID_ACTUATOR_ENCODER 0x209 // based on saito-san's CAN ID assignment
+#define CAN_ID_ACTUATOR_CURRENT 0x20a // based on saito-san's CAN ID assignment
 #define CAN_DATALENGTH_ACTUATOR_ENCODER 6
 #define CAN_DATALENGTH_ACTUATOR_CURRENT 8
 
@@ -47,13 +47,13 @@ k_msgq msgq_can_actuator_control;
 class ros_actuator {
 public:
     int init() {
-        //can device bind
+        // can device bind
         k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
         dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
             return -1;
 
-        //setup can filter
+        // setup can filter
         static const zcan_filter filter_actuator_control{
             .id{CAN_ID_ACTUATOR_CONTROL},
             .rtr{CAN_DATAFRAME},
@@ -65,7 +65,7 @@ public:
         return 0;
     }
     void poll() {
-        //send to IPC of sensor informations
+        // send to IPC of sensor informations
         actuator_controller::msg message;
         while (k_msgq_get(&actuator_controller::msgq, &message, K_NO_WAIT) == 0) {
 
@@ -93,7 +93,7 @@ public:
             can_send(dev, &can_frame_actuator_current, K_MSEC(100), nullptr, nullptr);
         }
 
-        //receive from IPC of motion control
+        // receive from IPC of motion control
         while (k_msgq_get(&msgq_can_actuator_control, &frame_cntl, K_NO_WAIT) == 0) {
             msg_cntl = actuator_controller::msg_control(frame_cntl);
             while (k_msgq_put(&actuator_controller::msgq_control, &msg_cntl, K_NO_WAIT) != 0)
