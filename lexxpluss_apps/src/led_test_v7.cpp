@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024, LexxPluss Inc.
+ * Copyright (c) 2024, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -24,45 +24,44 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
-#include "can_test_v7.hpp"
+#include <algorithm>
 #include "led_test_v7.hpp"
 
 namespace {
 
-void reset_usb_hub()
-{
-    if (const gpio_dt_spec reset = GPIO_DT_SPEC_GET(DT_NODELABEL(hubreset), gpios); gpio_is_ready_dt(&reset)) {
-        gpio_pin_configure_dt(&reset, GPIO_OUTPUT_ACTIVE);
-        k_msleep(1);
-        gpio_pin_set_dt(&reset, 0);
-        k_msleep(1);
-        gpio_pin_set_dt(&reset, 1);
-    }
-}
+constexpr led_rgb black{0, 0, 0}, white{32, 32, 32};
 
 }
 
-int main()
+namespace lexxhard {
+
+int led_test_v7::init()
 {
-    reset_usb_hub();
-    const gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_NODELABEL(led1), gpios);
-    gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
-    lexxhard::can_test_v7 can_test;
-    lexxhard::led_test_v7 led_test;
-    can_test.init();
-    led_test.init();
-    auto prev{k_cycle_get_32()};
-    while (true) {
-        if (auto now{k_cycle_get_32()}; k_cyc_to_ms_near32(now - prev) > 1'000) {
-            prev = now;
-            gpio_is_ready_dt(&led) && gpio_pin_toggle_dt(&led);
-        }
-        can_test.poll();
-        led_test.poll();
-        k_msleep(10);
+    dev = DEVICE_DT_GET(DT_NODELABEL(led_strip2));
+    if (!device_is_ready(dev))
+        return -1;
+    update(black);
+    prev = k_cycle_get_32();
+    return 0;
+}
+
+int led_test_v7::poll()
+{
+    if (!device_is_ready(dev))
+        return -1;
+    if (auto now{k_cycle_get_32()}; k_cyc_to_ms_near32(now - prev) > 1'000) {
+        prev = now;
+        update(pixeldata[0].r == 0 ? white : black);
     }
     return 0;
+}
+
+void led_test_v7::update(const led_rgb &color)
+{
+    std::fill(pixeldata, pixeldata + PIXELS, color);
+    led_strip_update_rgb(dev, pixeldata, PIXELS);
+}
+
 }
 
 // vim: set expandtab shiftwidth=4:

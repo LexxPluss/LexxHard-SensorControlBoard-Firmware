@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024, LexxPluss Inc.
+ * Copyright (c) 2024, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,46 +23,23 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
-#include "can_test_v7.hpp"
-#include "led_test_v7.hpp"
+#pragma once
 
-namespace {
+#include <zephyr/device.h>
+#include <zephyr/drivers/led_strip.h>
 
-void reset_usb_hub()
-{
-    if (const gpio_dt_spec reset = GPIO_DT_SPEC_GET(DT_NODELABEL(hubreset), gpios); gpio_is_ready_dt(&reset)) {
-        gpio_pin_configure_dt(&reset, GPIO_OUTPUT_ACTIVE);
-        k_msleep(1);
-        gpio_pin_set_dt(&reset, 0);
-        k_msleep(1);
-        gpio_pin_set_dt(&reset, 1);
-    }
+namespace lexxhard {
+
+class led_test_v7 {
+public:
+    int init();
+    int poll();
+private:
+    void update(const led_rgb &color);
+    const device *dev{nullptr};
+    uint32_t prev;
+    static constexpr uint32_t PIXELS{DT_PROP(DT_NODELABEL(led_strip2), chain_length)};
+    led_rgb pixeldata[PIXELS];
+};
+
 }
-
-}
-
-int main()
-{
-    reset_usb_hub();
-    const gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_NODELABEL(led1), gpios);
-    gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
-    lexxhard::can_test_v7 can_test;
-    lexxhard::led_test_v7 led_test;
-    can_test.init();
-    led_test.init();
-    auto prev{k_cycle_get_32()};
-    while (true) {
-        if (auto now{k_cycle_get_32()}; k_cyc_to_ms_near32(now - prev) > 1'000) {
-            prev = now;
-            gpio_is_ready_dt(&led) && gpio_pin_toggle_dt(&led);
-        }
-        can_test.poll();
-        led_test.poll();
-        k_msleep(10);
-    }
-    return 0;
-}
-
-// vim: set expandtab shiftwidth=4:
