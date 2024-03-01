@@ -175,13 +175,13 @@
 &spi5 {
 	pinctrl-0 = <&spi5_nss_pf6 &spi5_sck_pf7 &spi5_miso_pf8 &spi5_mosi_pf9>;
 	pinctrl-names = "default";
-	clock-frequency = <2000000>;
+	clock-frequency = <600000>;
 	status = "okay";
 	adis16470: adis16470@0 {
 		compatible = "adi,adis16470";
 		reg = <0>;
-		spi-max-frequency = <2000000>;
-		/* int-gpios = <&gpiof 2 GPIO_ACTIVE_HIGH>; */
+		spi-max-frequency = <600000>;
+		int-gpios = <&gpiof 2 GPIO_ACTIVE_HIGH>;
 	};
 };
 
