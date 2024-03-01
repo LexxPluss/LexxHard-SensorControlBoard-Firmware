@@ -30,12 +30,12 @@ namespace {
 
 void reset_usb_hub()
 {
-    if (const device *gpioj{device_get_binding("GPIOJ")}; device_is_ready(gpioj)) {
-        gpio_pin_configure(gpioj, 13, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    if (const gpio_dt_spec reset = GPIO_DT_SPEC_GET(DT_NODELABEL(hubreset), gpios); gpio_is_ready_dt(&reset)) {
+        gpio_pin_configure_dt(&reset, GPIO_OUTPUT_ACTIVE);
         k_msleep(1);
-        gpio_pin_set(gpioj, 13, 0);
+        gpio_pin_set_dt(&reset, 0);
         k_msleep(1);
-        gpio_pin_set(gpioj, 13, 1);
+        gpio_pin_set_dt(&reset, 1);
     }
 }
 
@@ -44,15 +44,10 @@ void reset_usb_hub()
 int main()
 {
     reset_usb_hub();
-    const device *gpiog{device_get_binding("GPIOG")};
-    if (gpiog != nullptr)
-        gpio_pin_configure(gpiog, 7, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    int heartbeat_led{1};
+    const gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_NODELABEL(led1), gpios);
+    gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
     while (true) {
-        if (gpiog != nullptr) {
-            gpio_pin_set(gpiog, 7, heartbeat_led);
-            heartbeat_led = !heartbeat_led;
-        }
+        gpio_is_ready_dt(&led) && gpio_pin_toggle_dt(&led);
         k_msleep(1000);
     }
     return 0;
