@@ -23,12 +23,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <device.h>
-#include <drivers/can.h>
-#include <shell/shell.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/shell/shell.h>
 #include <algorithm>
-#include <logging/log.h>
+#include <zephyr/logging/log.h>
 #include "can_dummy_v7_2.hpp"
 
 namespace {
@@ -39,10 +39,8 @@ void send_can_data(const device *dev, uint32_t id, const uint8_t *data, uint8_t 
 {
     if (dlc > CAN_MAX_DLEN)
         return;
-    zcan_frame frame{
+    can_frame frame{
         .id{id},
-        .rtr{CAN_DATAFRAME},
-        .id_type{CAN_STANDARD_IDENTIFIER},
         .dlc{dlc}
     };
     std::copy(data, data + dlc, frame.data);
@@ -69,7 +67,7 @@ void receive_can1_data(const uint8_t *data)
     LOG_INF("receive data: %d %d %d %d %d %d %d %d\n",data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
 }
 
-CAN_DEFINE_MSGQ(msgq_can1, 8);
+CAN_MSGQ_DEFINE(msgq_can1, 8);
 
 }
 
@@ -78,20 +76,21 @@ namespace lexxhard::can_dummy_v7_2 {
 class can_dummy_v7_2_impl {
 public:
     int init() {
-        dev = device_get_binding("CAN_1");
+        // dev = device_get_binding("CAN_1");
+        dev = device_get_binding("can@40006400");
+
         if (!device_is_ready(dev)){
             LOG_INF("CAN1 not ready at init\n");
             return -1;
         }
-        can_configure(dev, CAN_NORMAL_MODE, 1'000'000);
-        static const zcan_filter filter{
+        can_set_bitrate(dev, 1000000);
+        can_set_mode(dev, CAN_MODE_NORMAL);
+
+        static const can_filter filter{
             .id{0x204},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7ff},
-            .rtr_mask{1}
+            .mask{0x7ff},
         };
-        can_attach_msgq(dev, &msgq_can1, &filter);
+        can_add_rx_filter_msgq(dev, &msgq_can1, &filter);
         LOG_INF("CAN1 init\n");
         return 0;
     }
@@ -102,14 +101,14 @@ public:
             return;
         }
         while (true) {
-            uint32_t now_cycle{k_cycle_get_32()};
-            uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
-            if (dt_ms > 1'000) {
-                prev_cycle = now_cycle;
-                send_can1_data(dev);
-                // ++acc_gyro_counter;
-            }
-            zcan_frame frame;
+            // uint32_t now_cycle{k_cycle_get_32()};
+            // uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
+            // if (dt_ms > 1'000) {
+            //     prev_cycle = now_cycle;
+            //     send_can1_data(dev);
+            //     // ++acc_gyro_counter;
+            // }
+            can_frame frame;
             if (k_msgq_get(&msgq_can1, &frame, K_NO_WAIT) == 0) {
                 switch (frame.id) {
                 case 0x204: receive_can1_data(frame.data); break;

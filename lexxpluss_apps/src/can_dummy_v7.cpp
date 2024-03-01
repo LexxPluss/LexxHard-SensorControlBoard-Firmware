@@ -23,11 +23,11 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <device.h>
-#include <drivers/can.h>
-#include <shell/shell.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/shell/shell.h>
+#include <zephyr/logging/log.h>
 #include <algorithm>
 #include "can_dummy_v7.hpp"
 
@@ -39,10 +39,8 @@ void send_can_data(const device *dev, uint32_t id, const uint8_t *data, uint8_t 
 {
     if (dlc > CAN_MAX_DLEN)
         return;
-    zcan_frame frame{
+    can_frame frame{
         .id{id},
-        .rtr{CAN_DATAFRAME},
-        .id_type{CAN_STANDARD_IDENTIFIER},
         .dlc{dlc}
     };
     std::copy(data, data + dlc, frame.data);
@@ -69,7 +67,7 @@ void receive_can2_data(const uint8_t *data)
     LOG_INF("receive data: %d %d %d %d %d %d %d %d\n", data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
 }
 
-CAN_DEFINE_MSGQ(msgq_can2, 8);
+CAN_MSGQ_DEFINE(msgq_can2, 8);
 
 }
 
@@ -78,23 +76,22 @@ namespace lexxhard::can_dummy_v7 {
 class can_dummy_v7_impl {
 public:
     int init() {
-        dev = device_get_binding("CAN_2");
-        // dev = device_get_binding("can@40006800");
+        // dev = device_get_binding("CAN_2");
+        dev = device_get_binding("can@40006800");
 
         if (!device_is_ready(dev)){
             LOG_INF("CAN2 not ready at init\n");
             return -1;
         }
 
-        can_configure(dev, CAN_NORMAL_MODE, 1'000'000);
-        static const zcan_filter filter{
+        can_set_bitrate(dev, 1000000);
+        can_set_mode(dev, CAN_MODE_NORMAL);
+        
+        static const can_filter filter{
             .id{0x203},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7ff},
-            .rtr_mask{1}
+            .mask{0x7ff},
         };
-        can_attach_msgq(dev, &msgq_can2, &filter);
+        can_add_rx_filter_msgq(dev, &msgq_can2, &filter);
         LOG_INF("CAN2 init\n");
         return 0;
     }
@@ -112,7 +109,7 @@ public:
                 send_can2_data(dev);
                 // ++acc_gyro_counter;
             }
-            zcan_frame frame;
+            can_frame frame;
             if (k_msgq_get(&msgq_can2, &frame, K_NO_WAIT) == 0) {
                 switch (frame.id) {
                 case 0x203: receive_can2_data(frame.data); break;

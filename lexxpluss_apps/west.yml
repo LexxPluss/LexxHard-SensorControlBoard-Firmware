@@ -28,7 +28,7 @@ manifest:
   projects:
     - name: zephyr
       url: https://github.com/zephyrproject-rtos/zephyr
-      revision: refs/tags/zephyr-v3.5.0
+      revision: refs/tags/zephyr-v3.4.0
       import: true
     - name: ros_msgs
       remote: lexxpluss

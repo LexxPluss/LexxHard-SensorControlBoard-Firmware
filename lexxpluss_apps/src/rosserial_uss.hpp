@@ -52,7 +52,7 @@ public:
     }
 private:
     std_msgs::Float64MultiArray msg;
-    float msg_data[5];
+    double msg_data[5];
     ros::Publisher pub{"/sensor_set/ultrasonic", &msg};
 };
 
