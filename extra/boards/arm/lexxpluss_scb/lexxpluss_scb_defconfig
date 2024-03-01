@@ -1,15 +1,15 @@
-# Copyright (c) 2022-2024, LexxPluss Inc.
+# Copyright (c) 2024, LexxPluss Inc.
 # All rights reserved.
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
-# 
+#
 # 1. Redistributions of source code must retain the above copyright notice,
 #    this list of conditions and the following disclaimer.
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 #    this list of conditions and the following disclaimer in the documentation
 #    and/or other materials provided with the distribution.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
 # WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -21,29 +21,31 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-description: MaxBotix Ultrasonic Ranging Module
+CONFIG_SOC_SERIES_STM32F7X=y
+CONFIG_SOC_STM32F769XX=y
 
-compatible: "maxbotix,maxbotix"
+CONFIG_ARM_MPU=y
 
-include: base.yaml
+CONFIG_HW_STACK_PROTECTION=y
 
-properties:
-  # label:
-  #   required: true
-  #   type: string
-  #   description: Human readable string describing the device (used as device_get_binding() argument)
+CONFIG_SERIAL=y
 
-  status:
-    required: true
-    type: string
-    description: Human readable string describing the device's status
+CONFIG_CONSOLE=y
+CONFIG_UART_CONSOLE=y
 
-  trig-gpios:
-    type: phandle-array
-    description: Trigger pin
-    required: true
+CONFIG_GPIO=y
+CONFIG_SPI=y
+CONFIG_ADC=y
+CONFIG_PWM=y
+CONFIG_CAN=y
+CONFIG_I2C=y
 
-  echo-gpios:
-    type: phandle-array
-    description: Echo pin
-    required: true
+CONFIG_CLOCK_CONTROL=y
+
+CONFIG_LOG=y
+
+CONFIG_LED_STRIP=y
+CONFIG_WS2812_STRIP=y
+CONFIG_SENSOR=y
+
+CONFIG_PINCTRL=y

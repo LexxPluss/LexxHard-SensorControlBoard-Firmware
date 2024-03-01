@@ -1,4 +1,4 @@
-# Copyright (c) 2022, LexxPluss Inc.
+# Copyright (c) 2022-2024, LexxPluss Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -26,10 +26,7 @@ cmake_minimum_required(VERSION 3.13.1)
 find_package(Zephyr)
 project(lexxpluss_apps)
 
-FILE(GLOB app_sources src/*.cpp)
-FILE(GLOB ros_sources ../ros_msgs/*.cpp)
-target_sources(app PRIVATE ${app_sources} ${ros_sources})
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs)
+target_sources(app PRIVATE src/main.cpp)
 
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)
