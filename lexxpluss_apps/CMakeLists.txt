@@ -26,7 +26,7 @@ cmake_minimum_required(VERSION 3.13.1)
 find_package(Zephyr)
 project(lexxpluss_apps)
 
-target_sources(app PRIVATE src/main.cpp)
+target_sources(app PRIVATE src/main.cpp src/can_test_v7.cpp)
 
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)
