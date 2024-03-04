@@ -44,11 +44,20 @@ struct msg_bmu {
     uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
 } __attribute__((aligned(4)));
 
+struct msg_rawframe_bmu {
+    uint8_t frame[8];
+} __attribute__((aligned(4)));
+
+
+struct msg_can_bmu {
+    uint8_t frame[8];
+} __attribute__((aligned(4)));
+
 void init();
 void run(void *p1, void *p2, void *p3);
 uint32_t get_rsoc();
 extern k_thread thread;
-extern k_msgq msgq_bmu, msgq_board, msgq_control;
+extern k_msgq msgq_parsed_bmu, msgq_can_recv_bmu, msgq_rawframe_bmu, msgq_board, msgq_control;
 }
 
 // vim: set expandtab shiftwidth=4:

@@ -17,7 +17,7 @@
  * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
  * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
  * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * LOSS OF USE, DATA, OR PROFI TS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
  * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
@@ -37,26 +37,23 @@ namespace lexxhard::bmu_controller {
 LOG_MODULE_REGISTER(bmu);
 
 char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
+char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (msg_rawframe_bmu)];
 
-CAN_DEFINE_MSGQ(msgq_can_bmu, 16);
+CAN_DEFINE_MSGQ(msgq_can_recv_bmu, 16);
 
 class bmu_controller_impl {
 public:
     int init() {
-        //k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
+        k_msgq_init(&msgq_parsed_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
+        k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (msg_rawframe_bmu), 8);
         dev_can_bmu = device_get_binding("CAN_1");
         if (!device_is_ready(dev_can_bmu))
-            return -1;
-        dev_can_ipc = device_get_binding("CAN_2");
-        if (!device_is_ready(dev_can_ipc))
             return -1;
         return 0;
     }
 
     void run() {
         if (!device_is_ready(dev_can_bmu))
-            return;
-        if (!device_is_ready(dev_can_ipc))
             return;
         static const zcan_filter filter_bmu{
             .id{0x100},
@@ -65,18 +62,19 @@ public:
             .id_mask{0x7c0},
             .rtr_mask{1}
         };
-        can_attach_msgq(dev_can_bmu, &msgq_can_bmu, &filter_bmu);
-
-        //setup_can_ipc_frame();
+        can_attach_msgq(dev_can_bmu, &msgq_can_recv_bmu, &filter_bmu);
 
         while (true) {
             zcan_frame frame;
-            if (k_msgq_get(&msgq_can_bmu, &frame, K_NO_WAIT) == 0) {
-                // if (handler_bmu(frame)) {
-                //     while (k_msgq_put(&msgq_bmu, &msg, K_NO_WAIT) != 0)
-                //         k_msgq_purge(&msgq_bmu);
-                // }
-                can_send(dev_can_ipc, &frame, K_MSEC(100), nullptr, nullptr); //path thru from BMU to ipc
+            if (k_msgq_get(&msgq_can_recv_bmu, &frame, K_NO_WAIT) == 0) {
+                // -> raw packet to can_bmu
+                while (k_msgq_put(&msgq_rawframe_bmu, frame.data, K_NO_WAIT) != 0)
+                    k_msgq_purge(&msgq_rawframe_bmu);
+                // -> parsed info to board_controller
+                if (handler_bmu(frame)) {
+                    while (k_msgq_put(&msgq_parsed_bmu, &msg, K_NO_WAIT) != 0)
+                        k_msgq_purge(&msgq_parsed_bmu);
+                }
             }
             else
             {
@@ -204,7 +202,7 @@ uint32_t get_rsoc()
 }
 
 k_thread thread;
-k_msgq msgq_bmu;
+k_msgq msgq_parsed_bmu, msgq_rawframe_bmu;
 
 }
 
