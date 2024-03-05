@@ -89,7 +89,7 @@ struct msg_pwmtrampoline {
 K_MSGQ_DEFINE(msgq_pwmtrampoline, sizeof (msg_pwmtrampoline), 8, 4);
 
 enum class POS {
-    LEFT, CENTER, RIGHT
+    CENTER, LEFT, RIGHT
 };
 
 // This is the class of the HAL encoder so we will use only for center actuator probably
@@ -146,13 +146,13 @@ public:
     int init(POS pos) {
         int result{0};
         switch (pos) {
-        case POS::LEFT:
-            // result = enc.init(TIM3);
-            // mm_per_pulse = 50.0f / 1054.0f;
-            break;
         case POS::CENTER:
             result = enc.init(TIM4);
             mm_per_pulse = 50.0f / 1054.0f;
+            break;
+        case POS::LEFT:
+            // result = enc.init(TIM3);
+            // mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::RIGHT:
             // result = enc.init(TIM1);
@@ -207,17 +207,17 @@ class pwm_driver {
 public:
     int init(POS pos) {
         switch (pos) {
-        case POS::LEFT:
-            // dev[0] = device_get_binding("PWM_8");
-            // dev[1] = dev[0];
-            // pin[0] = 1;
-            // pin[1] = 2;
-            break;
         case POS::CENTER:
             dev[0] = device_get_binding("PWM_5");
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
+            break;
+        case POS::LEFT:
+            // dev[0] = device_get_binding("PWM_8");
+            // dev[1] = dev[0];
+            // pin[0] = 1;
+            // pin[1] = 2;
             break;
         case POS::RIGHT:
             // dev[0] = device_get_binding("PWM_2");
@@ -323,16 +323,16 @@ public:
             return -1;
         cnt.init(pos);
         switch (pos) {
-        case POS::LEFT:
-            current_adc = adc_reader::ACTUATOR_0;
-            fail_checker.init("GPIOG", 8);
-            break;
         case POS::CENTER:
-            current_adc = adc_reader::ACTUATOR_1;
+            current_adc = adc_reader::ACTUATOR_C;
             fail_checker.init("GPIOD", 10);
             break;
+        case POS::LEFT:
+            current_adc = adc_reader::ACTUATOR_L;
+            fail_checker.init("GPIOG", 8);
+            break;
         case POS::RIGHT:
-            current_adc = adc_reader::ACTUATOR_2;
+            current_adc = adc_reader::ACTUATOR_R;
             fail_checker.init("GPIOE", 10);
             break;
         }
@@ -419,8 +419,8 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        if (act[0].init(POS::LEFT) != 0 ||
-            act[1].init(POS::CENTER) != 0 ||
+        if (act[0].init(POS::CENTER) != 0 ||
+            act[1].init(POS::LEFT) != 0 ||
             act[2].init(POS::RIGHT) != 0)
             return -1;
         return 0;
@@ -543,6 +543,7 @@ public:
     void set_current_monitor() const {
     }
     void info(const shell *shell) const {
+        shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             auto [pulse, current, fail, direction, duty]{act[i].get_info()};
             shell_print(shell,
@@ -609,6 +610,7 @@ private:
 
 int cmd_duty(const shell *shell, size_t argc, char **argv)
 {
+    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <direction> <power> ...\n", argv[-1], argv[0]);
         return 1;
@@ -624,6 +626,7 @@ int cmd_duty(const shell *shell, size_t argc, char **argv)
 
 int cmd_init(const shell *shell, size_t argc, char **argv)
 {
+    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
     if (impl.init_location() != 0)
         shell_print(shell, "init error.");
     return 0;
@@ -631,6 +634,7 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
 
 int locate(const shell *shell, size_t argc, char **argv)
 {
+    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
     uint8_t location[ACTUATOR_NUM]{0, 0, 0}, power[ACTUATOR_NUM]{0, 0, 0}, detail[ACTUATOR_NUM]{0, 0, 0};
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <location> <power> ...\n", argv[-1], argv[0]);
