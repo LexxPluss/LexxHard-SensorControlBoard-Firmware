@@ -35,15 +35,15 @@
 
 namespace lexxhard {
 
-char __aligned(4) msgq_led_buffer[8 * sizeof (msg_led)];
-
+char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
+k_msgq msgq_can_led;
 
 class can_led {
 public:
     int init()
     {
         //can device bind`
-        k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (msg_led), 8);
+        k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (led_controller::msg), 8);
         dev = device_get_binding("CAN_2");
         if (!device_is_ready(dev))
             return -1;
@@ -73,8 +73,6 @@ private:
     led_controller::msg can2led;
     const device *dev{nullptr};
 };
-
-k_msgq msgq_can_led;
 }
 
 // vim: set expandtab shiftwidth=4:
