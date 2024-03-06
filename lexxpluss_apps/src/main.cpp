@@ -87,7 +87,6 @@ void main()
     lexxhard::misc_controller::init();
     lexxhard::pgv_controller::init();
     lexxhard::rosserial::init();
-    lexxhard::rosserial_service::init();
     lexxhard::runaway_detector::init();
     lexxhard::tof_controller::init();
     lexxhard::uss_controller::init();
@@ -104,7 +103,6 @@ void main()
     RUN(uss_controller, 2);
     RUN(runaway_detector, 4);
     RUN(rosserial, 5); // The rosserial thread will be started last.
-    RUN(rosserial_service, 6); // The rosserial thread will be started last.
     const device *gpiog{device_get_binding("GPIOG")};
     if (gpiog != nullptr)
         gpio_pin_configure(gpiog, 7, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);

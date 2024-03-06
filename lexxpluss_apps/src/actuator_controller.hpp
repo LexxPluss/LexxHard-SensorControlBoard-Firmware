@@ -29,7 +29,42 @@
 
 namespace lexxhard::actuator_controller {
 
+struct can_format_control {
+    int8_t direction[3]; // Center / Left / Right, -1:down, 0:stop, 1:up
+    uint8_t power_duty[3]; // Center / Left / Right, 0-100 duty[%]
+} __attribute__((aligned(4)));
+
+struct can_format_encoder {
+    can_format_encoder(int16_t enc0,int16_t enc1,int16_t enc2) : encoder_count{enc0, enc1, enc2} {} 
+    int16_t encoder_count[3]; // Center / Left / Right
+} __attribute__((aligned(4)));
+
+struct can_format_current {
+    can_format_current(int16_t cur0,int16_t cur1,int16_t cur2, int16_t con) : current_mv{cur0, cur1, cur2}, connection_mv(con) {} 
+    int16_t current_mv[3]; // Center / Left / Right
+    int16_t connection_mv;
+} __attribute__((aligned(4)));
+
 struct msg_control {
+
+    msg_control(){}
+    msg_control(can_format_control frame)
+    : actuators
+    {
+        {
+            frame.direction[0],
+            frame.power_duty[0]
+        },
+        {
+            frame.direction[1],
+            frame.power_duty[1]
+        },
+        {
+            frame.direction[2],
+            frame.power_duty[2]
+        }
+    } {}
+
     struct {
         int8_t direction;
         uint8_t power;

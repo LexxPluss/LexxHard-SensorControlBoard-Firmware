@@ -24,7 +24,6 @@
  */
 
 #include "rosserial_hardware_zephyr.hpp"
-#include "rosserial_actuator.hpp"
 #include "rosserial_bmu.hpp"
 #include "rosserial_board.hpp"
 #include "rosserial_dfu.hpp"
@@ -41,7 +40,6 @@ public:
     int init() {
         nh.getHardware()->set_baudrate(921600);
         nh.initNode(const_cast<char*>("UART_6"));
-        actuator.init(nh);
         bmu.init(nh);
         board.init(nh);
         dfu.init(nh);
@@ -54,7 +52,6 @@ public:
     void run() {
         while (true) {
             nh.spinOnce();
-            actuator.poll();
             bmu.poll();
             board.poll();
             dfu.poll();
@@ -67,7 +64,6 @@ public:
     }
 private:
     ros::NodeHandle nh;
-    ros_actuator actuator;
     ros_bmu bmu;
     ros_board board;
     ros_dfu dfu;

@@ -38,9 +38,9 @@ enum {
     DOWNWARD_L = 0,
     DOWNWARD_R,
     TROLLEY,
-    ACTUATOR_0,
-    ACTUATOR_1,
-    ACTUATOR_2,
+    ACTUATOR_L,
+    ACTUATOR_C,
+    ACTUATOR_R,
     NUM_CHANNELS
 };
 
