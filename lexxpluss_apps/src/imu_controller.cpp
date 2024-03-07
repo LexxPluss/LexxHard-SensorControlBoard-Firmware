@@ -45,8 +45,9 @@ public:
 
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 
-        dev = device_get_binding(DT_LABEL(DT_INST(0, invensense_icm42605))); //ICM-42605's register map is same as IIM-42652
-        
+        // dev = device_get_binding(DT_LABEL(DT_INST(0, invensense_icm42605))); //ICM-42605's register map is same as IIM-42652
+        dev = device_get_binding("ICM42605");
+
         if (!device_is_ready(dev)) {
             LOG_ERR("IMU device not found");
             return -1;
