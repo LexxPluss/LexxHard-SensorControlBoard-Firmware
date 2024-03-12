@@ -208,21 +208,18 @@ public:
     int init(POS pos) {
         switch (pos) {
         case POS::CENTER:
-            //LOG_INF("POS::CENTER 211");
             dev[0] = device_get_binding("PWM_5");
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::LEFT:
-            //LOG_INF("POS::LEFT 218");
             dev[0] = device_get_binding("PWM_8");
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::RIGHT:
-            //LOG_INF("POS::RIGHT 225");
             dev[0] = device_get_binding("PWM_2");
             dev[1] = dev[0];
             pin[0] = 3;
@@ -443,7 +440,6 @@ public:
         // };
         int fail_count{0};
         auto fail_check = [&](bool failed) {
-            // LOG_INF("fail_check 446");
             if (failed) {
                 static constexpr int fail_max{10};
                 if (fail_count < fail_max) {
@@ -462,7 +458,6 @@ public:
         };
         //reset_actuator();
 
-       // LOG_INF("HELLO ACT 461");
 
         // Heartbeat LED 5
         // const device *gpiog{device_get_binding("GPIOG")};
@@ -474,28 +469,22 @@ public:
         uint32_t prev_cycle{k_cycle_get_32()};
 
         while (true) {
-            //LOG_INF("ACT WHILE 473");
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
             bool is_emergency{can_controller::is_emergency()};  // -> board controller
-            //LOG_INF("ACT 477");
             msg_control can2actuator;
             if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency)
                 handle_control(can2actuator);
             msg_pwmtrampoline pwmtrampoline;
             if (k_msgq_get(&msgq_pwmtrampoline, &pwmtrampoline, K_NO_WAIT) == 0 && !is_emergency)
                 handle_pwmtrampoline(pwmtrampoline);
-            //LOG_INF("ACT 484");
-            if (is_emergency){//LOG_INF("ACT 485");
+            if (is_emergency){
                 pwm_direct_all(msg_control::STOP);}
-            //LOG_INF("ACT 487");
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
-            //LOG_INF("ACT WHILE 490");
             if (dt_ms > 20) {
                 prev_cycle = now_cycle;
                 bool failed{false};
-                //LOG_INF("ACT 494");
                 for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
                     int8_t direction;
                     uint8_t duty;
@@ -506,13 +495,9 @@ public:
                              duty) = act[i].get_info();
                     if (actuator2can.fail[i])
                         failed = true;
-                    //LOG_INF("ACT 502");
                 }
-                //LOG_INF("ACT 510");
                 fail_check(failed);
-                //LOG_INF("ACT 513");
                 actuator2can.connect = adc_reader::get(adc_reader::TROLLEY);
-                //LOG_INF("ACT 515");
                 while (k_msgq_put(&msgq, &actuator2can, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
                 // if (device_is_ready(gpiog)) {
@@ -592,7 +577,6 @@ private:
             act[msg.index].direct(msg.direction, msg.duty);
     }
     void pwm_direct_all(int direction, uint8_t pwm_duty = 0) {
-        //LOG_INF("pwm_direct_all 588");
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
             act[i].direct(direction, pwm_duty);
     }
