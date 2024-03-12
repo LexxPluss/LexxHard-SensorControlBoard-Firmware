@@ -59,16 +59,16 @@ extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
     //     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
     //     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
     // } else 
-    if(htim_encoder->Instance == TIM4) {
-        __HAL_RCC_TIM4_CLK_ENABLE();
-        __HAL_RCC_GPIOD_CLK_ENABLE();
-        GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-        GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
-        HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-    }
+    // if(htim_encoder->Instance == TIM4) {
+    //     __HAL_RCC_TIM4_CLK_ENABLE();
+    //     __HAL_RCC_GPIOD_CLK_ENABLE();
+    //     GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
+    //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    //     GPIO_InitStruct.Pull = GPIO_NOPULL;
+    //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    //     GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+    //     HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+    // }
 }
 
 namespace lexxhard::actuator_controller {
@@ -147,9 +147,9 @@ public:
         int result{0};
         switch (pos) {
         case POS::CENTER:
-            result = enc.init(TIM4);
-            mm_per_pulse = 50.0f / 1054.0f;
-            break;
+            // result = enc.init(TIM4);
+            // mm_per_pulse = 50.0f / 1054.0f;
+            // break;
         case POS::LEFT:
             // result = enc.init(TIM3);
             // mm_per_pulse = 50.0f / 1054.0f;
@@ -208,22 +208,25 @@ public:
     int init(POS pos) {
         switch (pos) {
         case POS::CENTER:
+            LOG_INF("POS::CENTER 211");
             dev[0] = device_get_binding("PWM_5");
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::LEFT:
-            // dev[0] = device_get_binding("PWM_8");
-            // dev[1] = dev[0];
-            // pin[0] = 1;
-            // pin[1] = 2;
+            LOG_INF("POS::LEFT 218");
+            dev[0] = device_get_binding("PWM_8");
+            dev[1] = dev[0];
+            pin[0] = 1;
+            pin[1] = 2;
             break;
         case POS::RIGHT:
-            // dev[0] = device_get_binding("PWM_2");
-            // dev[1] = dev[0];
-            // pin[0] = 3;
-            // pin[1] = 4;
+            LOG_INF("POS::RIGHT 225");
+            dev[0] = device_get_binding("PWM_2");
+            dev[1] = dev[0];
+            pin[0] = 3;
+            pin[1] = 4;
             break;
         }
         if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
@@ -428,23 +431,24 @@ public:
 
     void run() {
         // Enable Pin, Reset Functions
-        const device *dev_enable{device_get_binding("GPIOJ")};
-        if (device_is_ready(dev_enable))
-            gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        auto reset_actuator = [&]() {
-            if (device_is_ready(dev_enable)) {
-                gpio_pin_set(dev_enable, 0, 0);
-                k_msleep(100);
-                gpio_pin_set(dev_enable, 0, 1);
-            }
-        };
+        // const device *dev_enable{device_get_binding("GPIOJ")};
+        // if (device_is_ready(dev_enable))
+        //     gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        // auto reset_actuator = [&]() {
+        //     if (device_is_ready(dev_enable)) {
+        //         gpio_pin_set(dev_enable, 0, 0);
+        //         k_msleep(100);
+        //         gpio_pin_set(dev_enable, 0, 1);
+        //     }
+        // };
         int fail_count{0};
         auto fail_check = [&](bool failed) {
+            LOG_INF("fail_check 446");
             if (failed) {
                 static constexpr int fail_max{10};
                 if (fail_count < fail_max) {
                     LOG_WRN("fail of actuator detected, reset.");
-                    reset_actuator();
+                    //reset_actuator();
                     ++fail_count;
                 } else if (fail_count == fail_max) {
                     LOG_WRN("continued fail of actuator detected.");
@@ -456,7 +460,9 @@ public:
                 fail_count = 0;
             }
         };
-        reset_actuator();
+        //reset_actuator();
+
+        LOG_INF("HELLO ACT 461");
 
         // Heartbeat LED 5
         // const device *gpiog{device_get_binding("GPIOG")};
@@ -468,22 +474,28 @@ public:
         uint32_t prev_cycle{k_cycle_get_32()};
 
         while (true) {
+            LOG_INF("ACT WHILE 473");
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
             bool is_emergency{can_controller::is_emergency()};  // -> board controller
+            LOG_INF("ACT 477");
             msg_control can2actuator;
             if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency)
                 handle_control(can2actuator);
             msg_pwmtrampoline pwmtrampoline;
             if (k_msgq_get(&msgq_pwmtrampoline, &pwmtrampoline, K_NO_WAIT) == 0 && !is_emergency)
                 handle_pwmtrampoline(pwmtrampoline);
-            if (is_emergency)
-                pwm_direct_all(msg_control::STOP);
+            LOG_INF("ACT 484");
+            if (is_emergency){LOG_INF("ACT 485");
+                pwm_direct_all(msg_control::STOP);}
+            LOG_INF("ACT 487");
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
+            LOG_INF("ACT WHILE 490");
             if (dt_ms > 20) {
                 prev_cycle = now_cycle;
                 bool failed{false};
+                LOG_INF("ACT 494");
                 for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
                     int8_t direction;
                     uint8_t duty;
@@ -494,9 +506,13 @@ public:
                              duty) = act[i].get_info();
                     if (actuator2can.fail[i])
                         failed = true;
+                    LOG_INF("ACT 502");
                 }
+                LOG_INF("ACT 510");
                 fail_check(failed);
+                LOG_INF("ACT 513");
                 actuator2can.connect = adc_reader::get(adc_reader::TROLLEY);
+                LOG_INF("ACT 515");
                 while (k_msgq_put(&msgq, &actuator2can, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
                 // if (device_is_ready(gpiog)) {
@@ -576,6 +592,7 @@ private:
             act[msg.index].direct(msg.direction, msg.duty);
     }
     void pwm_direct_all(int direction, uint8_t pwm_duty = 0) {
+        LOG_INF("pwm_direct_all 588");
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
             act[i].direct(direction, pwm_duty);
     }

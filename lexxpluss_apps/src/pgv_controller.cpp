@@ -119,7 +119,12 @@ public:
         }
     }
     void info(const shell *shell) const {
+        msg m{pgv2can};
         shell_print(shell, "pgv info is not supported on this firmware version");
+        for(int i = 0 ; i < 21 ; i ++)
+        {
+            shell_print(shell, "byte[%d] = %d ", i, pgv2can.rawdata[i] );
+        }
     }
 private:
     enum class DIR {

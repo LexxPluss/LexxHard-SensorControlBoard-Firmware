@@ -39,9 +39,13 @@ char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 class uss_fetcher {
 public:
     int init(const char *label0, const char *label1) {
+        LOG_INF("USS-init start");
+
         dev[0] = device_get_binding(label0);
         if (!device_is_ready(dev[0]))
             return -1;
+        LOG_INF("USS-init 2");
+
         if (label1 != nullptr) {
             dev[1] = device_get_binding(label1);
             if (!device_is_ready(dev[1]))
@@ -62,12 +66,15 @@ private:
     void run() {
         if (!device_is_ready(dev[0]))
             return;
+        //LOG_INF("USS-before while");
+
         while (true) {
             if (sensor_sample_fetch_chan(dev[0], SENSOR_CHAN_ALL) == 0) {
                 sensor_value v;
                 sensor_channel_get(dev[0], SENSOR_CHAN_DISTANCE, &v);
                 int32_t value{v.val1 * 1000 + v.val2 / 1000};
                 distance[0] = distance[0] / 4 + value * 3 / 4;
+                //LOG_INF("USS");
             }
             if (device_is_ready(dev[1])) {
                 if (sensor_sample_fetch_chan(dev[1], SENSOR_CHAN_ALL) == 0) {

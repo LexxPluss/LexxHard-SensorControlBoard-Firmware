@@ -101,8 +101,8 @@ public:
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         dev[LED_LEFT] = device_get_binding("WS2812_0");
         dev[LED_RIGHT] = device_get_binding("WS2812_1");
-        dev[2] = device_get_binding("WS2812_3");
-        dev[3] = device_get_binding("WS2812_2");
+        dev[2] = device_get_binding("WS2812_2");
+        dev[3] = device_get_binding("WS2812_3");
         if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]) ||
             !device_is_ready(dev[2]) || !device_is_ready(dev[3]))
             return -1;
@@ -151,17 +151,17 @@ private:
     void update() {
         std::copy(&pixeldata[LED_LEFT][0],  &pixeldata[LED_LEFT][PIXELS_BACK],  &pixeldata_back[LED_LEFT][0]);
         std::copy(&pixeldata[LED_RIGHT][0], &pixeldata[LED_RIGHT][PIXELS_BACK], &pixeldata_back[LED_RIGHT][0]);
-        if (can_controller::is_emergency()) {
-            static uint32_t blink_counter{0};
-            ++blink_counter;
-            if (blink_counter < 20) {
-                led_rgb red{.r{0xff}, .g{0x00}, .b{0x00}};
-                for (uint32_t i{PIXELS_BACK - 4}; i < PIXELS_BACK; ++i)
-                    pixeldata_back[LED_LEFT][i] = pixeldata_back[LED_RIGHT][i] = red;
-            } else if (blink_counter >= 40) {
-                blink_counter = 0;
-            }
-        }
+        // if (can_controller::is_emergency()) {
+        //     static uint32_t blink_counter{0};
+        //     ++blink_counter;
+        //     if (blink_counter < 20) {
+        //         led_rgb red{.r{0xff}, .g{0x00}, .b{0x00}};
+        //         for (uint32_t i{PIXELS_BACK - 4}; i < PIXELS_BACK; ++i)
+        //             pixeldata_back[LED_LEFT][i] = pixeldata_back[LED_RIGHT][i] = red;
+        //     } else if (blink_counter >= 40) {
+        //         blink_counter = 0;
+        //     }
+        // }
         led_strip_update_rgb(dev[LED_LEFT], pixeldata[LED_LEFT], PIXELS);
         led_strip_update_rgb(dev[LED_RIGHT], pixeldata[LED_RIGHT], PIXELS);
         led_strip_update_rgb(dev[2], pixeldata_back[LED_LEFT], PIXELS_BACK);
@@ -396,6 +396,7 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
+    //while(1);
 }
 
 k_thread thread;
