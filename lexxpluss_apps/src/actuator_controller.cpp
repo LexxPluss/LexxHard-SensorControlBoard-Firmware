@@ -151,12 +151,12 @@ public:
             mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::LEFT:
-            // result = enc.init(TIM3);
-            // mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(TIM3);
+            mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::RIGHT:
-            // result = enc.init(TIM1);
-            // mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(TIM1);
+            mm_per_pulse = 50.0f / 1054.0f;
             break;
         }
         reset_pulse();
@@ -214,16 +214,16 @@ public:
             pin[1] = 2;
             break;
         case POS::LEFT:
-            // dev[0] = device_get_binding("PWM_8");
-            // dev[1] = dev[0];
-            // pin[0] = 1;
-            // pin[1] = 2;
+            dev[0] = device_get_binding("PWM_8");
+            dev[1] = dev[0];
+            pin[0] = 1;
+            pin[1] = 2;
             break;
         case POS::RIGHT:
-            // dev[0] = device_get_binding("PWM_2");
-            // dev[1] = dev[0];
-            // pin[0] = 3;
-            // pin[1] = 4;
+            dev[0] = device_get_binding("PWM_2");
+            dev[1] = dev[0];
+            pin[0] = 3;
+            pin[1] = 4;
             break;
         }
         if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
@@ -429,26 +429,22 @@ public:
     void run() {
         // Enable Pin, Reset Functions
         const device *dev_enable{device_get_binding("GPIOJ")};
-        printk("initial : %p\n", dev_enable);
         if (device_is_ready(dev_enable))
             gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        printk("2nd : %p\n", dev_enable);
-        // auto reset_actuator = [&]() {
-        //     printk("reset_begin: %p", dev_enable);
-        //     if (device_is_ready(dev_enable)) {
-        //         gpio_pin_set(dev_enable, 0, 0);
-        //         k_msleep(100);
-        //         gpio_pin_set(dev_enable, 0, 1);
-        //     }
-        //     printk("reset_end: %p", dev_enable);
-        // };
+        auto reset_actuator = [&]() {
+            if (device_is_ready(dev_enable)) {
+                gpio_pin_set(dev_enable, 0, 0);
+                k_msleep(100);
+                gpio_pin_set(dev_enable, 0, 1);
+            }
+        };
         int fail_count{0};
         auto fail_check = [&](bool failed) {
             if (failed) {
                 static constexpr int fail_max{10};
                 if (fail_count < fail_max) {
                     LOG_WRN("fail of actuator detected, reset.");
-                    //reset_actuator();
+                    reset_actuator();
                     ++fail_count;
                 } else if (fail_count == fail_max) {
                     LOG_WRN("continued fail of actuator detected.");
@@ -460,8 +456,7 @@ public:
                 fail_count = 0;
             }
         };
-        printk("463 : %p\n", dev_enable);
-        //reset_actuator();
+        reset_actuator();
 
         // Heartbeat LED 5
         // const device *gpiog{device_get_binding("GPIOG")};
