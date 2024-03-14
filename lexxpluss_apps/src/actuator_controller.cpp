@@ -429,14 +429,17 @@ public:
     void run() {
         // Enable Pin, Reset Functions
         const device *dev_enable{device_get_binding("GPIOJ")};
+        printk("initial : %p\n", dev_enable);
         if (device_is_ready(dev_enable))
             gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         auto reset_actuator = [&]() {
+            printk("reset_begin: %p", dev_enable);
             if (device_is_ready(dev_enable)) {
                 gpio_pin_set(dev_enable, 0, 0);
                 k_msleep(100);
                 gpio_pin_set(dev_enable, 0, 1);
             }
+            printk("reset_end: %p", dev_enable);
         };
         int fail_count{0};
         auto fail_check = [&](bool failed) {
