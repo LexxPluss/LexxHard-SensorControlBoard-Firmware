@@ -55,14 +55,14 @@ public:
         }
 
         struct sensor_value odr_accel;
-        odr_accel.val1 = 25; // 25Hz
+        odr_accel.val1 = 40; // 40Hz
         odr_accel.val2 = 0; 
         if (sensor_attr_set(dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_accel) < 0) {
             LOG_ERR("IMU ODR ACCEL Setting Fail\n");
         }
 
         struct sensor_value odr_gyro;
-        odr_gyro.val1 = 25; // 25Hz
+        odr_gyro.val1 = 40; // 40Hz
         odr_gyro.val2 = 0; 
         if (sensor_attr_set(dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_gyro) < 0) {
             LOG_ERR("IMU ODR GYRO Setting Fail\n");
