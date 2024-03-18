@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, LexxPluss Inc.
+ * Copyright (c) 2024, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,10 +23,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "mbed.h"
-#include "serial_message.hpp"
+// #include "mbed.h"
+// #include "serial_message.hpp"
+#include <zephyr.h>
+#include <device.h>
+#include <drivers/gpio.h>
+#include <logging/log.h>
+#include <shell/shell.h>
+#include "adc_reader.hpp"
 
-namespace {
+namespace lexxhard::board_controller {
 
 #undef SERIAL_DEBUG
 #ifdef SERIAL_DEBUG
@@ -293,10 +299,10 @@ public:
     }
     bool is_charger_ready() const {
         if(connector_v > (CHARGING_VOLTAGE * 0.7)){
-            LOG("charger ready voltage:%f.\n", connector_v);
+            LOG_DBG("charger ready voltage:%f.\n", connector_v);
             return true;
         }else {
-            LOG("connector_v:%f THRESH:%f\n", connector_v, (CHARGING_VOLTAGE * 0.9));
+            LOG_DBG("connector_v:%f THRESH:%f\n", connector_v, (CHARGING_VOLTAGE * 0.9));
             return false;
         }
     }
@@ -321,12 +327,12 @@ public:
             if (++connect_check_count >= CONNECT_THRES_COUNT) {
                 connect_check_count = CONNECT_THRES_COUNT;
                 if (prev_connect_check_count < CONNECT_THRES_COUNT)
-                    LOG("connected to the charger.\n");
+                    LOG_DBG("connected to the charger.\n");
             }
         } else {
             connect_check_count = 0;
             if (prev_connect_check_count >= CONNECT_THRES_COUNT)
-                LOG("disconnected from the charger.\n");
+                LOG_DBG("disconnected from the charger.\n");
         }
 #ifndef SERIAL_DEBUG
         while (serial.readable()) {
@@ -571,7 +577,7 @@ private:
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
                 bat_out.write(wheel_poweroff ? 0 : 1);
-                LOG("wheel power control %d!\n", wheel_poweroff);
+                LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
         };
         psw.poll();
@@ -599,10 +605,10 @@ private:
             break;
         case POWER_STATE::POST:
             if (!poweron_by_switch && !mc.is_plugged()) {
-                LOG("unplugged from manual charger\n");
+                LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::OFF);
             } else if (bmu.is_ok() && temp.is_ok()) {
-                LOG("BMU and temperature OK\n");
+                LOG_DBG("BMU and temperature OK\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (timer_post.elapsed_time() > 3s) {
                 set_new_state(POWER_STATE::OFF);
@@ -621,7 +627,7 @@ private:
                     if (timer_shutdown.elapsed_time() > 60s)
                         set_new_state(POWER_STATE::OFF);
                 } else {
-                    LOG("wait shutdown\n");
+                    LOG_DBG("wait shutdown\n");
                     wait_shutdown = true;
                     bat_out.write(0);
                     timer_shutdown.reset();
@@ -634,10 +640,10 @@ private:
                         shutdown_reason = SHUTDOWN_REASON::BMU;
                 }
             } else if (!esw.asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
-                LOG("not emergency and heartbeat OK\n");
+                LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
             } else if (mc.is_plugged()) {
-                LOG("plugged to manual charger\n");
+                LOG_DBG("plugged to manual charger\n");
                 set_new_state(POWER_STATE::MANUAL_CHARGE);
             }
             break;
@@ -645,29 +651,29 @@ private:
         case POWER_STATE::NORMAL:
             wheel_relay_control();
             if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG("detect power switch\n");
+                LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.power_off_from_ros()) {
-                LOG("receive power off from ROS\n");
+                LOG_DBG("receive power off from ROS\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (!bmu.is_ok()) {
-                LOG("BMU failure\n");
+                LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (!dcdc.is_ok()) {
-                LOG("DCDC failure\n");
+                LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.asserted()) {
-                LOG("emergency switch asserted\n");
+                LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.emergency_stop_from_ros()) {
-                LOG("receive emergency stop from ROS\n");
+                LOG_DBG("receive emergency stop from ROS\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mc.is_plugged()) {
-                LOG("plugged to manual charger\n");
+                LOG_DBG("plugged to manual charger\n");
                 set_new_state(POWER_STATE::MANUAL_CHARGE);
             } else if (!charge_guard_asserted && ac.is_docked() && bmu.is_chargable()) {
                 if(ac.is_charger_ready() == true){
-                    LOG("docked to auto charger\n");
+                    LOG_DBG("docked to auto charger\n");
                     set_new_state(POWER_STATE::AUTO_CHARGE);
                 }
             }
@@ -675,59 +681,59 @@ private:
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
             if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG("detect power switch\n");
+                LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.power_off_from_ros()) {
-                LOG("receive power off from ROS\n");
+                LOG_DBG("receive power off from ROS\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (!bmu.is_ok()) {
-                LOG("BMU failure\n");
+                LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (!dcdc.is_ok()) {
-                LOG("DCDC failure\n");
+                LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.asserted()) {
-                LOG("emergency switch asserted\n");
+                LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.emergency_stop_from_ros()) {
-                LOG("receive emergency stop from ROS\n");
+                LOG_DBG("receive emergency stop from ROS\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.is_dead()) {
-                LOG("main board or ROS dead\n");
+                LOG_DBG("main board or ROS dead\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (bmu.is_full_charge()) {
-                LOG("full charge\n");
+                LOG_DBG("full charge\n");
                 set_new_state(POWER_STATE::NORMAL);
             } else if (!ac.is_docked()) {
-                LOG("undocked from auto charger\n");
+                LOG_DBG("undocked from auto charger\n");
                 set_new_state(POWER_STATE::NORMAL);
             } else if (mc.is_plugged()) {
-                LOG("manual charger plugged\n");
+                LOG_DBG("manual charger plugged\n");
                 set_new_state(POWER_STATE::NORMAL);
             } else if (current_check_enable && !bmu.is_charging()) {
-                LOG("not charging\n");
+                LOG_DBG("not charging\n");
                 set_new_state(POWER_STATE::NORMAL);
             }
             break;
         case POWER_STATE::MANUAL_CHARGE:
             if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG("detect power switch (ignored)\n");
+                LOG_DBG("detect power switch (ignored)\n");
                 psw.reset_state();
             }
             if (!mc.is_plugged()) {
-                LOG("unplugged from manual charger\n");
+                LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::NORMAL);
             }
             break;
         case POWER_STATE::LOCKDOWN:
             if (!dcdc.is_ok()) {
-                LOG("DCDC failure\n");
+                LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::OFF);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG("detect power switch\n");
+                LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::OFF);
             } else if (psw.is_activated_unlock()) {
-                LOG("force recover from lockdown\n");
+                LOG_DBG("force recover from lockdown\n");
                 set_new_state(POWER_STATE::STANDBY);
             }
             break;
@@ -748,7 +754,7 @@ private:
         int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1};
         switch (newstate) {
         case POWER_STATE::OFF:
-            LOG("enter OFF\n");
+            LOG_DBG("enter OFF\n");
             poweron_by_switch = false;
             psw.set_led(false);
             dcdc.set_enable(false);
@@ -758,15 +764,15 @@ private:
                 continue;
             break;
         case POWER_STATE::TIMEROFF:
-            LOG("enter TIMEROFF\n");
+            LOG_DBG("enter TIMEROFF\n");
             timer_poweroff.reset();
             timer_poweroff.start();
             break;
         case POWER_STATE::WAIT_SW:
-            LOG("enter WAIT_SW\n");
+            LOG_DBG("enter WAIT_SW\n");
             break;
         case POWER_STATE::POST:
-            LOG("enter POST\n");
+            LOG_DBG("enter POST\n");
             psw.set_led(true);
             bmu.set_enable(true);
             bat_out.write(0);
@@ -774,7 +780,7 @@ private:
             timer_post.start();
             break;
         case POWER_STATE::STANDBY:
-            LOG("enter STANDBY\n");
+            LOG_DBG("enter STANDBY\n");
             psw.set_led(true);
             dcdc.set_enable(true);
             wsw.set_disable(true);
@@ -783,7 +789,7 @@ private:
             wait_shutdown = false;
             break;
         case POWER_STATE::NORMAL:
-            LOG("enter NORMAL\n");
+            LOG_DBG("enter NORMAL\n");
             wsw.set_disable(false);
             bat_out.write(bat_out_state);
             ac.set_enable(false);
@@ -791,19 +797,19 @@ private:
             charge_guard_timeout.attach([this](){charge_guard_asserted = false;}, 10s);
             break;
         case POWER_STATE::AUTO_CHARGE:
-            LOG("enter AUTO_CHARGE\n");
+            LOG_DBG("enter AUTO_CHARGE\n");
             ac.set_enable(true);
             current_check_enable = false;
             current_check_timeout.attach([this](){current_check_enable = true;}, 10s);
             break;
         case POWER_STATE::MANUAL_CHARGE:
-            LOG("enter MANUAL_CHARGE\n");
+            LOG_DBG("enter MANUAL_CHARGE\n");
             wsw.set_disable(true);
             bat_out.write(0);
             ac.set_enable(false);
             break;
         case POWER_STATE::LOCKDOWN:
-            LOG("enter LOCKDOWN\n");
+            LOG_DBG("enter LOCKDOWN\n");
             wsw.set_disable(true);
             bat_out.write(0);
             ac.set_enable(false);
@@ -812,72 +818,72 @@ private:
         state = newstate;
     }
     void poll_100ms() {
-        auto temperature{temp.get_temperature()};
-        if (state == POWER_STATE::AUTO_CHARGE ||
-            state == POWER_STATE::MANUAL_CHARGE) {
-            fan.control_by_duty(100);
-        } else {
-            fan.control_by_temperature(temperature);
-        }
-        uint8_t buf[8]{0};
-        if (psw.get_raw_state())
-            buf[0] |= 0b00000001;
-        bool st0, st1, st2;
-        esw.get_raw_state(st0, st1);
-        if (st0)
-            buf[0] |= 0b00000010;
-        if (st1)
-            buf[0] |= 0b00000100;
-        bsw.get_raw_state(st0, st1);
-        if (st0)
-            buf[0] |= 0b00001000;
-        if (st1)
-            buf[0] |= 0b00010000;
-        if (mc.is_plugged())
-            buf[1] |= 0b00000001;
-        if (ac.is_docked())
-            buf[1] |= 0b00000010;
-        buf[1] |= (static_cast<uint32_t>(shutdown_reason) & 0x1f) << 2;
-        if (wait_shutdown)
-            buf[1] |= 0b10000000;
-        dcdc.get_failed_state(st0, st1);
-        if (st0)
-            buf[2] |= 0b00000001;
-        if (st1)
-            buf[2] |= 0b00000010;
-        bmu.get_fet_state(st0, st1, st2);
-        if (st0)
-            buf[2] |= 0b00010000;
-        if (st1)
-            buf[2] |= 0b00100000;
-        if (st2)
-            buf[2] |= 0b01000000;
-        wsw.get_raw_state(st0, st1);
-        if (st0)
-            buf[3] |= 0b00000001;
-        if (st1)
-            buf[3] |= 0b00000010;
-        buf[3] |= static_cast<uint32_t>(state) << 2;
-        int t0, t1;
-        ac.get_connector_temperature(t0, t1);
-        buf[4] = fan.get_duty_percent();
-        buf[5] = t0;
-        buf[6] = t1;
-        buf[7] = temperature;
-        can.send(CANMessage{0x200, buf});
-        ThisThread::sleep_for(1ms);
-        buf[0] = psw.is_activated_battery() ? 1 : 0;
-        can.send(CANMessage{0x202, buf, 1});
-        ThisThread::sleep_for(1ms);
-        if (state == POWER_STATE::LOCKDOWN)
-            psw.toggle_led();
-        uint32_t v{ac.get_connector_voltage()};
-        buf[0] = v;
-        buf[1] = v >> 8;
-        buf[2] = ac.get_connect_check_count();
-        buf[3] = ac.get_heartbeat_delay();
-        buf[4] = ac.is_temperature_error();
-        can.send(CANMessage{0x204, buf, 5});
+        // auto temperature{temp.get_temperature()};
+        // if (state == POWER_STATE::AUTO_CHARGE ||
+        //     state == POWER_STATE::MANUAL_CHARGE) {
+        //     fan.control_by_duty(100);
+        // } else {
+        //     fan.control_by_temperature(temperature);
+        // }
+        // uint8_t buf[8]{0};
+        // if (psw.get_raw_state())
+        //     buf[0] |= 0b00000001;
+        // bool st0, st1, st2;
+        // esw.get_raw_state(st0, st1);
+        // if (st0)
+        //     buf[0] |= 0b00000010;
+        // if (st1)
+        //     buf[0] |= 0b00000100;
+        // bsw.get_raw_state(st0, st1);
+        // if (st0)
+        //     buf[0] |= 0b00001000;
+        // if (st1)
+        //     buf[0] |= 0b00010000;
+        // if (mc.is_plugged())
+        //     buf[1] |= 0b00000001;
+        // if (ac.is_docked())
+        //     buf[1] |= 0b00000010;
+        // buf[1] |= (static_cast<uint32_t>(shutdown_reason) & 0x1f) << 2;
+        // if (wait_shutdown)
+        //     buf[1] |= 0b10000000;
+        // dcdc.get_failed_state(st0, st1);
+        // if (st0)
+        //     buf[2] |= 0b00000001;
+        // if (st1)
+        //     buf[2] |= 0b00000010;
+        // bmu.get_fet_state(st0, st1, st2);
+        // if (st0)
+        //     buf[2] |= 0b00010000;
+        // if (st1)
+        //     buf[2] |= 0b00100000;
+        // if (st2)
+        //     buf[2] |= 0b01000000;
+        // wsw.get_raw_state(st0, st1);
+        // if (st0)
+        //     buf[3] |= 0b00000001;
+        // if (st1)
+        //     buf[3] |= 0b00000010;
+        // buf[3] |= static_cast<uint32_t>(state) << 2;
+        // int t0, t1;
+        // ac.get_connector_temperature(t0, t1);
+        // buf[4] = fan.get_duty_percent();
+        // buf[5] = t0;
+        // buf[6] = t1;
+        // buf[7] = temperature;
+        // can.send(CANMessage{0x200, buf});
+        // ThisThread::sleep_for(1ms);
+        // buf[0] = psw.is_activated_battery() ? 1 : 0;
+        // can.send(CANMessage{0x202, buf, 1});
+        // ThisThread::sleep_for(1ms);
+        // if (state == POWER_STATE::LOCKDOWN)
+        //     psw.toggle_led();
+        // uint32_t v{ac.get_connector_voltage()};
+        // buf[0] = v;
+        // buf[1] = v >> 8;
+        // buf[2] = ac.get_connect_check_count();
+        // buf[3] = ac.get_heartbeat_delay();
+        // buf[4] = ac.is_temperature_error();
+        // can.send(CANMessage{0x204, buf, 5});
     }
     void poll_1s() {
         Watchdog &watchdog{Watchdog::get_instance()};
@@ -914,7 +920,7 @@ private:
 
 int main()
 {
-    LOG("RUN!\n");
+    LOG_DBG("RUN!\n");
     state_controller ctrl;
     ctrl.init();
     globalqueue.dispatch_forever();
