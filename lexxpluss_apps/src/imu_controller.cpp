@@ -24,6 +24,7 @@
  */
 
 #include <zephyr.h>
+#include <drivers/gpio.h>
 #include <device.h>
 #include <drivers/sensor.h>
 #include <logging/log.h>
@@ -31,21 +32,21 @@
 #include "imu_controller.hpp"
 #include "runaway_detector.hpp"
 
+#define PI 3.14159265358979323846
+
 namespace lexxhard::imu_controller {
 
 LOG_MODULE_REGISTER(imu);
 
 char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 static struct sensor_trigger data_trigger;
+bool int_flag{false};
 
 class imu_fetcher {
 public:
     int init() {
-        imu_instance = this;
-
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 
-        // dev = device_get_binding(DT_LABEL(DT_INST(0, invensense_icm42605))); //ICM-42605's register map is same as IIM-42652
         dev = device_get_binding("ICM42605");
 
         if (!device_is_ready(dev)) {
@@ -53,40 +54,50 @@ public:
             return -1;
         }
 
-        struct sensor_value odr;
-        odr.val1 = 100; // 100Hz
-        odr.val2 = 0; 
-        if (sensor_attr_set(dev, SENSOR_CHAN_ALL, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr) < 0) {
-            LOG_ERR("IMU ODR Setting Fail\n");
+        struct sensor_value odr_accel;
+        odr_accel.val1 = 25; // 25Hz
+        odr_accel.val2 = 0; 
+        if (sensor_attr_set(dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_accel) < 0) {
+            LOG_ERR("IMU ODR ACCEL Setting Fail\n");
+        }
+
+        struct sensor_value odr_gyro;
+        odr_gyro.val1 = 25; // 25Hz
+        odr_gyro.val2 = 0; 
+        if (sensor_attr_set(dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_gyro) < 0) {
+            LOG_ERR("IMU ODR GYRO Setting Fail\n");
         }
 
         struct sensor_value fsr_accel;
         fsr_accel.val1 = 3; // 2G Defined in the icm42605_reg.h
         fsr_accel.val2 = 0; 
         if (sensor_attr_set(dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_FULL_SCALE, &fsr_accel) < 0) {
-            LOG_ERR("IMU ODR Setting Fail\n");
+            LOG_ERR("IMU FSR ACC Setting Fail\n");
         } 
 
         struct sensor_value fsr_gyro;
         fsr_gyro.val1 = 7; // 15DPS Defined in the icm42605_reg.h
         fsr_gyro.val2 = 0; 
         if (sensor_attr_set(dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_FULL_SCALE, &fsr_gyro) < 0) {
-            LOG_ERR("IMU ODR Setting Fail\n");
+            LOG_ERR("IMU FSR GYRO Setting Fail\n");
         } 
 
-        for (int i{0}; i < 3; ++i) {
-            message.accel[i] = 0;
-            message.gyro[i] = 0;
-            message.delta_ang[i] = 0;
-            message.delta_vel[i] = 0;
+        // initialize the messsage data
+        for (int i = 0; i < 3; i++) {
+            message.accel_data_lower[i] = 0;
+            message.accel_data_upper[i] = 0;
+            message.gyro_data_lower[i] = 0;
+            message.gyro_data_upper[i] = 0;
         }
-        message.temp = 0;
+        message.counter = 0;
 
         LOG_INF("IMU controller for LexxPluss board. (%p)", dev);
 
         return 0;
     }
     void run() {
+        uint8_t counter{0};
+
         if (!device_is_ready(dev)) {
             LOG_ERR("IMU device not found");
             return;
@@ -98,89 +109,116 @@ public:
 	    };
         
         // data to be read from the sensor triggered by the interrupt signal
-        if (sensor_trigger_set(dev, &data_trigger, &imu_fetcher::handle_iim42652) < 0) {
+        if (sensor_trigger_set(dev, &data_trigger, cb_func) < 0) {
 		    LOG_ERR("Cannot configure data trigger!!!\n");
 		    return;
 	    }
 
         while (true) {
+            // fetch data if interrupt is triggered
+            if(int_flag) {
+                if (sensor_sample_fetch(dev) == 0) {
+                    struct sensor_value accel[3];
+                    struct sensor_value gyro[3];
+                    int16_t accel_data[3];
+                    int16_t gyro_data[3];
+
+                    sensor_channel_get(dev, SENSOR_CHAN_ACCEL_XYZ, accel);
+                    sensor_channel_get(dev, SENSOR_CHAN_GYRO_XYZ, gyro);
+
+                    //sensor -x is system y, sensor -y is systemx, sensor z is system z
+                    accel_data[1] = accel_value_to_int16_t(&accel[0]) * -1;
+                    accel_data[0] = accel_value_to_int16_t(&accel[1]) * -1;
+                    accel_data[2] = accel_value_to_int16_t(&accel[2]);
+                    gyro_data[1] = gyro_rad_to_deg_int16_t(&gyro[0]);
+                    gyro_data[0] = gyro_rad_to_deg_int16_t(&gyro[1]);
+                    gyro_data[2] = gyro_rad_to_deg_int16_t(&gyro[2]);
+
+                    //split to upper and lower bytes for CAN message
+                    for(int i = 0; i < 3; i++) {
+                        message.accel_data_lower[i] = (uint8_t)(accel_data[i] & 0x00FF);
+                        message.accel_data_upper[i] = (uint8_t)((accel_data[i] & 0xFF00) >> 8);
+                        message.gyro_data_lower[i] = (uint8_t)(gyro_data[i] & 0x00FF);
+                        message.gyro_data_upper[i] = (uint8_t)((gyro_data[i] & 0xFF00) >> 8);
+                    }
+
+                    message.counter = counter++;    // 0 to 255
+
+                    // to ZCAN module
+                    while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+                                k_msgq_purge(&msgq);
+
+                    runaway_detector::msg message_runaway{
+                        .accel{sensor_value_to_float(&accel[1]), sensor_value_to_float(&accel[0]), sensor_value_to_float(&accel[2])},
+                        .gyro{sensor_value_to_float(&gyro[1]), sensor_value_to_float(&gyro[0]), sensor_value_to_float(&gyro[2])}
+                    };
+
+                    // to Runaway Detector
+                    while (k_msgq_put(&runaway_detector::msgq, &message_runaway, K_NO_WAIT) != 0)
+                        k_msgq_purge(&runaway_detector::msgq);
+                }
+                int_flag = false;
+            }
             k_msleep(1);
         }
     }
     void info(const shell *shell) const {
-        msg m{message};
+        double accel_x = (double)((int16_t)(message.accel_data_upper[0] << 8 | message.accel_data_lower[0])) / 1000.0;
+        double accel_y = (double)((int16_t)(message.accel_data_upper[1] << 8 | message.accel_data_lower[1])) / 1000.0;
+        double accel_z = (double)((int16_t)(message.accel_data_upper[2] << 8 | message.accel_data_lower[2])) / 1000.0;
+        double gyro_x = (double)((int16_t)(message.gyro_data_upper[0] << 8 | message.gyro_data_lower[0])) / 1000.0;
+        double gyro_y = (double)((int16_t)(message.gyro_data_upper[1] << 8 | message.gyro_data_lower[1])) / 1000.0;
+        double gyro_z = (double)((int16_t)(message.gyro_data_upper[2] << 8 | message.gyro_data_lower[2])) / 1000.0;
+        
         shell_print(shell,
-                    "accel: %d %d %d (mm/s/s)\n"
-                    "gyro: %d %d %d (mdeg/s)\n"
-                    "vel: %d %d %d (mm/s)\n"
-                    "ang: %d %d %d (mdeg)\n"
-                    "temp: %fdeg",
-                    m.accel[0], m.accel[1], m.accel[2],
-                    m.gyro[0], m.gyro[1], m.gyro[2],
-                    m.delta_vel[0], m.delta_vel[1], m.delta_vel[2],
-                    m.delta_ang[0], m.delta_ang[1], m.delta_ang[2],
-                    (float)m.temp / 1000);
+                    "accel: %f %f %f (m/s/s)\n"
+                    "gyro: %f %f %f (deg/s)\n"
+                    "counter: %u\n",
+                    accel_x, accel_y, accel_z,
+                    gyro_x, gyro_y, gyro_z,
+                    (int16_t)message.counter);
+    }
+    static void cb_func(const struct device *dev, struct sensor_trigger *trig_cb) {
+        ARG_UNUSED(dev);
+	    ARG_UNUSED(trig_cb);
+
+        int_flag = true;
     }
 private:
-    static inline float sensor_value_to_float(const struct sensor_value *val) {
-        return (float)val->val1 + (float)val->val2 / 1000000;
+    float sensor_value_to_float(const struct sensor_value *val) {
+        return (float)val->val1 + (float)val->val2 * 1e-6f;
     }
 
-    static void handle_iim42652(const struct device *dev, struct sensor_trigger *trig) {
-        int rc = imu_instance->process_iim42652(dev);
+    int16_t accel_value_to_int16_t(const struct sensor_value *val) {
+        int64_t temp_value{0};
+        
+        temp_value = (int64_t)(val->val1 * 1e3f + val->val2 * 1e-3f);
 
-        if (rc != 0) {
-            LOG_ERR("cancelling trigger due to failure: %d\n", rc);
-            (void)sensor_trigger_set(dev, trig, NULL);
-            return;
-        }
-    }
-
-    int process_iim42652(const struct device *dev) {
-        struct sensor_value accel[3];
-        struct sensor_value gyro[3];
-        struct sensor_value temperature;
-        // msg message
-
-        if (sensor_sample_fetch(dev) == 0) {
-            sensor_channel_get(dev, SENSOR_CHAN_ACCEL_XYZ, accel);
-            sensor_channel_get(dev, SENSOR_CHAN_GYRO_XYZ, gyro);
-            sensor_channel_get(dev, SENSOR_CHAN_DIE_TEMP, &temperature);
-        } else {
-            LOG_ERR("IMU sample fetch failed\n");
-            return -1;
+        if(temp_value > INT16_MAX) {
+            temp_value = INT16_MAX;
+        } else if(temp_value < INT16_MIN) {
+            temp_value = INT16_MIN;
         }
 
-        imu_instance->message.accel[0] = (int16_t)(sensor_value_to_double(&accel[0]) * -1 * 1000); // X [mm/s/s]
-        imu_instance->message.accel[1] = (int16_t)(sensor_value_to_double(&accel[1]) * 1000);      // Y [mm/s/s]
-        imu_instance->message.accel[2] = (int16_t)(sensor_value_to_double(&accel[2]) * -1 * 1000); // Z [mm/s/s]
-        imu_instance->message.gyro[0] = (int16_t)(sensor_value_to_double(&gyro[0]) * -1 * 1000);   // X [mdeg/s]
-        imu_instance->message.gyro[1] = (int16_t)(sensor_value_to_double(&gyro[1]) * 1000);        // Y [mdeg/s]
-        imu_instance->message.gyro[2] = (int16_t)(sensor_value_to_double(&gyro[2]) * -1 * 1000);   // Z [mdeg/s]
-        imu_instance->message.temp = (int16_t)(sensor_value_to_double(&temperature) * 1000);       // Temperature [mdeg C]
-        imu_instance->message.delta_ang[0] = 0;
-        imu_instance->message.delta_ang[1] = 0;
-        imu_instance->message.delta_ang[2] = 0;
-        imu_instance->message.delta_vel[0] = 0;
-        imu_instance->message.delta_vel[1] = 0;
-        imu_instance->message.delta_vel[2] = 0;
-
-        while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
-                    k_msgq_purge(&msgq);
-
-        runaway_detector::msg message_runaway{
-            .accel{sensor_value_to_float(&accel[0]) * -1, sensor_value_to_float(&accel[1]), sensor_value_to_float(&accel[2]) * -1},
-            .gyro{sensor_value_to_float(&gyro[0]) * -1, sensor_value_to_float(&gyro[1]), sensor_value_to_float(&gyro[2]) * -1}
-        };
-
-        while (k_msgq_put(&runaway_detector::msgq, &message_runaway, K_NO_WAIT) != 0)
-            k_msgq_purge(&runaway_detector::msgq);
-
-        return 0;
+        return (int16_t)temp_value;
     }
-    static imu_fetcher* imu_instance;
-    const device *dev{nullptr};
+
+    int16_t gyro_rad_to_deg_int16_t(const struct sensor_value *val) {
+        int64_t temp_value{0};
+        
+        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6f) * (180.0 / PI) * 1e3f);
+
+        if(temp_value > INT16_MAX) {
+            temp_value = INT16_MAX;
+        } else if(temp_value < INT16_MIN) {
+            temp_value = INT16_MIN;
+        }
+
+        return (int16_t)temp_value;
+    }
+
     msg message;
+    const device *dev{nullptr};
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)
@@ -205,7 +243,6 @@ void run(void *p1, void *p2, void *p3)
     impl.run();
 }
 
-imu_fetcher* imu_fetcher::imu_instance = nullptr;
 k_thread thread;
 k_msgq msgq;
 

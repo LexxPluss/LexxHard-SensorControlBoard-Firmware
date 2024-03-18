@@ -45,7 +45,7 @@ public:
         bmu.init(nh);
         board.init(nh);
         dfu.init(nh);
-        imu.init(nh);
+        imu.init();
         interlock.init(nh);
         tof.init(nh);
         uss.init(nh);
@@ -71,7 +71,7 @@ private:
     ros_bmu bmu;
     ros_board board;
     ros_dfu dfu;
-    ros_imu imu;
+    can_imu imu;
     ros_interlock interlock;
     ros_tof tof;
     ros_uss uss;
