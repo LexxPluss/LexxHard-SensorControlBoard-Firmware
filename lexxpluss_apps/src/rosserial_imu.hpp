@@ -27,8 +27,6 @@
 
 #include <zephyr.h>
 #include <drivers/can.h>
-#include "ros/node_handle.h"
-#include "lexxauto_msgs/Imu.h"
 #include "imu_controller.hpp"
 
 #define CAN_ID_ACCL 0x206
