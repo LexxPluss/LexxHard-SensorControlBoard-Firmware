@@ -29,10 +29,9 @@
 #include <drivers/sensor.h>
 #include <logging/log.h>
 #include <shell/shell.h>
+#include "common.hpp"
 #include "imu_controller.hpp"
 #include "runaway_detector.hpp"
-
-#define PI 3.14159265358979323846
 
 namespace lexxhard::imu_controller {
 
@@ -106,13 +105,13 @@ public:
         data_trigger = (struct sensor_trigger) {
             .type = SENSOR_TRIG_DATA_READY,
             .chan = SENSOR_CHAN_ALL,
-	    };
+        };
         
         // data to be read from the sensor triggered by the interrupt signal
         if (sensor_trigger_set(dev, &data_trigger, cb_func) < 0) {
-		    LOG_ERR("Cannot configure data trigger!!!\n");
-		    return;
-	    }
+            LOG_ERR("Cannot configure data trigger!!!\n");
+            return;
+        }
 
         while (true) {
             // fetch data if interrupt is triggered
@@ -180,9 +179,10 @@ public:
     }
     static void cb_func(const struct device *dev, struct sensor_trigger *trig_cb) {
         ARG_UNUSED(dev);
-	    ARG_UNUSED(trig_cb);
+        ARG_UNUSED(trig_cb);
 
         int_flag = true;
+        return;
     }
 private:
     float sensor_value_to_float(const struct sensor_value *val) {
@@ -206,7 +206,7 @@ private:
     int16_t gyro_rad_to_deg_int16_t(const struct sensor_value *val) {
         int64_t temp_value{0};
         
-        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6f) * (180.0 / PI) * 1e3f);
+        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6f) * (180.0 / M_PI) * 1e3f);
 
         if(temp_value > INT16_MAX) {
             temp_value = INT16_MAX;
