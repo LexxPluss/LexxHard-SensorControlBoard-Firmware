@@ -151,12 +151,12 @@ public:
             mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::LEFT:
-            // result = enc.init(TIM3);
-            // mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(TIM3);
+            mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::RIGHT:
-            // result = enc.init(TIM1);
-            // mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(TIM1);
+            mm_per_pulse = 50.0f / 1054.0f;
             break;
         }
         reset_pulse();
@@ -214,16 +214,16 @@ public:
             pin[1] = 2;
             break;
         case POS::LEFT:
-            // dev[0] = device_get_binding("PWM_8");
-            // dev[1] = dev[0];
-            // pin[0] = 1;
-            // pin[1] = 2;
+            dev[0] = device_get_binding("PWM_8");
+            dev[1] = dev[0];
+            pin[0] = 1;
+            pin[1] = 2;
             break;
         case POS::RIGHT:
-            // dev[0] = device_get_binding("PWM_2");
-            // dev[1] = dev[0];
-            // pin[0] = 3;
-            // pin[1] = 4;
+            dev[0] = device_get_binding("PWM_2");
+            dev[1] = dev[0];
+            pin[0] = 3;
+            pin[1] = 4;
             break;
         }
         if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
