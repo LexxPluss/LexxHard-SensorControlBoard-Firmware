@@ -26,40 +26,68 @@
 #pragma once
 
 #include <zephyr.h>
-#include "ros/node_handle.h"
-#include "lexxauto_msgs/Imu.h"
+#include <drivers/can.h>
 #include "imu_controller.hpp"
+
+#define CAN_ID_ACCL 0x206
+#define CAN_ID_GYRO 0x207
+#define CAN_DATA_LENGTH 7
 
 namespace lexxhard {
 
-class ros_imu {
+class can_imu {
 public:
-    void init(ros::NodeHandle &nh) {
-        nh.advertise(pub);
+    int init() {
+        dev = device_get_binding("CAN_2");  //CAN(to IPC)
+        if (!device_is_ready(dev))
+            return -1;
+
+        return 0;
     }
     void poll() {
         imu_controller::msg message;
+
         while (k_msgq_get(&imu_controller::msgq, &message, K_NO_WAIT) == 0) {
-            msg.gyro.x = message.gyro[0];
-            msg.gyro.y = message.gyro[1];
-            msg.gyro.z = message.gyro[2];
-            msg.accel.x = message.accel[0];
-            msg.accel.y = message.accel[1];
-            msg.accel.z = message.accel[2];
-            msg.ang.x = message.delta_ang[0];
-            msg.ang.y = message.delta_ang[1];
-            msg.ang.z = message.delta_ang[2];
-            msg.vel.x = message.delta_vel[0];
-            msg.vel.y = message.delta_vel[1];
-            msg.vel.z = message.delta_vel[2];
-            pub.publish(&msg);
+            zcan_frame frame_imu[2]{
+                {
+                    .id = CAN_ID_ACCL,
+                    .rtr = CAN_DATAFRAME,
+                    .id_type = CAN_STANDARD_IDENTIFIER,
+                    .dlc = CAN_DATA_LENGTH,
+                    .data{
+                        message.accel_data_upper[0],
+                        message.accel_data_lower[0],
+                        message.accel_data_upper[1],
+                        message.accel_data_lower[1],
+                        message.accel_data_upper[2],
+                        message.accel_data_lower[2],
+                        message.counter
+                    }
+                },
+                {
+                    .id = CAN_ID_GYRO,
+                    .rtr = CAN_DATAFRAME,
+                    .id_type = CAN_STANDARD_IDENTIFIER,
+                    .dlc = CAN_DATA_LENGTH,
+                    .data{
+                        message.gyro_data_upper[0],
+                        message.gyro_data_lower[0],
+                        message.gyro_data_upper[1],
+                        message.gyro_data_lower[1],
+                        message.gyro_data_upper[2],
+                        message.gyro_data_lower[2],
+                        message.counter
+                    }
+                }
+            };
+
+            can_send(dev, &frame_imu[0], K_MSEC(100), nullptr, nullptr);    //accel
+            can_send(dev, &frame_imu[1], K_MSEC(100), nullptr, nullptr);    //gyro
         }
     }
 private:
-    lexxauto_msgs::Imu msg;
-    ros::Publisher pub{"/sensor_set/imu", &msg};
+    const device *dev{nullptr};
 };
-
 }
 
 // vim: set expandtab shiftwidth=4:
