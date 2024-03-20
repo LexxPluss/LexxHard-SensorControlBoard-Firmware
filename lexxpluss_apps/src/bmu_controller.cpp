@@ -44,11 +44,12 @@ CAN_DEFINE_MSGQ(msgq_can_recv_bmu, 16);
 class bmu_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_parsed_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
-        k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (msg_rawframe_bmu), 8);
+        k_msgq_init(&msgq_parsed_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8); // For board_controller of MCU internal code
+        k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (msg_rawframe_bmu), 8); // For IPC as path through from CAN_1 to CAN_2
         dev_can_bmu = device_get_binding("CAN_1");
         if (!device_is_ready(dev_can_bmu))
             return -1;
+        can_configure(dev_can_bmu, CAN_NORMAL_MODE, 500000);
         return 0;
     }
 
@@ -59,11 +60,10 @@ public:
             .id{0x100},
             .rtr{CAN_DATAFRAME},
             .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7c0},
+            .id_mask{0x7c0}, // This mask ranged from 0x100 to 0x13F
             .rtr_mask{1}
         };
         can_attach_msgq(dev_can_bmu, &msgq_can_recv_bmu, &filter_bmu);
-
         while (true) {
             zcan_frame frame;
             if (k_msgq_get(&msgq_can_recv_bmu, &frame, K_NO_WAIT) == 0) {
@@ -170,7 +170,6 @@ private:
     msg_bmu msg{0};
 
     const device *dev_can_bmu{nullptr};
-    const device *dev_can_ipc{nullptr};
 
 } impl;
 
