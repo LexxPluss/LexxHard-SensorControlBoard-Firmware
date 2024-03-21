@@ -23,41 +23,56 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-// #include "mbed.h"
-// #include "serial_message.hpp"
 #include <zephyr.h>
 #include <device.h>
 #include <drivers/gpio.h>
 #include <logging/log.h>
 #include <shell/shell.h>
 #include "adc_reader.hpp"
+#include "board_controller.hpp"
 
 namespace lexxhard::board_controller {
 
-#undef SERIAL_DEBUG
-#ifdef SERIAL_DEBUG
-BufferedSerial debugserial{PA_2, PA_3};
-FILE *debugout{fdopen(&debugserial, "r+")};
-#define LOG(...) fprintf(debugout, __VA_ARGS__)
-#else
-#define LOG(...) logger.print(__VA_ARGS__)
-#endif
+LOG_MODULE_REGISTER(board);
 
-/*Switched*/ PinName can_tx{PA_12}, can_rx{PA_11}; // Can associated pins
-/*Half-Changed*/ PinName ps_sw_in{PB_0}, ps_led_out{PB_12}; // Power Switch handler associated pins
-/*Changed*/ PinName bp_left{PA_4}; // Bumper Switch associated pins
-/*Same*/ PinName es_left{PA_6}, es_right(PA_7); // Emergency Switch associated pins
-/*Same*/ PinName wh_left{PB_8}, wh_right{PB_9}; // Wheel switch associated pins
-/*Same*/ PinName mc_din{PB_10}; // Manual charging detection associated pins
-/*Th pins changed*/ PinName ac_th_pos{PA_0}, ac_th_neg{PA_1}, ac_IrDA_tx{PA_2}, ac_IrDA_rx{PA_3}, ac_analogVol{PB_1}, ac_chargingRelay{PB_2}; // Auto charging detection associated pins
-/*Changed (not PB_11)*/ PinName bmu_main_sw{PB_11}, bmu_c_fet{PB_13}, bmu_d_fet{PB_14}, bmu_p_dsg{PB_15}; // BMU controller associated pins
-/*Same*/ PinName ts_i2c_scl{PB_6}, ts_i2c_sda{PB_7}; // Temperature sensors associated I2C pins
-/*Switched*/ PinName dcdc_control_16v{PB_3}, dcdc_control_5v{PA_10}, dcdc_failSignal_16v{PB_4}, dcdc_failSignal_5v{PA_15}; // DC-DC related control and fail signal pins
-/*Same*/ PinName fan_pwm{PA_8}; // PWM fan signal control pin
-/*Same*/ PinName sc_bat_out{PB_5}, sc_hb_led{PA_9}; // State controller associated pins
-PinName main_MCU_ON{PA_5}; // Pin controlling the MainMCU power-up
+char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
+char __aligned(4) msgq_board_buffer[8 * sizeof (msg_board)];
 
-EventQueue globalqueue;
+pin_def_gpio ps_sw_in{"GPIOH", 4}, ps_led_out{"GPIOH", 5}; // Power Switch handler associated pins
+pin_def_gpio bp_left{"GPIOI", 7}; // Bumper Switch associated pins
+pin_def_gpio es_left{"GPIOI", 4}, es_right("GPIOI", 0); // Emergency Switch associated pins
+pin_def_gpio wh_left_right{"GPIOK", 3}; // Wheel switch associated pins
+pin_def_gpio mc_din{"GPIOK", 7}; // Manual charging detection associated pins
+pin_def_gpio ac_th_pos{"GPIOC", 4}, ac_th_neg{"GPIOC", 5}, ac_IrDA_tx{"GPIOG", 14}, ac_IrDA_rx{"GPIOG", 9}, ac_analogVol{"GPIOF", 10}, ac_chargingRelay{"GPIOD", 0}; // Auto charging detection associated pins
+pin_def_gpio bmu_c_fet{PJ, 5}, bmu_d_fet{PJ, 12}, bmu_p_dsg{PJ, 13}; // BMU controller associated pins
+pin_def_gpio ts_i2c_scl{"GPIOF", 14}, ts_i2c_sda{"GPIOF", 15}; // Temperature sensors associated I2C pins
+pin_def_gpio pwr_control_24v{"GPIOC", 15}, pwr_control_peripheral{"GPIOD", 2}, pwr_control_wheel_motor{"GPIOD", 1}; // Power Control associated pins
+pin_def_gpio pgood_24v{"GPIOH", 3}, pgood_peripheral{"GPIOH", 15}, pgood_wheel_motor_left{"GPIOH", 1}, pgood_wheel_motor_right{"GPIOH", 12}; // Power Good associated pins
+pin_def_gpio pgood_linear_act_left{"GPIOK", 4}, pgood_linear_act_right{"GPIOK", 5}, pgood_linear_act_center{"GPIOK", 4};
+pin_def_gpio fan_pwm_5v_1{"GPIOC", 10}, fan_pwm_5v_2{"GPIOC", 11}, fan_pwm_24v_1{"GPIOB", 14}, fan_pwm_24v_2{"GPIOB", 15}; // PWM fan signal control pin
+
+// EventQueue globalqueue;
+
+void gpio_set_value(pin_def_gpio pin_def, uint8_t output_value) {
+    const device *gpio_dev{device_get_binding(pin_def.label)};
+
+    if (device_is_ready(gpio_dev)) {
+        gpio_pin_configure(gpio_dev, pin_def.io_number, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+        gpio_pin_set(gpio_dev, pin_def.io_number, output_value);
+    }
+    return;
+}
+
+int8_t gpio_get_value(pin_def_gpio pin_def) {
+    int8_t rtn{-1};
+    const device *gpio_dev{device_get_binding(pin_def.label)}; 
+
+    if (device_is_ready(gpio_dev)) {
+        gpio_pin_configure(gpio_dev, pin_def.io_number, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        rtn = gpio_pin_get(gpio_dev, pin_def.io_number);
+    }
+    return rtn;
+}
 
 class power_switch_handler {  // No pins declared
 public:
@@ -90,7 +105,7 @@ public:
         RELEASED, PUSHED, LONG_PUSHED,
     };
     void poll() {
-        int now{sw.read()};
+        int now{gpio_get_value(ps_sw_in)};
         if (prev_raw != now) {
             prev_raw = now;
             count = 0;
@@ -129,13 +144,14 @@ public:
     }
     STATE get_state() const {return state;}
     bool get_raw_state() {
-        return sw.read() == 0;
+        return gpio_get_value(ps_sw_in) == 0;
     }
     void set_led(bool enabled) {
-        led.write(enabled ? 1 : 0);
+        gpio_set_value(ps_led_out, enabled ? 1 : 0);
     }
     void toggle_led() {
-        led.write(led.read() == 0 ? 1 : 0);
+        set_led(led_en);
+        led_en = true ? false : true;
     }
     bool is_activated_battery() const {
         return sw_bat.is_activated();
@@ -145,11 +161,10 @@ public:
     }
 private:
     power_switch_handler sw_bat{2}, sw_unlock{10};
-    DigitalIn sw{ps_sw_in};
-    DigitalOut led{ps_led_out, 0};
     Timer timer;
     STATE state{STATE::RELEASED};
     uint32_t count{0};
+    bool led_en{false};
     int prev{-1}, prev_raw{-1};
     static constexpr uint32_t COUNT{1};
 };
@@ -157,23 +172,17 @@ private:
 class bumper_switch { // Variables Implemented
 public:
     void poll() {
-        if (left.read() == 0) {
+        // if (left.read() == 0) {
+        if (gpio_get_value(bp_left) == 0) {
             asserted = true;
             timeout.attach([this](){asserted = false;}, 1s);
         }
     }
     void get_raw_state(bool &left, bool &right) const {
         left = right = asserted;
-#ifdef SERIAL_DEBUG
-        static bool prev{false};
-        if (prev != asserted) {
-            prev = asserted;
-            LOG("BUMPER %s!\n", asserted ? "ON" : "OFF");
-        }
-#endif
     }
 private:
-    DigitalIn left{bp_left};
+    // DigitalIn left{bp_left};
     Timeout timeout;
     bool asserted{false};
 };
@@ -181,7 +190,7 @@ private:
 class emergency_switch { // Variables Implemented
 public:
     void poll() {
-        int now{left.read()};
+        int now{gpio_get_value(es_left)};
         if (left_prev != now) {
             left_prev = now;
             left_count = 0;
@@ -192,7 +201,7 @@ public:
             left_count = COUNT;
             left_asserted = now == 1;
         }
-        now = right.read();
+        now = gpio_get_value(es_right);
         if (right_prev != now) {
             right_prev = now;
             right_count = 0;
@@ -210,7 +219,6 @@ public:
         right = right_asserted;
     }
 private:
-    DigitalIn left{es_left}, right{es_right};
     uint32_t left_count{0}, right_count{0};
     int left_prev{-1}, right_prev{-1};
     bool left_asserted{false}, right_asserted{false};
@@ -221,19 +229,19 @@ class wheel_switch { // Variables Implemented
 public:
     void set_disable(bool disable) {
         if (disable) {
-            left.write(1);
-            right.write(1);
+            gpio_set_value(wh_left_right, 1);
+            left_right_disable = true; 
         } else {
-            left.write(0);
-            right.write(0);
+            gpio_set_value(wh_left_right, 0);
+            left_right_disable = false;
         }
     }
     void get_raw_state(bool &left, bool &right) {
-        left = this->left.read() == 1;
-        right = this->right.read() == 1;
+        left = left_right_disable;
+        right = left_right_disable;
     }
 private:
-    DigitalOut left{wh_left, 0}, right{wh_right, 0};
+    bool left_right_disable{false};   //false is enable
 };
 
 class manual_charger { // Variables Implemented
@@ -242,7 +250,7 @@ public:
         setup_first_state();
     }
     void poll() {
-        int now{din.read()};
+        int now{gpio_get_value(mc_din)};
         if (prev != now) {
             prev = now;
             timer.reset();
@@ -259,15 +267,14 @@ public:
     bool is_plugged() {return plugged;}
 private:
     void setup_first_state() {
-        int plugped_count{0};
+        int plugged_count{0};
         for (int i{0}; i < 10; ++i) {
-            if (din.read() == 0)
-                ++plugped_count;
+            if (gpio_get_value(mc_din) == 0)
+                ++plugged_count;
             ThisThread::sleep_for(5ms);
         }
-        plugged = plugped_count > 5;
+        plugged = plugged_count > 5;
     }
-    DigitalIn din{mc_din};
     Timer timer;
     int prev{1};
     bool plugged{false};
@@ -276,22 +283,16 @@ private:
 class auto_charger { // Variables Half-Implemented (Not Thermistors ADC)
 public:
     void init() {
-#ifndef SERIAL_DEBUG
-        serial.set_baud(4800);
-        serial.set_format(8, SerialBase::None, 1);
-        serial.set_blocking(false);
-#endif
         globalqueue.call_every(1s, this, &auto_charger::poll_1s);
         heartbeat_timer.start();
         serial_timer.start();
     }
     bool is_docked() const {
         return is_connected() && !temperature_error && !is_overheat() && heartbeat_timer.elapsed_time() < 5s;
-        // return is_connected() && !temperature_error && !is_overheat() && heartbeat_timer.elapsed_time() < 5s;
-        // return is_charger_ready() && is_connected() && !temperature_error && !is_overheat() && heartbeat_timer.elapsed_time() < 5s;
     }
     void set_enable(bool enable) {
-        sw.write(enable ? 1 : 0);
+        // sw.write(enable ? 1 : 0);
+        gpio_set_value(ac_chargingRelay, enable ? 1 : 0);
     }
     void force_stop() {
         set_enable(false);
@@ -334,21 +335,7 @@ public:
             if (prev_connect_check_count >= CONNECT_THRES_COUNT)
                 LOG_DBG("disconnected from the charger.\n");
         }
-#ifndef SERIAL_DEBUG
-        while (serial.readable()) {
-            if (serial_timer.elapsed_time() > 1s)
-                msg.reset();
-            serial_timer.reset();
-            uint8_t data;
-            serial.read(&data, 1);
-            if (msg.decode(data)) {
-                uint8_t param[3];
-                uint8_t command{msg.get_command(param)};
-                if (command == serial_message::HEARTBEAT && param[0] == heartbeat_counter)
-                    heartbeat_timer.reset();
-            }
-        }
-#endif
+        // TODO adc_readはadc_controllerを使う
         adc_read();
     }
     void update_rsoc(uint8_t rsoc) {
@@ -392,18 +379,13 @@ private: // Thermistor side starts here.
         }
          
         uint8_t buf[8], param[3]{++heartbeat_counter, sw_state, rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
-        serial_message::compose(buf, serial_message::HEARTBEAT, param);
-#ifndef SERIAL_DEBUG
-        serial.write(buf, sizeof buf);
-#endif
+        // serial_message::compose(buf, serial_message::HEARTBEAT, param);
     } // Declaration of variables
-#ifndef SERIAL_DEBUG
-    BufferedSerial serial{ac_IrDA_tx, ac_IrDA_rx}; // IrDA serial pins
-#endif
+
+    // TODO adcはadc_controllerを使う
     AnalogIn connector{ac_analogVol, 3.3f}; // Charging connector pin 0 - 24V. (3.3f max voltage reference - map voltage between 0 - 3.3V)
     AnalogIn therm_pos{ac_th_pos, 3.3f}; // Charging connector pin where the input is 0 - 24V. (map voltage between 0 - 3.3V)
     AnalogIn therm_neg{ac_th_neg, 3.3f}; // Charging connector pin where the input is 0 - 24V. (map voltage between 0 - 3.3V)
-    DigitalOut sw{ac_chargingRelay, 0}; // declare the robot auto Charging relay pin!!
     Timer heartbeat_timer, serial_timer;
     serial_message msg;
     uint8_t heartbeat_counter{0}, rsoc{0};
@@ -418,12 +400,9 @@ private: // Thermistor side starts here.
 
 class bmu_controller { // Variables Implemented
 public:
-    bmu_controller(can_driver &can) : can(can) {}
     void init() {
-        for (auto i : {0x100, 0x101, 0x113})
-            can.register_callback(i, callback(this, &bmu_controller::handle_can));
+        // TODO メッセージキューに変更
     }
-    void set_enable(bool enable) {main_sw = enable ? 1 : 0;}
     bool is_ok() const {
         return ((data.mod_status1 & 0b10111111) == 0 ||
                 (data.mod_status2 & 0b11100001) == 0 ||
@@ -431,9 +410,9 @@ public:
                 (data.bmu_alarm2  & 0b00000001) == 0);
     }
     void get_fet_state(bool &c_fet, bool &d_fet, bool &p_dsg) {
-        c_fet = this->c_fet.read() == 1;
-        d_fet = this->d_fet.read() == 1;
-        p_dsg = this->p_dsg.read() == 1;
+        c_fet = gpio_get_value(bmu_c_fet) == 1;
+        d_fet = gpio_get_value(bmu_d_fet) == 1;
+        p_dsg = gpio_get_value(bmu_p_dsg) == 1;
     }
     bool is_full_charge() const {
         return (data.mod_status1 & 0b01000000) != 0;
@@ -448,6 +427,7 @@ public:
         return data.rsoc;
     }
 private:
+    // TODO CANはここで使わないが、メッセージ内容は使う
     void handle_can(const CANMessage &msg) {
         switch (msg.id) {
         case 0x100:
@@ -467,8 +447,6 @@ private:
         }
     }
     can_driver &can;
-    DigitalOut main_sw{bmu_main_sw, 0}; // MAIN_SW switch pin
-    DigitalIn c_fet{bmu_c_fet}, d_fet{bmu_d_fet}, p_dsg{bmu_p_dsg};
         struct {
         int16_t pack_a{0};
         uint16_t pack_v{0};
@@ -479,64 +457,112 @@ private:
 
 class dcdc_converter { // Variables Implemented
 public:
-    // 電源のEnableをここでやる
     void set_enable(bool enable) {
-        if (enable) {               // In this configuration 0=OFF, 1=ON
-            control[0].write(1);    // external 5V must be turned on first.
-            control[1].write(1);
-            //control[2].write(1);    // control[2] controls the relay of the MAIN_SW of the BMU.
-            control[2].write(1);    // control[3] controls the relay that powers ON the main MCU
+        // 0=OFF, 1=ON
+        if (enable) {
+            gpio_set_value(pwr_control_wheel_motor, 1);
+            k_msleep(1000);
+            gpio_set_value(pwr_control_peripheral, 1);
+            k_msleep(1000);
+            gpio_set_value(pwr_control_24v, 1);
         } else {
-            control[1].write(0);    // 16V must be turned off first.
-            control[0].write(0);
-            // control[2].write(0);
-            control[2].write(0);
+            gpio_set_value(pwr_control_wheel_motor, 0);
+            k_msleep(1000);
+            gpio_set_value(pwr_control_peripheral, 0);
+            k_msleep(1000);
+            gpio_set_value(pwr_control_24v, 0);
         }
     }
     bool is_ok() {
-        return fail[0].read() != 0 && fail[1].read() != 0;
+        // 0:OK, 1:NG
+        bool rtn = (gpio_get_value(pgood_24v) == 0)                  
+            && (gpio_get_value(pgood_peripheral) == 0)
+            && (gpio_get_value(pgood_wheel_motor_left) == 0)
+            && (gpio_get_value(pgood_wheel_motor_right) == 0);
+        return rtn;
     }
-    void get_failed_state(bool &v5, bool &v16) {
-        v5 = fail[0].read() == 0;
-        v16 = fail[1].read() == 0;
+    void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
+        // 0:OK, 1:NG
+        v24 = gpio_get_value(pgood_24v) == 1;
+        v_peripheral = gpio_get_value(pgood_peripheral) == 1;
+        v_wheel_motor_left = gpio_get_value(pgood_wheel_motor_left) == 1;
+        v_wheel_motor_right = gpio_get_value(pgood_wheel_motor_right) == 1;
     }
 private:
-    DigitalOut control[3]{{dcdc_control_5v, 0}, {dcdc_control_16v, 0}, {main_MCU_ON, 0}};
-    DigitalIn fail[2]{dcdc_failSignal_5v, dcdc_failSignal_16v};
 };
 
 class fan_driver { // Variables Implemented
 /* FanをONにするファンクション */
-// public:
-//     void init() {
-//         pwm.period_us(1000000 / CONTROL_HZ);
-//         pwm.pulsewidth_us(0);
-//     }
-//     void control_by_temperature(float temperature) {
-//         static constexpr float temp_min{15.0f}, temp_l{20.0f}, temp_h{30.0f};
-//         static constexpr int duty_l{10}, duty_h{100};
-//         static constexpr float A{(duty_h - duty_l) / (temp_h - temp_l)};
-//         int duty_percent;
-//         if (temperature < temp_min)
-//             duty_percent = 0;
-//         else if (temperature < temp_l)
-//             duty_percent = duty_l;
-//         else if (temperature > temp_h)
-//             duty_percent = duty_h;
-//         else
-//             duty_percent = A * (temperature - temp_l) + duty_l; // Linearly interpolate between temp_l and temp_h.
-//         control_by_duty(duty_percent);
-//     }
-//     void control_by_duty(int duty_percent) {
-//         int pulsewidth{duty_percent * 1000000 / 100 / CONTROL_HZ};
-//         pwm.pulsewidth_us(pulsewidth);
-//     }
-//     int get_duty_percent() {
-//         return pwm.read_pulsewitdth_us() * CONTROL_HZ * 100 / 1000000;
-//     }
-// private:
-//     PwmOut pwm{fan_pwm};
-//     static constexpr int CONTROL_HZ{5000};
+public:
+    void init() {
+        // TODO 初期化処理
+    }
+    void fan_on() {
+        gpio_set_value(fan_pwm_5v_1, 1);    // 1:ON, 0:OFF
+        gpio_set_value(fan_pwm_5v_2, 1);    // 1:ON, 0:OFF
+        gpio_set_value(fan_pwm_24v_1, 1);   // 1:ON, 0:OFF
+        gpio_set_value(fan_pwm_24v_2, 1);   // 1:ON, 0:OFF
+    }
+    void fan_off() {
+        gpio_set_value(fan_pwm_5v_1, 0);    // 1:ON, 0:OFF
+        gpio_set_value(fan_pwm_5v_2, 0);    // 1:ON, 0:OFF
+        gpio_set_value(fan_pwm_24v_1, 0);   // 1:ON, 0:OFF
+        gpio_set_value(fan_pwm_24v_2, 0);   // 1:ON, 0:OFF
+    }
+private:
+};
+
+class mainboard_controller {  // No pins declared
+public:
+    void init() {
+        // can.register_callback(0x201, callback(this, &mainboard_controller::handle_can));
+    }
+    void poll() {
+        if (timer.elapsed_time() > 3s) {
+            heartbeat_timeout = true;
+            timer.stop();
+            timer.reset();
+        }
+    }
+    bool emergency_stop_from_ros() const {
+        return emergency_stop;
+    }
+    bool power_off_from_ros() const {
+        return power_off;
+    }
+    // bool is_dead() const {
+    //     if (heartbeat_detect)
+    //         return heartbeat_timeout || ros_heartbeat_timeout;
+    //     else
+    //         return false;
+    // }
+    bool is_ready() const {
+        return heartbeat_detect;
+    }
+    // bool is_overheat() const {
+    //     return mainboard_overheat || actuatorboard_overheat;
+    // }
+    bool is_wheel_poweroff() const {
+        return wheel_poweroff;
+    }
+private:
+    void handle_can(const CANMessage &msg) {
+        heartbeat_timeout = false;
+        timer.reset();
+        timer.start();
+        emergency_stop = msg.data[0] != 0;
+        power_off = msg.data[1] != 0;
+        ros_heartbeat_timeout = msg.data[2] != 0;
+        mainboard_overheat = msg.data[3] != 0;
+        actuatorboard_overheat = msg.data[4] != 0;
+        wheel_poweroff = msg.data[5] != 0;
+        if (!ros_heartbeat_timeout)
+            heartbeat_detect = true;
+    }
+    // can_driver &can;
+    // Timer timer;
+    bool heartbeat_timeout{true}, heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
+         mainboard_overheat{false}, actuatorboard_overheat{false}, wheel_poweroff{false};
 };
 
 class state_controller { // Variables Implemented
@@ -550,7 +576,6 @@ public:
         globalqueue.call_every(20ms, this, &state_controller::poll); //違う周期のポーリングをどうするか？
         globalqueue.call_every(100ms, this, &state_controller::poll_100ms);
         globalqueue.call_every(1s, this, &state_controller::poll_1s);
-        globalqueue.call_every(10s, this, &state_controller::poll_10s);
 
         Watchdog &watchdog{Watchdog::get_instance()}; //ZephyrでWatchdogはどうやるのか？
         uint32_t watchdog_max{watchdog.get_max_timeout()};
@@ -573,10 +598,10 @@ private:
     };
     void poll() {
         auto wheel_relay_control = [&](){
-            bool wheel_poweroff{mbd.is_wheel_poweroff()};
+            bool wheel_poweroff{gpio_get_value(pgood_wheel_motor_left) && gpio_get_value(pgood_wheel_motor_right)};
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
-                bat_out.write(wheel_poweroff ? 0 : 1);
+                gpio_set_value(pwr_control_wheel_motor, wheel_poweroff ? 0 : 1);
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
         };
@@ -585,7 +610,7 @@ private:
         esw.poll();
         mc.poll();
         ac.poll();
-
+        // TODO mbd の動作をリプレースする
         switch (state) {
         case POWER_STATE::OFF:
             set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
@@ -629,7 +654,7 @@ private:
                 } else {
                     LOG_DBG("wait shutdown\n");
                     wait_shutdown = true;
-                    bat_out.write(0);
+                    gpio_set_value(pwr_control_wheel_motor, 0);
                     timer_shutdown.reset();
                     timer_shutdown.start();
                     if (psw_state == power_switch::STATE::PUSHED)
@@ -758,8 +783,8 @@ private:
             poweron_by_switch = false;
             psw.set_led(false);
             dcdc.set_enable(false);
-            bmu.set_enable(false);
-            bat_out.write(0);
+            // bmu.set_enable(false);
+            gpio_set_value(pwr_control_wheel_motor, 0);
             while (true) // wait power off
                 continue;
             break;
@@ -774,8 +799,8 @@ private:
         case POWER_STATE::POST:
             LOG_DBG("enter POST\n");
             psw.set_led(true);
-            bmu.set_enable(true);
-            bat_out.write(0);
+            // bmu.set_enable(true);
+            gpio_set_value(pwr_control_wheel_motor, 0);
             timer_post.reset();
             timer_post.start();
             break;
@@ -784,14 +809,14 @@ private:
             psw.set_led(true);
             dcdc.set_enable(true);
             wsw.set_disable(true);
-            bat_out.write(bat_out_state);
+            gpio_set_value(pwr_control_wheel_motor, bat_out_state);
             ac.set_enable(false);
             wait_shutdown = false;
             break;
         case POWER_STATE::NORMAL:
             LOG_DBG("enter NORMAL\n");
             wsw.set_disable(false);
-            bat_out.write(bat_out_state);
+            gpio_set_value(pwr_control_wheel_motor, bat_out_state);
             ac.set_enable(false);
             charge_guard_asserted = true;
             charge_guard_timeout.attach([this](){charge_guard_asserted = false;}, 10s);
@@ -805,13 +830,13 @@ private:
         case POWER_STATE::MANUAL_CHARGE:
             LOG_DBG("enter MANUAL_CHARGE\n");
             wsw.set_disable(true);
-            bat_out.write(0);
+            gpio_set_value(pwr_control_wheel_motor, 0);
             ac.set_enable(false);
             break;
         case POWER_STATE::LOCKDOWN:
             LOG_DBG("enter LOCKDOWN\n");
             wsw.set_disable(true);
-            bat_out.write(0);
+            gpio_set_value(pwr_control_wheel_motor, 0);
             ac.set_enable(false);
             break;
         }
@@ -875,8 +900,8 @@ private:
         // buf[0] = psw.is_activated_battery() ? 1 : 0;
         // can.send(CANMessage{0x202, buf, 1});
         // ThisThread::sleep_for(1ms);
-        // if (state == POWER_STATE::LOCKDOWN)
-        //     psw.toggle_led();
+        if (state == POWER_STATE::LOCKDOWN)
+            psw.toggle_led();
         // uint32_t v{ac.get_connector_voltage()};
         // buf[0] = v;
         // buf[1] = v >> 8;
