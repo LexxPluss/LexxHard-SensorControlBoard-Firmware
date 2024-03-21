@@ -24,12 +24,15 @@
  */
 
 #include <zephyr.h>
+#include <cmath>
+#include <kernel.h>
 #include <device.h>
 #include <drivers/gpio.h>
 #include <logging/log.h>
 #include <shell/shell.h>
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
+#include "common.hpp"
 
 namespace lexxhard::board_controller {
 
@@ -76,16 +79,16 @@ int8_t gpio_get_value(pin_def_gpio pin_def) {
 
 class power_switch_handler {  // No pins declared
 public:
-    power_switch_handler(int thres) : thres(thres * 2) {
-        timer.start();
+    power_switch_handler(int thres_data) : thres(thres_data * 2) {
+        start_time = k_uptime_get();
     }
     void poll(bool changed) {
         if (changed) {
             activated = ++counter >= thres;
-            timer.reset();
+            start_time = k_uptime_get();
         }
-        auto elapsed{timer.elapsed_time()};
-        if (elapsed > 1s) {
+        auto elapsed{k_uptime_get() - start_time};
+        if (elapsed > 1000) {
             counter = 0;
             activated = false;
         }
@@ -94,8 +97,8 @@ public:
         return activated;
     }
 private:
-    Timer timer;
-    int thres, counter{0};
+    int64_t start_time{0};
+    int thres{0}, counter{0};
     bool activated{false};
 };
 
@@ -123,14 +126,13 @@ public:
             sw_unlock.poll(changed);
             if (changed) {
                 prev = now;
-                timer.reset();
-                timer.start();
+                start_time = k_uptime_get();
             } else if (now == 0) {
-                auto elapsed{timer.elapsed_time()};
-                if (elapsed > 60s) {
+                auto elapsed{k_uptime_get() - start_time};
+                if (elapsed > 60000) {
                     if (state != STATE::LONG_PUSHED)
                         state = STATE::LONG_PUSHED;
-                } else if (elapsed > 3s) {
+                } else if (elapsed > 3000) {
                     if (state == STATE::RELEASED)
                         state = STATE::PUSHED;
                 }
@@ -138,8 +140,7 @@ public:
         }
     }
     void reset_state() {
-        timer.stop();
-        timer.reset();
+        start_time = k_uptime_get();
         state = STATE::RELEASED;
     }
     STATE get_state() const {return state;}
@@ -161,7 +162,7 @@ public:
     }
 private:
     power_switch_handler sw_bat{2}, sw_unlock{10};
-    Timer timer;
+    int64_t start_time;
     STATE state{STATE::RELEASED};
     uint32_t count{0};
     bool led_en{false};
@@ -172,18 +173,22 @@ private:
 class bumper_switch { // Variables Implemented
 public:
     void poll() {
-        // if (left.read() == 0) {
-        if (gpio_get_value(bp_left) == 0) {
-            asserted = true;
-            timeout.attach([this](){asserted = false;}, 1s);
+        if(asserted) {
+            if ((k_uptime_get() - start_time) > 1000) {
+                asserted = false;
+            }
+        } else {
+            if (gpio_get_value(bp_left) == 0) {
+                asserted = true;
+                start_time = k_uptime_get();
+            }
         }
     }
     void get_raw_state(bool &left, bool &right) const {
         left = right = asserted;
     }
 private:
-    // DigitalIn left{bp_left};
-    Timeout timeout;
+    int64_t start_time;
     bool asserted{false};
 };
 
@@ -247,20 +252,19 @@ private:
 class manual_charger { // Variables Implemented
 public:
     void init() {
+        start_time = k_uptime_get();
         setup_first_state();
     }
     void poll() {
         int now{gpio_get_value(mc_din)};
         if (prev != now) {
             prev = now;
-            timer.reset();
-            timer.start();
+            start_time = k_uptime_get();
         } else {
-            auto elapsed{timer.elapsed_time()};
-            if (elapsed > 100ms) {
+            auto elapsed{k_uptime_get() - start_time};
+            if (elapsed > 100) {
                 plugged = now == 0;
-                timer.stop();
-                timer.reset();
+                start_time = k_uptime_get();
             }
         }
     }
@@ -271,11 +275,11 @@ private:
         for (int i{0}; i < 10; ++i) {
             if (gpio_get_value(mc_din) == 0)
                 ++plugged_count;
-            ThisThread::sleep_for(5ms);
+            k_msleep(5);
         }
         plugged = plugged_count > 5;
     }
-    Timer timer;
+    int64_t start_time{0};
     int prev{1};
     bool plugged{false};
 };
@@ -284,11 +288,10 @@ class auto_charger { // Variables Half-Implemented (Not Thermistors ADC)
 public:
     void init() {
         globalqueue.call_every(1s, this, &auto_charger::poll_1s);
-        heartbeat_timer.start();
-        serial_timer.start();
+        start_time = k_uptime_get();
     }
     bool is_docked() const {
-        return is_connected() && !temperature_error && !is_overheat() && heartbeat_timer.elapsed_time() < 5s;
+        return is_connected() && !temperature_error && !is_overheat() && (k_uptime_get() - start_time) < 5000;
     }
     void set_enable(bool enable) {
         // sw.write(enable ? 1 : 0);
@@ -308,17 +311,17 @@ public:
         }
     }
     void get_connector_temperature(int &positive, int &negative) const {
-        positive = clamp(static_cast<int>(connector_temp[0]), 0, 255);
-        negative = clamp(static_cast<int>(connector_temp[1]), 0, 255);
+        positive = CLAMP(static_cast<int>(connector_temp[0]), 0, 255);
+        negative = CLAMP(static_cast<int>(connector_temp[1]), 0, 255);
     }
     uint32_t get_connector_voltage() const {
         int32_t voltage_mv{static_cast<int32_t>(connector_v * 1e+3f)};
-        return clamp(voltage_mv, 0L, 3300L);
+        return CLAMP(voltage_mv, 0L, 3300L);
     }
     uint32_t get_connect_check_count() const {return connect_check_count;}
     uint32_t get_heartbeat_delay() const {
-        auto seconds{std::chrono::duration_cast<std::chrono::seconds>(heartbeat_timer.elapsed_time())};
-        return clamp(static_cast<uint32_t>(seconds.count()), 0UL, 255UL);
+        auto seconds{(k_uptime_get() - start_time) / 1000};
+        return CLAMP(static_cast<uint32_t>(seconds), 0UL, 255UL);
     }
     bool is_temperature_error() const {return temperature_error;}
     void poll() {
@@ -349,7 +352,7 @@ private: // Thermistor side starts here.
         calculate_temperature(v_th_neg, 1); // Calculate the thermistor MINUS temperature
     }
     void calculate_temperature(float adc_voltage, uint8_t sensor) { // Changed version for direct ADC measurements
-        adc_voltage = clamp(adc_voltage, 0.0f, 3.29999f); // Clamp the value of the adc voltage received
+        adc_voltage = CLAMP(adc_voltage, 0.0f, 3.29999f); // Clamp the value of the adc voltage received
         // see https://lexxpluss.esa.io/posts/459
         static constexpr float R0{3300.0f}, B{3970.0f}, T0{373.0f};
         float Rpu{10000.0f};
@@ -377,17 +380,20 @@ private: // Thermistor side starts here.
         }else{
             sw_state = 0;
         }
-         
+
+        BufferedSerial serial{ac_IrDA_tx, ac_IrDA_rx}; // IrDA serial pins
         uint8_t buf[8], param[3]{++heartbeat_counter, sw_state, rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
-        // serial_message::compose(buf, serial_message::HEARTBEAT, param);
+        serial_message::compose(buf, serial_message::HEARTBEAT, param);
+        serial.write(buf, sizeof buf);
     } // Declaration of variables
 
     // TODO adcはadc_controllerを使う
     AnalogIn connector{ac_analogVol, 3.3f}; // Charging connector pin 0 - 24V. (3.3f max voltage reference - map voltage between 0 - 3.3V)
     AnalogIn therm_pos{ac_th_pos, 3.3f}; // Charging connector pin where the input is 0 - 24V. (map voltage between 0 - 3.3V)
     AnalogIn therm_neg{ac_th_neg, 3.3f}; // Charging connector pin where the input is 0 - 24V. (map voltage between 0 - 3.3V)
-    Timer heartbeat_timer, serial_timer;
-    serial_message msg;
+    // Timer heartbeat_timer, serial_timer;
+    int64_t start_time{0};
+    // serial_message msg;
     uint8_t heartbeat_counter{0}, rsoc{0};
     float connector_v{0.0f}, connector_temp[2]{0.0f, 0.0f};
     uint32_t connect_check_count{0}, temperature_error_count{0};
@@ -518,11 +524,11 @@ public:
         // can.register_callback(0x201, callback(this, &mainboard_controller::handle_can));
     }
     void poll() {
-        if (timer.elapsed_time() > 3s) {
-            heartbeat_timeout = true;
-            timer.stop();
-            timer.reset();
-        }
+        // if (timer.elapsed_time() > 3s) {
+        //     heartbeat_timeout = true;
+        //     timer.stop();
+        //     timer.reset();
+        // }
     }
     bool emergency_stop_from_ros() const {
         return emergency_stop;
@@ -548,8 +554,8 @@ public:
 private:
     void handle_can(const CANMessage &msg) {
         heartbeat_timeout = false;
-        timer.reset();
-        timer.start();
+        // timer.reset();
+        // timer.start();
         emergency_stop = msg.data[0] != 0;
         power_off = msg.data[1] != 0;
         ros_heartbeat_timeout = msg.data[2] != 0;
@@ -573,9 +579,27 @@ public:
         bmu.init();
         fan.init();
 
-        globalqueue.call_every(20ms, this, &state_controller::poll); //違う周期のポーリングをどうするか？
-        globalqueue.call_every(100ms, this, &state_controller::poll_100ms);
-        globalqueue.call_every(1s, this, &state_controller::poll_1s);
+        k_timer_init(&timer_poll_20ms, static_poll_20ms_callback, NULL);
+        k_timer_user_data_set(&timer_poll_20ms, this);
+        k_timer_start(&timer_poll_20ms, K_MSEC(20), K_MSEC(20));
+
+        k_timer_init(&timer_poll_100ms, static_poll_100ms_callback, NULL);
+        k_timer_user_data_set(&timer_poll_100ms, this);
+        k_timer_start(&timer_poll_100ms, K_MSEC(100), K_MSEC(100));
+
+        k_timer_init(&timer_poll_1s, static_poll_1s_callback, NULL);
+        k_timer_user_data_set(&timer_poll_1s, this);
+        k_timer_start(&timer_poll_1s, K_MSEC(1000), K_MSEC(1000));
+
+        k_timer_init(&current_check_timeout, static_current_check_timeout_callback, NULL);
+        k_timer_user_data_set(&current_check_timeout, this);
+
+        k_timer_init(&charge_guard_timeout, static_charge_guard_timeout_callback, NULL);
+        k_timer_user_data_set(&charge_guard_timeout, this);
+
+        timer_post = k_uptime_get();
+        timer_shutdown = k_uptime_get();
+        timer_poweroff = k_uptime_get();
 
         Watchdog &watchdog{Watchdog::get_instance()}; //ZephyrでWatchdogはどうやるのか？
         uint32_t watchdog_max{watchdog.get_max_timeout()};
@@ -584,7 +608,43 @@ public:
             watchdog_timeout = watchdog_max;
         watchdog.start(watchdog_timeout);
     }
+    void run() {
+        while(true) {
+            poll();
+        }
+    }
 private:
+    static void static_poll_20ms_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            instance->poll();
+        }
+    }
+    static void static_poll_100ms_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            instance->poll_100ms();
+        }
+    }
+    static void static_poll_1s_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            instance->poll_1s();
+        }
+    }
+    static void static_current_check_timeout_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            instance->charge_guard_asserted = false;
+        }
+    }
+    static void static_charge_guard_timeout_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            instance->current_check_enable = true;
+        }
+    }
+
     enum class POWER_STATE {
         OFF,
         WAIT_SW,
@@ -598,7 +658,7 @@ private:
     };
     void poll() {
         auto wheel_relay_control = [&](){
-            bool wheel_poweroff{gpio_get_value(pgood_wheel_motor_left) && gpio_get_value(pgood_wheel_motor_right)};
+            bool wheel_poweroff{mbd.is_wheel_poweroff()};   // TODO mbd.is_wheel_poweroff() はLexxAutoからのモーターOFF指令
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
                 gpio_set_value(pwr_control_wheel_motor, wheel_poweroff ? 0 : 1);
@@ -616,7 +676,7 @@ private:
             set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
             break;
         case POWER_STATE::TIMEROFF:
-            if (timer_poweroff.elapsed_time() > 5s)
+            if ((k_uptime_get() - timer_poweroff) > 5000)
                 set_new_state(POWER_STATE::OFF);
             break;
         case POWER_STATE::WAIT_SW:
@@ -635,7 +695,7 @@ private:
             } else if (bmu.is_ok() && temp.is_ok()) {
                 LOG_DBG("BMU and temperature OK\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (timer_post.elapsed_time() > 3s) {
+            } else if ((k_uptime_get() - timer_post) > 3000) {
                 set_new_state(POWER_STATE::OFF);
             }
             break;
@@ -646,17 +706,15 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
                 set_new_state(wait_shutdown ? POWER_STATE::TIMEROFF : POWER_STATE::LOCKDOWN);
-            } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() ||
-                mbd.is_overheat() || !bmu.is_ok() || !temp.is_ok()) {
+            } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 if (wait_shutdown) {
-                    if (timer_shutdown.elapsed_time() > 60s)
+                    if ((k_uptime_get() - timer_shutdown)> 60000)
                         set_new_state(POWER_STATE::OFF);
                 } else {
                     LOG_DBG("wait shutdown\n");
                     wait_shutdown = true;
                     gpio_set_value(pwr_control_wheel_motor, 0);
-                    timer_shutdown.reset();
-                    timer_shutdown.start();
+                    timer_shutdown = k_uptime_get();    // timer reset
                     if (psw_state == power_switch::STATE::PUSHED)
                         shutdown_reason = SHUTDOWN_REASON::SWITCH;
                     if (mbd.power_off_from_ros())
@@ -767,31 +825,29 @@ private:
     void set_new_state(POWER_STATE newstate) {
         switch (state) {
         case POWER_STATE::NORMAL:
-            charge_guard_timeout.detach();
+            k_timer_stop(&charge_guard_timeout);
             break;
         case POWER_STATE::AUTO_CHARGE:
-            current_check_timeout.detach();
+            k_timer_stop(&current_check_timeout);
             ac.force_stop();
             break;
         default:
             break;
         }
-        int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1};
+        int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1}; // TODO mbd.is_wheel_poweroff() はLexxAutoからのモーターOFF指令
         switch (newstate) {
         case POWER_STATE::OFF:
             LOG_DBG("enter OFF\n");
             poweron_by_switch = false;
             psw.set_led(false);
             dcdc.set_enable(false);
-            // bmu.set_enable(false);
             gpio_set_value(pwr_control_wheel_motor, 0);
             while (true) // wait power off
                 continue;
             break;
         case POWER_STATE::TIMEROFF:
             LOG_DBG("enter TIMEROFF\n");
-            timer_poweroff.reset();
-            timer_poweroff.start();
+            timer_poweroff = k_uptime_get();    // timer reset
             break;
         case POWER_STATE::WAIT_SW:
             LOG_DBG("enter WAIT_SW\n");
@@ -799,10 +855,8 @@ private:
         case POWER_STATE::POST:
             LOG_DBG("enter POST\n");
             psw.set_led(true);
-            // bmu.set_enable(true);
             gpio_set_value(pwr_control_wheel_motor, 0);
-            timer_post.reset();
-            timer_post.start();
+            timer_post = k_uptime_get();    // timer reset
             break;
         case POWER_STATE::STANDBY:
             LOG_DBG("enter STANDBY\n");
@@ -819,13 +873,13 @@ private:
             gpio_set_value(pwr_control_wheel_motor, bat_out_state);
             ac.set_enable(false);
             charge_guard_asserted = true;
-            charge_guard_timeout.attach([this](){charge_guard_asserted = false;}, 10s);
+            k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
             break;
         case POWER_STATE::AUTO_CHARGE:
             LOG_DBG("enter AUTO_CHARGE\n");
             ac.set_enable(true);
             current_check_enable = false;
-            current_check_timeout.attach([this](){current_check_enable = true;}, 10s);
+            k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
             break;
         case POWER_STATE::MANUAL_CHARGE:
             LOG_DBG("enter MANUAL_CHARGE\n");
@@ -853,13 +907,13 @@ private:
         // uint8_t buf[8]{0};
         // if (psw.get_raw_state())
         //     buf[0] |= 0b00000001;
-        // bool st0, st1, st2;
-        // esw.get_raw_state(st0, st1);
+        bool st0, st1, st2;
+        esw.get_raw_state(st0, st1);
         // if (st0)
         //     buf[0] |= 0b00000010;
         // if (st1)
         //     buf[0] |= 0b00000100;
-        // bsw.get_raw_state(st0, st1);
+        bsw.get_raw_state(st0, st1);
         // if (st0)
         //     buf[0] |= 0b00001000;
         // if (st1)
@@ -871,19 +925,19 @@ private:
         // buf[1] |= (static_cast<uint32_t>(shutdown_reason) & 0x1f) << 2;
         // if (wait_shutdown)
         //     buf[1] |= 0b10000000;
-        // dcdc.get_failed_state(st0, st1);
+        dcdc.get_failed_state(st0, st1);
         // if (st0)
         //     buf[2] |= 0b00000001;
         // if (st1)
         //     buf[2] |= 0b00000010;
-        // bmu.get_fet_state(st0, st1, st2);
+        bmu.get_fet_state(st0, st1, st2);
         // if (st0)
         //     buf[2] |= 0b00010000;
         // if (st1)
         //     buf[2] |= 0b00100000;
         // if (st2)
         //     buf[2] |= 0b01000000;
-        // wsw.get_raw_state(st0, st1);
+        wsw.get_raw_state(st0, st1);
         // if (st0)
         //     buf[3] |= 0b00000001;
         // if (st1)
@@ -915,17 +969,18 @@ private:
         watchdog.kick();
     }
     
-    can_driver can;
+    // can_driver can;
     power_switch psw;
     bumper_switch bsw;
     emergency_switch esw;
     wheel_switch wsw;
     manual_charger mc;
     auto_charger ac;
-    bmu_controller bmu{can};
+    bmu_controller bmu;
     dcdc_converter dcdc;
     fan_driver fan;
-    DigitalOut bat_out{sc_bat_out, 0}, heartbeat_led{sc_hb_led, 0};
+    mainboard_controller mbd;
+    // DigitalOut bat_out{sc_bat_out, 0}, heartbeat_led{sc_hb_led, 0};
     POWER_STATE state{POWER_STATE::OFF};
     enum class SHUTDOWN_REASON {
         NONE,
@@ -935,21 +990,30 @@ private:
         POWERBOARD_TEMP,
         BMU,
     } shutdown_reason{SHUTDOWN_REASON::NONE};
-    Timer timer_post, timer_shutdown, timer_poweroff;
-    Timeout current_check_timeout, charge_guard_timeout;
+    // Timer timer_post, timer_shutdown, timer_poweroff;
+    // Timeout current_check_timeout, charge_guard_timeout;
+    int64_t timer_post{0}, timer_shutdown{0}, timer_poweroff{0};
+    k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
+    k_timer current_check_timeout, charge_guard_timeout;
     bool poweron_by_switch{false}, wait_shutdown{false}, current_check_enable{false}, charge_guard_asserted{false},
          last_wheel_poweroff{false};
-};
+} impl;
 
-}
-
-int main()
+void init()
 {
-    LOG_DBG("RUN!\n");
-    state_controller ctrl;
-    ctrl.init();
-    globalqueue.dispatch_forever();
-    return 0;
+    impl.init();
 }
+
+void run(void *p1, void *p2, void *p3)
+{
+    impl.run();
+}
+
+k_thread thread;
+k_msgq msgq;
+
+}
+
+
 
 // vim: set expandtab shiftwidth=4:
