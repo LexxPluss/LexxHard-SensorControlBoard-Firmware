@@ -28,6 +28,7 @@
 #include <kernel.h>
 #include <device.h>
 #include <drivers/gpio.h>
+#include <drivers/uart.h>
 #include <logging/log.h>
 #include <shell/shell.h>
 #include "adc_reader.hpp"
@@ -102,6 +103,8 @@ private:
     bool activated{false};
 };
 
+#define PWS_LONG_PUSHED_MS 60000
+#define PWS_PUSHED_MS 3000
 class power_switch { // Variables Implemented
 public:
     enum class STATE {
@@ -129,10 +132,10 @@ public:
                 start_time = k_uptime_get();
             } else if (now == 0) {
                 auto elapsed{k_uptime_get() - start_time};
-                if (elapsed > 60000) {
+                if (elapsed > PWS_LONG_PUSHED_MS) {
                     if (state != STATE::LONG_PUSHED)
                         state = STATE::LONG_PUSHED;
-                } else if (elapsed > 3000) {
+                } else if (elapsed > PWS_PUSHED_MS) {
                     if (state == STATE::RELEASED)
                         state = STATE::PUSHED;
                 }
@@ -170,11 +173,12 @@ private:
     static constexpr uint32_t COUNT{1};
 };
 
+#define BUMPER_SWITCH_HOLD_TIME_MS 1000
 class bumper_switch { // Variables Implemented
 public:
     void poll() {
         if(asserted) {
-            if ((k_uptime_get() - start_time) > 1000) {
+            if ((k_uptime_get() - start_time) > BUMPER_SWITCH_HOLD_TIME_MS) {
                 asserted = false;
             }
         } else {
@@ -284,25 +288,125 @@ private:
     bool plugged{false};
 };
 
+class serial_message {
+public:
+    bool decode(uint8_t data) {
+        return decode_single(data);
+    }
+    bool decode(uint8_t *buf, int length) {
+        while (length--) {
+            if (decode_single(*buf++))
+                return true;
+        }
+        return false;
+    }
+    uint8_t get_command(uint8_t param[3]) const {
+        param[0] = request.detail.param[0];
+        param[1] = request.detail.param[1];
+        param[2] = request.detail.param[2];
+        return request.detail.command;
+    }
+    static void compose(uint8_t buf[8], uint8_t command, uint8_t *param) {
+        buf[0] = 'L'; // L and P creates the header of the communication protocol
+        buf[1] = 'P';
+        buf[2] = command;
+        if (param != nullptr) {
+            buf[3] = param[0];
+            buf[4] = param[1];
+            buf[5] = param[2];
+        } else {
+            buf[3] = buf[4] = buf[5] = 0;
+        }
+        uint16_t sum{calc_check_sum(buf, 6)};
+        buf[6] = sum;
+        buf[7] = sum >> 8; // This confirms that the message have been received correctly on the other end of teh communication by reverting and confirming the sum operation.
+    }
+    void reset() {state = STATE::HEAD0;}
+    static constexpr uint8_t HEARTBEAT{0x01};
+    static constexpr uint8_t POWERON{0x02};
+    static constexpr uint8_t POWEROFF{0x03};
+private:
+    bool decode_single(uint8_t data) {
+        bool result{false};
+        switch (state) {
+        case STATE::HEAD0:
+            request.raw[0] = data;
+            if (data == 'L')
+                state = STATE::HEAD1;
+            break;
+        case STATE::HEAD1:
+            request.raw[1] = data;
+            if (data == 'P') {
+                state = STATE::DATA;
+                data_count = 2;
+            } else {
+                reset();
+            }
+            break;
+        case STATE::DATA:
+            request.raw[data_count] = data;
+            if (++data_count >= sizeof request.raw) {
+                reset();
+                uint16_t sum{calc_check_sum(request.raw, 6)};
+                if (((sum >> 0) & 0xff) == request.detail.sum[0] &&
+                    ((sum >> 8) & 0xff) == request.detail.sum[1])
+                    result = true;
+            }
+            break;
+        }
+        return result;
+    }
+    static uint16_t calc_check_sum(const uint8_t *buf, uint32_t length) {
+        uint16_t value{0};
+        while (length--)
+            value += *buf++;
+        uint8_t l{static_cast<uint8_t>(255 - value % 256)};
+        uint8_t h{static_cast<uint8_t>(~l)};
+        return (h << 8) | l;
+    }
+    union {
+        uint8_t raw[8];
+        struct {
+            uint8_t head[2];
+            uint8_t command;
+            uint8_t param[3];
+            uint8_t sum[2];
+        } detail;
+    } request;
+    uint32_t data_count{0};
+    enum class STATE {
+        HEAD0, HEAD1, DATA
+    } state{STATE::HEAD0};
+};
+
+#define AUTO_CHARGE_DOCKED_TIMEOUT_MS 5000
+#define IRDA_DATA_LEN 8
+#define IRDA_TX_TIMEOUT_MS 1000
 class auto_charger { // Variables Half-Implemented (Not Thermistors ADC)
 public:
     void init() {
-        globalqueue.call_every(1s, this, &auto_charger::poll_1s);
+        k_timer_init(&timer_poll_1s, static_poll_1s_callback, NULL);
+        k_timer_user_data_set(&timer_poll_1s, this);
+        k_timer_start(&timer_poll_1s, K_MSEC(1000), K_MSEC(1000));
+
         start_time = k_uptime_get();
+
+        dev = device_get_binding("UART_6");
+        return;
     }
     bool is_docked() const {
-        return is_connected() && !temperature_error && !is_overheat() && (k_uptime_get() - start_time) < 5000;
+        return is_connected() && !is_overheat() && (k_uptime_get() - start_time) < AUTO_CHARGE_DOCKED_TIMEOUT_MS;
     }
     void set_enable(bool enable) {
-        // sw.write(enable ? 1 : 0);
         gpio_set_value(ac_chargingRelay, enable ? 1 : 0);
     }
     void force_stop() {
         set_enable(false);
         send_heartbeat();
+        return;
     }
     bool is_charger_ready() const {
-        if(connector_v > (CHARGING_VOLTAGE * 0.7)){
+        if(connector_v > (CHARGING_VOLTAGE * 0.9)){
             LOG_DBG("charger ready voltage:%f.\n", connector_v);
             return true;
         }else {
@@ -313,6 +417,7 @@ public:
     void get_connector_temperature(int &positive, int &negative) const {
         positive = CLAMP(static_cast<int>(connector_temp[0]), 0, 255);
         negative = CLAMP(static_cast<int>(connector_temp[1]), 0, 255);
+        return;
     }
     uint32_t get_connector_voltage() const {
         int32_t voltage_mv{static_cast<int32_t>(connector_v * 1e+3f)};
@@ -323,10 +428,10 @@ public:
         auto seconds{(k_uptime_get() - start_time) / 1000};
         return CLAMP(static_cast<uint32_t>(seconds), 0UL, 255UL);
     }
-    bool is_temperature_error() const {return temperature_error;}
+    
     void poll() {
         uint32_t prev_connect_check_count{connect_check_count};
-        connector_v = connector.read_voltage();  // Read the voltage from the auto charging terminals
+        connector_v = (float)(adc_reader::get_adc3(adc_reader::CHARGING_VOLTAGE) / 1000.0f);
         if (connector_v > CONNECT_THRES_VOLTAGE) {
             if (++connect_check_count >= CONNECT_THRES_COUNT) {
                 connect_check_count = CONNECT_THRES_COUNT;
@@ -338,18 +443,27 @@ public:
             if (prev_connect_check_count >= CONNECT_THRES_COUNT)
                 LOG_DBG("disconnected from the charger.\n");
         }
-        // TODO adc_readはadc_controllerを使う
         adc_read();
+        return;
     }
     void update_rsoc(uint8_t rsoc) {
         this->rsoc = rsoc;
+        return;
     }
 private: // Thermistor side starts here.
+    static void static_poll_1s_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<auto_charger*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            instance->poll_1s();
+        }
+        return;
+    }
     void adc_read() { // Change to read the temperature sensor from ADC pin directly. Thermistor side.
-        float v_th_pos{therm_pos.read_voltage()}; // Read the positive thermistor voltage
-        float v_th_neg{therm_neg.read_voltage()}; // Read the negative thermistor voltage
+        float v_th_pos{(float)(adc_reader::get(adc_reader::THERMISTOR_P) / 1000.0f)};
+        float v_th_neg{(float)(adc_reader::get(adc_reader::THERMISTOR_N) / 1000.0f)};
         calculate_temperature(v_th_pos, 0); // Calculate the thermistor PLUS temperature
         calculate_temperature(v_th_neg, 1); // Calculate the thermistor MINUS temperature
+        return;
     }
     void calculate_temperature(float adc_voltage, uint8_t sensor) { // Changed version for direct ADC measurements
         adc_voltage = CLAMP(adc_voltage, 0.0f, 3.29999f); // Clamp the value of the adc voltage received
@@ -360,6 +474,7 @@ private: // Thermistor side starts here.
         float T{1.0f / (logf(R / R0) / B + 1.0f / T0)};
         static constexpr float gain{0.02f}; // Low pass filter gain
         connector_temp[sensor] = connector_temp[sensor] * (1.0f - gain) + (T - 273.0f) * gain; // Low pass filter function
+        return;
     }
     bool is_connected() const {
         return connect_check_count >= CONNECT_THRES_COUNT;
@@ -368,11 +483,10 @@ private: // Thermistor side starts here.
         return connector_temp[0] > 80.0f || connector_temp[1] > 80.0f;
     }
     void poll_1s() {                                                         /* Function that checks the conditions of charging while the IrDA is connected */
-        if (is_connected() && !temperature_error && !is_overheat())
+        if (is_connected() && !is_overheat())
             send_heartbeat();
     }
     void send_heartbeat() {                                                    /* Creates the message to send to the robot using the "compose" function below */
-        // uint8_t buf[8], param[3]{++heartbeat_counter, static_cast<uint8_t>(sw.read()), rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
         uint8_t sw_state{0};
 
         if(is_connected()){
@@ -381,23 +495,26 @@ private: // Thermistor side starts here.
             sw_state = 0;
         }
 
-        BufferedSerial serial{ac_IrDA_tx, ac_IrDA_rx}; // IrDA serial pins
-        uint8_t buf[8], param[3]{++heartbeat_counter, sw_state, rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
+        uint8_t buf[IRDA_DATA_LEN], param[3]{++heartbeat_counter, sw_state, rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
         serial_message::compose(buf, serial_message::HEARTBEAT, param);
-        serial.write(buf, sizeof buf);
+
+        if (!device_is_ready(dev)) {
+            LOG_DBG("UART device is not ready\n");
+            return;
+        }
+
+        int ret = uart_tx(dev, buf, IRDA_DATA_LEN, IRDA_TX_TIMEOUT_MS);
+        if (ret < 0) {
+            LOG_DBG("Failed to send data over UART\n");
+        }
     } // Declaration of variables
 
-    // TODO adcはadc_controllerを使う
-    AnalogIn connector{ac_analogVol, 3.3f}; // Charging connector pin 0 - 24V. (3.3f max voltage reference - map voltage between 0 - 3.3V)
-    AnalogIn therm_pos{ac_th_pos, 3.3f}; // Charging connector pin where the input is 0 - 24V. (map voltage between 0 - 3.3V)
-    AnalogIn therm_neg{ac_th_neg, 3.3f}; // Charging connector pin where the input is 0 - 24V. (map voltage between 0 - 3.3V)
-    // Timer heartbeat_timer, serial_timer;
+    const device* dev{nullptr};
     int64_t start_time{0};
-    // serial_message msg;
     uint8_t heartbeat_counter{0}, rsoc{0};
     float connector_v{0.0f}, connector_temp[2]{0.0f, 0.0f};
-    uint32_t connect_check_count{0}, temperature_error_count{0};
-    bool temperature_error{false};
+    uint32_t connect_check_count{0};
+    k_timer timer_poll_1s;
     static constexpr int ADDR{0b10010010}; // I2C adress for temp sensor
     static constexpr uint32_t CONNECT_THRES_COUNT{100}; // Number of times that ...
     static constexpr float CHARGING_VOLTAGE{30.0f * 1000.0f / (9100.0f + 1000.0f)},
@@ -969,7 +1086,6 @@ private:
         watchdog.kick();
     }
     
-    // can_driver can;
     power_switch psw;
     bumper_switch bsw;
     emergency_switch esw;
@@ -980,7 +1096,6 @@ private:
     dcdc_converter dcdc;
     fan_driver fan;
     mainboard_controller mbd;
-    // DigitalOut bat_out{sc_bat_out, 0}, heartbeat_led{sc_hb_led, 0};
     POWER_STATE state{POWER_STATE::OFF};
     enum class SHUTDOWN_REASON {
         NONE,
@@ -990,8 +1105,7 @@ private:
         POWERBOARD_TEMP,
         BMU,
     } shutdown_reason{SHUTDOWN_REASON::NONE};
-    // Timer timer_post, timer_shutdown, timer_poweroff;
-    // Timeout current_check_timeout, charge_guard_timeout;
+
     int64_t timer_post{0}, timer_shutdown{0}, timer_poweroff{0};
     k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;

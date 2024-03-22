@@ -32,6 +32,7 @@ namespace lexxhard::adc_reader {
 void init();
 void run(void *p1, void *p2, void *p3);
 int32_t get(int index);
+int32_t get_adc3(int index);
 extern k_thread thread;
 
 enum {
@@ -41,7 +42,14 @@ enum {
     ACTUATOR_0,
     ACTUATOR_1,
     ACTUATOR_2,
+    THERMISTOR_P,
+    THERMISTOR_N,
     NUM_CHANNELS
+};
+
+enum {
+    CHARGING_VOLTAGE = 0,
+    NUM_CHANNELS_ADC3
 };
 
 }
