@@ -25,20 +25,10 @@
 
 #pragma once
 
-#include <zephyr/drivers/gpio.h>
+namespace lexxhard::can_test_v7 {
 
-struct device;
-
-namespace lexxhard {
-
-class can_test_v7 {
-public:
-    int init();
-    int poll();
-private:
-    const device *can1{nullptr}, *can2{nullptr};
-    uint32_t prev;
-    gpio_dt_spec led_s, led_r;
-};
+void init();
+void run(void *p1, void *p2, void *p3);
+extern k_thread thread;
 
 }

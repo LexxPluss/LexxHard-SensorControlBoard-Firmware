@@ -30,6 +30,7 @@ target_sources(app PRIVATE
     src/main.cpp
     src/can_test_v7.cpp
     src/led_test_v7.cpp
+    src/firmware_updater.cpp
 )
 
 if(ENABLE_INTERLOCK)

@@ -26,15 +26,29 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include "can_test_v7.hpp"
+#include "firmware_updater.hpp"
 #include "led_test_v7.hpp"
+
+namespace {
+
+K_THREAD_STACK_DEFINE(can_test_v7_stack, 2048);
+    K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
+
+#define RUN(name, prio) \
+    k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
+                    lexxhard::name::run, nullptr, nullptr, nullptr, prio, K_FP_REGS, K_MSEC(2000));
+
+}
 
 int main()
 {
+    lexxhard::can_test_v7::init();
+    lexxhard::firmware_updater::init();
+    RUN(can_test_v7, 4);
+    RUN(firmware_updater, 7);
     const gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_NODELABEL(led1), gpios);
     gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
-    lexxhard::can_test_v7 can_test;
     lexxhard::led_test_v7 led_test;
-    can_test.init();
     led_test.init();
     auto prev{k_cycle_get_32()};
     while (true) {
@@ -42,7 +56,6 @@ int main()
             prev = now;
             gpio_is_ready_dt(&led) && gpio_pin_toggle_dt(&led);
         }
-        can_test.poll();
         led_test.poll();
         k_msleep(10);
     }
