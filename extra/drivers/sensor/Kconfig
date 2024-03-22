@@ -1,2 +1,2 @@
-rsource "adis16470/Kconfig"
 rsource "maxbotix/Kconfig"
+rsource "adis16470/Kconfig"

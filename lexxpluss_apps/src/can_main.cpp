@@ -57,7 +57,14 @@ private:
     ros::NodeHandle nh;
     ros_bmu bmu;
     ros_board board;
+<<<<<<< HEAD:lexxpluss_apps/src/can_main.cpp
     ros_imu imu;
+=======
+    ros_dfu dfu;
+    can_imu imu;
+    ros_interlock interlock;
+    ros_tof tof;
+>>>>>>> 9fb6710ba46d8b4e87798329b69dd978f79fe102:lexxpluss_apps/src/rosserial.cpp
     ros_uss uss;
 } impl;
 
