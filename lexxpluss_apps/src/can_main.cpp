@@ -24,14 +24,11 @@
  */
 
 #include "rosserial_hardware_zephyr.hpp"
-#include "rosserial_bmu.hpp"
-#include "rosserial_board.hpp"
-#include "rosserial_dfu.hpp"
-#include "rosserial_imu.hpp"
-#include "rosserial_interlock.hpp"
-#include "rosserial_tof.hpp"
-#include "rosserial_uss.hpp"
-#include "rosserial.hpp"
+#include "can_bmu.hpp"
+#include "can_board.hpp"
+#include "can_imu.hpp"
+#include "can_uss.hpp"
+#include "can_main.hpp"
 
 namespace lexxhard::rosserial {
 
@@ -42,11 +39,8 @@ public:
         nh.initNode(const_cast<char*>("UART_6"));
         bmu.init(nh);
         board.init(nh);
-        dfu.init(nh);
         imu.init(nh);
-        interlock.init(nh);
-        tof.init(nh);
-        uss.init(nh);
+        uss.init();
         return 0;
     }
     void run() {
@@ -54,10 +48,7 @@ public:
             nh.spinOnce();
             bmu.poll();
             board.poll();
-            dfu.poll();
             imu.poll();
-            interlock.poll();
-            tof.poll();
             uss.poll();
             k_usleep(1);
         }
@@ -66,10 +57,7 @@ private:
     ros::NodeHandle nh;
     ros_bmu bmu;
     ros_board board;
-    ros_dfu dfu;
     ros_imu imu;
-    ros_interlock interlock;
-    ros_tof tof;
     ros_uss uss;
 } impl;
 

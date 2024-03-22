@@ -30,14 +30,10 @@
 #include "can_controller.hpp"
 #include "firmware_updater.hpp"
 #include "imu_controller.hpp"
-#include "interlock_controller.hpp"
 #include "led_controller.hpp"
-#include "misc_controller.hpp"
 #include "pgv_controller.hpp"
-#include "rosserial.hpp"
-#include "rosserial_service.hpp"
+#include "can_main.hpp"
 #include "runaway_detector.hpp"
-#include "tof_controller.hpp"
 #include "uss_controller.hpp"
 
 namespace {
@@ -47,14 +43,10 @@ K_THREAD_STACK_DEFINE(adc_reader_stack, 2048);
 K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
-K_THREAD_STACK_DEFINE(interlock_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
-K_THREAD_STACK_DEFINE(misc_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(rosserial_stack, 2048);
-K_THREAD_STACK_DEFINE(rosserial_service_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
-K_THREAD_STACK_DEFINE(tof_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 
 #define RUN(name, prio) \
@@ -82,24 +74,18 @@ void main()
     lexxhard::can_controller::init();
     lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
-    lexxhard::interlock_controller::init();
     lexxhard::led_controller::init();
-    lexxhard::misc_controller::init();
     lexxhard::pgv_controller::init();
     lexxhard::rosserial::init();
     lexxhard::runaway_detector::init();
-    lexxhard::tof_controller::init();
     lexxhard::uss_controller::init();
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
     RUN(can_controller, 4);
     RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
-    RUN(interlock_controller, 5);
     RUN(led_controller, 1);
-    RUN(misc_controller, 2);
     RUN(pgv_controller, 1);
-    RUN(tof_controller, 2);
     RUN(uss_controller, 2);
     RUN(runaway_detector, 4);
     RUN(rosserial, 5); // The rosserial thread will be started last.
