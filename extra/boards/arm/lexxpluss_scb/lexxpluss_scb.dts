@@ -35,8 +35,8 @@
 
 	chosen {
 		zephyr,code-partition = &slot0_partition;
-		zephyr,console = &usart1;
-		zephyr,shell-uart = &usart1;
+		zephyr,console = &usart2;
+		zephyr,shell-uart = &usart2;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 		zephyr,dtcm = &dtcm;
@@ -150,10 +150,9 @@
 };
 
 &usart2 {
-	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6 &usart2_cts_pd3 &usart2_rts_pd4>;
+	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6>;
 	pinctrl-names = "default";
 	current-speed = <115200>;
-	hw-flow-control;
 	status = "okay";
 };
 
