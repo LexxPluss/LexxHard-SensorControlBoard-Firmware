@@ -29,10 +29,12 @@
 #include <device.h>
 #include <drivers/gpio.h>
 #include <drivers/uart.h>
+#include <drivers/watchdog.h>
 #include <logging/log.h>
 #include <shell/shell.h>
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
+#include "can_controller.hpp"
 #include "common.hpp"
 
 namespace lexxhard::board_controller {
@@ -524,7 +526,9 @@ private: // Thermistor side starts here.
 class bmu_controller { // Variables Implemented
 public:
     void init() {
-        // TODO メッセージキューに変更
+        // CANを受信する
+        // for (auto i : {0x100, 0x101, 0x113})
+        //     can.register_callback(i, callback(this, &bmu_controller::handle_can));
     }
     bool is_ok() const {
         return ((data.mod_status1 & 0b10111111) == 0 ||
@@ -550,7 +554,7 @@ public:
         return data.rsoc;
     }
 private:
-    // TODO CANはここで使わないが、メッセージ内容は使う
+    // CANからメッセージを取得する
     void handle_can(const CANMessage &msg) {
         switch (msg.id) {
         case 0x100:
@@ -635,10 +639,11 @@ public:
 private:
 };
 
-class mainboard_controller {  // No pins declared
+class boardstate_controller {  // No pins declared
 public:
     void init() {
         // can.register_callback(0x201, callback(this, &mainboard_controller::handle_can));
+        // TODO メッセージキューを初期化
     }
     void poll() {
         // if (timer.elapsed_time() > 3s) {
@@ -669,6 +674,7 @@ public:
         return wheel_poweroff;
     }
 private:
+    //メッセージキューに変更
     void handle_can(const CANMessage &msg) {
         heartbeat_timeout = false;
         // timer.reset();
@@ -688,6 +694,7 @@ private:
          mainboard_overheat{false}, actuatorboard_overheat{false}, wheel_poweroff{false};
 };
 
+#define WDT_TIMEOUT_MS 10000
 class state_controller { // Variables Implemented
 public:
     void init() {
@@ -718,12 +725,38 @@ public:
         timer_shutdown = k_uptime_get();
         timer_poweroff = k_uptime_get();
 
-        Watchdog &watchdog{Watchdog::get_instance()}; //ZephyrでWatchdogはどうやるのか？
-        uint32_t watchdog_max{watchdog.get_max_timeout()};
-        uint32_t watchdog_timeout{10000U};
-        if (watchdog_timeout > watchdog_max)
-            watchdog_timeout = watchdog_max;
-        watchdog.start(watchdog_timeout);
+        // Setup Watch Dog Timer
+        dev_wdi = device_get_binding("IWDG");
+        if (!device_is_ready(dev_wdi)){
+            LOG_INF("Watchdog device is not ready\n");
+            return;
+        }
+
+        struct wdt_timeout_cfg wdt_config ={
+            .flags = WDT_FLAG_RESET_SOC,
+            .window.min = 0,
+            .window.max = WDT_TIMEOUT_MS,
+            .callback = NULL,
+        };
+
+        int wdt_channel_id = wdt_install_timeout(dev_wdi, &wdt_config);
+        if (wdt_channel_id < 0) {
+            LOG_INF("WDT install timeout error\n");
+            return;
+        }
+        
+        int err_setup = wdt_setup(dev_wdi, WDT_OPT_PAUSE_HALTED_BY_DBG);
+        if (err_setup) {
+            LOG_INF("WDT setup error: %d\n", err_setup);
+            return;
+        }
+
+        // Watchdog &watchdog{Watchdog::get_instance()}; //ZephyrでWatchdogはどうやるのか？
+        // uint32_t watchdog_max{watchdog.get_max_timeout()};
+        // uint32_t watchdog_timeout{10000U};
+        // if (watchdog_timeout > watchdog_max)
+        //     watchdog_timeout = watchdog_max;
+        // watchdog.start(watchdog_timeout);
     }
     void run() {
         while(true) {
@@ -1082,8 +1115,11 @@ private:
         // can.send(CANMessage{0x204, buf, 5});
     }
     void poll_1s() {
-        Watchdog &watchdog{Watchdog::get_instance()};
-        watchdog.kick();
+        if (!device_is_ready(dev_wdi)){
+            LOG_INF("Watchdog device is not ready\n");
+            return;
+        }
+        wdt_feed(dev_wdi, 0);   // Feed the watchdog, Second value will not be used for STM32
     }
     
     power_switch psw;
@@ -1095,7 +1131,7 @@ private:
     bmu_controller bmu;
     dcdc_converter dcdc;
     fan_driver fan;
-    mainboard_controller mbd;
+    boardstate_controller mbd;
     POWER_STATE state{POWER_STATE::OFF};
     enum class SHUTDOWN_REASON {
         NONE,
@@ -1109,6 +1145,7 @@ private:
     int64_t timer_post{0}, timer_shutdown{0}, timer_poweroff{0};
     k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;
+    const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, wait_shutdown{false}, current_check_enable{false}, charge_guard_asserted{false},
          last_wheel_poweroff{false};
 } impl;
