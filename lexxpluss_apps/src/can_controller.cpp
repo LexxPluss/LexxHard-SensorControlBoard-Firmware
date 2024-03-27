@@ -29,9 +29,7 @@
 #include <drivers/gpio.h>
 #include <logging/log.h>
 #include <shell/shell.h>
-#include "interlock_controller.hpp"
 #include "led_controller.hpp"
-#include "misc_controller.hpp"
 #include "can_controller.hpp"
 
 namespace lexxhard::can_controller {
@@ -103,10 +101,6 @@ public:
             if (k_msgq_get(&msgq_control, &ros2board, K_NO_WAIT) == 0) {
                 prev_cycle_ros = k_cycle_get_32();
                 handled = true;
-            }
-            interlock_controller::msg_can_interlock message;
-            if (k_msgq_get(&interlock_controller::msgq_can_interlock, &message, K_NO_WAIT) == 0) {
-	        ros2board.emergency_stop |= message.is_emergency_stop;
             }
             uint32_t now_cycle{k_cycle_get_32()};
             if (prev_cycle_ros != 0) {
@@ -306,9 +300,6 @@ private:
             board2ros.charge_connector_temp[0] = frame.data[5];
             board2ros.charge_connector_temp[1] = frame.data[6];
             board2ros.power_board_temp = frame.data[7];
-            board2ros.main_board_temp = misc_controller::get_main_board_temp();
-            for (auto i{0}; i < 3; ++i)
-                board2ros.actuator_board_temp[i] = misc_controller::get_actuator_board_temp(i);
             static constexpr uint8_t LOCKDOWN_STATE{7};
             if (prev_state != LOCKDOWN_STATE && board2ros.state == LOCKDOWN_STATE) {
                 led_controller::msg message{led_controller::msg::LOCKDOWN, 1000000000};
@@ -382,7 +373,7 @@ private:
     const device *dev{nullptr};
     char version_powerboard[32]{""};
     bool heartbeat_timeout{true}, enable_lockdown{true};
-    static constexpr char version[]{"2.7.1"};
+    static constexpr char version[]{"1.0.0"};
 } impl;
 
 // int bmu_info(const shell *shell, size_t argc, char **argv)

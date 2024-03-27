@@ -41,13 +41,7 @@ struct msg {
     msg() : pattern(NONE), interrupt_ms(0) {}
     msg(uint32_t pattern, uint32_t interrupt_ms) :
         pattern(pattern), interrupt_ms(interrupt_ms) {}
-    msg(can_format frame) {
-        pattern = frame.pattern;
-        cpm = frame.count_per_minutes;
-        rgb[0] = frame.rgb[0];
-        rgb[1] = frame.rgb[1];
-        rgb[2] = frame.rgb[2];
-    }
+    msg(can_format frame) : pattern(frame.pattern), cpm(frame.count_per_minutes), rgb{frame.rgb[0],frame.rgb[1],frame.rgb[2]} {}
 
     msg(const char *str) {
         if      (strcmp(str, "emergency_stop")  == 0) pattern = EMERGENCY_STOP;
@@ -107,8 +101,9 @@ struct msg {
              : (c >= 'A' && c <= 'F') ? c - 'A' + 10
                                       : -1;
     }
+    uint8_t pattern{NONE};
     uint32_t interrupt_ms{0}, cpm{0};
-    uint8_t pattern{NONE}, rgb[3]{0, 0, 0};
+    uint8_t rgb[3]{0, 0, 0};
     static constexpr uint8_t NONE{0};
     static constexpr uint8_t EMERGENCY_STOP{1};
     static constexpr uint8_t AMR_MODE{2};

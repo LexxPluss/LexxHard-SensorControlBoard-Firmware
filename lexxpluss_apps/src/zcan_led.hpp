@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, LexxPluss Inc.
+ * Copyright (c) 2022, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,37 +26,53 @@
 #pragma once
 
 #include <zephyr.h>
-#include "ros/node_handle.h"
-#include "std_msgs/Bool.h"
-#include "interlock_controller.hpp"
+#include <device.h>
+#include <drivers/gpio.h>
+#include <drivers/can.h>
+#include "led_controller.hpp"
+
+#define CAN_ID_LED 0x205 //based on saito-san's CAN ID assignment
 
 namespace lexxhard {
 
-class ros_interlock {
+char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
+k_msgq msgq_can_led;
+
+class can_led {
 public:
-    void init(ros::NodeHandle &nh) {
-        nh.subscribe(sub_emergency_stop_at_amr);
-        nh.advertise(pub_emergency_stop_at_connected_robot);
-        msg_emergency_stop_at_connected_robot.data = false;
+    int init()
+    {
+        //can device bind`
+        k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (led_controller::msg), 8);
+        dev = device_get_binding("CAN_2");
+        if (!device_is_ready(dev))
+            return -1;
+
+        //setup can filter
+        static const zcan_filter filter_led{
+            .id{CAN_ID_LED},
+            .rtr{CAN_DATAFRAME},
+            .id_type{CAN_STANDARD_IDENTIFIER},
+            .id_mask{0x7ff},
+            .rtr_mask{1}
+        };
+        can_attach_msgq(dev, &msgq_can_led, &filter_led);
+        return 0;
     }
-    void poll() {
-        interlock_controller::msg_connected_robot_status message;
-        while (k_msgq_get(&interlock_controller::msgq_connected_robot_status, &message, K_NO_WAIT) == 0) {
-            msg_emergency_stop_at_connected_robot.data = message.is_emergency_stop;
-            pub_emergency_stop_at_connected_robot.publish(&msg_emergency_stop_at_connected_robot);
+
+    void poll()
+    {
+        while (k_msgq_get(&msgq_can_led, &can_led_frame, K_NO_WAIT) == 0) {
+            can2led = led_controller::msg(can_led_frame);
+            while (k_msgq_put(&led_controller::msgq, &can2led, K_NO_WAIT) != 0)
+                k_msgq_purge(&led_controller::msgq);
         }
     }
 private:
-    void callback_emergency_stop_at_amr(const std_msgs::Bool &msg) {
-        interlock_controller::msg_amr_status message{msg.data};
-	while (k_msgq_put(&interlock_controller::msgq_amr_status, &message, K_NO_WAIT) != 0)
-            k_msgq_purge(&interlock_controller::msgq_amr_status);
-    }
-    std_msgs::Bool msg_emergency_stop_at_connected_robot;
-    ros::Publisher pub_emergency_stop_at_connected_robot{"/control/emergency_stop_at_connected_robot", &msg_emergency_stop_at_connected_robot};
-    ros::Subscriber<std_msgs::Bool, ros_interlock> sub_emergency_stop_at_amr{"/control/emergency_stop_at_amr", &ros_interlock::callback_emergency_stop_at_amr, this};
-};  // class ros_interlock
-
-}  // namespace lexxhard
+    led_controller::can_format can_led_frame;
+    led_controller::msg can2led;
+    const device *dev{nullptr};
+};
+}
 
 // vim: set expandtab shiftwidth=4:

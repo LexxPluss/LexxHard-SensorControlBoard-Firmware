@@ -30,11 +30,11 @@
 namespace lexxhard::imu_controller {
 
 struct msg {
-    float accel[3];
-    float gyro[3];
-    float delta_ang[3];
-    float delta_vel[3];
-    float temp;
+    uint8_t accel_data_lower[3];
+    uint8_t accel_data_upper[3];
+    uint8_t gyro_data_lower[3];
+    uint8_t gyro_data_upper[3];
+    uint8_t counter;
 } __attribute__((aligned(4)));
 
 void init();
