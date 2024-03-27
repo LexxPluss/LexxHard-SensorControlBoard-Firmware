@@ -29,8 +29,8 @@
 #include <drivers/can.h>
 #include "uss_controller.hpp"
 
-#define CAN_ID 0x204
-#define CAN_DATA_LENGTH 8
+#define CAN_ID_USS 0x204
+#define CAN_DATA_LENGTH_USS 8
 
 namespace lexxhard {
 
@@ -44,7 +44,7 @@ public:
         uss_controller::msg message;
 
         while (k_msgq_get(&uss_controller::msgq, &message, K_NO_WAIT) == 0) {
-            uint8_t packedData[CAN_DATA_LENGTH] {0}; // 8バイトのデータ配列 0で初期化
+            uint8_t packedData[CAN_DATA_LENGTH_USS] {0}; // 8バイトのデータ配列 0で初期化
 
             /* TODO USSのデータ出力サイズを調べる(2mm解像度で12bit?) */
             uint16_t data1 = (uint16_t)(message.front_left / 1000);
@@ -64,15 +64,15 @@ public:
 
             // CANフレームにデータをセット
             zcan_frame frame{
-                .id = CAN_ID,
+                .id = CAN_ID_USS,
                 .rtr = CAN_DATAFRAME,
                 .id_type = CAN_STANDARD_IDENTIFIER,
-                .dlc = CAN_DATA_LENGTH,
+                .dlc = CAN_DATA_LENGTH_USS,
                 .data = {0}
             };
 
             // packedDataをCANフレームのdataフィールドにコピー
-            memcpy(frame.data, packedData, CAN_DATA_LENGTH);
+            memcpy(frame.data, packedData, CAN_DATA_LENGTH_USS);
 
             can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
         }

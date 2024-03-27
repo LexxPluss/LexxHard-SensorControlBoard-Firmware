@@ -31,7 +31,7 @@
 
 #define CAN_ID_ACCL 0x206
 #define CAN_ID_GYRO 0x207
-#define CAN_DATA_LENGTH 7
+#define CAN_DATA_LENGTH_IMU 7
 
 namespace lexxhard {
 
@@ -53,7 +53,7 @@ public:
                     .id = CAN_ID_ACCL,
                     .rtr = CAN_DATAFRAME,
                     .id_type = CAN_STANDARD_IDENTIFIER,
-                    .dlc = CAN_DATA_LENGTH,
+                    .dlc = CAN_DATA_LENGTH_IMU,
                     .data{
                         message.accel_data_upper[0],
                         message.accel_data_lower[0],
@@ -68,7 +68,7 @@ public:
                     .id = CAN_ID_GYRO,
                     .rtr = CAN_DATAFRAME,
                     .id_type = CAN_STANDARD_IDENTIFIER,
-                    .dlc = CAN_DATA_LENGTH,
+                    .dlc = CAN_DATA_LENGTH_IMU,
                     .data{
                         message.gyro_data_upper[0],
                         message.gyro_data_lower[0],
