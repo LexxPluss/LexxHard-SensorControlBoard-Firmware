@@ -36,6 +36,14 @@ struct pin_def_gpio {
     uint8_t io_number; 
 } __attribute__((aligned(4)));
 
+struct msg_rcv_pb {
+    bool ros_emergency_stop;
+    bool ros_power_off;
+    bool ros_heartbeat_timeout;
+    bool ros_wheel_power_off;
+} __attribute__((aligned(4)));
+
+
 void init();
 void run(void *p1, void *p2, void *p3);
 // uint32_t get_rsoc();
@@ -43,6 +51,6 @@ void run(void *p1, void *p2, void *p3);
 // bool get_bumper_switch();
 // bool is_emergency();
 extern k_thread thread;
-extern k_msgq msgq;
-
+extern k_msgq msgq_can_bmu_pb;
+extern k_msgq msgq_board_pb_rx, msgq_board_pb_tx;
 }

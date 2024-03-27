@@ -27,22 +27,25 @@
 #include <cmath>
 #include <kernel.h>
 #include <device.h>
+#include <drivers/can.h>
 #include <drivers/gpio.h>
 #include <drivers/uart.h>
 #include <drivers/watchdog.h>
 #include <logging/log.h>
 #include <shell/shell.h>
+#include <sys/util.h>
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "can_controller.hpp"
-#include "common.hpp"
+
 
 namespace lexxhard::board_controller {
 
 LOG_MODULE_REGISTER(board);
 
-char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
-char __aligned(4) msgq_board_buffer[8 * sizeof (msg_board)];
+char __aligned(4) msgq_bmu_pb_buffer[8 * sizeof (can_controller::msg_bmu)];
+char __aligned(4) msgq_board_pb_rx_buffer[8 * sizeof (msg_rcv_pb)];
+char __aligned(4) msgq_board_pb_tx_buffer[8 * sizeof (can_controller::msg_board)];
 
 pin_def_gpio ps_sw_in{"GPIOH", 4}, ps_led_out{"GPIOH", 5}; // Power Switch handler associated pins
 pin_def_gpio bp_left{"GPIOI", 7}; // Bumper Switch associated pins
@@ -50,14 +53,12 @@ pin_def_gpio es_left{"GPIOI", 4}, es_right("GPIOI", 0); // Emergency Switch asso
 pin_def_gpio wh_left_right{"GPIOK", 3}; // Wheel switch associated pins
 pin_def_gpio mc_din{"GPIOK", 7}; // Manual charging detection associated pins
 pin_def_gpio ac_th_pos{"GPIOC", 4}, ac_th_neg{"GPIOC", 5}, ac_IrDA_tx{"GPIOG", 14}, ac_IrDA_rx{"GPIOG", 9}, ac_analogVol{"GPIOF", 10}, ac_chargingRelay{"GPIOD", 0}; // Auto charging detection associated pins
-pin_def_gpio bmu_c_fet{PJ, 5}, bmu_d_fet{PJ, 12}, bmu_p_dsg{PJ, 13}; // BMU controller associated pins
+pin_def_gpio bmu_c_fet{"GPIOJ", 5}, bmu_d_fet{"GPIOJ", 12}, bmu_p_dsg{"GPIOJ", 13}; // BMU controller associated pins
 pin_def_gpio ts_i2c_scl{"GPIOF", 14}, ts_i2c_sda{"GPIOF", 15}; // Temperature sensors associated I2C pins
 pin_def_gpio pwr_control_24v{"GPIOC", 15}, pwr_control_peripheral{"GPIOD", 2}, pwr_control_wheel_motor{"GPIOD", 1}; // Power Control associated pins
 pin_def_gpio pgood_24v{"GPIOH", 3}, pgood_peripheral{"GPIOH", 15}, pgood_wheel_motor_left{"GPIOH", 1}, pgood_wheel_motor_right{"GPIOH", 12}; // Power Good associated pins
 pin_def_gpio pgood_linear_act_left{"GPIOK", 4}, pgood_linear_act_right{"GPIOK", 5}, pgood_linear_act_center{"GPIOK", 4};
 pin_def_gpio fan_pwm_5v_1{"GPIOC", 10}, fan_pwm_5v_2{"GPIOC", 11}, fan_pwm_24v_1{"GPIOB", 14}, fan_pwm_24v_2{"GPIOB", 15}; // PWM fan signal control pin
-
-// EventQueue globalqueue;
 
 void gpio_set_value(pin_def_gpio pin_def, uint8_t output_value) {
     const device *gpio_dev{device_get_binding(pin_def.label)};
@@ -484,11 +485,11 @@ private: // Thermistor side starts here.
     bool is_overheat() const {
         return connector_temp[0] > 80.0f || connector_temp[1] > 80.0f;
     }
-    void poll_1s() {                                                         /* Function that checks the conditions of charging while the IrDA is connected */
+    void poll_1s() {          /* Function that checks the conditions of charging while the IrDA is connected */
         if (is_connected() && !is_overheat())
             send_heartbeat();
     }
-    void send_heartbeat() {                                                    /* Creates the message to send to the robot using the "compose" function below */
+    void send_heartbeat() {  /* Creates the message to send to the robot using the "compose" function below */
         uint8_t sw_state{0};
 
         if(is_connected()){
@@ -523,12 +524,21 @@ private: // Thermistor side starts here.
                            CONNECT_THRES_VOLTAGE{3.3f * 0.5f * 1000.0f / (9100.0f + 1000.0f)};
 };
 
+CAN_DEFINE_MSGQ(msgq_can_bmu_pb, 16);
 class bmu_controller { // Variables Implemented
 public:
     void init() {
-        // CANを受信する
-        // for (auto i : {0x100, 0x101, 0x113})
-        //     can.register_callback(i, callback(this, &bmu_controller::handle_can));
+        k_msgq_init(&msgq_can_bmu_pb, msgq_bmu_pb_buffer, sizeof (can_controller::msg_bmu), 8);
+        dev = device_get_binding("CAN_1");
+        if (!device_is_ready(dev))
+            return;
+        setup_can_filter();
+    }
+    void poll() {
+        zcan_frame frame;
+        while (k_msgq_get(&msgq_can_bmu_pb, &frame, K_NO_WAIT) == 0){
+            handle_can(frame);
+        }
     }
     bool is_ok() const {
         return ((data.mod_status1 & 0b10111111) == 0 ||
@@ -554,27 +564,36 @@ public:
         return data.rsoc;
     }
 private:
-    // CANからメッセージを取得する
-    void handle_can(const CANMessage &msg) {
-        switch (msg.id) {
+    void setup_can_filter() const {
+        static const zcan_filter filter_bmu{
+            .id{0x100},
+            .rtr{CAN_DATAFRAME},
+            .id_type{CAN_STANDARD_IDENTIFIER},
+            .id_mask{0x7c0},
+            .rtr_mask{1}
+        };
+        can_attach_msgq(dev, &msgq_can_bmu_pb, &filter_bmu);
+    }
+    void handle_can(zcan_frame &frame) {
+        switch (frame.id) {
         case 0x100:
-            data.mod_status1 = msg.data[0];
-            data.asoc = msg.data[2];
-            data.rsoc = msg.data[3];
+            data.mod_status1 = frame.data[0];
+            data.asoc = frame.data[2];
+            data.rsoc = frame.data[3];
             break;
         case 0x101:
-            data.mod_status2 = msg.data[6];
-            data.pack_a = (msg.data[0] << 8) | msg.data[1];
-            data.pack_v = (msg.data[4] << 8) | msg.data[5];
+            data.mod_status2 = frame.data[6];
+            data.pack_a = (frame.data[0] << 8) | frame.data[1];
+            data.pack_v = (frame.data[4] << 8) | frame.data[5];
             break;
         case 0x113:
-            data.bmu_alarm1 = msg.data[4];
-            data.bmu_alarm2 = msg.data[5];
+            data.bmu_alarm1 = frame.data[4];
+            data.bmu_alarm2 = frame.data[5];
             break;
         }
     }
-    can_driver &can;
-        struct {
+    const device *dev{nullptr};
+    struct {
         int16_t pack_a{0};
         uint16_t pack_v{0};
         uint8_t mod_status1{0xff}, mod_status2{0xff}, bmu_alarm1{0xff}, bmu_alarm2{0xff};
@@ -619,10 +638,9 @@ private:
 };
 
 class fan_driver { // Variables Implemented
-/* FanをONにするファンクション */
 public:
     void init() {
-        // TODO 初期化処理
+        fan_on();
     }
     void fan_on() {
         gpio_set_value(fan_pwm_5v_1, 1);    // 1:ON, 0:OFF
@@ -646,6 +664,10 @@ public:
         // TODO メッセージキューを初期化
     }
     void poll() {
+        msg_rcv_pb msg;
+        if (k_msgq_get(&can_controller::msgq_board, &msg, K_NO_WAIT) == 0) {
+            handle_board(msg);
+        }
         // if (timer.elapsed_time() > 3s) {
         //     heartbeat_timeout = true;
         //     timer.stop();
@@ -658,40 +680,34 @@ public:
     bool power_off_from_ros() const {
         return power_off;
     }
-    // bool is_dead() const {
-    //     if (heartbeat_detect)
-    //         return heartbeat_timeout || ros_heartbeat_timeout;
-    //     else
-    //         return false;
-    // }
+    bool is_dead() const {
+        if (heartbeat_detect)
+            return heartbeat_timeout || ros_heartbeat_timeout;
+        else
+            return false;
+    }
     bool is_ready() const {
         return heartbeat_detect;
     }
-    // bool is_overheat() const {
-    //     return mainboard_overheat || actuatorboard_overheat;
-    // }
     bool is_wheel_poweroff() const {
         return wheel_poweroff;
     }
 private:
-    //メッセージキューに変更
-    void handle_can(const CANMessage &msg) {
+    //メッセージキューに変更 msgq_board
+    void handle_board(const msg_rcv_pb &msg) {
         heartbeat_timeout = false;
         // timer.reset();
         // timer.start();
-        emergency_stop = msg.data[0] != 0;
-        power_off = msg.data[1] != 0;
-        ros_heartbeat_timeout = msg.data[2] != 0;
-        mainboard_overheat = msg.data[3] != 0;
-        actuatorboard_overheat = msg.data[4] != 0;
-        wheel_poweroff = msg.data[5] != 0;
+        emergency_stop = msg.ros_emergency_stop;
+        power_off = msg.ros_power_off;
+        ros_heartbeat_timeout = msg.ros_heartbeat_timeout;
+        wheel_poweroff = msg.ros_wheel_power_off;
         if (!ros_heartbeat_timeout)
             heartbeat_detect = true;
     }
-    // can_driver &can;
     // Timer timer;
     bool heartbeat_timeout{true}, heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
-         mainboard_overheat{false}, actuatorboard_overheat{false}, wheel_poweroff{false};
+          wheel_poweroff{false};
 };
 
 #define WDT_TIMEOUT_MS 10000
@@ -732,12 +748,12 @@ public:
             return;
         }
 
-        struct wdt_timeout_cfg wdt_config ={
-            .flags = WDT_FLAG_RESET_SOC,
-            .window.min = 0,
-            .window.max = WDT_TIMEOUT_MS,
-            .callback = NULL,
-        };
+        struct wdt_timeout_cfg wdt_config;
+        wdt_config.flags = WDT_FLAG_RESET_SOC;
+        wdt_config.window.min = 0;
+        wdt_config.window.max = WDT_TIMEOUT_MS;
+        wdt_config.callback = NULL;
+
 
         int wdt_channel_id = wdt_install_timeout(dev_wdi, &wdt_config);
         if (wdt_channel_id < 0) {
@@ -750,13 +766,6 @@ public:
             LOG_INF("WDT setup error: %d\n", err_setup);
             return;
         }
-
-        // Watchdog &watchdog{Watchdog::get_instance()}; //ZephyrでWatchdogはどうやるのか？
-        // uint32_t watchdog_max{watchdog.get_max_timeout()};
-        // uint32_t watchdog_timeout{10000U};
-        // if (watchdog_timeout > watchdog_max)
-        //     watchdog_timeout = watchdog_max;
-        // watchdog.start(watchdog_timeout);
     }
     void run() {
         while(true) {
@@ -820,6 +829,7 @@ private:
         esw.poll();
         mc.poll();
         ac.poll();
+        bmu.poll();
         // TODO mbd の動作をリプレースする
         switch (state) {
         case POWER_STATE::OFF:
@@ -842,7 +852,7 @@ private:
             if (!poweron_by_switch && !mc.is_plugged()) {
                 LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::OFF);
-            } else if (bmu.is_ok() && temp.is_ok()) {
+            } else if (bmu.is_ok()) {
                 LOG_DBG("BMU and temperature OK\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if ((k_uptime_get() - timer_post) > 3000) {
@@ -1047,6 +1057,9 @@ private:
         state = newstate;
     }
     void poll_100ms() {
+        // TODO ここで can_contoroller にデータを送信
+        can_controller::msg_board msg;
+
         // auto temperature{temp.get_temperature()};
         // if (state == POWER_STATE::AUTO_CHARGE ||
         //     state == POWER_STATE::MANUAL_CHARGE) {
@@ -1075,7 +1088,7 @@ private:
         // buf[1] |= (static_cast<uint32_t>(shutdown_reason) & 0x1f) << 2;
         // if (wait_shutdown)
         //     buf[1] |= 0b10000000;
-        dcdc.get_failed_state(st0, st1);
+        // dcdc.get_failed_state(st0, st1);
         // if (st0)
         //     buf[2] |= 0b00000001;
         // if (st1)
@@ -1113,6 +1126,8 @@ private:
         // buf[3] = ac.get_heartbeat_delay();
         // buf[4] = ac.is_temperature_error();
         // can.send(CANMessage{0x204, buf, 5});
+
+        // TODO メッセージキューで can_controller へ送る
     }
     void poll_1s() {
         if (!device_is_ready(dev_wdi)){
@@ -1161,7 +1176,8 @@ void run(void *p1, void *p2, void *p3)
 }
 
 k_thread thread;
-k_msgq msgq;
+// k_msgq msgq_can_bmu_pb;
+k_msgq msgq_board_pb_rx, msgq_board_pb_tx;
 
 }
 

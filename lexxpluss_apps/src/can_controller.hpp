@@ -46,15 +46,19 @@ struct msg_bmu {
 } __attribute__((aligned(4)));
 
 struct msg_board {
-    float main_board_temp, actuator_board_temp[3], charge_connector_voltage;
-    int16_t charge_connector_temp[2], power_board_temp;
+    float wheel_motor_lr_loadsw_temp, peripheral_loadsw_temp, auto_charge_loadsw_temp, charge_connector_voltage;
+    float wheel_motor_l_loadsw_cs, wheel_motor_r_loadsw_cs, peripheral_loadsw_cs;
+    int16_t charge_connector_p_temp, charge_connector_n_temp;
     uint8_t fan_duty, shutdown_reason, state, charge_check_count, charge_heartbeat_delay;
-    bool bumper_switch[2];
-    bool emergency_switch[2];
-    bool power_switch, wait_shutdown, auto_charging, manual_charging;
-    bool c_fet, d_fet, p_dsg, v5_fail, v16_fail;
-    bool wheel_disable[2];
-    bool charge_temperature_error;
+    bool bumper_switch_on;
+    bool emergency_switch_on;
+    bool power_switch_state, wait_shutdown_state, auto_charging_status, manual_charging_status;
+    bool c_fet, d_fet, p_dsg;
+    bool v24_loadsw_on, v_wheel_motor_lr_loadsw_on, auto_charge_loadsw_on, v_peripheral_loadsw_on;
+    bool v24_pgood, v_wheel_motor_l_pgood, v_wheel_motor_r_pgood, v_peripheral_pgood;
+    bool c_act_pgood, l_act_pgood, r_act_pgood;
+    bool wheel_enable;
+    bool charge_temperature_good;
 } __attribute__((aligned(4)));
 
 struct msg_control {
