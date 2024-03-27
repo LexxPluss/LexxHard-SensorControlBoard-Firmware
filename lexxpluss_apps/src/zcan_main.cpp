@@ -24,11 +24,11 @@
  */
 
 #include "rosserial_hardware_zephyr.hpp"
-#include "can_bmu.hpp"
-#include "can_board.hpp"
-#include "can_imu.hpp"
-#include "can_uss.hpp"
-#include "can_main.hpp"
+#include "zcan_bmu.hpp"
+#include "zcan_board.hpp"
+#include "zcan_imu.hpp"
+#include "zcan_uss.hpp"
+#include "zcan_main.hpp"
 
 namespace lexxhard::rosserial {
 
@@ -58,7 +58,7 @@ private:
     ros_bmu bmu;
     ros_board board;
     // ros_dfu dfu;
-    can_imu imu;
+    zcan_imu imu;
     // ros_interlock interlock;
     // ros_tof tof;
     ros_uss uss;

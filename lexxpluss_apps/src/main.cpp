@@ -32,7 +32,7 @@
 #include "imu_controller.hpp"
 #include "led_controller.hpp"
 #include "pgv_controller.hpp"
-#include "can_main.hpp"
+#include "zcan_main.hpp"
 #include "runaway_detector.hpp"
 #include "uss_controller.hpp"
 

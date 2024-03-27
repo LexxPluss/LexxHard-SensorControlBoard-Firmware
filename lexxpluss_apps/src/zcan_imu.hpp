@@ -35,7 +35,7 @@
 
 namespace lexxhard {
 
-class can_imu {
+class zcan_imu {
 public:
     int init() {
         dev = device_get_binding("CAN_2");  //CAN(to IPC)
