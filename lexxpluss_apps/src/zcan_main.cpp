@@ -37,7 +37,7 @@ public:
     int init() {
         nh.getHardware()->set_baudrate(921600);
         nh.initNode(const_cast<char*>("UART_6"));
-        bmu.init(nh);
+        // bmu.init(nh);
         board.init(nh);
         imu.init();
         uss.init();
@@ -46,7 +46,7 @@ public:
     void run() {
         while (true) {
             nh.spinOnce();
-            bmu.poll();
+            // bmu.poll();
             board.poll();
             imu.poll();
             uss.poll();
@@ -55,7 +55,7 @@ public:
     }
 private:
     ros::NodeHandle nh;
-    ros_bmu bmu;
+    // ros_bmu bmu;
     ros_board board;
     // ros_dfu dfu;
     zcan_imu imu;
