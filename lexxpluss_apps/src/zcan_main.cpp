@@ -23,7 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "rosserial_hardware_zephyr.hpp"
+// #include "rosserial_hardware_zephyr.hpp"
 #include "zcan_bmu.hpp"
 #include "zcan_board.hpp"
 #include "zcan_imu.hpp"
@@ -35,28 +35,35 @@ namespace lexxhard::rosserial {
 class {
 public:
     int init() {
-        nh.getHardware()->set_baudrate(921600);
-        nh.initNode(const_cast<char*>("UART_6"));
+        // CAN baudrate setting
+        dev = device_get_binding("CAN_2");
+        if (!device_is_ready(dev))
+            return -1;
+        can_configure(dev, CAN_NORMAL_MODE, 1000000);
+
+        // nh.getHardware()->set_baudrate(921600);
+        // nh.initNode(const_cast<char*>("UART_6"));
         // bmu.init(nh);
-        board.init(nh);
+        // board.init(nh);
         imu.init();
         uss.init();
         return 0;
     }
     void run() {
         while (true) {
-            nh.spinOnce();
+            // nh.spinOnce();
             // bmu.poll();
-            board.poll();
+            // board.poll();
             imu.poll();
             uss.poll();
             k_usleep(1);
         }
     }
 private:
-    ros::NodeHandle nh;
+    const device *dev{nullptr};
+    // ros::NodeHandle nh;
     // ros_bmu bmu;
-    ros_board board;
+    // ros_board board;
     // ros_dfu dfu;
     zcan_imu imu;
     // ros_interlock interlock;
