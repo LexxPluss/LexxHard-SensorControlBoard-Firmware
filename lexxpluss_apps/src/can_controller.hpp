@@ -29,21 +29,21 @@
 
 namespace lexxhard::can_controller {
 
-struct msg_bmu {
-    struct {
-        uint16_t value;
-        uint8_t id;
-    } max_voltage, min_voltage, max_cell_voltage, min_cell_voltage;
-    struct {
-        int16_t value;
-        uint8_t id;
-    } max_temp, min_temp, max_current, min_current;
-    int16_t fet_temp, pack_current;
-    uint16_t charging_current, pack_voltage, design_capacity, full_charge_capacity, remain_capacity;
-    uint16_t manufacturing, inspection, serial;
-    uint8_t mod_status1, mod_status2, bmu_status, asoc, rsoc, soh;
-    uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
-} __attribute__((aligned(4)));
+// struct msg_bmu {
+//     struct {
+//         uint16_t value;
+//         uint8_t id;
+//     } max_voltage, min_voltage, max_cell_voltage, min_cell_voltage;
+//     struct {
+//         int16_t value;
+//         uint8_t id;
+//     } max_temp, min_temp, max_current, min_current;
+//     int16_t fet_temp, pack_current;
+//     uint16_t charging_current, pack_voltage, design_capacity, full_charge_capacity, remain_capacity;
+//     uint16_t manufacturing, inspection, serial;
+//     uint8_t mod_status1, mod_status2, bmu_status, asoc, rsoc, soh;
+//     uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
+// } __attribute__((aligned(4)));
 
 struct msg_board {
     float main_board_temp, actuator_board_temp[3], charge_connector_voltage;
@@ -63,12 +63,12 @@ struct msg_control {
 
 void init();
 void run(void *p1, void *p2, void *p3);
-uint32_t get_rsoc();
+// uint32_t get_rsoc();
 bool get_emergency_switch();
 bool get_bumper_switch();
 bool is_emergency();
 extern k_thread thread;
-extern k_msgq msgq_bmu, msgq_board, msgq_control;
+extern k_msgq /*msgq_bmu,*/ msgq_board, msgq_control;
 
 }
 

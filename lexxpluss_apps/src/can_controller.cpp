@@ -36,11 +36,11 @@ namespace lexxhard::can_controller {
 
 LOG_MODULE_REGISTER(can);
 
-char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
+//char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
 char __aligned(4) msgq_board_buffer[8 * sizeof (msg_board)];
 char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
-CAN_DEFINE_MSGQ(msgq_can_bmu, 16);
+//CAN_DEFINE_MSGQ(msgq_can_bmu, 16);
 CAN_DEFINE_MSGQ(msgq_can_board, 4);
 CAN_DEFINE_MSGQ(msgq_can_log, 8);
 
@@ -63,7 +63,7 @@ private:
 class can_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
+//        k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
         k_msgq_init(&msgq_board, msgq_board_buffer, sizeof (msg_board), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
         dev = device_get_binding("CAN_2");
@@ -83,13 +83,13 @@ public:
         while (true) {
             bool handled{false};
             zcan_frame frame;
-            if (k_msgq_get(&msgq_can_bmu, &frame, K_NO_WAIT) == 0) {
-                if (handler_bmu(frame)) {
-                    while (k_msgq_put(&msgq_bmu, &bmu2ros, K_NO_WAIT) != 0)
-                        k_msgq_purge(&msgq_bmu);
-                }
-                handled = true;
-            }
+            // if (k_msgq_get(&msgq_can_bmu, &frame, K_NO_WAIT) == 0) {
+            //     if (handler_bmu(frame)) {
+            //         while (k_msgq_put(&msgq_bmu, &bmu2ros, K_NO_WAIT) != 0)
+            //             k_msgq_purge(&msgq_bmu);
+            //     }
+            //     handled = true;
+            // }
             if (k_msgq_get(&msgq_can_board, &frame, K_NO_WAIT) == 0) {
                 handler_board(frame);
                 while (k_msgq_put(&msgq_board, &board2ros, K_NO_WAIT) != 0)
@@ -120,9 +120,9 @@ public:
                 k_msleep(1);
         }
     }
-    uint32_t get_rsoc() const {
-        return bmu2ros.rsoc;
-    }
+    // uint32_t get_rsoc() const {
+    //     return bmu2ros.rsoc;
+    // }
     bool get_emergency_switch() const {
         return board2ros.emergency_switch[0] ||
                board2ros.emergency_switch[1];
@@ -138,31 +138,31 @@ public:
                board2ros.bumper_switch[1] ||
                ros2board.emergency_stop;
     }
-    void bmu_info(const shell *shell) const {
-        shell_print(shell,
-                    "MOD:0x%02x/%02x BMU:0x%02x\n"
-                    "ASOC:%u RSOC:%u SOH:%u\n"
-                    "FET:%d Current:%d ChargeCurrent:%u\n"
-                    "Voltage:%u Capacity(design):%u Capacity(full):%u Capacity(remain):%u\n"
-                    "Max Voltage:%u/%u Min Voltage:%u/%u\n"
-                    "Max Temp:%d/%u Min Temp:%d/%u\n"
-                    "Max Current:%d/%u Min Current:%d/%u\n"
-                    "BMUFW:0x%02x MODFW:0x%02x SER:0x%02x PAR:0x%02x\n"
-                    "ALM1:0x%02x ALM2:0x%02x\n"
-                    "Max Cell Voltage:%u/%u Min Cell Voltage:%u/%u\n"
-                    "Manufacture:%u Inspection:%u Serial:%u\n",
-                    bmu2ros.mod_status1, bmu2ros.mod_status2, bmu2ros.bmu_status,
-                    bmu2ros.asoc, bmu2ros.rsoc, bmu2ros.soh,
-                    bmu2ros.fet_temp, bmu2ros.pack_current, bmu2ros.charging_current,
-                    bmu2ros.pack_voltage, bmu2ros.design_capacity, bmu2ros.full_charge_capacity, bmu2ros.remain_capacity,
-                    bmu2ros.max_voltage.value, bmu2ros.max_voltage.id, bmu2ros.min_voltage.value, bmu2ros.min_voltage.id,
-                    bmu2ros.max_temp.value, bmu2ros.max_temp.id, bmu2ros.min_temp.value, bmu2ros.min_temp.id,
-                    bmu2ros.max_current.value, bmu2ros.max_current.id, bmu2ros.min_current.value, bmu2ros.min_current.id,
-                    bmu2ros.bmu_fw_ver, bmu2ros.mod_fw_ver, bmu2ros.serial_config, bmu2ros.parallel_config,
-                    bmu2ros.bmu_alarm1, bmu2ros.bmu_alarm2,
-                    bmu2ros.max_cell_voltage.value, bmu2ros.max_cell_voltage.id, bmu2ros.min_cell_voltage.value, bmu2ros.min_cell_voltage.id,
-                    bmu2ros.manufacturing, bmu2ros.inspection, bmu2ros.serial);
-    }
+    // void bmu_info(const shell *shell) const {
+    //     shell_print(shell,
+    //                 "MOD:0x%02x/%02x BMU:0x%02x\n"
+    //                 "ASOC:%u RSOC:%u SOH:%u\n"
+    //                 "FET:%d Current:%d ChargeCurrent:%u\n"
+    //                 "Voltage:%u Capacity(design):%u Capacity(full):%u Capacity(remain):%u\n"
+    //                 "Max Voltage:%u/%u Min Voltage:%u/%u\n"
+    //                 "Max Temp:%d/%u Min Temp:%d/%u\n"
+    //                 "Max Current:%d/%u Min Current:%d/%u\n"
+    //                 "BMUFW:0x%02x MODFW:0x%02x SER:0x%02x PAR:0x%02x\n"
+    //                 "ALM1:0x%02x ALM2:0x%02x\n"
+    //                 "Max Cell Voltage:%u/%u Min Cell Voltage:%u/%u\n"
+    //                 "Manufacture:%u Inspection:%u Serial:%u\n",
+    //                 bmu2ros.mod_status1, bmu2ros.mod_status2, bmu2ros.bmu_status,
+    //                 bmu2ros.asoc, bmu2ros.rsoc, bmu2ros.soh,
+    //                 bmu2ros.fet_temp, bmu2ros.pack_current, bmu2ros.charging_current,
+    //                 bmu2ros.pack_voltage, bmu2ros.design_capacity, bmu2ros.full_charge_capacity, bmu2ros.remain_capacity,
+    //                 bmu2ros.max_voltage.value, bmu2ros.max_voltage.id, bmu2ros.min_voltage.value, bmu2ros.min_voltage.id,
+    //                 bmu2ros.max_temp.value, bmu2ros.max_temp.id, bmu2ros.min_temp.value, bmu2ros.min_temp.id,
+    //                 bmu2ros.max_current.value, bmu2ros.max_current.id, bmu2ros.min_current.value, bmu2ros.min_current.id,
+    //                 bmu2ros.bmu_fw_ver, bmu2ros.mod_fw_ver, bmu2ros.serial_config, bmu2ros.parallel_config,
+    //                 bmu2ros.bmu_alarm1, bmu2ros.bmu_alarm2,
+    //                 bmu2ros.max_cell_voltage.value, bmu2ros.max_cell_voltage.id, bmu2ros.min_cell_voltage.value, bmu2ros.min_cell_voltage.id,
+    //                 bmu2ros.manufacturing, bmu2ros.inspection, bmu2ros.serial);
+    // }
     void brd_emgoff() {
         ros2board.emergency_stop = false;
         heartbeat_timeout = false;
@@ -197,13 +197,13 @@ public:
     }
 private:
     void setup_can_filter() const {
-        static const zcan_filter filter_bmu{
-            .id{0x100},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7c0},
-            .rtr_mask{1}
-        };
+        // static const zcan_filter filter_bmu{
+        //     .id{0x100},
+        //     .rtr{CAN_DATAFRAME},
+        //     .id_type{CAN_STANDARD_IDENTIFIER},
+        //     .id_mask{0x7c0},
+        //     .rtr_mask{1}
+        // };
         static const zcan_filter filter_board{
             .id{0x200},
             .rtr{CAN_DATAFRAME},
@@ -218,63 +218,63 @@ private:
             .id_mask{CAN_STD_ID_MASK},
             .rtr_mask{1}
         };
-        can_attach_msgq(dev, &msgq_can_bmu, &filter_bmu);
+        // can_attach_msgq(dev, &msgq_can_bmu, &filter_bmu);
         can_attach_msgq(dev, &msgq_can_board, &filter_board);
         can_attach_msgq(dev, &msgq_can_log, &filter_log);
     }
-    bool handler_bmu(zcan_frame &frame) {
-        bool result{false};
-        if (frame.id == 0x100) {
-            bmu2ros.mod_status1 = frame.data[0];
-            bmu2ros.bmu_status = frame.data[1];
-            bmu2ros.asoc = frame.data[2];
-            bmu2ros.rsoc = frame.data[3];
-            bmu2ros.soh = frame.data[4];
-            bmu2ros.fet_temp = (frame.data[5] << 8) | frame.data[6];
-        } else if (frame.id == 0x101) {
-            bmu2ros.pack_current = (frame.data[0] << 8) | frame.data[1];
-            bmu2ros.charging_current = (frame.data[2] << 8) | frame.data[3];
-            bmu2ros.pack_voltage = (frame.data[4] << 8) | frame.data[5];
-            bmu2ros.mod_status2 = frame.data[6];
-        } else if (frame.id == 0x103) {
-            bmu2ros.design_capacity = (frame.data[0] << 8) | frame.data[1];
-            bmu2ros.full_charge_capacity = (frame.data[2] << 8) | frame.data[3];
-            bmu2ros.remain_capacity = (frame.data[4] << 8) | frame.data[5];
-        } else if (frame.id == 0x110) {
-            bmu2ros.max_voltage.value = (frame.data[0] << 8) | frame.data[1];
-            bmu2ros.max_voltage.id = frame.data[2];
-            bmu2ros.min_voltage.value = (frame.data[4] << 8) | frame.data[5];
-            bmu2ros.min_voltage.id = frame.data[6];
-        } else if (frame.id == 0x111) {
-            bmu2ros.max_temp.value = (frame.data[0] << 8) | frame.data[1];
-            bmu2ros.max_temp.id = frame.data[2];
-            bmu2ros.min_temp.value = (frame.data[4] << 8) | frame.data[5];
-            bmu2ros.min_temp.id = frame.data[6];
-        } else if (frame.id == 0x112) {
-            bmu2ros.max_current.value = (frame.data[0] << 8) | frame.data[1];
-            bmu2ros.max_current.id = frame.data[2];
-            bmu2ros.min_current.value = (frame.data[4] << 8) | frame.data[5];
-            bmu2ros.min_current.id = frame.data[6];
-        } else if (frame.id == 0x113) {
-            bmu2ros.bmu_fw_ver = frame.data[0];
-            bmu2ros.mod_fw_ver = frame.data[1];
-            bmu2ros.serial_config = frame.data[2];
-            bmu2ros.parallel_config = frame.data[3];
-            bmu2ros.bmu_alarm1 = frame.data[4];
-            bmu2ros.bmu_alarm2 = frame.data[5];
-        } else if (frame.id == 0x120) {
-            bmu2ros.min_cell_voltage.value = (frame.data[0] << 8) | frame.data[1];
-            bmu2ros.min_cell_voltage.id = frame.data[2];
-            bmu2ros.max_cell_voltage.value = (frame.data[4] << 8) | frame.data[5];
-            bmu2ros.max_cell_voltage.id = frame.data[6];
-        } else if (frame.id == 0x130) {
-            bmu2ros.manufacturing = (frame.data[0] << 8) | frame.data[1];
-            bmu2ros.inspection = (frame.data[2] << 8) | frame.data[3];
-            bmu2ros.serial = (frame.data[4] << 8) | frame.data[5];
-            result = true;
-        }
-        return result;
-    }
+    // bool handler_bmu(zcan_frame &frame) {
+    //     bool result{false};
+    //     if (frame.id == 0x100) {
+    //         bmu2ros.mod_status1 = frame.data[0];
+    //         bmu2ros.bmu_status = frame.data[1];
+    //         bmu2ros.asoc = frame.data[2];
+    //         bmu2ros.rsoc = frame.data[3];
+    //         bmu2ros.soh = frame.data[4];
+    //         bmu2ros.fet_temp = (frame.data[5] << 8) | frame.data[6];
+    //     } else if (frame.id == 0x101) {
+    //         bmu2ros.pack_current = (frame.data[0] << 8) | frame.data[1];
+    //         bmu2ros.charging_current = (frame.data[2] << 8) | frame.data[3];
+    //         bmu2ros.pack_voltage = (frame.data[4] << 8) | frame.data[5];
+    //         bmu2ros.mod_status2 = frame.data[6];
+    //     } else if (frame.id == 0x103) {
+    //         bmu2ros.design_capacity = (frame.data[0] << 8) | frame.data[1];
+    //         bmu2ros.full_charge_capacity = (frame.data[2] << 8) | frame.data[3];
+    //         bmu2ros.remain_capacity = (frame.data[4] << 8) | frame.data[5];
+    //     } else if (frame.id == 0x110) {
+    //         bmu2ros.max_voltage.value = (frame.data[0] << 8) | frame.data[1];
+    //         bmu2ros.max_voltage.id = frame.data[2];
+    //         bmu2ros.min_voltage.value = (frame.data[4] << 8) | frame.data[5];
+    //         bmu2ros.min_voltage.id = frame.data[6];
+    //     } else if (frame.id == 0x111) {
+    //         bmu2ros.max_temp.value = (frame.data[0] << 8) | frame.data[1];
+    //         bmu2ros.max_temp.id = frame.data[2];
+    //         bmu2ros.min_temp.value = (frame.data[4] << 8) | frame.data[5];
+    //         bmu2ros.min_temp.id = frame.data[6];
+    //     } else if (frame.id == 0x112) {
+    //         bmu2ros.max_current.value = (frame.data[0] << 8) | frame.data[1];
+    //         bmu2ros.max_current.id = frame.data[2];
+    //         bmu2ros.min_current.value = (frame.data[4] << 8) | frame.data[5];
+    //         bmu2ros.min_current.id = frame.data[6];
+    //     } else if (frame.id == 0x113) {
+    //         bmu2ros.bmu_fw_ver = frame.data[0];
+    //         bmu2ros.mod_fw_ver = frame.data[1];
+    //         bmu2ros.serial_config = frame.data[2];
+    //         bmu2ros.parallel_config = frame.data[3];
+    //         bmu2ros.bmu_alarm1 = frame.data[4];
+    //         bmu2ros.bmu_alarm2 = frame.data[5];
+    //     } else if (frame.id == 0x120) {
+    //         bmu2ros.min_cell_voltage.value = (frame.data[0] << 8) | frame.data[1];
+    //         bmu2ros.min_cell_voltage.id = frame.data[2];
+    //         bmu2ros.max_cell_voltage.value = (frame.data[4] << 8) | frame.data[5];
+    //         bmu2ros.max_cell_voltage.id = frame.data[6];
+    //     } else if (frame.id == 0x130) {
+    //         bmu2ros.manufacturing = (frame.data[0] << 8) | frame.data[1];
+    //         bmu2ros.inspection = (frame.data[2] << 8) | frame.data[3];
+    //         bmu2ros.serial = (frame.data[4] << 8) | frame.data[5];
+    //         result = true;
+    //     }
+    //     return result;
+    // }
     void handler_board(zcan_frame &frame) {
         if (frame.id == 0x200) {
             uint8_t prev_state{board2ros.state};
@@ -365,7 +365,7 @@ private:
         };
         can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
     }
-    msg_bmu bmu2ros{0};
+//    msg_bmu bmu2ros{0};
     msg_board board2ros{0};
     msg_control ros2board{true, false};
     log_printer log;
@@ -376,17 +376,17 @@ private:
     static constexpr char version[]{"1.0.0"};
 } impl;
 
-int bmu_info(const shell *shell, size_t argc, char **argv)
-{
-    impl.bmu_info(shell);
-    return 0;
-}
+// int bmu_info(const shell *shell, size_t argc, char **argv)
+// {
+//     impl.bmu_info(shell);
+//     return 0;
+// }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_bmu,
-    SHELL_CMD(info, NULL, "BMU information", bmu_info),
-    SHELL_SUBCMD_SET_END
-);
-SHELL_CMD_REGISTER(bmu, &sub_bmu, "BMU commands", NULL);
+// SHELL_STATIC_SUBCMD_SET_CREATE(sub_bmu,
+//     SHELL_CMD(info, NULL, "BMU information", bmu_info),
+//     SHELL_SUBCMD_SET_END
+// );
+// SHELL_CMD_REGISTER(bmu, &sub_bmu, "BMU commands", NULL);
 
 int brd_emgoff(const shell *shell, size_t argc, char **argv)
 {
@@ -429,10 +429,10 @@ void run(void *p1, void *p2, void *p3)
     impl.run();
 }
 
-uint32_t get_rsoc()
-{
-    return impl.get_rsoc();
-}
+// uint32_t get_rsoc()
+// {
+//     return impl.get_rsoc();
+// }
 
 bool get_emergency_switch()
 {
@@ -450,7 +450,7 @@ bool is_emergency()
 }
 
 k_thread thread;
-k_msgq msgq_bmu, msgq_board, msgq_control;
+k_msgq /*msgq_bmu,*/ msgq_board, msgq_control;
 
 }
 
