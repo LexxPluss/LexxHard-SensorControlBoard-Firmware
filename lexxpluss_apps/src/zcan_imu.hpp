@@ -27,22 +27,27 @@
 
 #include <zephyr.h>
 #include <drivers/can.h>
+#include <logging/log.h>
 #include "imu_controller.hpp"
 
 #define CAN_ID_ACCL 0x206
 #define CAN_ID_GYRO 0x207
 #define CAN_DATA_LENGTH_IMU 7
 
-namespace lexxhard {
+namespace lexxhard::zcan_imu {
+
+LOG_MODULE_REGISTER(zcan_imu);
 
 class zcan_imu {
 public:
-    int init() {
+    void init() {
         dev = device_get_binding("CAN_2");  //CAN(to IPC)
-        if (!device_is_ready(dev))
-            return -1;
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN_2 is not ready");
+            return;
+        }
 
-        return 0;
+        return;
     }
     void poll() {
         imu_controller::msg message;

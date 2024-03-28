@@ -29,6 +29,7 @@
 #include <device.h>
 #include <drivers/gpio.h>
 #include <drivers/can.h>
+#include <logging/log.h>
 #include "actuator_controller.hpp"
 
 #define CAN_ID_ACTUATOR_CONTROL 0x208 // based on saito-san's CAN ID assignment
@@ -37,21 +38,22 @@
 #define CAN_DATALENGTH_ACTUATOR_ENCODER 6
 #define CAN_DATALENGTH_ACTUATOR_CURRENT 8
 
+namespace lexxhard::zcan_actuator {
 
-
-namespace lexxhard {
-
+LOG_MODULE_REGISTER(zcan_actuator);
 char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof(actuator_controller::can_format_control)];
 k_msgq msgq_can_actuator_control;
 
-class ros_actuator {
+class zcan_actuator {
 public:
-    int init() {
+    void init() {
         // can device bind
         k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
         dev = device_get_binding("CAN_2");
-        if (!device_is_ready(dev))
-            return -1;
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN_2 is not ready");
+            return;
+        }
 
         // setup can filter
         static const zcan_filter filter_actuator_control{
@@ -62,7 +64,7 @@ public:
             .rtr_mask{1}
         };
         can_attach_msgq(dev, &msgq_can_actuator_control, &filter_actuator_control);
-        return 0;
+        return;
     }
     void poll() {
         // send to IPC of sensor informations

@@ -23,14 +23,19 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-// #include "rosserial_hardware_zephyr.hpp"
+#include <logging/log.h>
+#include "zcan_actuator.hpp"
 #include "zcan_bmu.hpp"
 #include "zcan_board.hpp"
 #include "zcan_imu.hpp"
+#include "zcan_led.hpp"
+#include "zcan_pgv.hpp"
 #include "zcan_uss.hpp"
 #include "zcan_main.hpp"
 
-namespace lexxhard::rosserial {
+namespace lexxhard::zcan_main {
+
+LOG_MODULE_REGISTER(zcan_main);
 
 class {
 public:
@@ -41,34 +46,37 @@ public:
             return -1;
         can_configure(dev, CAN_NORMAL_MODE, 1000000);
 
-        // nh.getHardware()->set_baudrate(921600);
-        // nh.initNode(const_cast<char*>("UART_6"));
-        // bmu.init(nh);
-        // board.init(nh);
+        // bmu.init();
+        // board.init();
+        act.init();
         imu.init();
+        led.init();
+        pgv.init();
         uss.init();
         return 0;
     }
     void run() {
         while (true) {
-            // nh.spinOnce();
             // bmu.poll();
             // board.poll();
+            act.poll();
             imu.poll();
+            led.poll();
+            pgv.poll();
             uss.poll();
             k_usleep(1);
         }
     }
 private:
     const device *dev{nullptr};
-    // ros::NodeHandle nh;
-    // ros_bmu bmu;
-    // ros_board board;
-    // ros_dfu dfu;
-    zcan_imu imu;
-    // ros_interlock interlock;
-    // ros_tof tof;
-    ros_uss uss;
+    // lexxhard::zcan_bmu::zcan_bmu bmu;
+    // lexxhard::zcan_board::zcan_board board;
+    // lexxhard::zcan_dfu::zcan_dfu dfu;
+    lexxhard::zcan_actuator::zcan_actuator act;
+    lexxhard::zcan_imu::zcan_imu imu;
+    lexxhard::zcan_led::zcan_led led;
+    lexxhard::zcan_pgv::zcan_pgv pgv;
+    lexxhard::zcan_uss::zcan_uss uss;
 } impl;
 
 void init()

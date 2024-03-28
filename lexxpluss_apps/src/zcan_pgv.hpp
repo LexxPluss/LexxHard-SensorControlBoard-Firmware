@@ -28,6 +28,7 @@
 #include <zephyr.h>
 #include <cstdio>
 #include <drivers/can.h>
+#include <logging/log.h>
 #include "std_msgs/UInt8.h"
 #include "lexxauto_msgs/PositionGuideVision.h"
 #include "common.hpp"
@@ -38,18 +39,22 @@
 #define CAN_ID_PGV_3 0x202
 #define CAN_DATA_LENGTH 8
 
-namespace lexxhard {
+namespace lexxhard::zcan_pgv {
 
-class can_pgv {
+LOG_MODULE_REGISTER(zcan_pgv);
+
+class zcan_pgv {
 public:
-    int init()
+    void init()
     {
         //can device bind
         dev = device_get_binding("CAN_2");
-        if (!device_is_ready(dev))
-            return -1;
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN_2 is not ready");
+            return;
+        }
         ring_counter=0;
-        return 0;
+        return;
     }
 
     void poll() {

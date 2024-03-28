@@ -25,16 +25,19 @@
 
 // #pragma once
 
-// #include <zephyr.h>
-// #include <cstdio>
-// #include "ros/node_handle.h"
-// #include "lexxauto_msgs/Battery.h"
-// #include "can_controller.hpp"
+#include <zephyr.h>
+#include <cstdio>
+#include <logging/log.h>
+#include "ros/node_handle.h"
+#include "lexxauto_msgs/Battery.h"
+#include "can_controller.hpp"
 
-// namespace lexxhard {
+namespace lexxhard::zcan_bmu {
 
-// class ros_bmu {
-// public:
+LOG_MODULE_REGISTER(zcan_bmu);
+
+class zcan_bmu {
+public:
 //     void init(ros::NodeHandle &nh) {
 //         nh.advertise(pub);
 //         msg.temps = temps;
@@ -89,14 +92,14 @@
 //             msg.temps[2].temperature = message.fet_temp * 1e-1f;
 //             msg.state_of_health = message.soh;
 //             pub.publish(&msg);
-//         }
-//     }
-// private:
-//     lexxauto_msgs::Battery msg;
-//     sensor_msgs::Temperature temps[3];
-//     ros::Publisher pub{"/sensor_set/battery", &msg};
-// };
+    //     }
+    // }
+private:
+    // lexxauto_msgs::Battery msg;
+    // sensor_msgs::Temperature temps[3];
+    // ros::Publisher pub{"/sensor_set/battery", &msg};
+};
 
-// }
+}
 
 // // vim: set expandtab shiftwidth=4:

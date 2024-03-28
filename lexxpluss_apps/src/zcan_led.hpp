@@ -29,24 +29,29 @@
 #include <device.h>
 #include <drivers/gpio.h>
 #include <drivers/can.h>
+#include <logging/log.h>
 #include "led_controller.hpp"
 
 #define CAN_ID_LED 0x205 //based on saito-san's CAN ID assignment
 
-namespace lexxhard {
+namespace lexxhard::zcan_led {
+
+LOG_MODULE_REGISTER(zcan_led);
 
 char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
 k_msgq msgq_can_led;
 
-class can_led {
+class zcan_led {
 public:
-    int init()
+    void init()
     {
         //can device bind`
         k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (led_controller::msg), 8);
         dev = device_get_binding("CAN_2");
-        if (!device_is_ready(dev))
-            return -1;
+        if (!device_is_ready(dev)){
+            LOG_INF("CAN_2 is not ready");
+            return;
+        }
 
         //setup can filter
         static const zcan_filter filter_led{
@@ -57,7 +62,7 @@ public:
             .rtr_mask{1}
         };
         can_attach_msgq(dev, &msgq_can_led, &filter_led);
-        return 0;
+        return;
     }
 
     void poll()
