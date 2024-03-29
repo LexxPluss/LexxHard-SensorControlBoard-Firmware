@@ -28,24 +28,8 @@
 #include "can_test_v7.hpp"
 #include "led_test_v7.hpp"
 
-namespace {
-
-void reset_usb_hub()
-{
-    if (const gpio_dt_spec reset = GPIO_DT_SPEC_GET(DT_NODELABEL(hubreset), gpios); gpio_is_ready_dt(&reset)) {
-        gpio_pin_configure_dt(&reset, GPIO_OUTPUT_ACTIVE);
-        k_msleep(1);
-        gpio_pin_set_dt(&reset, 0);
-        k_msleep(1);
-        gpio_pin_set_dt(&reset, 1);
-    }
-}
-
-}
-
 int main()
 {
-    reset_usb_hub();
     const gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_NODELABEL(led1), gpios);
     gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
     lexxhard::can_test_v7 can_test;

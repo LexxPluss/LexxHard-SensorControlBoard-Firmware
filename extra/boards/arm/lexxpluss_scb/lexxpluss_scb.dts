@@ -112,11 +112,6 @@
 			gpios = <&gpiog 4 GPIO_ACTIVE_HIGH>;
 		};
 	};
-
-	hubreset: hubreset {
-		compatible = "gpio-pin";
-		gpios = <&gpioj 13 GPIO_ACTIVE_HIGH>;
-	};
 };
 
 &clk_hse {
