@@ -70,37 +70,28 @@ void init_io() {
     if (const device *gpioc{device_get_binding("GPIOC")}; device_is_ready(gpioc)) {
         // Load switch for V24 OFF
         gpio_pin_configure(gpioc, PIN_NUM_LOADSW_V24_EN_GPIOC, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpioc, PIN_NUM_LOADSW_V24_EN_GPIOC, 1);
 
         // Fan1 and Fan2 ON
         gpio_pin_configure(gpioc, PIN_NUM_FAN1_EN_GPIOC, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpioc, PIN_NUM_FAN1_EN_GPIOC, 1);
         gpio_pin_configure(gpioc, PIN_NUM_FAN2_EN_GPIOC, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpioc, PIN_NUM_FAN2_EN_GPIOC, 1);
     }
 
     if (const device *gpiob{device_get_binding("GPIOB")}; device_is_ready(gpiob)) {
         // Fan3 and Fan4 ON
         gpio_pin_configure(gpiob, PIN_NUM_FAN3_EN_GPIOB, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiob, PIN_NUM_FAN3_EN_GPIOB, 1);
         gpio_pin_configure(gpiob, PIN_NUM_FAN3_EN_GPIOB, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiob, PIN_NUM_FAN3_EN_GPIOB, 1);
     }
 
     if (const device *gpiod{device_get_binding("GPIOD")}; device_is_ready(gpiod)) {
         // Load switch for Autocharge, Wheel and Peripheral OFF
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_AUTOCHARGE_EN_GPIOD, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiod, PIN_NUM_LOADSW_AUTOCHARGE_EN_GPIOD, 0);
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_WHEEL_EN_GPIOD, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiod, PIN_NUM_LOADSW_WHEEL_EN_GPIOD, 0);
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiod, PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD, 0);
+        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_AUTOCHARGE_EN_GPIOD, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_WHEEL_EN_GPIOD, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
     }
 
     if (const device *gpiok{device_get_binding("GPIOK")}; device_is_ready(gpiok)) {
         // Wheel Disable
-        gpio_pin_configure(gpiok, PIN_NUM_WHEEL_EN_GPIOK, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiok, PIN_NUM_WHEEL_EN_GPIOK, 0);
+        gpio_pin_configure(gpiok, PIN_NUM_WHEEL_EN_GPIOK, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
     }
     k_msleep(3000);
 }
@@ -109,24 +100,20 @@ void power_on() {
     if (const device *gpiod{device_get_binding("GPIOD")}; device_is_ready(gpiod)) {
         // Load switch for Wheel and Peripheral ON
         gpio_pin_configure(gpiod, PIN_NUM_LOADSW_WHEEL_EN_GPIOD, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiod, PIN_NUM_LOADSW_WHEEL_EN_GPIOD, 1);
-        k_msleep(1000);
+        k_msleep(3000);
         gpio_pin_configure(gpiod, PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiod, PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD, 1);
         k_msleep(3000);
     }
 
     if (const device *gpioc{device_get_binding("GPIOC")}; device_is_ready(gpioc)) {
         // Load switch for V24 ON
-        gpio_pin_configure(gpioc, PIN_NUM_LOADSW_V24_EN_GPIOC, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpioc, PIN_NUM_LOADSW_V24_EN_GPIOC, 0);
+        gpio_pin_configure(gpioc, PIN_NUM_LOADSW_V24_EN_GPIOC, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
     }
 
     if (const device *gpiok{device_get_binding("GPIOK")}; device_is_ready(gpiok)) {
         // Wheel Disable
         gpio_pin_configure(gpiok, PIN_NUM_WHEEL_EN_GPIOK, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpiok, PIN_NUM_WHEEL_EN_GPIOK, 1);
     }
 }
 
