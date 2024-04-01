@@ -46,7 +46,7 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 
-        dev = device_get_binding("ICM42605");
+        dev = device_get_binding("IIM42652");
 
         if (!device_is_ready(dev)) {
             LOG_ERR("IMU device not found");

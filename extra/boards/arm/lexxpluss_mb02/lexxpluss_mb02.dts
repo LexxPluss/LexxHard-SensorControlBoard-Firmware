@@ -157,11 +157,11 @@
 	pinctrl-0 = <&spi5_sck_pf7 &spi5_miso_pf8 &spi5_mosi_pf9>;
 	cs-gpios = <&gpiof 6 GPIO_ACTIVE_LOW>;
 	status = "okay";
-	sensor0: icm42605@0 {
-		compatible = "invensense,icm42605";
+	sensor0: iim42652@0 {
+		compatible = "invensense,iim42652";
 		spi-max-frequency = <24000000>;
 		reg = <0>;
-		label = "ICM42605";
+		label = "IIM42652";
 		int-gpios = <&gpiof 2 GPIO_ACTIVE_HIGH>;
 	};
 };

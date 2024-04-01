@@ -1,2 +1,3 @@
 rsource "maxbotix/Kconfig"
 rsource "adis16470/Kconfig"
+rsource "iim42652/Kconfig"
