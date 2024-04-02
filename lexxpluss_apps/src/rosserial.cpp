@@ -43,7 +43,7 @@ public:
         nh.initNode(const_cast<char*>("UART_6"));
         actuator.init(nh);
         bmu.init(nh);
-        board.init(nh);
+        // board.init(nh);
         dfu.init(nh);
         imu.init(nh);
         interlock.init(nh);
@@ -56,7 +56,7 @@ public:
             nh.spinOnce();
             actuator.poll();
             bmu.poll();
-            board.poll();
+            // board.poll();
             dfu.poll();
             imu.poll();
             interlock.poll();

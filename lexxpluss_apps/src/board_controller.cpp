@@ -49,7 +49,7 @@ char __aligned(4) msgq_board_pb_tx_buffer[8 * sizeof (can_controller::msg_board)
 
 pin_def_gpio ps_sw_in{"GPIOH", 4}, ps_led_out{"GPIOH", 5}; // Power Switch handler associated pins
 pin_def_gpio bp_left{"GPIOI", 7}; // Bumper Switch associated pins
-pin_def_gpio es_left{"GPIOI", 4}, es_right("GPIOI", 0); // Emergency Switch associated pins
+pin_def_gpio es_left{"GPIOI", 4}, es_right{"GPIOI", 0}; // Emergency Switch associated pins
 pin_def_gpio wh_left_right{"GPIOK", 3}; // Wheel switch associated pins
 pin_def_gpio mc_din{"GPIOK", 7}; // Manual charging detection associated pins
 pin_def_gpio ac_th_pos{"GPIOC", 4}, ac_th_neg{"GPIOC", 5}, ac_IrDA_tx{"GPIOG", 14}, ac_IrDA_rx{"GPIOG", 9}, ac_analogVol{"GPIOF", 10}, ac_chargingRelay{"GPIOD", 0}; // Auto charging detection associated pins
@@ -180,23 +180,24 @@ private:
 class bumper_switch { // Variables Implemented
 public:
     void poll() {
-        if(asserted) {
+        if(asserted_flag) {
             if ((k_uptime_get() - start_time) > BUMPER_SWITCH_HOLD_TIME_MS) {
-                asserted = false;
+                asserted_flag = false;
             }
         } else {
             if (gpio_get_value(bp_left) == 0) {
-                asserted = true;
+                asserted_flag = true;
                 start_time = k_uptime_get();
             }
         }
     }
     void get_raw_state(bool &left, bool &right) const {
-        left = right = asserted;
+        left = right = asserted_flag;
     }
+    bool is_asserted() const {return asserted_flag;}
 private:
     int64_t start_time;
-    bool asserted{false};
+    bool asserted_flag{false};
 };
 
 class emergency_switch { // Variables Implemented
@@ -225,7 +226,7 @@ public:
             right_asserted = now == 1;
         }
     }
-    bool asserted() const {return left_asserted || right_asserted;}
+    bool is_asserted() const {return left_asserted || right_asserted;}
     void get_raw_state(bool &left, bool &right) const {
         left = left_asserted;
         right = right_asserted;
@@ -252,6 +253,7 @@ public:
         left = left_right_disable;
         right = left_right_disable;
     }
+    bool is_enabled() const {return !left_right_disable;}
 private:
     bool left_right_disable{false};   //false is enable
 };
@@ -660,19 +662,13 @@ private:
 class boardstate_controller {  // No pins declared
 public:
     void init() {
-        // can.register_callback(0x201, callback(this, &mainboard_controller::handle_can));
-        // TODO メッセージキューを初期化
+        k_msgq_init(&msgq_board_pb_rx, msgq_board_pb_rx_buffer, sizeof (msg_rcv_pb), 8);
     }
     void poll() {
         msg_rcv_pb msg;
-        if (k_msgq_get(&can_controller::msgq_board, &msg, K_NO_WAIT) == 0) {
+        if (k_msgq_get(&msgq_board_pb_rx, &msg, K_NO_WAIT) == 0) {
             handle_board(msg);
         }
-        // if (timer.elapsed_time() > 3s) {
-        //     heartbeat_timeout = true;
-        //     timer.stop();
-        //     timer.reset();
-        // }
     }
     bool emergency_stop_from_ros() const {
         return emergency_stop;
@@ -682,7 +678,7 @@ public:
     }
     bool is_dead() const {
         if (heartbeat_detect)
-            return heartbeat_timeout || ros_heartbeat_timeout;
+            return ros_heartbeat_timeout;
         else
             return false;
     }
@@ -695,22 +691,21 @@ public:
 private:
     //メッセージキューに変更 msgq_board
     void handle_board(const msg_rcv_pb &msg) {
-        heartbeat_timeout = false;
-        // timer.reset();
-        // timer.start();
         emergency_stop = msg.ros_emergency_stop;
         power_off = msg.ros_power_off;
         ros_heartbeat_timeout = msg.ros_heartbeat_timeout;
         wheel_poweroff = msg.ros_wheel_power_off;
-        if (!ros_heartbeat_timeout)
+
+        // heartbeat is not timeout means heartbeat is detected
+        if (ros_heartbeat_timeout == false)
             heartbeat_detect = true;
     }
-    // Timer timer;
-    bool heartbeat_timeout{true}, heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
-          wheel_poweroff{false};
+    bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
+        wheel_poweroff{false};
 };
 
 #define WDT_TIMEOUT_MS 10000
+#define FAN_DUTY_DEFAULT 100
 class state_controller { // Variables Implemented
 public:
     void init() {
@@ -740,6 +735,8 @@ public:
         timer_post = k_uptime_get();
         timer_shutdown = k_uptime_get();
         timer_poweroff = k_uptime_get();
+
+        k_msgq_init(&msgq_board_pb_tx, msgq_board_pb_tx_buffer, sizeof (lexxhard::can_controller::msg_board), 8);
 
         // Setup Watch Dog Timer
         dev_wdi = device_get_binding("IWDG");
@@ -771,6 +768,9 @@ public:
         while(true) {
             poll();
         }
+    }
+    uint32_t get_rsoc() {
+        return bmu.get_rsoc();
     }
 private:
     static void static_poll_20ms_callback(struct k_timer *timer_id) {
@@ -882,7 +882,7 @@ private:
                     if (!bmu.is_ok())
                         shutdown_reason = SHUTDOWN_REASON::BMU;
                 }
-            } else if (!esw.asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
+            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
             } else if (mc.is_plugged()) {
@@ -905,7 +905,7 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (esw.asserted()) {
+            } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.emergency_stop_from_ros()) {
@@ -935,7 +935,7 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (esw.asserted()) {
+            } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.emergency_stop_from_ros()) {
@@ -994,7 +994,7 @@ private:
         default:
             break;
         }
-        int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1}; // TODO mbd.is_wheel_poweroff() はLexxAutoからのモーターOFF指令
+        int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1};
         switch (newstate) {
         case POWER_STATE::OFF:
             LOG_DBG("enter OFF\n");
@@ -1057,77 +1057,47 @@ private:
         state = newstate;
     }
     void poll_100ms() {
-        // TODO ここで can_contoroller にデータを送信
-        can_controller::msg_board msg;
+        board2ros.state = static_cast<uint32_t>(state);
+        board2ros.emergency_switch_asserted = esw.is_asserted();
+        board2ros.bumper_switch_asserted = bsw.is_asserted();
+        board2ros.manual_charging_status = mc.is_plugged();
+        board2ros.auto_charging_status = ac.is_docked();
+        board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
+        board2ros.wait_shutdown_state = wait_shutdown;
+        board2ros.wheel_enable = wsw.is_enabled();
 
-        // auto temperature{temp.get_temperature()};
-        // if (state == POWER_STATE::AUTO_CHARGE ||
-        //     state == POWER_STATE::MANUAL_CHARGE) {
-        //     fan.control_by_duty(100);
-        // } else {
-        //     fan.control_by_temperature(temperature);
-        // }
-        // uint8_t buf[8]{0};
-        // if (psw.get_raw_state())
-        //     buf[0] |= 0b00000001;
-        bool st0, st1, st2;
-        esw.get_raw_state(st0, st1);
-        // if (st0)
-        //     buf[0] |= 0b00000010;
-        // if (st1)
-        //     buf[0] |= 0b00000100;
-        bsw.get_raw_state(st0, st1);
-        // if (st0)
-        //     buf[0] |= 0b00001000;
-        // if (st1)
-        //     buf[0] |= 0b00010000;
-        // if (mc.is_plugged())
-        //     buf[1] |= 0b00000001;
-        // if (ac.is_docked())
-        //     buf[1] |= 0b00000010;
-        // buf[1] |= (static_cast<uint32_t>(shutdown_reason) & 0x1f) << 2;
-        // if (wait_shutdown)
-        //     buf[1] |= 0b10000000;
-        // dcdc.get_failed_state(st0, st1);
-        // if (st0)
-        //     buf[2] |= 0b00000001;
-        // if (st1)
-        //     buf[2] |= 0b00000010;
-        bmu.get_fet_state(st0, st1, st2);
-        // if (st0)
-        //     buf[2] |= 0b00010000;
-        // if (st1)
-        //     buf[2] |= 0b00100000;
-        // if (st2)
-        //     buf[2] |= 0b01000000;
-        wsw.get_raw_state(st0, st1);
-        // if (st0)
-        //     buf[3] |= 0b00000001;
-        // if (st1)
-        //     buf[3] |= 0b00000010;
-        // buf[3] |= static_cast<uint32_t>(state) << 2;
-        // int t0, t1;
-        // ac.get_connector_temperature(t0, t1);
-        // buf[4] = fan.get_duty_percent();
-        // buf[5] = t0;
-        // buf[6] = t1;
-        // buf[7] = temperature;
-        // can.send(CANMessage{0x200, buf});
-        // ThisThread::sleep_for(1ms);
-        // buf[0] = psw.is_activated_battery() ? 1 : 0;
-        // can.send(CANMessage{0x202, buf, 1});
-        // ThisThread::sleep_for(1ms);
+        bool v24, v_peripheral, v_wheel_motor_left, v_wheel_motor_right;
+        dcdc.get_failed_state(v24, v_peripheral, v_wheel_motor_left, v_wheel_motor_right);
+        board2ros.v24_pgood = v24;
+        board2ros.v_peripheral_pgood = v_peripheral;
+        board2ros.v_wheel_motor_l_pgood = v_wheel_motor_left;
+        board2ros.v_wheel_motor_r_pgood = v_wheel_motor_right;
+
+        int t0, t1;
+        ac.get_connector_temperature(t0, t1);
+        board2ros.charge_connector_p_temp = t0;
+        board2ros.charge_connector_n_temp = t1;
+
+        board2ros.fan_duty = FAN_DUTY_DEFAULT;
+
+        board2ros.charge_connector_voltage = ac.get_connector_voltage();
+        board2ros.charge_check_count = ac.get_connect_check_count();
+        board2ros.charge_heartbeat_delay = ac.get_heartbeat_delay();
+
+        bool c_fet, d_fet, p_dsg;
+        bmu.get_fet_state(c_fet, d_fet, p_dsg);
+        board2ros.c_fet = c_fet;
+        board2ros.d_fet = d_fet;
+        board2ros.p_dsg = p_dsg;
+
+        board2ros.is_activated_battery = psw.is_activated_battery() ? 1 : 0;
+
         if (state == POWER_STATE::LOCKDOWN)
             psw.toggle_led();
-        // uint32_t v{ac.get_connector_voltage()};
-        // buf[0] = v;
-        // buf[1] = v >> 8;
-        // buf[2] = ac.get_connect_check_count();
-        // buf[3] = ac.get_heartbeat_delay();
-        // buf[4] = ac.is_temperature_error();
-        // can.send(CANMessage{0x204, buf, 5});
 
-        // TODO メッセージキューで can_controller へ送る
+        if (k_msgq_put(&msgq_board_pb_tx, &board2ros, K_NO_WAIT) != 0){
+            k_msgq_purge(&msgq_board_pb_tx);
+        }
     }
     void poll_1s() {
         if (!device_is_ready(dev_wdi)){
@@ -1157,6 +1127,7 @@ private:
         BMU,
     } shutdown_reason{SHUTDOWN_REASON::NONE};
 
+    lexxhard::can_controller::msg_board board2ros;
     int64_t timer_post{0}, timer_shutdown{0}, timer_poweroff{0};
     k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;
@@ -1175,8 +1146,12 @@ void run(void *p1, void *p2, void *p3)
     impl.run();
 }
 
+uint32_t get_rsoc()
+{
+    return impl.get_rsoc();
+}
+
 k_thread thread;
-// k_msgq msgq_can_bmu_pb;
 k_msgq msgq_board_pb_rx, msgq_board_pb_tx;
 
 }

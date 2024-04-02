@@ -46,55 +46,25 @@ char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 class can_controller_impl {
 public:
     int init() {
-        // k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
         k_msgq_init(&msgq_board, msgq_board_buffer, sizeof (msg_board), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        dev = device_get_binding("CAN_2");
-        if (!device_is_ready(dev))
-            return -1;
-        // can_configure(dev, CAN_NORMAL_MODE, 500000);
         return 0;
     }
     void run() {
         if (!device_is_ready(dev))
             return;
-        const device *gpiog{device_get_binding("GPIOG")};
-        if (device_is_ready(gpiog))
-            gpio_pin_configure(gpiog, 6, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-            
-        int heartbeat_led{1};
+
         while (true) {
             bool handled{false};
-            // zcan_frame frame;
-            // if (k_msgq_get(&msgq_can_bmu, &frame, K_NO_WAIT) == 0) {
-            //     if (handler_bmu(frame)) {
-            //         while (k_msgq_put(&msgq_bmu, &bmu2ros, K_NO_WAIT) != 0)
-            //             k_msgq_purge(&msgq_bmu);
-            //     }
-            //     handled = true;
-            // }
-            // if (k_msgq_get(&msgq_can_board, &frame, K_NO_WAIT) == 0) {
-            //     handler_board(frame);
-            //     while (k_msgq_put(&msgq_board, &board2ros, K_NO_WAIT) != 0)
-            //         k_msgq_purge(&msgq_board);
-            //     handled = true;
-            // }
 
-            // if (k_msgq_get(&board_controller::msgq_board_pb, &frame, K_NO_WAIT) == 0) {
-            //     handler_board(frame);
-            //     while (k_msgq_put(&msgq_board, &board2ros, K_NO_WAIT) != 0)
-            //         k_msgq_purge(&msgq_board);
-            //     handled = true;
-            // }
-
-            // board2ros
+            // board2ros ROS->can_controller->board_controller
             if (k_msgq_get(&board_controller::msgq_board_pb_tx, &board2ros, K_NO_WAIT) == 0) {
                 if (k_msgq_put(&msgq_board, &board2ros, K_NO_WAIT) != 0){
                     k_msgq_purge(&msgq_board);
                     handled = true;
                 }
             }
-            // ros2board
+            // ros2board board_controller->can_controller->ROS
             if (k_msgq_get(&msgq_control, &ros2board, K_NO_WAIT) == 0) {
                 handler_to_pb();
                 if (k_msgq_put(&board_controller::msgq_board_pb_rx, &msg_board_to_pb, K_NO_WAIT) != 0){
@@ -103,45 +73,26 @@ public:
                     handled = true;
                 }
             }
-            interlock_controller::msg_can_interlock message;
-            if (k_msgq_get(&interlock_controller::msgq_can_interlock, &message, K_NO_WAIT) == 0) {
-	            ros2board.emergency_stop |= message.is_emergency_stop;
-            }
-            // check heartbeat between ROS and SCB
+
             uint32_t now_cycle{k_cycle_get_32()};
             if (prev_cycle_ros != 0) {
                 uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle_ros)};
                 heartbeat_timeout = dt_ms > ROS2BOARD_TIMEOUT_MS;
             }
-            uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle_send)};
-            if (dt_ms > 100) {
-                prev_cycle_send = now_cycle;
-                if (device_is_ready(gpiog)) {
-                    gpio_pin_set(gpiog, 6, heartbeat_led);
-                    heartbeat_led = !heartbeat_led;
-                }
-            }
+
             if (!handled)
                 k_msleep(1);
         }
     }
-    // TODO rsoc を取得する
-    uint32_t get_rsoc() const {
-        return bmu2ros.rsoc;
-    }
     bool get_emergency_switch() const {
-        return board2ros.emergency_switch[0] ||
-               board2ros.emergency_switch[1];
+        return board2ros.emergency_switch_asserted;
     }
     bool get_bumper_switch() const {
-	return board2ros.bumper_switch[0] ||
-	       board2ros.bumper_switch[1];
+	return board2ros.bumper_switch_asserted;
     }
     bool is_emergency() const {
-        return board2ros.emergency_switch[0] ||
-               board2ros.emergency_switch[1] ||
-               board2ros.bumper_switch[0] ||
-               board2ros.bumper_switch[1] ||
+        return board2ros.emergency_switch_asserted ||
+               board2ros.bumper_switch_asserted ||
                ros2board.emergency_stop;
     }
     void brd_emgoff() {
@@ -153,109 +104,33 @@ public:
     }
     void brd_info(const shell *shell) const {
         shell_print(shell,
-                    "Bumper:%d/%d Emergency:%d/%d Power:%d\n"
+                    "Bumper:%d Emergency:%d Power:%d\n"
                     "Shutdown:%d Reason:%d AutoCharge:%d ManualCharge:%d\n"
                     "CFET:%d DFET:%d PDSG:%d\n"
-                    "5VFAIL:%d 16VFAIL:%d\n"
-                    "STATE:%u WHEEL:%d/%d\n"
+                    "V24_PG:%d VPERIPH_PG:%d VWHEEL_L_PG:%d VWHEEL_R_PG:%d\n"
+                    "STATE:%u WHEEL:%d\n"
                     "FAN:%u\n"
-                    "ConnTemp:%d/%d PBTemp:%d\n"
-                    "MBTemp:%f ActTemp:%f/%f/%f\n"
+                    "ConnTemp:P %d N %d\n"
                     "Lockdown:%s\n"
-                    "Charge Connector Voltage:%f Count:%u Delay:%u TempError:%d\n"
-                    "Version:%s PowerBoard Version:%s\n",
-                    board2ros.bumper_switch[0], board2ros.bumper_switch[1], board2ros.emergency_switch[0], board2ros.emergency_switch[1], board2ros.power_switch,
-                    board2ros.wait_shutdown, board2ros.shutdown_reason, board2ros.auto_charging, board2ros.manual_charging,
+                    "Charge Connector Voltage:%f Count:%u Delay:%u ChargeTempGood:%d\n"
+                    "Version:%s\n",
+                    board2ros.bumper_switch_asserted, board2ros.emergency_switch_asserted, board2ros.power_switch_state,
+                    board2ros.wait_shutdown_state, board2ros.shutdown_reason, board2ros.auto_charging_status, board2ros.manual_charging_status,
                     board2ros.c_fet, board2ros.d_fet, board2ros.p_dsg,
-                    board2ros.v5_fail, board2ros.v16_fail,
-                    board2ros.state, board2ros.wheel_disable[0], board2ros.wheel_disable[1],
+                    board2ros.v24_pgood, board2ros.v_peripheral_pgood, board2ros.v_wheel_motor_l_pgood, board2ros.v_wheel_motor_r_pgood,
+                    board2ros.state, board2ros.wheel_enable,
                     board2ros.fan_duty,
-                    board2ros.charge_connector_temp[0], board2ros.charge_connector_temp[1], board2ros.power_board_temp,
-                    board2ros.main_board_temp, board2ros.actuator_board_temp[0], board2ros.actuator_board_temp[1], board2ros.actuator_board_temp[2],
+                    board2ros.charge_connector_p_temp, board2ros.charge_connector_n_temp,
                     enable_lockdown ? "enable" : "disable",
-                    board2ros.charge_connector_voltage, board2ros.charge_check_count, board2ros.charge_heartbeat_delay, board2ros.charge_temperature_error,
-                    version, version_powerboard);
+                    board2ros.charge_connector_voltage, board2ros.charge_check_count, board2ros.charge_heartbeat_delay, board2ros.charge_temperature_good,
+                    version);
     }
 private:
-    // メモ：from_pbはやらず、board2ros フォーマットでboard_controller から受け取ることにした
-    // void handler_from_pb() {
-    //     if (frame.id == 0x200) {
-    //         uint8_t prev_state{board2ros.state};
-    //         bool prev_wait_shutdown{board2ros.wait_shutdown};
-    //         board2ros.bumper_switch[0] = (frame.data[0] & 0b00001000) != 0;
-    //         board2ros.bumper_switch[1] = (frame.data[0] & 0b00010000) != 0;
-    //         board2ros.emergency_switch[0] = (frame.data[0] & 0b00000010) != 0;
-    //         board2ros.emergency_switch[1] = (frame.data[0] & 0b00000100) != 0;
-    //         board2ros.power_switch = (frame.data[0] & 0b00000001) != 0;
-    //         board2ros.wait_shutdown = (frame.data[1] & 0b10000000) != 0;
-    //         board2ros.auto_charging = (frame.data[1] & 0b00000010) != 0;
-    //         board2ros.shutdown_reason = (frame.data[1] & 0b01111100) >> 2;
-    //         board2ros.manual_charging = (frame.data[1] & 0b00000001) != 0;
-    //         board2ros.c_fet = (frame.data[2] & 0b00010000) != 0;
-    //         board2ros.d_fet = (frame.data[2] & 0b00100000) != 0;
-    //         board2ros.p_dsg = (frame.data[2] & 0b01000000) != 0;
-    //         board2ros.v5_fail = (frame.data[2] & 0b00000001) != 0;
-    //         board2ros.v16_fail = (frame.data[2] & 0b00000010) != 0;
-    //         board2ros.wheel_disable[0] = (frame.data[3] & 0b00000001) != 0;
-    //         board2ros.wheel_disable[1] = (frame.data[3] & 0b00000010) != 0;
-    //         board2ros.state = (frame.data[3] & 0b11111100) >> 2;
-    //         board2ros.fan_duty = frame.data[4];
-    //         board2ros.charge_connector_temp[0] = frame.data[5];
-    //         board2ros.charge_connector_temp[1] = frame.data[6];
-    //         board2ros.power_board_temp = frame.data[7];
-    //         board2ros.main_board_temp = misc_controller::get_main_board_temp();
-    //         for (auto i{0}; i < 3; ++i)
-    //             board2ros.actuator_board_temp[i] = misc_controller::get_actuator_board_temp(i);
-    //         static constexpr uint8_t LOCKDOWN_STATE{7};
-    //         if (prev_state != LOCKDOWN_STATE && board2ros.state == LOCKDOWN_STATE) {
-    //             led_controller::msg message{led_controller::msg::LOCKDOWN, 1000000000};
-    //             while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
-    //                 k_msgq_purge(&led_controller::msgq);
-    //         }
-    //         if (!prev_wait_shutdown && board2ros.wait_shutdown) {
-    //             led_controller::msg message{led_controller::msg::SHOWTIME, 60000};
-    //             while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
-    //                 k_msgq_purge(&led_controller::msgq);
-    //         }
-    //     } else if (frame.id == 0x202) {
-    //         if (frame.data[0] == 1) {
-    //             led_controller::msg message{led_controller::msg::CHARGE_LEVEL, 2000};
-    //             while (k_msgq_put(&led_controller::msgq, &message, K_NO_WAIT) != 0)
-    //                 k_msgq_purge(&led_controller::msgq);
-    //         }
-    //     } else if (frame.id == 0x203) {
-    //         for (uint32_t i{0}, n{0}; i < frame.dlc && n < sizeof version_powerboard - 2; ++i) {
-    //             char data{frame.data[i]};
-    //             version_powerboard[n++] = data;
-    //             if (data == '\0')
-    //                 break;
-    //             version_powerboard[n++] = '.';
-    //         }
-    //         version_powerboard[frame.dlc] = '\0';
-    //     } else if (frame.id == 0x204) {
-    //         uint16_t voltage_mv{static_cast<uint16_t>(frame.data[0] | (frame.data[1] << 8))};
-    //         board2ros.charge_connector_voltage = voltage_mv * 1e-3f;
-    //         board2ros.charge_check_count = frame.data[2];
-    //         board2ros.charge_heartbeat_delay = frame.data[3];
-    //         board2ros.charge_temperature_error = frame.data[4];
-    //     }
-    // }
-
-    // TODO board2ros から msgq_board_pb_rx へ載せ替え（enable_lockdown && heartbeat_timeout を加える）
-    void handler_to_pb() const {
-        // zcan_frame frame{
-        //     .id{0x201},
-        //     .rtr{CAN_DATAFRAME},
-        //     .id_type{CAN_STANDARD_IDENTIFIER},
-        //     .dlc{6},
-        //     .data{
-        //         ros2board.emergency_stop,
-        //         ros2board.power_off,
-        //         enable_lockdown && heartbeat_timeout,
-        //         ros2board.wheel_power_off
-        //     }
-        // };
-        // can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+    void handler_to_pb() {
+        msg_board_to_pb.ros_emergency_stop = ros2board.emergency_stop;
+        msg_board_to_pb.ros_power_off = ros2board.power_off;
+        msg_board_to_pb.ros_heartbeat_timeout = enable_lockdown && heartbeat_timeout;
+        msg_board_to_pb.ros_wheel_power_off = ros2board.wheel_power_off;
     }
     msg_board board2ros{0};
     msg_control ros2board{0};
@@ -266,18 +141,6 @@ private:
     bool heartbeat_timeout{true}, enable_lockdown{true};
     static constexpr char version[]{"2.7.1"};
 } impl;
-
-// int bmu_info(const shell *shell, size_t argc, char **argv)
-// {
-//     impl.bmu_info(shell);
-//     return 0;
-// }
-
-// SHELL_STATIC_SUBCMD_SET_CREATE(sub_bmu,
-//     SHELL_CMD(info, NULL, "BMU information", bmu_info),
-//     SHELL_SUBCMD_SET_END
-// );
-// SHELL_CMD_REGISTER(bmu, &sub_bmu, "BMU commands", NULL);
 
 int brd_emgoff(const shell *shell, size_t argc, char **argv)
 {
@@ -320,11 +183,6 @@ void run(void *p1, void *p2, void *p3)
     impl.run();
 }
 
-uint32_t get_rsoc()
-{
-    return impl.get_rsoc();
-}
-
 bool get_emergency_switch()
 {
     return impl.get_emergency_switch();
@@ -341,7 +199,6 @@ bool is_emergency()
 }
 
 k_thread thread;
-// k_msgq msgq_bmu, msgq_board, msgq_control;
 k_msgq msgq_board, msgq_control;
 
 }

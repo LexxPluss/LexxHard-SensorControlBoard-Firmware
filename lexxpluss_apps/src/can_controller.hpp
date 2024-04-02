@@ -50,10 +50,11 @@ struct msg_board {
     float wheel_motor_l_loadsw_cs, wheel_motor_r_loadsw_cs, peripheral_loadsw_cs;
     int16_t charge_connector_p_temp, charge_connector_n_temp;
     uint8_t fan_duty, shutdown_reason, state, charge_check_count, charge_heartbeat_delay;
-    bool bumper_switch_on;
-    bool emergency_switch_on;
+    bool bumper_switch_asserted;
+    bool emergency_switch_asserted;
     bool power_switch_state, wait_shutdown_state, auto_charging_status, manual_charging_status;
     bool c_fet, d_fet, p_dsg;
+    bool is_activated_battery;
     bool v24_loadsw_on, v_wheel_motor_lr_loadsw_on, auto_charge_loadsw_on, v_peripheral_loadsw_on;
     bool v24_pgood, v_wheel_motor_l_pgood, v_wheel_motor_r_pgood, v_peripheral_pgood;
     bool c_act_pgood, l_act_pgood, r_act_pgood;
