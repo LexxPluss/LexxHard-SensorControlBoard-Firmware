@@ -2,6 +2,12 @@
  * Copyright (c) 2016 TDK Invensense
  *
  * SPDX-License-Identifier: Apache-2.0
+ * 
+ * CHANGELOG:
+ * 2024-04-02: created IIM42625 driver based on ICM42605 driver by Takuro Tsujikawa (takuro.tsujikawa@lexxpluss.com)
+ * 	- changed definition from ICM42605 to IIM42652
+ * 	- changed filename from icm42605_trigger.c to iim42652_trigger.c
+ *  - Fixed the issue based on https://github.com/zephyrproject-rtos/zephyr/commit/0c6cf9a84ee9f677149e257ce00ddd141865c469
  */
 
 #include <device.h>
@@ -37,7 +43,6 @@ int iim42652_trigger_set(const struct device *dev,
 	}
 
 	if (trig->type == SENSOR_TRIG_DATA_READY) {
-		LOG_INF("SENSOR_TRIG_DATA_READY set");
 		drv_data->data_ready_handler = handler;
 		drv_data->data_ready_trigger = *trig;
 	} else if (trig->type == SENSOR_TRIG_TAP) {
@@ -101,8 +106,6 @@ static void iim42652_thread(void *p1, void *p2, void *p3)
 
 	struct iim42652_data *drv_data = p1;
 
-	LOG_INF("iim42652_thread start");
-
 	while (1) {
 		k_sem_take(&drv_data->gpio_sem, K_FOREVER);
 		iim42652_thread_cb(drv_data->dev);
@@ -114,8 +117,6 @@ int iim42652_init_interrupt(const struct device *dev)
 	struct iim42652_data *drv_data = dev->data;
 	const struct iim42652_config *cfg = dev->config;
 	int result = 0;
-
-	LOG_INF("iim42652_init_interrupt");
 
 	/* setup data ready gpio interrupt */
 	drv_data->gpio = device_get_binding(cfg->int_label);
@@ -147,8 +148,6 @@ int iim42652_init_interrupt(const struct device *dev)
 
 	gpio_pin_interrupt_configure(drv_data->gpio, cfg->int_pin,
 				     GPIO_INT_EDGE_TO_INACTIVE);
-
-	LOG_INF("iim42652_init_interrupt done");
 
 	return 0;
 }

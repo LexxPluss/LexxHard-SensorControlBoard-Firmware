@@ -2,6 +2,11 @@
  * Copyright (c) 2020 TDK Invensense
  *
  * SPDX-License-Identifier: Apache-2.0
+ * 
+ * CHANGELOG:
+ * 2024-04-02: created IIM42625 driver based on ICM42605 driver by Takuro Tsujikawa (takuro.tsujikawa@lexxpluss.com)
+ * 	- changed definition from ICM42605 to IIM42652
+ * 	- changed filename from icm42605_spi.c to iim42652_spi.c
  */
 
 #include <device.h>

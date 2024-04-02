@@ -2,6 +2,11 @@
  * Copyright (c) 2020 TDK Invensense
  *
  * SPDX-License-Identifier: Apache-2.0
+ * 
+ * CHANGELOG:
+ * 2024-04-02: created IIM42625 driver based on ICM42605 driver by Takuro Tsujikawa (takuro.tsujikawa@lexxpluss.com)
+ * 	- changed definition from ICM42605 to IIM42652
+ * 	- changed filename from icm42605.c to iim42652.c
  */
 
 #define DT_DRV_COMPAT invensense_iim42652
@@ -428,8 +433,6 @@ static int iim42652_init(const struct device *dev)
 		return -EIO;
 	}
 #endif
-
-	LOG_INF("iim42652_init done");
 
 	return 0;
 }

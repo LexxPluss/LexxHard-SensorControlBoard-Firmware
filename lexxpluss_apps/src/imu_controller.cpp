@@ -90,8 +90,6 @@ public:
         }
         message.counter = 0;
 
-        LOG_INF("IMU controller for LexxPluss board. (%p)", dev);
-
         return 0;
     }
     void run() {
