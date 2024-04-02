@@ -1,2 +1,3 @@
 add_subdirectory_ifdef(CONFIG_MAXBOTIX maxbotix)
 add_subdirectory_ifdef(CONFIG_ADIS16470 adis16470)
+add_subdirectory_ifdef(CONFIG_IIM42652 iim42652)
