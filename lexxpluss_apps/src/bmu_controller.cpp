@@ -46,7 +46,8 @@ public:
     int init() {
         k_msgq_init(&msgq_parsed_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8); // For board_controller of MCU internal code
         k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (msg_rawframe_bmu), 8); // For IPC as path through from CAN_1 to CAN_2
-        dev_can_bmu = device_get_binding("CAN_1");
+        // dev_can_bmu = device_get_binding("CAN_1");
+        dev_can_bmu = DEVICE_DT_GET(DT_NODELABEL(can1));
         if (!device_is_ready(dev_can_bmu))
             return -1;
         can_configure(dev_can_bmu, CAN_NORMAL_MODE, 500000);

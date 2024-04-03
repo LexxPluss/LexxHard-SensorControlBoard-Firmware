@@ -208,19 +208,22 @@ public:
     int init(POS pos) {
         switch (pos) {
         case POS::CENTER:
-            dev[0] = device_get_binding("PWM_5");
+            // dev[0] = device_get_binding("PWM_5");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm5));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::LEFT:
-            dev[0] = device_get_binding("PWM_8");
+            // dev[0] = device_get_binding("PWM_8");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm8));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::RIGHT:
-            dev[0] = device_get_binding("PWM_2");
+            // dev[0] = device_get_binding("PWM_2");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm2));
             dev[1] = dev[0];
             pin[0] = 3;
             pin[1] = 4;

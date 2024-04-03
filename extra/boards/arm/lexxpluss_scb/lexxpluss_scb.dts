@@ -104,19 +104,81 @@
 		status = "okay";
 	};
 
-	leds {
-		compatible = "gpio-leds";
-		led1: led1 {
+	dbg_leds {
+		compatible = "gpio-dbg_leds";
+		dbg_led1: dbgled1 {
 			gpios = <&gpiog 7 GPIO_ACTIVE_HIGH>;
 		};
-		led2: led2 {
+		dbg_led2: dbg_led2 {
 			gpios = <&gpiog 6 GPIO_ACTIVE_HIGH>;
 		};
-		led3: led3 {
+		dbg_led3: dbg_led3 {
 			gpios = <&gpiog 5 GPIO_ACTIVE_HIGH>;
 		};
-		led4: led4 {
+		dbg_led4: dbg_led4 {
 			gpios = <&gpiog 4 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	actuator_fails {
+		compatible = "gpio-actuator_fail";
+		act_c_fail: act_c_fail {
+			gpios = <&gpiod 10 GPIO_ACTIVE_HIGH>;
+		};
+		act_l_fail: act_l_fail {
+			gpios = <&gpiog 8 GPIO_ACTIVE_HIGH>;
+		};
+		act_r_fail: act_r_fail {
+			gpios = <&gpioe 10 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	powers {
+		compatible = "gpio-power";
+		v24: v24 {
+			gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
+		};
+		v_autocharge: v_autocharge {
+			gpios = <&gpiod 0 GPIO_ACTIVE_HIGH>;
+		};
+		v_wheel: v_wheel {
+			gpios = <&gpiod 1 GPIO_ACTIVE_HIGH>;
+		};
+		v_peripheral: v_peripheral {
+			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	fans {
+		compatible = "gpio-fan";
+		fan1: fan1 {
+			gpios = <&gpioc 10 GPIO_ACTIVE_HIGH>;
+		};
+		fan2: fan2 {
+			gpios = <&gpioc 11 GPIO_ACTIVE_HIGH>;
+		};
+		fan3: fan3 {
+			gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
+		};
+		fan4: fan4 {
+			gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	pgvs {
+		compatible = "gpio-pgv";
+		pgv_en: pgv_en {
+			gpios = <&gpioh 2 GPIO_ACTIVE_HIGH>;
+		};
+		pgv_en_n: pgv_en_n {
+			gpios = <&gpioa 2 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	wheel_en {
+		compatible = "gpio-wheel_en";
+		wheel_en: wheel_en {
+			gpios = <&gpiok 3 GPIO_ACTIVE_HIGH>;
 		};
 	};
 };
@@ -173,7 +235,7 @@
 	pinctrl-0 = <&spi5_sck_pf7 &spi5_miso_pf8 &spi5_mosi_pf9>;
 	cs-gpios = <&gpiof 6 GPIO_ACTIVE_LOW>;
 	status = "okay";
-	sensor0: iim42652@0 {
+	imu0: iim42652@0 {
 		compatible = "invensense,iim42652";
 		spi-max-frequency = <24000000>;
 		reg = <0>;

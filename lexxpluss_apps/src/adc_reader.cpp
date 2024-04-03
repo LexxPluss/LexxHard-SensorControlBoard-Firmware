@@ -35,7 +35,8 @@ LOG_MODULE_REGISTER(adc);
 class {
 public:
     int init() {
-        dev = device_get_binding("ADC_1");
+        // dev = device_get_binding("ADC_1");
+        dev = DEVICE_DT_GET(DT_NODELABEL(adc1));
         return device_is_ready(dev) ? 0 : -1;
     }
     void run() {

@@ -66,7 +66,8 @@ public:
 //        k_msgq_init(&msgq_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8);
         k_msgq_init(&msgq_board, msgq_board_buffer, sizeof (msg_board), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        dev = device_get_binding("CAN_2");
+        // dev = device_get_binding("CAN_2");
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev))
             return -1;
         can_configure(dev, CAN_NORMAL_MODE, 500000);
@@ -75,6 +76,7 @@ public:
     void run() {
         if (!device_is_ready(dev))
             return;
+        led_s = GPIO_DT_SPEC_GET(DT_NODELABEL(led2), gpios);
         const device *gpiog{device_get_binding("GPIOG")};
         if (device_is_ready(gpiog))
             gpio_pin_configure(gpiog, 6, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);

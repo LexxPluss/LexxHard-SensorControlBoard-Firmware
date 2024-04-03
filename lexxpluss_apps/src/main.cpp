@@ -67,53 +67,78 @@ K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 #define PIN_NUM_WHEEL_EN_GPIOK 3
 
 void init_io() {
-    if (const device *gpioc{device_get_binding("GPIOC")}; device_is_ready(gpioc)) {
-        // Load switch for V24 OFF
-        gpio_pin_configure(gpioc, PIN_NUM_LOADSW_V24_EN_GPIOC, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    gpio_dt_spec gpio_v24, gpio_autocharge, gpio_wheel, gpio_peripheral;
+    gpio_dt_spec gpio_fan1, gpio_fan2, gpio_fan3, gpio_fan4;
+    gpio_dt_spec gpio_wheel_en;
 
-        // Fan1 and Fan2 ON
-        gpio_pin_configure(gpioc, PIN_NUM_FAN1_EN_GPIOC, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(gpioc, PIN_NUM_FAN2_EN_GPIOC, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-    }
+    gpio_v24 = GPIO_DT_SPEC_GET(DT_NODELABEL(v24), gpios);
+    gpio_autocharge = GPIO_DT_SPEC_GET(DT_NODELABEL(v_autocharge), gpios);
+    gpio_wheel = GPIO_DT_SPEC_GET(DT_NODELABEL(v_wheel), gpios);
+    gpio_peripheral = GPIO_DT_SPEC_GET(DT_NODELABEL(v_peripheral), gpios);
+    gpio_fan1 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan1), gpios);
+    gpio_fan2 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan2), gpios);
+    gpio_fan3 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan3), gpios);
+    gpio_fan4 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan4), gpios);
+    gpio_wheel_en = GPIO_DT_SPEC_GET(DT_NODELABEL(wheel_en), gpios);
 
-    if (const device *gpiob{device_get_binding("GPIOB")}; device_is_ready(gpiob)) {
-        // Fan3 and Fan4 ON
-        gpio_pin_configure(gpiob, PIN_NUM_FAN3_EN_GPIOB, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(gpiob, PIN_NUM_FAN3_EN_GPIOB, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-    }
+    // Load switch OFF
+    if (device_is_ready(&gpio_v24))
+        gpio_pin_configure_dt(&gpio_v24, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    if (device_is_ready(&gpio_autocharge))
+        gpio_pin_configure_dt(&gpio_autocharge, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    if (device_is_ready(&gpio_wheel))
+        gpio_pin_configure_dt(&gpio_wheel, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    if (device_is_ready(&gpio_peripheral))
+        gpio_pin_configure_dt(&gpio_peripheral, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
 
-    if (const device *gpiod{device_get_binding("GPIOD")}; device_is_ready(gpiod)) {
-        // Load switch for Autocharge, Wheel and Peripheral OFF
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_AUTOCHARGE_EN_GPIOD, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_WHEEL_EN_GPIOD, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    }
+    // Wheel Disable
+    if (device_is_ready(&gpio_wheel_en))
+        gpio_pin_configure_dt(&gpio_wheel_en, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
 
-    if (const device *gpiok{device_get_binding("GPIOK")}; device_is_ready(gpiok)) {
-        // Wheel Disable
-        gpio_pin_configure(gpiok, PIN_NUM_WHEEL_EN_GPIOK, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    }
+    // Fan1 and Fan2 ON
+    if (device_is_ready(&gpio_fan1))
+        gpio_pin_configure_dt(&gpio_fan1, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    if (device_is_ready(&gpio_fan2))
+        gpio_pin_configure_dt(&gpio_fan2, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+
+    // Fan3 and Fan4 ON
+    if (device_is_ready(&gpio_fan3))
+        gpio_pin_configure_dt(&gpio_fan3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    if (device_is_ready(&gpio_fan4))
+        gpio_pin_configure_dt(&gpio_fan4, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+
     k_msleep(3000);
 }
 
 void power_on() {
-    if (const device *gpiod{device_get_binding("GPIOD")}; device_is_ready(gpiod)) {
-        // Load switch for Wheel and Peripheral ON
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_WHEEL_EN_GPIOD, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    gpio_dt_spec gpio_v24, gpio_wheel, gpio_peripheral;
+    gpio_dt_spec gpio_wheel_en;
+
+    gpio_v24 = GPIO_DT_SPEC_GET(DT_NODELABEL(v24), gpios);
+    gpio_wheel = GPIO_DT_SPEC_GET(DT_NODELABEL(v_wheel), gpios);
+    gpio_peripheral = GPIO_DT_SPEC_GET(DT_NODELABEL(v_peripheral), gpios);
+    gpio_wheel_en = GPIO_DT_SPEC_GET(DT_NODELABEL(wheel_en), gpios);
+
+    // Load switch OFF
+    
+    if (device_is_ready(&gpio_wheel)){
+        gpio_pin_configure_dt(&gpio_wheel, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
-        gpio_pin_configure(gpiod, PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    }
+        
+    if (device_is_ready(&gpio_peripheral)){
+        gpio_pin_configure_dt(&gpio_peripheral, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+        k_msleep(3000);
+    }
+    
+    if (device_is_ready(&gpio_v24)){
+        gpio_pin_configure_dt(&gpio_v24, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
     }
 
-    if (const device *gpioc{device_get_binding("GPIOC")}; device_is_ready(gpioc)) {
-        // Load switch for V24 ON
-        gpio_pin_configure(gpioc, PIN_NUM_LOADSW_V24_EN_GPIOC, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    if (device_is_ready(&gpio_wheel_en)){
+        gpio_pin_configure_dt(&gpio_wheel_en, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
-    }
-
-    if (const device *gpiok{device_get_binding("GPIOK")}; device_is_ready(gpiok)) {
-        // Wheel Disable
-        gpio_pin_configure(gpiok, PIN_NUM_WHEEL_EN_GPIOK, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
     }
 }
 
@@ -150,16 +175,14 @@ void main()
 
     printk("--- SensorControlBoard V1.0.0 ---\n");
 
+    gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
+    if (device_is_ready(&heart_beat_led))
+        gpio_pin_configure_dt(&heart_beat_led, GPIO_OUTPUT_INACTIVE);
+
     // Heartbeat LED
-    const device *gpiog{device_get_binding("GPIOG")};
-    if (gpiog != nullptr)
-        gpio_pin_configure(gpiog, 7, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    int heartbeat_led{1};
     while (true) {
-        if (gpiog != nullptr) {
-            gpio_pin_set(gpiog, 7, heartbeat_led);
-            heartbeat_led = !heartbeat_led;
-        }
+        if(device_is_ready(&heart_beat_led))
+            gpio_pin_toggle_dt(&heart_beat_led);
         k_msleep(1000);
     }
 }

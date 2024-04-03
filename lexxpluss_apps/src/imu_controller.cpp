@@ -46,7 +46,8 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 
-        dev = device_get_binding("IIM42652");
+        // dev = device_get_binding("IIM42652");
+        dev = DEVICE_DT_GET(DT_NODELABEL(imu0));
 
         if (!device_is_ready(dev)) {
             LOG_ERR("IMU device not found");

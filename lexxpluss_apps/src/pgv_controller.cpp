@@ -46,12 +46,16 @@ public:
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
         ring_buf_init(&rxbuf.rb, sizeof rxbuf.buf, rxbuf.buf);
         ring_buf_init(&txbuf.rb, sizeof txbuf.buf, txbuf.buf);
-        dev_485 = device_get_binding("UART_4");
-        dev_en = device_get_binding("GPIOH");
-        dev_en_n = device_get_binding("GPIOA");
+        // dev_485 = device_get_binding("UART_4");
+        // dev_en = device_get_binding("GPIOH");
+        // dev_en_n = device_get_binding("GPIOA");
+        dev_485 = DEVICE_DT_GET(DT_NODELABEL(uart4));
+        dev_en = GPIO_DT_SPEC_GET(DT_NODELABEL(pgv_en), gpios);
+        dev_en_n = GPIO_DT_SPEC_GET(DT_NODELABEL(pgv_en_n), gpios);
+
         if (!device_is_ready(dev_485) ||
-            !device_is_ready(dev_en) ||
-            !device_is_ready(dev_en_n))
+            !gpio_is_ready_dt(&dev_en) ||
+            !gpio_is_ready_dt(&dev_en_n))
             return -1;
         uart_config config{
             .baudrate{115200},
@@ -69,10 +73,14 @@ public:
         }};
         uart_irq_callback_user_data_set(dev_485, uart_isr_trampoline, this);
         uart_irq_rx_enable(dev_485);
-        gpio_pin_configure(dev_en, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_configure(dev_en_n, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(dev_en, 2, 0);
-        gpio_pin_set(dev_en_n, 2, 0);
+        // gpio_pin_configure(dev_en, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        // gpio_pin_configure(dev_en_n, 2, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&dev_en, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&dev_en_n, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        // gpio_pin_set(dev_en, 2, 0);
+        // gpio_pin_set(dev_en_n, 2, 0);
+        gpio_pin_set_dt(dev_en, 0);
+        gpio_pin_set_dt(dev_en_n, 0);
         k_sem_init(&sem, 0, 1);
         return 0;
     }
@@ -89,15 +97,15 @@ public:
             uint8_t buf[8];
             recv(buf, sizeof buf);
         }
-        const device *gpiog{device_get_binding("GPIOG")};
-        if (device_is_ready(gpiog))
-            gpio_pin_configure(gpiog, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        int heartbeat_led{1};
+        // const device *gpiog{device_get_binding("GPIOG")};
+        // if (device_is_ready(gpiog))
+        //     gpio_pin_configure(gpiog, 4, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        // int heartbeat_led{1};
         while (true) {
-            if (device_is_ready(gpiog)) {
-                gpio_pin_set(gpiog, 4, heartbeat_led);
-                heartbeat_led = !heartbeat_led;
-            }
+            // if (device_is_ready(gpiog)) {
+            //     gpio_pin_set(gpiog, 4, heartbeat_led);
+            //     heartbeat_led = !heartbeat_led;
+            // }
             if (get_position(pgv2can)) {
                 while (k_msgq_put(&msgq, &pgv2can, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
@@ -211,9 +219,11 @@ private:
         ring_buf rb;
         uint32_t buf[256 / sizeof (uint32_t)];
     } txbuf, rxbuf;
-    const device *dev_485{nullptr}, *dev_en{nullptr}, *dev_en_n{nullptr};
+    // const device *dev_485{nullptr}, *dev_en{nullptr}, *dev_en_n{nullptr};
+    const device *dev_485{nullptr};
     msg pgv2can;
     k_sem sem;
+    const gpio_dt_spec dev_en, dev_en_n;
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)
