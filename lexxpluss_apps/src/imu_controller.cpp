@@ -46,7 +46,7 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 
-        dev = device_get_binding("ICM42605");
+        dev = device_get_binding("IIM42652");
 
         if (!device_is_ready(dev)) {
             LOG_ERR("IMU device not found");
@@ -89,8 +89,6 @@ public:
             message.gyro_data_upper[i] = 0;
         }
         message.counter = 0;
-
-        LOG_INF("IMU controller for LexxPluss board. (%p)", dev);
 
         return 0;
     }
