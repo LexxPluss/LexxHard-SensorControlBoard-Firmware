@@ -25,11 +25,11 @@
 
 #pragma once
 
-#include <zephyr.h>
-#include <device.h>
-#include <drivers/gpio.h>
-#include <drivers/can.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include "actuator_controller.hpp"
 
 #define CAN_ID_ACTUATOR_CONTROL 0x208 // based on saito-san's CAN ID assignment

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
 #include "ros/node_handle.h"
 #include "std_msgs/UInt8MultiArray.h"
 #include "std_msgs/UInt16MultiArray.h"

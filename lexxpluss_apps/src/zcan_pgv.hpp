@@ -25,10 +25,10 @@
 
 #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include <cstdio>
-#include <drivers/can.h>
-#include <logging/log.h>
 #include "std_msgs/UInt8.h"
 #include "lexxauto_msgs/PositionGuideVision.h"
 #include "common.hpp"

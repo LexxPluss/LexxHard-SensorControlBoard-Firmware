@@ -25,8 +25,8 @@
 
 #pragma once
 
-#include <zephyr.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include "ros/node_handle.h"
 #include "std_msgs/Bool.h"
 #include "std_msgs/Byte.h"

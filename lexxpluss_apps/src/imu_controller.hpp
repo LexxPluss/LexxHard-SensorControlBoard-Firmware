@@ -25,7 +25,7 @@
 
 #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
 
 namespace lexxhard::imu_controller {
 

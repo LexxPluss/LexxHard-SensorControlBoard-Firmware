@@ -23,7 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <logging/log.h>
+#include <zephyr/logging/log.h>
 #include "zcan_actuator.hpp"
 #include "zcan_bmu.hpp"
 #include "zcan_board.hpp"

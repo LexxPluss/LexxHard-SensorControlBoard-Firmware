@@ -25,9 +25,9 @@
 
 #pragma once
 
-#include <zephyr.h>
-#include <drivers/can.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include "imu_controller.hpp"
 
 #define CAN_ID_ACCL 0x206

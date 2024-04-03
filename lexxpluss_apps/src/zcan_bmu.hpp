@@ -25,9 +25,9 @@
 
 // #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <cstdio>
-#include <logging/log.h>
 #include "ros/node_handle.h"
 #include "lexxauto_msgs/Battery.h"
 #include "can_controller.hpp"

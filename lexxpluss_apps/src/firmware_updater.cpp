@@ -23,10 +23,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <devicetree.h>
-#include <storage/flash_map.h>
-#include <sys/reboot.h>
+#include <zephyr/kernel.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/storage/flash_map.h>
+#include <zephyr/sys/reboot.h>
 #include "firmware_updater.hpp"
 
 namespace lexxhard::firmware_updater {

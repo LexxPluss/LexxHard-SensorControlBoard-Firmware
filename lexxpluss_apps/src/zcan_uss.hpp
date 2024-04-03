@@ -25,9 +25,9 @@
 
 #pragma once
 
-#include <zephyr.h>
-#include <drivers/can.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include "uss_controller.hpp"
 
 #define CAN_ID_USS 0x204
