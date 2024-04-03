@@ -148,7 +148,7 @@ void main()
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // The rosserial thread will be started last.
 
-    printk("--- SensorControlBoard V0.9 ---\n");
+    printk("--- SensorControlBoard V1.0.0 ---\n");
 
     // Heartbeat LED
     const device *gpiog{device_get_binding("GPIOG")};
