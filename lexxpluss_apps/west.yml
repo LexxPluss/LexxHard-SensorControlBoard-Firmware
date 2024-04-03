@@ -1,4 +1,4 @@
-# Copyright (c) 2022, LexxPluss Inc.
+# Copyright (c) 2022-2024, LexxPluss Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -25,10 +25,7 @@ manifest:
   projects:
     - name: zephyr
       url: https://github.com/zephyrproject-rtos/zephyr.git
-      revision: refs/tags/v2.7.5
+      revision: refs/tags/v3.6.0
       import: true
-    - name: ros_msgs
-      url: https://github.com/LexxPluss/ros_msgs.git
-      revision: main
   self:
     path: lexxpluss_apps
