@@ -62,6 +62,17 @@
 			status = "disabled";
 			label = "CAN_2";
 		};
+/*
+		adc3: adc@40012200 {
+			compatible = "st,stm32-adc";
+			reg = <0x40012200 0x200>;
+			clocks = <&rcc STM32_CLOCK_BUS_APB2 0x00000400>;
+			interrupts = <18 0>;
+			status = "disabled";
+			label = "ADC_3";
+			#io-channel-cells = <1>;
+		};
+		*/
 	};
 
 	uss0: mb1604-0 {
@@ -147,10 +158,13 @@
 };
 
 &usart6 {
-	pinctrl-0 = <&usart6_tx_pg14 &usart6_rx_pg9 &usart6_cts_pg13 &usart6_rts_pg12>;
-	current-speed = <115200>;
-	hw-flow-control;
+	pinctrl-0 = <&usart6_tx_pg14 &usart6_rx_pg9>;
+	current-speed = <4800>;
 	status = "okay";
+};
+
+&iwdg {
+			status = "okay";
 };
 
 &spi5 {
@@ -227,9 +241,15 @@
 };
 
 &adc1 {
-	pinctrl-0 = <&adc1_in8_pb0 &adc1_in9_pb1 &adc1_in10_pc0 &adc1_in11_pc1 &adc1_in12_pc2 &adc1_in13_pc3>;
+	pinctrl-0 = <&adc1_in8_pb0 &adc1_in9_pb1 &adc1_in10_pc0 &adc1_in11_pc1 &adc1_in12_pc2 &adc1_in13_pc3 &adc1_in14_pc4 &adc1_in15_pc5>;
 	status = "okay";
 };
+/*
+&adc3 {
+	pinctrl-0 = <&adc3_in8_pf10>;
+	status = "okay";
+};
+*/
 
 &timers1 {
 	status = "okay";

@@ -25,33 +25,29 @@
 
 #pragma once
 
-#include <zephyr/kernel.h>
+#define IOLABEL_MAX_LENGTH 50
 
-namespace lexxhard::adc_reader {
+#include <zephyr.h>
+
+namespace lexxhard::board_controller {
+
+struct pin_def_gpio {
+    char label[IOLABEL_MAX_LENGTH]; 
+    uint8_t io_number; 
+} __attribute__((aligned(4)));
+
+struct msg_rcv_pb {
+    bool ros_emergency_stop;
+    bool ros_power_off;
+    bool ros_heartbeat_timeout;
+    bool ros_wheel_power_off;
+} __attribute__((aligned(4)));
+
 
 void init();
 void run(void *p1, void *p2, void *p3);
-int32_t get(int index);
-int32_t get_adc3(int index);
+uint32_t get_rsoc();
 extern k_thread thread;
-
-enum {
-    DOWNWARD_L = 0,
-    DOWNWARD_R,
-    TROLLEY,
-    ACTUATOR_L,
-    ACTUATOR_C,
-    ACTUATOR_R,
-    THERMISTOR_P,
-    THERMISTOR_N,
-    NUM_CHANNELS
-};
-
-enum {
-    CHARGING_VOLTAGE = 0,
-    NUM_CHANNELS_ADC3
-};
-
+extern k_msgq msgq_can_bmu_pb;
+extern k_msgq msgq_board_pb_rx, msgq_board_pb_tx;
 }
-
-// vim: set expandtab shiftwidth=4:
