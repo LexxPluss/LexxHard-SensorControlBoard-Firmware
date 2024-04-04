@@ -90,10 +90,12 @@ static int maxbotix_init(const struct device *dev)
 {
     struct maxbotix_data *data = dev->data;
     const struct maxbotix_cfg *cfg  = dev->config;
-    data->trig_dev = device_get_binding(cfg->trig_port);
+    // data->trig_dev = device_get_binding(cfg->trig_port);
+    data->trig_dev = DEVICE_DT_GET(DT_NODELABEL(cfg->trig_port));
     if (!data->trig_dev)
         return -ENODEV;
-    data->echo_dev = device_get_binding(cfg->echo_port);
+    // data->echo_dev = device_get_binding(cfg->echo_port);
+    data->echo_port = DEVICE_DT_GET(DT_NODELABEL(cfg->echo_port));
     if (!data->echo_dev)
         return -ENODEV;
     int err = gpio_pin_configure(data->trig_dev, cfg->trig_pin, (GPIO_OUTPUT | cfg->trig_flags));

@@ -41,7 +41,8 @@ LOG_MODULE_REGISTER(zcan_imu);
 class zcan_imu {
 public:
     void init() {
-        dev = device_get_binding("CAN_2");  //CAN(to IPC)
+        // dev = device_get_binding("CAN_2");  //CAN(to IPC)
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));    //CAN(to IPC)
         if (!device_is_ready(dev)){
             LOG_INF("CAN_2 is not ready");
             return;

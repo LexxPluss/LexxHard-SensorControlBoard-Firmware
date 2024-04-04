@@ -48,7 +48,8 @@ public:
     void init()
     {
         //can device bind
-        dev = device_get_binding("CAN_2");
+        // dev = device_get_binding("CAN_2");
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
             LOG_INF("CAN_2 is not ready");
             return;

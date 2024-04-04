@@ -39,11 +39,13 @@ char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 class uss_fetcher {
 public:
     int init(const char *label0, const char *label1) {
-        dev[0] = device_get_binding(label0);
+        // dev[0] = device_get_binding(label0);
+        dev[0] = DEVICE_DT_GET(DT_NODELABEL(label0));
         if (!device_is_ready(dev[0]))
             return -1;
         if (label1 != nullptr) {
-            dev[1] = device_get_binding(label1);
+            // dev[1] = device_get_binding(label1);
+            dev[1] = DEVICE_DT_GET(DT_NODELABEL(label1));
             if (!device_is_ready(dev[1]))
                 return -1;
         }

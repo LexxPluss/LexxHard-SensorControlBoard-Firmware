@@ -49,7 +49,8 @@ public:
     void init() {
         // can device bind
         k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
-        dev = device_get_binding("CAN_2");
+        // dev = device_get_binding("CAN_2");
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
             LOG_INF("CAN_2 is not ready");
             return;

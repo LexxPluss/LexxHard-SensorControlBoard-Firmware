@@ -43,11 +43,11 @@ k_msgq msgq_can_led;
 
 class zcan_led {
 public:
-    void init()
-    {
+    void init() {
         //can device bind`
         k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (led_controller::msg), 8);
-        dev = device_get_binding("CAN_2");
+        // dev = device_get_binding("CAN_2");
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
             LOG_INF("CAN_2 is not ready");
             return;

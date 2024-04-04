@@ -4,18 +4,18 @@
  * SPDX-License-Identifier: Apache-2.0
  * 
  * CHANGELOG:
- * 2024-04-02: created IIM42625 driver based on ICM42605 driver by Takuro Tsujikawa (takuro.tsujikawa@lexxpluss.com)
- * 	- changed definition from ICM42605 to IIM42652
- * 	- changed filename from icm42605.c to iim42652.c
+ * 2024-04-02: created IIM42652 driver based on IIM42652 driver by Takuro Tsujikawa (takuro.tsujikawa@lexxpluss.com)
+ * 	- changed definition from IIM42652 to IIM42652
+ * 	- changed filename from iim42652.c to iim42652.c
  */
 
 #define DT_DRV_COMPAT invensense_iim42652
 
-#include <drivers/spi.h>
-#include <init.h>
-#include <sys/byteorder.h>
-#include <drivers/sensor.h>
-#include <logging/log.h>
+#include <zephyr/drivers/spi.h>
+#include <zephyr/init.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/logging/log.h>
 
 #include "iim42652.h"
 #include "iim42652_reg.h"
@@ -130,31 +130,32 @@ int iim42652_tap_fetch(const struct device *dev)
 {
 	int result = 0;
 	struct iim42652_data *drv_data = dev->data;
+	const struct iim42652_config *cfg = dev->config;
 
 	if (drv_data->tap_en &&
 	    (drv_data->tap_handler || drv_data->double_tap_handler)) {
-		result = inv_spi_read(REG_INT_STATUS3, drv_data->fifo_data, 1);
+		result = inv_spi_read(&cfg->spi, REG_INT_STATUS3, drv_data->fifo_data, 1);
 		if (drv_data->fifo_data[0] & BIT_INT_STATUS_TAP_DET) {
-			result = inv_spi_read(REG_APEX_DATA4,
+			result = inv_spi_read(&cfg->spi, REG_APEX_DATA4,
 					      drv_data->fifo_data, 1);
 			if (drv_data->fifo_data[0] & APEX_TAP) {
-				if (drv_data->tap_trigger.type ==
+				if (drv_data->tap_trigger->type ==
 				    SENSOR_TRIG_TAP) {
 					if (drv_data->tap_handler) {
 						LOG_DBG("Single Tap detected");
 						drv_data->tap_handler(dev
-						      , &drv_data->tap_trigger);
+						      , drv_data->tap_trigger);
 					}
 				} else {
 					LOG_ERR("Trigger type is mismatched");
 				}
 			} else if (drv_data->fifo_data[0] & APEX_DOUBLE_TAP) {
-				if (drv_data->double_tap_trigger.type ==
+				if (drv_data->double_tap_trigger->type ==
 				    SENSOR_TRIG_DOUBLE_TAP) {
 					if (drv_data->double_tap_handler) {
 						LOG_DBG("Double Tap detected");
 						drv_data->double_tap_handler(dev
-						     , &drv_data->tap_trigger);
+						     , drv_data->tap_trigger);
 					}
 				} else {
 					LOG_ERR("Trigger type is mismatched");
@@ -174,14 +175,15 @@ static int iim42652_sample_fetch(const struct device *dev,
 	int result = 0;
 	uint16_t fifo_count = 0;
 	struct iim42652_data *drv_data = dev->data;
+	const struct iim42652_config *cfg = dev->config;
 
 	/* Read INT_STATUS (0x45) and FIFO_COUNTH(0x46), FIFO_COUNTL(0x47) */
-	result = inv_spi_read(REG_INT_STATUS, drv_data->fifo_data, 3);
+	result = inv_spi_read(&cfg->spi, REG_INT_STATUS, drv_data->fifo_data, 3);
 
 	if (drv_data->fifo_data[0] & BIT_INT_STATUS_DRDY) {
 		fifo_count = (drv_data->fifo_data[1] << 8)
 			+ (drv_data->fifo_data[2]);
-		result = inv_spi_read(REG_FIFO_DATA, drv_data->fifo_data,
+		result = inv_spi_read(&cfg->spi, REG_FIFO_DATA, drv_data->fifo_data,
 				      fifo_count);
 
 		/* FIFO Data structure
@@ -389,38 +391,17 @@ static int iim42652_data_init(struct iim42652_data *data,
 	return 0;
 }
 
+
 static int iim42652_init(const struct device *dev)
 {
 	struct iim42652_data *drv_data = dev->data;
 	const struct iim42652_config *cfg = dev->config;
 
-	LOG_INF("iim42652_init start");  
-
-	drv_data->spi = device_get_binding(cfg->spi_label);
-	if (!drv_data->spi) {
-		LOG_ERR("SPI device not exist");
+	if (!spi_is_ready_dt(&cfg->spi)) {
+		LOG_ERR("SPI bus is not ready");
 		return -ENODEV;
 	}
 
-	drv_data->spi_cs.gpio_dev = device_get_binding(cfg->gpio_label);
-
-	if (!drv_data->spi_cs.gpio_dev) {
-		LOG_ERR("GPIO device not exist");
-		return -ENODEV;
-	}
-
-	drv_data->spi_cs.gpio_pin = cfg->gpio_pin;
-	drv_data->spi_cs.gpio_dt_flags = cfg->gpio_dt_flags;
-	drv_data->spi_cs.delay = 0U;
-
-	drv_data->spi_cfg.frequency = cfg->frequency;
-	drv_data->spi_cfg.slave = cfg->slave;
-	drv_data->spi_cfg.operation = (SPI_OP_MODE_MASTER | SPI_MODE_CPOL |
-			SPI_MODE_CPHA | SPI_WORD_SET(8) | SPI_LINES_SINGLE |
-			SPI_TRANSFER_MSB);
-	drv_data->spi_cfg.cs = &drv_data->spi_cs;
-
-	iim42652_spi_init(drv_data->spi, &drv_data->spi_cfg);
 	iim42652_data_init(drv_data, cfg);
 	iim42652_sensor_init(dev);
 
@@ -433,6 +414,8 @@ static int iim42652_init(const struct device *dev)
 		return -EIO;
 	}
 #endif
+
+	LOG_DBG("Initialize interrupt done");
 
 	return 0;
 }
@@ -449,26 +432,24 @@ static const struct sensor_driver_api iim42652_driver_api = {
 
 #define IIM42652_DEFINE_CONFIG(index)					\
 	static const struct iim42652_config iim42652_cfg_##index = {	\
-		.spi_label = DT_INST_BUS_LABEL(index),			\
-		.spi_addr = DT_INST_REG_ADDR(index),			\
-		.frequency = DT_INST_PROP(index, spi_max_frequency),	\
-		.slave = DT_INST_REG_ADDR(index),			\
-		.int_label = DT_INST_GPIO_LABEL(index, int_gpios),	\
-		.int_pin =  DT_INST_GPIO_PIN(index, int_gpios),		\
-		.int_flags = DT_INST_GPIO_FLAGS(index, int_gpios),	\
-		.gpio_label = DT_INST_SPI_DEV_CS_GPIOS_LABEL(index),	\
-		.gpio_pin = DT_INST_SPI_DEV_CS_GPIOS_PIN(index),	\
-		.gpio_dt_flags = DT_INST_SPI_DEV_CS_GPIOS_FLAGS(index),	\
+		.spi = SPI_DT_SPEC_INST_GET(index,			\
+					    SPI_OP_MODE_MASTER |	\
+					    SPI_MODE_CPOL |		\
+					    SPI_MODE_CPHA |		\
+					    SPI_WORD_SET(8) |		\
+					    SPI_TRANSFER_MSB,		\
+					    0U),			\
+		.gpio_int = GPIO_DT_SPEC_INST_GET(index, int_gpios),    \
 		.accel_hz = DT_INST_PROP(index, accel_hz),		\
 		.gyro_hz = DT_INST_PROP(index, gyro_hz),		\
-		.accel_fs = DT_ENUM_IDX(DT_DRV_INST(index), accel_fs),	\
-		.gyro_fs = DT_ENUM_IDX(DT_DRV_INST(index), gyro_fs),	\
+		.accel_fs = DT_INST_ENUM_IDX(index, accel_fs),		\
+		.gyro_fs = DT_INST_ENUM_IDX(index, gyro_fs),		\
 	}
 
 #define IIM42652_INIT(index)						\
 	IIM42652_DEFINE_CONFIG(index);					\
 	static struct iim42652_data iim42652_driver_##index;		\
-	DEVICE_DT_INST_DEFINE(index, iim42652_init,			\
+	SENSOR_DEVICE_DT_INST_DEFINE(index, iim42652_init,		\
 			    NULL,					\
 			    &iim42652_driver_##index,			\
 			    &iim42652_cfg_##index, POST_KERNEL,		\

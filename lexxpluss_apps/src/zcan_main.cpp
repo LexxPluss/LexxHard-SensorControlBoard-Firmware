@@ -41,7 +41,8 @@ class {
 public:
     int init() {
         // CAN baudrate setting
-        dev = device_get_binding("CAN_2");
+        // dev = device_get_binding("CAN_2");
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev))
             return -1;
         can_configure(dev, CAN_NORMAL_MODE, 1000000);

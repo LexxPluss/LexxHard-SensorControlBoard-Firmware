@@ -48,9 +48,6 @@ public:
         return 0;
     }
     void run() {
-        if (!device_is_ready(dev))
-            return;
-
         while (true) {
             bool handled{false};
 
@@ -133,8 +130,6 @@ private:
     msg_control ros2board{0};
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
-    const device *dev{nullptr};
-    char version_powerboard[32]{""};
     bool heartbeat_timeout{true}, enable_lockdown{true};
     static constexpr char version[]{"1.0.0"};
 } impl;
