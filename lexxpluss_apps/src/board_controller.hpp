@@ -27,7 +27,7 @@
 
 #define IOLABEL_MAX_LENGTH 50
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
 
 namespace lexxhard::board_controller {
 

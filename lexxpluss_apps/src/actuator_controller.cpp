@@ -241,8 +241,10 @@ public:
             uint32_t ns{duty_rev * CONTROL_PERIOD_NS / 100};
             pulse_ns[direction < msg_control::STOP ? 0 : 1] = ns;
         }
-        pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
-        pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
+        // pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
+        // pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
+        pwm_set(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
+        pwm_set(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
         this->direction = direction;
         this->duty = duty;
     }
@@ -305,11 +307,6 @@ public:
         int32_t diff_abs{abs(target_position - cnt.get_location())};
         return diff_abs < thres_mm;
     }
-    // void set_param(float pp, float vp, float vi) {
-    //     POS_P = pp;
-    //     VEL_P = vp;
-    //     VEL_I = vi;
-    // }
 private:
     counter &cnt;
     float control_i{0.0f};
@@ -325,19 +322,23 @@ public:
         if (pwm.init(pos) != 0)
             return -1;
         cnt.init(pos);
+
         switch (pos) {
         case POS::CENTER:
             current_adc = adc_reader::ACTUATOR_C;
-            fail_checker.init("GPIOD", 10);
+            fail_checker.init(POS::CENTER);
             break;
         case POS::LEFT:
             current_adc = adc_reader::ACTUATOR_L;
-            fail_checker.init("GPIOG", 8);
+            fail_checker.init(POS::LEFT);
             break;
         case POS::RIGHT:
             current_adc = adc_reader::ACTUATOR_R;
-            fail_checker.init("GPIOE", 10);
+            fail_checker.init(POS::RIGHT);
             break;
+        default:
+            LOG_INF("invalid actuator position.");
+            return -1;
         }
         if (!fail_checker.ready())
             return -1;
@@ -385,9 +386,6 @@ public:
             duty
         };
     }
-    // void set_param(float pp, float vp, float vi) {
-    //     posctl.set_param(pp, vp, vi);
-    // }
 private:
     int32_t calc_current(int32_t adc_voltage_mv) const {
         static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
@@ -401,19 +399,35 @@ private:
     int32_t current_adc{-1};
     class {
     public:
-        void init(const char *devname, uint32_t pin) {
-            dev = device_get_binding(devname);
-            if (device_is_ready(dev))
-                gpio_pin_configure(dev, pin, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        void init(POS pos) {
+            switch (pos) {
+            case POS::CENTER:
+                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_c_fail), gpios);
+                break;
+            case POS::LEFT:
+                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_l_fail), gpios);
+                break;
+            case POS::RIGHT:
+                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_r_fail), gpios);
+                break;
+            default:
+                LOG_INF("invalid actuator position.");
+                return;
+            }
+            
+            if (gpio_is_ready_dt(&dev))
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
             this->pin = pin;
         }
-        bool ready() const {return device_is_ready(dev);}
+        bool ready() const {return gpio_is_ready_dt(&dev);}
+        
         bool is_failed() const {
-            return ready() ? gpio_pin_get(dev, pin) == 0 : false;
+            return ready() ? gpio_pin_get_dt(&dev) == 0 : false;
         }
     private:
         uint32_t pin{0};
-        const device *dev{nullptr};
+        // const device *dev{nullptr};
+        gpio_dt_spec dev;
     } fail_checker;
 };
 

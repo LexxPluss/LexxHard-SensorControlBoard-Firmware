@@ -38,12 +38,12 @@ properties:
     type: string
     description: Human readable string describing the device's status
 
-  trig-gpios:
+  trig_gpios:
     type: phandle-array
     description: Trigger pin
     required: true
 
-  echo-gpios:
+  echo_gpios:
     type: phandle-array
     description: Echo pin
     required: true

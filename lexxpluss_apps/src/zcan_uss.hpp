@@ -69,10 +69,8 @@ public:
             packedData[7] = data5 >> 8;
 
             // CANフレームにデータをセット
-            zcan_frame frame{
+            can_frame frame{
                 .id = CAN_ID_USS,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
                 .dlc = CAN_DATA_LENGTH_USS,
                 .data = {0}
             };

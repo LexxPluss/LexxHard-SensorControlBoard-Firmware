@@ -54,11 +54,9 @@ public:
         imu_controller::msg message;
 
         while (k_msgq_get(&imu_controller::msgq, &message, K_NO_WAIT) == 0) {
-            zcan_frame frame_imu[2]{
+            can_frame frame_imu[2]{
                 {
                     .id = CAN_ID_ACCL,
-                    .rtr = CAN_DATAFRAME,
-                    .id_type = CAN_STANDARD_IDENTIFIER,
                     .dlc = CAN_DATA_LENGTH_IMU,
                     .data{
                         message.accel_data_upper[0],
@@ -72,8 +70,6 @@ public:
                 },
                 {
                     .id = CAN_ID_GYRO,
-                    .rtr = CAN_DATAFRAME,
-                    .id_type = CAN_STANDARD_IDENTIFIER,
                     .dlc = CAN_DATA_LENGTH_IMU,
                     .data{
                         message.gyro_data_upper[0],

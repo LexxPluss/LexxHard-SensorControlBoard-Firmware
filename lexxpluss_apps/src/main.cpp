@@ -56,16 +56,6 @@ K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
                     lexxhard::name::run, nullptr, nullptr, nullptr, prio, K_FP_REGS, K_MSEC(2000));
 }
 
-#define PIN_NUM_LOADSW_V24_EN_GPIOC 15
-#define PIN_NUM_LOADSW_AUTOCHARGE_EN_GPIOD 0
-#define PIN_NUM_LOADSW_WHEEL_EN_GPIOD 1
-#define PIN_NUM_LOADSW_PERIPHERAL_EN_GPIOD 2
-#define PIN_NUM_FAN1_EN_GPIOC 10
-#define PIN_NUM_FAN2_EN_GPIOC 11
-#define PIN_NUM_FAN3_EN_GPIOB 14
-#define PIN_NUM_FAN4_EN_GPIOB 15
-#define PIN_NUM_WHEEL_EN_GPIOK 3
-
 void init_io() {
     gpio_dt_spec gpio_v24, gpio_autocharge, gpio_wheel, gpio_peripheral;
     gpio_dt_spec gpio_fan1, gpio_fan2, gpio_fan3, gpio_fan4;
@@ -82,29 +72,29 @@ void init_io() {
     gpio_wheel_en = GPIO_DT_SPEC_GET(DT_NODELABEL(wheel_en), gpios);
 
     // Load switch OFF
-    if (device_is_ready(&gpio_v24))
+    if (gpio_is_ready_dt(&gpio_v24))
         gpio_pin_configure_dt(&gpio_v24, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-    if (device_is_ready(&gpio_autocharge))
+    if (gpio_is_ready_dt(&gpio_autocharge))
         gpio_pin_configure_dt(&gpio_autocharge, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    if (device_is_ready(&gpio_wheel))
+    if (gpio_is_ready_dt(&gpio_wheel))
         gpio_pin_configure_dt(&gpio_wheel, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    if (device_is_ready(&gpio_peripheral))
+    if (gpio_is_ready_dt(&gpio_peripheral))
         gpio_pin_configure_dt(&gpio_peripheral, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
 
     // Wheel Disable
-    if (device_is_ready(&gpio_wheel_en))
+    if (gpio_is_ready_dt(&gpio_wheel_en))
         gpio_pin_configure_dt(&gpio_wheel_en, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
 
     // Fan1 and Fan2 ON
-    if (device_is_ready(&gpio_fan1))
+    if (gpio_is_ready_dt(&gpio_fan1))
         gpio_pin_configure_dt(&gpio_fan1, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-    if (device_is_ready(&gpio_fan2))
+    if (gpio_is_ready_dt(&gpio_fan2))
         gpio_pin_configure_dt(&gpio_fan2, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
 
     // Fan3 and Fan4 ON
-    if (device_is_ready(&gpio_fan3))
+    if (gpio_is_ready_dt(&gpio_fan3))
         gpio_pin_configure_dt(&gpio_fan3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-    if (device_is_ready(&gpio_fan4))
+    if (gpio_is_ready_dt(&gpio_fan4))
         gpio_pin_configure_dt(&gpio_fan4, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
 
     k_msleep(3000);
@@ -121,33 +111,33 @@ void power_on() {
 
     // Load switch OFF
     
-    if (device_is_ready(&gpio_wheel)){
+    if (gpio_is_ready_dt(&gpio_wheel)){
         gpio_pin_configure_dt(&gpio_wheel, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
     }
         
-    if (device_is_ready(&gpio_peripheral)){
+    if (gpio_is_ready_dt(&gpio_peripheral)){
         gpio_pin_configure_dt(&gpio_peripheral, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
     }
     
-    if (device_is_ready(&gpio_v24)){
+    if (gpio_is_ready_dt(&gpio_v24)){
         gpio_pin_configure_dt(&gpio_v24, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
     }
 
-    if (device_is_ready(&gpio_wheel_en)){
+    if (gpio_is_ready_dt(&gpio_wheel_en)){
         gpio_pin_configure_dt(&gpio_wheel_en, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
     }
 }
 
-void main()
+int main()
 {
-    /*** Function Only for Zephyr V2 ***/
+    // /*** Function Only for Zephyr V2 ***/
     init_io();
     power_on();
-    /***********************************/
+    // /***********************************/
 
     lexxhard::actuator_controller::init();
     lexxhard::adc_reader::init();
@@ -176,15 +166,17 @@ void main()
     printk("--- SensorControlBoard V1.0.0 ---\n");
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
-    if (device_is_ready(&heart_beat_led))
+    if (gpio_is_ready_dt(&heart_beat_led))
         gpio_pin_configure_dt(&heart_beat_led, GPIO_OUTPUT_INACTIVE);
 
     // Heartbeat LED
     while (true) {
-        if(device_is_ready(&heart_beat_led))
+        if(gpio_is_ready_dt(&heart_beat_led))
             gpio_pin_toggle_dt(&heart_beat_led);
         k_msleep(1000);
     }
+
+    return 0;
 }
 
 // vim: set expandtab shiftwidth=4:

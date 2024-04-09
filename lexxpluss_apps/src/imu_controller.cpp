@@ -107,7 +107,7 @@ public:
         };
         
         // data to be read from the sensor triggered by the interrupt signal
-        if (sensor_trigger_set(dev, &data_trigger, cb_func) < 0) {
+        if (sensor_trigger_set(dev, &data_trigger, NULL) < 0) {
             LOG_ERR("Cannot configure data trigger!!!\n");
             return;
         }
@@ -205,7 +205,8 @@ private:
     int16_t gyro_rad_to_deg_int16_t(const struct sensor_value *val) {
         int64_t temp_value{0};
         
-        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6f) * (180.0 / M_PI) * 1e3f);
+        // temp_value = (int64_t)((val->val1 + val->val2 * 1e-6f) * (180.0 / M_PI) * 1e3f);
+        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6) * (180.0 / M_PI) * 1e3);
 
         if(temp_value > INT16_MAX) {
             temp_value = INT16_MAX;

@@ -31,6 +31,7 @@
 #include <zephyr/shell/shell.h>
 #include "led_controller.hpp"
 #include "can_controller.hpp"
+#include "board_controller.hpp"
 
 namespace lexxhard::can_controller {
 
@@ -116,7 +117,7 @@ public:
                     board2ros.fan_duty,
                     board2ros.charge_connector_p_temp, board2ros.charge_connector_n_temp,
                     enable_lockdown ? "enable" : "disable",
-                    board2ros.charge_connector_voltage, board2ros.charge_check_count, board2ros.charge_heartbeat_delay, board2ros.charge_temperature_good,
+                    (double)board2ros.charge_connector_voltage, board2ros.charge_check_count, board2ros.charge_heartbeat_delay, board2ros.charge_temperature_good,
                     version);
     }
 private:

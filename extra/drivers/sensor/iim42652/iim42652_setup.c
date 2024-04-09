@@ -22,6 +22,7 @@ LOG_MODULE_DECLARE(IIM42652, CONFIG_SENSOR_LOG_LEVEL);
 
 int iim42652_set_fs(const struct device *dev, uint16_t a_sf, uint16_t g_sf)
 {
+	const struct iim42652_config *cfg = dev->config;
 	uint8_t databuf;
 	int result;
 

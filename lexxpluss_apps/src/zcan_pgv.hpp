@@ -29,8 +29,8 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include <cstdio>
-#include "std_msgs/UInt8.h"
-#include "lexxauto_msgs/PositionGuideVision.h"
+// #include "std_msgs/UInt8.h"
+// #include "lexxauto_msgs/PositionGuideVision.h"
 #include "common.hpp"
 #include "pgv_controller.hpp"
 
@@ -62,20 +62,14 @@ public:
         pgv_controller::msg message;
         while (k_msgq_get(&pgv_controller::msgq, &message, K_NO_WAIT) == 0)
         {
-            zcan_frame frame_pgv[3]{{
+            can_frame frame_pgv[3]{{
                 .id = CAN_ID_PGV_1,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
                 .dlc = CAN_DATA_LENGTH
             },{
                 .id = CAN_ID_PGV_2,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
                 .dlc = CAN_DATA_LENGTH
             },{
                 .id = CAN_ID_PGV_3,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
                 .dlc = CAN_DATA_LENGTH,
             }};
 
@@ -102,26 +96,26 @@ private:
 
     //THIS FUNCTION SHOULD RE-WRITE WHEN USE BECAUSE STILL NOT CHANGED UNTIL ROS-SERIAL GEN
     //BUT THIS FUNCTION NOT USED
-    void callback(const std_msgs::UInt8 &req) {
-        switch (req.data) {
-        case 0:
-            snprintf(direction, sizeof direction, "No lane is selected");
-            break;
-        case 1:
-            snprintf(direction, sizeof direction, "Right lane is selected");
-            break;
-        case 2:
-            snprintf(direction, sizeof direction, "Left lane is selected");
-            break;
-        case 3:
-            snprintf(direction, sizeof direction, "Straight Ahead");
-            break;
-        }
-        pgv_controller::msg_control can2pgv;
-        can2pgv.dir_command = req.data;
-        while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
-            k_msgq_purge(&pgv_controller::msgq_control);
-    }
+    // void callback(const std_msgs::UInt8 &req) {
+    //     switch (req.data) {
+    //     case 0:
+    //         snprintf(direction, sizeof direction, "No lane is selected");
+    //         break;
+    //     case 1:
+    //         snprintf(direction, sizeof direction, "Right lane is selected");
+    //         break;
+    //     case 2:
+    //         snprintf(direction, sizeof direction, "Left lane is selected");
+    //         break;
+    //     case 3:
+    //         snprintf(direction, sizeof direction, "Straight Ahead");
+    //         break;
+    //     }
+    //     pgv_controller::msg_control can2pgv;
+    //     can2pgv.dir_command = req.data;
+    //     while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
+    //         k_msgq_purge(&pgv_controller::msgq_control);
+    // }
     char direction[64]{"Straight Ahead"};
     const device *dev{nullptr};
 };

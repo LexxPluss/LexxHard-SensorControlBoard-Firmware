@@ -1,9 +1,9 @@
 #pragma once
 
 #include <zephyr/kernel.h>
-#include "ros/node_handle.h"
-#include "std_msgs/UInt8MultiArray.h"
-#include "std_msgs/UInt16MultiArray.h"
+// #include "ros/node_handle.h"
+// #include "std_msgs/UInt8MultiArray.h"
+// #include "std_msgs/UInt16MultiArray.h"
 #include "firmware_updater.hpp"
 
 namespace lexxhard::zcan_dfu {

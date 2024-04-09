@@ -40,8 +40,10 @@ public:
     void new_topic(float vz, uint32_t current_cycle) {
         bool detected{yaw_error_detected(vz, current_cycle)};
         if (!last_detected && detected) {
-            snprintf(log_buffer, sizeof log_buffer, "Emergency! ACC:%4.2f VEL:%4.2f DELTA:%4.2f\n", avg_yaw_accel, avg_yaw_velocity, sum_yaw_delta_theta);
-            LOG_ERR("%s", log_strdup(log_buffer));
+            snprintf(log_buffer, sizeof log_buffer, "Emergency! ACC:%4.2f VEL:%4.2f DELTA:%4.2f\n", 
+                static_cast<double>(avg_yaw_accel), static_cast<double>(avg_yaw_velocity), static_cast<double>(sum_yaw_delta_theta));
+            // TODO log_strdup(log_buffer) makes build error
+            // LOG_ERR("%s", log_strdup(log_buffer));
             // @@ do something. (emergency stop, etc.)
         }
         last_detected = detected;

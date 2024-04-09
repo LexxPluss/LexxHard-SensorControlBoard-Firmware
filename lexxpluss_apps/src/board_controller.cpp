@@ -23,17 +23,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
 #include <cmath>
-#include <kernel.h>
-#include <device.h>
-#include <drivers/can.h>
-#include <drivers/gpio.h>
-#include <drivers/uart.h>
-#include <drivers/watchdog.h>
-#include <logging/log.h>
-#include <shell/shell.h>
-#include <sys/util.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/drivers/watchdog.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
+#include <zephyr/sys/util.h>
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "can_controller.hpp"
@@ -411,11 +410,11 @@ public:
         return;
     }
     bool is_charger_ready() const {
-        if(connector_v > (CHARGING_VOLTAGE * 0.9)){
-            LOG_DBG("charger ready voltage:%f.\n", connector_v);
+        if(connector_v > (CHARGING_VOLTAGE * 0.9f)){
+            LOG_DBG("charger ready voltage:%f.\n", static_cast<double>(connector_v));
             return true;
         }else {
-            LOG_DBG("connector_v:%f THRESH:%f\n", connector_v, (CHARGING_VOLTAGE * 0.9));
+            LOG_DBG("connector_v:%f THRESH:%f\n", static_cast<double>(connector_v), static_cast<double>(CHARGING_VOLTAGE * 0.9f));
             return false;
         }
     }
@@ -526,7 +525,7 @@ private: // Thermistor side starts here.
                            CONNECT_THRES_VOLTAGE{3.3f * 0.5f * 1000.0f / (9100.0f + 1000.0f)};
 };
 
-CAN_DEFINE_MSGQ(msgq_can_bmu_pb, 16);
+CAN_MSGQ_DEFINE(msgq_can_bmu_pb, 16);
 class bmu_controller { // Variables Implemented
 public:
     void init() {
@@ -537,7 +536,7 @@ public:
         setup_can_filter();
     }
     void poll() {
-        zcan_frame frame;
+        can_frame frame;
         while (k_msgq_get(&msgq_can_bmu_pb, &frame, K_NO_WAIT) == 0){
             handle_can(frame);
         }
@@ -567,16 +566,14 @@ public:
     }
 private:
     void setup_can_filter() const {
-        static const zcan_filter filter_bmu{
+        static const can_filter filter_bmu{
             .id{0x100},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7c0},
-            .rtr_mask{1}
+            .mask{0x7c0}
         };
-        can_attach_msgq(dev, &msgq_can_bmu_pb, &filter_bmu);
+        // can_attach_msgq(dev, &msgq_can_bmu_pb, &filter_bmu);
+        can_add_rx_filter_msgq(dev, &msgq_can_bmu_pb, &filter_bmu);
     }
-    void handle_can(zcan_frame &frame) {
+    void handle_can(can_frame &frame) {
         switch (frame.id) {
         case 0x100:
             data.mod_status1 = frame.data[0];

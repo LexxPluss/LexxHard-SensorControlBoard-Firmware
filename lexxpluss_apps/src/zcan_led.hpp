@@ -39,14 +39,15 @@ namespace lexxhard::zcan_led {
 LOG_MODULE_REGISTER(zcan_led);
 
 char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
-k_msgq msgq_can_led;
+// k_msgq msgq_can_led;
+CAN_MSGQ_DEFINE(msgq_can_led, 16);
 
 class zcan_led {
 public:
     void init() {
-        //can device bind`
+        //can device bind
         k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (led_controller::msg), 8);
-        // dev = device_get_binding("CAN_2");
+
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
             LOG_INF("CAN_2 is not ready");
@@ -54,14 +55,12 @@ public:
         }
 
         //setup can filter
-        static const zcan_filter filter_led{
+        static const can_filter filter_led{
             .id{CAN_ID_LED},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7ff},
-            .rtr_mask{1}
+            .mask{0x7ff}
         };
-        can_attach_msgq(dev, &msgq_can_led, &filter_led);
+
+        can_add_rx_filter_msgq(dev, &msgq_can_led, &filter_led);
         return;
     }
 

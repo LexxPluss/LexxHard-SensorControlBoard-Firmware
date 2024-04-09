@@ -38,14 +38,49 @@ char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
 class uss_fetcher {
 public:
-    int init(const char *label0, const char *label1) {
-        // dev[0] = device_get_binding(label0);
-        dev[0] = DEVICE_DT_GET(DT_NODELABEL(label0));
+    int init(int label0, int label1) {
+        switch (label0) {
+            case 0:
+                dev[0] = DEVICE_DT_GET(DT_NODELABEL(uss0));
+                break;
+            case 1:
+                dev[0] = DEVICE_DT_GET(DT_NODELABEL(uss1));
+                break;
+            case 2:
+                dev[0] = DEVICE_DT_GET(DT_NODELABEL(uss2));
+                break;
+            case 3:
+                dev[0] = DEVICE_DT_GET(DT_NODELABEL(uss3));
+                break;
+            case 4:
+                dev[0] = DEVICE_DT_GET(DT_NODELABEL(uss4));
+                break;
+            default:
+                return -1;
+        }
         if (!device_is_ready(dev[0]))
             return -1;
-        if (label1 != nullptr) {
-            // dev[1] = device_get_binding(label1);
-            dev[1] = DEVICE_DT_GET(DT_NODELABEL(label1));
+
+        if (label1 != -1) {
+            switch (label1) {
+                case 0:
+                    dev[1] = DEVICE_DT_GET(DT_NODELABEL(uss0));
+                    break;
+                case 1:
+                    dev[1] = DEVICE_DT_GET(DT_NODELABEL(uss1));
+                    break;
+                case 2:
+                    dev[1] = DEVICE_DT_GET(DT_NODELABEL(uss2));
+                    break;
+                case 3:
+                    dev[1] = DEVICE_DT_GET(DT_NODELABEL(uss3));
+                    break;
+                case 4:
+                    dev[1] = DEVICE_DT_GET(DT_NODELABEL(uss4));
+                    break;
+                default:
+                    return -1;
+            }
             if (!device_is_ready(dev[1]))
                 return -1;
         }
@@ -117,10 +152,10 @@ SHELL_CMD_REGISTER(uss, &sub, "USS commands", NULL);
 void init()
 {
     k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-    fetcher[0].init("MB1604_0", "MB1604_1");
-    fetcher[1].init("MB1604_2", nullptr);
-    fetcher[2].init("MB1604_3", nullptr);
-    fetcher[3].init("MB1604_4", nullptr);
+    fetcher[0].init(0, 1);
+    fetcher[1].init(2, -1);
+    fetcher[2].init(3, -1);
+    fetcher[3].init(4, -1);
 }
 
 void run(void *p1, void *p2, void *p3)

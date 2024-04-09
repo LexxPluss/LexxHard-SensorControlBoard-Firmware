@@ -42,14 +42,14 @@ namespace lexxhard::zcan_actuator {
 
 LOG_MODULE_REGISTER(zcan_actuator);
 char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof(actuator_controller::can_format_control)];
-k_msgq msgq_can_actuator_control;
+// k_msgq msgq_can_actuator_control;
+CAN_MSGQ_DEFINE(msgq_can_actuator_control, 16);
 
 class zcan_actuator {
 public:
     void init() {
         // can device bind
         k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
-        // dev = device_get_binding("CAN_2");
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
             LOG_INF("CAN_2 is not ready");
@@ -57,36 +57,28 @@ public:
         }
 
         // setup can filter
-        static const zcan_filter filter_actuator_control{
+        static const can_filter filter_actuator_control{
             .id{CAN_ID_ACTUATOR_CONTROL},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7ff},
-            .rtr_mask{1}
+            .mask{0x7ff}
         };
-        can_attach_msgq(dev, &msgq_can_actuator_control, &filter_actuator_control);
+        // can_attach_msgq(dev, &msgq_can_actuator_control, &filter_actuator_control);
+        can_add_rx_filter_msgq(dev, &msgq_can_actuator_control, &filter_actuator_control);
         return;
     }
     void poll() {
         // send to IPC of sensor informations
         actuator_controller::msg message;
         while (k_msgq_get(&actuator_controller::msgq, &message, K_NO_WAIT) == 0) {
-
-
             // ROS:[center,left,right], ROBOT:[left,center,right]
-            zcan_frame can_frame_actuator_encoder{
+            can_frame can_frame_actuator_encoder{
                 .id = CAN_ID_ACTUATOR_ENCODER,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
                 .dlc = CAN_DATALENGTH_ACTUATOR_ENCODER
             };
             actuator_controller::can_format_encoder tmp_enc = actuator_controller::can_format_encoder(message.encoder_count[0], message.encoder_count[1], message.encoder_count[2]);
             memcpy(can_frame_actuator_encoder.data, &tmp_enc, CAN_DATALENGTH_ACTUATOR_ENCODER);
 
-            zcan_frame can_frame_actuator_current{
+            can_frame can_frame_actuator_current{
                 .id = CAN_ID_ACTUATOR_CURRENT,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
                 .dlc = CAN_DATALENGTH_ACTUATOR_CURRENT
             };
             actuator_controller::can_format_current tmp_cur = actuator_controller::can_format_current(message.current[0], message.current[1], message.current[2], message.connect);

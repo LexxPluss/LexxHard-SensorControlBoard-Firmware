@@ -27,15 +27,15 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include "ros/node_handle.h"
-#include "std_msgs/Bool.h"
-#include "std_msgs/Byte.h"
-#include "std_msgs/ByteMultiArray.h"
-#include "std_msgs/String.h"
-#include "std_msgs/UInt8MultiArray.h"
-#include "std_msgs/UInt8.h"
-#include "std_msgs/Float32.h"
-#include "lexxauto_msgs/BoardTemperatures.h"
+// #include "ros/node_handle.h"
+// #include "std_msgs/Bool.h"
+// #include "std_msgs/Byte.h"
+// #include "std_msgs/ByteMultiArray.h"
+// #include "std_msgs/String.h"
+// #include "std_msgs/UInt8MultiArray.h"
+// #include "std_msgs/UInt8.h"
+// #include "std_msgs/Float32.h"
+// #include "lexxauto_msgs/BoardTemperatures.h"
 #include "can_controller.hpp"
 
 namespace lexxhard::zcan_board {
