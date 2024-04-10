@@ -34,7 +34,7 @@
 
 namespace lexxhard::zcan_bmu {
 
-LOG_MODULE_REGISTER(zcan_bmu);
+// LOG_MODULE_REGISTER(zcan_bmu);
 
 class zcan_bmu {
 public:

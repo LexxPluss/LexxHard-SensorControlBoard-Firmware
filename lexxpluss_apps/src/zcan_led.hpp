@@ -36,7 +36,7 @@
 
 namespace lexxhard::zcan_led {
 
-LOG_MODULE_REGISTER(zcan_led);
+// LOG_MODULE_REGISTER(zcan_led);
 
 char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
 // k_msgq msgq_can_led;
@@ -50,7 +50,7 @@ public:
 
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
-            LOG_INF("CAN_2 is not ready");
+            // LOG_INF("CAN_2 is not ready");
             return;
         }
 

@@ -41,7 +41,7 @@
 
 namespace lexxhard::zcan_pgv {
 
-LOG_MODULE_REGISTER(zcan_pgv);
+// LOG_MODULE_REGISTER(zcan_pgv);
 
 class zcan_pgv {
 public:
@@ -51,7 +51,7 @@ public:
         // dev = device_get_binding("CAN_2");
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
-            LOG_INF("CAN_2 is not ready");
+            // LOG_INF("CAN_2 is not ready");
             return;
         }
         ring_counter=0;

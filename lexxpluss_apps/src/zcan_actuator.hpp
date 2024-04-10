@@ -40,7 +40,7 @@
 
 namespace lexxhard::zcan_actuator {
 
-LOG_MODULE_REGISTER(zcan_actuator);
+// LOG_MODULE_REGISTER(zcan_actuator);
 char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof(actuator_controller::can_format_control)];
 // k_msgq msgq_can_actuator_control;
 CAN_MSGQ_DEFINE(msgq_can_actuator_control, 16);
@@ -52,7 +52,7 @@ public:
         k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
-            LOG_INF("CAN_2 is not ready");
+            // LOG_INF("CAN_2 is not ready");
             return;
         }
 

@@ -35,7 +35,7 @@
 
 namespace lexxhard::zcan_main {
 
-LOG_MODULE_REGISTER(zcan_main);
+// LOG_MODULE_REGISTER(zcan_main);
 
 class {
 public:
