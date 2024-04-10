@@ -56,34 +56,103 @@ K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
                     lexxhard::name::run, nullptr, nullptr, nullptr, prio, K_FP_REGS, K_MSEC(2000));
 }
 
-void init_io() {
-    gpio_dt_spec gpio_v24, gpio_autocharge, gpio_wheel, gpio_peripheral;
-    gpio_dt_spec gpio_fan1, gpio_fan2, gpio_fan3, gpio_fan4;
-    gpio_dt_spec gpio_wheel_en;
+void init_gpio() {
+    gpio_dt_spec gpio_dev;
 
-    gpio_v24 = GPIO_DT_SPEC_GET(DT_NODELABEL(v24), gpios);
-    gpio_autocharge = GPIO_DT_SPEC_GET(DT_NODELABEL(v_autocharge), gpios);
-    gpio_wheel = GPIO_DT_SPEC_GET(DT_NODELABEL(v_wheel), gpios);
-    gpio_peripheral = GPIO_DT_SPEC_GET(DT_NODELABEL(v_peripheral), gpios);
+    // TODO 全部のGPIOを初期化する
+    // Output
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_led_out), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(v_autocharge), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(v24), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(v_wheel), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(v_peripheral), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(wheel_en), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(fan1), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(fan2), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(fan3), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(fan4), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    
+    // Input
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_sw_in), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(bp_left), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(es_left), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(es_right), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(mc_din), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(bmu_c_fet), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(bmu_d_fet), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(bmu_p_dsg), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_24v), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_peripheral), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_wheel_motor_left), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_wheel_motor_right), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_INACTIVE);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led2), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_INACTIVE);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led3), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_INACTIVE);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led4), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_INACTIVE);
+
+    return;
+}
+
+void fan_on() {
+    gpio_dt_spec gpio_fan1, gpio_fan2, gpio_fan3, gpio_fan4;
+
     gpio_fan1 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan1), gpios);
     gpio_fan2 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan2), gpios);
     gpio_fan3 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan3), gpios);
     gpio_fan4 = GPIO_DT_SPEC_GET(DT_NODELABEL(fan4), gpios);
-    gpio_wheel_en = GPIO_DT_SPEC_GET(DT_NODELABEL(wheel_en), gpios);
-
-    // Load switch OFF
-    if (gpio_is_ready_dt(&gpio_v24))
-        gpio_pin_configure_dt(&gpio_v24, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-    if (gpio_is_ready_dt(&gpio_autocharge))
-        gpio_pin_configure_dt(&gpio_autocharge, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    if (gpio_is_ready_dt(&gpio_wheel))
-        gpio_pin_configure_dt(&gpio_wheel, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    if (gpio_is_ready_dt(&gpio_peripheral))
-        gpio_pin_configure_dt(&gpio_peripheral, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-
-    // Wheel Disable
-    if (gpio_is_ready_dt(&gpio_wheel_en))
-        gpio_pin_configure_dt(&gpio_wheel_en, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
 
     // Fan1 and Fan2 ON
     if (gpio_is_ready_dt(&gpio_fan1))
@@ -96,8 +165,6 @@ void init_io() {
         gpio_pin_configure_dt(&gpio_fan3, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
     if (gpio_is_ready_dt(&gpio_fan4))
         gpio_pin_configure_dt(&gpio_fan4, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-
-    k_msleep(3000);
 }
 
 void power_on() {
@@ -109,8 +176,7 @@ void power_on() {
     gpio_peripheral = GPIO_DT_SPEC_GET(DT_NODELABEL(v_peripheral), gpios);
     gpio_wheel_en = GPIO_DT_SPEC_GET(DT_NODELABEL(wheel_en), gpios);
 
-    // Load switch OFF
-    
+    // Load switch ON
     if (gpio_is_ready_dt(&gpio_wheel)){
         gpio_pin_configure_dt(&gpio_wheel, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
         k_msleep(3000);
@@ -134,8 +200,11 @@ void power_on() {
 
 int main()
 {
+    init_gpio();
+    k_msleep(3000);
+
     // /*** Function Only for Zephyr V2 ***/
-    init_io();
+    fan_on();
     power_on();
     // /***********************************/
 
@@ -161,13 +230,13 @@ int main()
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
     RUN(runaway_detector, 4);
-    RUN(zcan_main, 5); // The rosserial thread will be started last.
+    RUN(zcan_main, 5); // zcan_main thread must be started at last.
 
-    printk("--- SensorControlBoard V1.0.0 ---\n");
+    printk("--- SensorControlBoard V2.0.0 ---\n");
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
-    if (gpio_is_ready_dt(&heart_beat_led))
-        gpio_pin_configure_dt(&heart_beat_led, GPIO_OUTPUT_INACTIVE);
+    // if (gpio_is_ready_dt(&heart_beat_led))
+    //     gpio_pin_configure_dt(&heart_beat_led, GPIO_OUTPUT_INACTIVE);
 
     // Heartbeat LED
     while (true) {

@@ -32,23 +32,22 @@
 #include <zephyr/sys/ring_buffer.h>
 #include "pgv_controller.hpp"
 
+#define RING_BUF_SIZE 256
+
 namespace lexxhard::pgv_controller {
 
 LOG_MODULE_REGISTER(pgv);
 
-char __aligned(4) msgq_buffer[8 * sizeof (msg)];
-char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
+char __aligned(4) msgq_buffer[8 * sizeof(msg)];
+char __aligned(4) msgq_control_buffer[8 * sizeof(msg_control)];
 
 class pgv_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-        k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        ring_buf_item_init(&rxbuf.rb, sizeof rxbuf.buf, rxbuf.buf);
-        ring_buf_item_init(&txbuf.rb, sizeof txbuf.buf, txbuf.buf);
-        // dev_485 = device_get_binding("UART_4");
-        // dev_en = device_get_binding("GPIOH");
-        // dev_en_n = device_get_binding("GPIOA");
+        k_msgq_init(&msgq, msgq_buffer, sizeof(msg), 8);
+        k_msgq_init(&msgq_control, msgq_control_buffer, sizeof(msg_control), 8);
+        ring_buf_init(&rxbuf.rb, sizeof(rxbuf.buf), rxbuf.buf);
+        ring_buf_init(&txbuf.rb, sizeof(txbuf.buf), txbuf.buf);
         dev_485 = DEVICE_DT_GET(DT_NODELABEL(uart4));
         dev_en = GPIO_DT_SPEC_GET(DT_NODELABEL(pgv_en), gpios);
         dev_en_n = GPIO_DT_SPEC_GET(DT_NODELABEL(pgv_en_n), gpios);
@@ -91,7 +90,7 @@ public:
             if (wait_data(5))
                 break;
             uint8_t buf[8];
-            recv(buf, sizeof buf);
+            recv(buf, sizeof(buf));
         }
 
         while (true) {
@@ -110,7 +109,7 @@ public:
                 }
                 wait_data(5);
                 uint8_t buf[8];
-                recv(buf, sizeof buf);
+                recv(buf, sizeof(buf));
             }
             k_msleep(10);
         }
@@ -130,10 +129,10 @@ private:
         uint8_t req[2];
         req[0] = 0xc8;
         req[1] = ~req[0];
-        send(req, sizeof req);
+        send(req, sizeof(req));
         wait_data(23);
         uint8_t buf[64];
-        if (int n{recv(buf, sizeof buf)}; n < 23 || !validate(buf + 2, 21)) // echo back 2byte + data 21byte(may be)
+        if (int n{recv(buf, sizeof(buf))}; n < 23 || !validate(buf + 2, 21)) // echo back 2byte + data 21byte(may be)
             return false;
         memcpy(data.rawdata, buf + 2, 21);
         return true;
@@ -147,7 +146,7 @@ private:
         case DIR::STRAIGHT: req[0] = 0xec; break;
         }
         req[1] = ~req[0];
-        send(req, sizeof req);
+        send(req, sizeof(req));
     }
     bool validate(const uint8_t *buf, uint32_t length) const {
         uint32_t tail{length - 1};
@@ -189,7 +188,7 @@ private:
         while (uart_irq_update(dev_485) && uart_irq_is_pending(dev_485)) {
             uint8_t buf[64];
             if (uart_irq_rx_ready(dev_485)) {
-                int n{uart_fifo_read(dev_485, buf, sizeof buf)};
+                int n{uart_fifo_read(dev_485, buf, sizeof(buf))};
                 if (n > 0)
                     ring_buf_put(&rxbuf.rb, buf, n);
             }
@@ -206,7 +205,8 @@ private:
     }
     struct {
         ring_buf rb;
-        uint32_t buf[256 / sizeof (uint32_t)];
+        // uint32_t buf[256 / sizeof (uint32_t)];
+        uint8_t buf[RING_BUF_SIZE];
     } txbuf, rxbuf;
     // const device *dev_485{nullptr}, *dev_en{nullptr}, *dev_en_n{nullptr};
     const device *dev_485{nullptr};

@@ -36,6 +36,7 @@
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "can_controller.hpp"
+#include "common.hpp"
 
 
 namespace lexxhard::board_controller {
@@ -46,18 +47,25 @@ char __aligned(4) msgq_bmu_pb_buffer[8 * sizeof (can_controller::msg_bmu)];
 char __aligned(4) msgq_board_pb_rx_buffer[8 * sizeof (msg_rcv_pb)];
 char __aligned(4) msgq_board_pb_tx_buffer[8 * sizeof (can_controller::msg_board)];
 
-pin_def_gpio ps_sw_in{"GPIOH", 4}, ps_led_out{"GPIOH", 5}; // Power Switch handler associated pins
-pin_def_gpio bp_left{"GPIOI", 7}; // Bumper Switch associated pins
-pin_def_gpio es_left{"GPIOI", 4}, es_right{"GPIOI", 0}; // Emergency Switch associated pins
-pin_def_gpio wh_left_right{"GPIOK", 3}; // Wheel switch associated pins
-pin_def_gpio mc_din{"GPIOK", 7}; // Manual charging detection associated pins
-pin_def_gpio ac_th_pos{"GPIOC", 4}, ac_th_neg{"GPIOC", 5}, ac_IrDA_tx{"GPIOG", 14}, ac_IrDA_rx{"GPIOG", 9}, ac_analogVol{"GPIOF", 10}, ac_chargingRelay{"GPIOD", 0}; // Auto charging detection associated pins
-pin_def_gpio bmu_c_fet{"GPIOJ", 5}, bmu_d_fet{"GPIOJ", 12}, bmu_p_dsg{"GPIOJ", 13}; // BMU controller associated pins
-pin_def_gpio ts_i2c_scl{"GPIOF", 14}, ts_i2c_sda{"GPIOF", 15}; // Temperature sensors associated I2C pins
-pin_def_gpio pwr_control_24v{"GPIOC", 15}, pwr_control_peripheral{"GPIOD", 2}, pwr_control_wheel_motor{"GPIOD", 1}; // Power Control associated pins
-pin_def_gpio pgood_24v{"GPIOH", 3}, pgood_peripheral{"GPIOH", 15}, pgood_wheel_motor_left{"GPIOH", 1}, pgood_wheel_motor_right{"GPIOH", 12}; // Power Good associated pins
-pin_def_gpio pgood_linear_act_left{"GPIOK", 4}, pgood_linear_act_right{"GPIOK", 5}, pgood_linear_act_center{"GPIOK", 4};
-pin_def_gpio fan_pwm_5v_1{"GPIOC", 10}, fan_pwm_5v_2{"GPIOC", 11}, fan_pwm_24v_1{"GPIOB", 14}, fan_pwm_24v_2{"GPIOB", 15}; // PWM fan signal control pin
+// pin_def_gpio ps_sw_in{"GPIOH", 4}, ps_led_out{"GPIOH", 5}; // Power Switch handler associated pins
+// pin_def_gpio bp_left{"GPIOI", 7}; // Bumper Switch associated pins
+// pin_def_gpio es_left{"GPIOI", 4}, es_right{"GPIOI", 0}; // Emergency Switch associated pins
+// pin_def_gpio wh_left_right{"GPIOK", 3}; // Wheel switch associated pins
+// pin_def_gpio mc_din{"GPIOK", 7}; // Manual charging detection associated pins
+// pin_def_gpio ac_th_pos{"GPIOC", 4}, ac_th_neg{"GPIOC", 5}, ac_IrDA_tx{"GPIOG", 14}, ac_IrDA_rx{"GPIOG", 9}, ac_analogVol{"GPIOF", 10}, ac_chargingRelay{"GPIOD", 0}; // Auto charging detection associated pins
+// pin_def_gpio bmu_c_fet{"GPIOJ", 5}, bmu_d_fet{"GPIOJ", 12}, bmu_p_dsg{"GPIOJ", 13}; // BMU controller associated pins
+// pin_def_gpio ts_i2c_scl{"GPIOF", 14}, ts_i2c_sda{"GPIOF", 15}; // Temperature sensors associated I2C pins
+// pin_def_gpio pwr_control_24v{"GPIOC", 15}, pwr_control_peripheral{"GPIOD", 2}, pwr_control_wheel_motor{"GPIOD", 1}; // Power Control associated pins
+// pin_def_gpio pgood_24v{"GPIOH", 3}, pgood_peripheral{"GPIOH", 15}, pgood_wheel_motor_left{"GPIOH", 1}, pgood_wheel_motor_right{"GPIOH", 12}; // Power Good associated pins
+// pin_def_gpio pgood_linear_act_left{"GPIOK", 4}, pgood_linear_act_right{"GPIOK", 5}, pgood_linear_act_center{"GPIOK", 4};
+// pin_def_gpio fan_pwm_5v_1{"GPIOC", 10}, fan_pwm_5v_2{"GPIOC", 11}, fan_pwm_24v_1{"GPIOB", 14}, fan_pwm_24v_2{"GPIOB", 15}; // PWM fan signal control pin
+
+void gpio_init() {
+    // TODO  全部のIOを定義する
+    // gpio_dt_spec ac_chargingRelay_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ac_chargingRelay), gpios);
+
+    return;
+}
 
 void gpio_set_value(pin_def_gpio pin_def, uint8_t output_value) {
     const device *gpio_dev{device_get_binding(pin_def.label)};
@@ -113,7 +121,8 @@ public:
         RELEASED, PUSHED, LONG_PUSHED,
     };
     void poll() {
-        int now{gpio_get_value(ps_sw_in)};
+        gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
+        int now{gpio_pin_get_dt(&gpio_dev)};
         if (prev_raw != now) {
             prev_raw = now;
             count = 0;
@@ -150,10 +159,12 @@ public:
     }
     STATE get_state() const {return state;}
     bool get_raw_state() {
-        return gpio_get_value(ps_sw_in) == 0;
+        gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
+        return gpio_pin_get_dt(&gpio_dev) == 0;
     }
     void set_led(bool enabled) {
-        gpio_set_value(ps_led_out, enabled ? 1 : 0);
+        gpio_dt_spec gpio_dev = GET_GPIO(ps_led_out);
+        gpio_pin_set_dt(&gpio_dev, enabled ? 1 : 0);
     }
     void toggle_led() {
         set_led(led_en);
@@ -184,7 +195,8 @@ public:
                 asserted_flag = false;
             }
         } else {
-            if (gpio_get_value(bp_left) == 0) {
+            gpio_dt_spec gpio_dev = GET_GPIO(bp_left);
+            if (gpio_pin_get_dt(&gpio_dev) == 0) {
                 asserted_flag = true;
                 start_time = k_uptime_get();
             }
@@ -202,7 +214,8 @@ private:
 class emergency_switch { // Variables Implemented
 public:
     void poll() {
-        int now{gpio_get_value(es_left)};
+        gpio_dt_spec gpio_dev = GET_GPIO(es_left);
+        int now{gpio_pin_get_dt(&gpio_dev)};
         if (left_prev != now) {
             left_prev = now;
             left_count = 0;
@@ -213,7 +226,8 @@ public:
             left_count = COUNT;
             left_asserted = now == 1;
         }
-        now = gpio_get_value(es_right);
+        gpio_dev = GET_GPIO(es_right);
+        now = gpio_pin_get_dt(&gpio_dev);
         if (right_prev != now) {
             right_prev = now;
             right_count = 0;
@@ -241,10 +255,12 @@ class wheel_switch { // Variables Implemented
 public:
     void set_disable(bool disable) {
         if (disable) {
-            gpio_set_value(wh_left_right, 1);
+            gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
+            gpio_pin_set_dt(&gpio_dev, 1);
             left_right_disable = true; 
         } else {
-            gpio_set_value(wh_left_right, 0);
+            gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
+            gpio_pin_set_dt(&gpio_dev, 0);
             left_right_disable = false;
         }
     }
@@ -264,7 +280,8 @@ public:
         setup_first_state();
     }
     void poll() {
-        int now{gpio_get_value(mc_din)};
+        gpio_dt_spec gpio_dev = GET_GPIO(mc_din);
+        int now{gpio_pin_get_dt(&gpio_dev)};
         if (prev != now) {
             prev = now;
             start_time = k_uptime_get();
@@ -281,7 +298,8 @@ private:
     void setup_first_state() {
         int plugged_count{0};
         for (int i{0}; i < 10; ++i) {
-            if (gpio_get_value(mc_din) == 0)
+            gpio_dt_spec gpio_dev = GET_GPIO(mc_din);
+            if (gpio_pin_get_dt(&gpio_dev) == 0)
                 ++plugged_count;
             k_msleep(5);
         }
@@ -402,7 +420,8 @@ public:
         return is_connected() && !is_overheat() && (k_uptime_get() - start_time) < AUTO_CHARGE_DOCKED_TIMEOUT_MS;
     }
     void set_enable(bool enable) {
-        gpio_set_value(ac_chargingRelay, enable ? 1 : 0);
+        gpio_dt_spec gpio_dev = GET_GPIO(v_autocharge);
+        gpio_pin_set_dt(&gpio_dev, enable ? 1 : 0);
     }
     void force_stop() {
         set_enable(false);
@@ -548,9 +567,12 @@ public:
                 (data.bmu_alarm2  & 0b00000001) == 0);
     }
     void get_fet_state(bool &c_fet, bool &d_fet, bool &p_dsg) {
-        c_fet = gpio_get_value(bmu_c_fet) == 1;
-        d_fet = gpio_get_value(bmu_d_fet) == 1;
-        p_dsg = gpio_get_value(bmu_p_dsg) == 1;
+        gpio_dt_spec gpio_c_dev = GET_GPIO(bmu_c_fet);
+        gpio_dt_spec gpio_d_dev = GET_GPIO(bmu_d_fet);
+        gpio_dt_spec gpio_p_dev = GET_GPIO(bmu_p_dsg);
+        c_fet = gpio_pin_get_dt(&gpio_c_dev) == 1;
+        d_fet = gpio_pin_get_dt(&gpio_d_dev) == 1;
+        p_dsg = gpio_pin_get_dt(&gpio_p_dev) == 1;
     }
     bool is_full_charge() const {
         return (data.mod_status1 & 0b01000000) != 0;
@@ -603,35 +625,50 @@ private:
 class dcdc_converter { // Variables Implemented
 public:
     void set_enable(bool enable) {
+        gpio_dt_spec gpio_dev;
         // 0=OFF, 1=ON
         if (enable) {
-            gpio_set_value(pwr_control_wheel_motor, 1);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 1);
             k_msleep(1000);
-            gpio_set_value(pwr_control_peripheral, 1);
+            gpio_dev = GET_GPIO(v_peripheral);
+            gpio_pin_set_dt(&gpio_dev, 1);
             k_msleep(1000);
-            gpio_set_value(pwr_control_24v, 1);
+            gpio_dev = GET_GPIO(v24);
+            gpio_pin_set_dt(&gpio_dev, 1);
         } else {
-            gpio_set_value(pwr_control_wheel_motor, 0);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 0);
             k_msleep(1000);
-            gpio_set_value(pwr_control_peripheral, 0);
+            gpio_dev = GET_GPIO(v_peripheral);
+            gpio_pin_set_dt(&gpio_dev, 0);
             k_msleep(1000);
-            gpio_set_value(pwr_control_24v, 0);
+            gpio_dev = GET_GPIO(v24);
+            gpio_pin_set_dt(&gpio_dev, 0);
         }
     }
     bool is_ok() {
         // 0:OK, 1:NG
-        bool rtn = (gpio_get_value(pgood_24v) == 0)                  
-            && (gpio_get_value(pgood_peripheral) == 0)
-            && (gpio_get_value(pgood_wheel_motor_left) == 0)
-            && (gpio_get_value(pgood_wheel_motor_right) == 0);
+        gpio_dt_spec gpio_pgood_24v_dev = GET_GPIO(pgood_24v);
+        gpio_dt_spec gpio_pgood_peripheral_dev = GET_GPIO(pgood_peripheral);
+        gpio_dt_spec gpio_pgood_wheel_motor_left_dev = GET_GPIO(pgood_wheel_motor_left);
+        gpio_dt_spec gpio_pgood_wheel_motor_right_dev = GET_GPIO(pgood_wheel_motor_right);
+        bool rtn = (gpio_pin_get_dt(&gpio_pgood_24v_dev) == 0)                  
+            && (gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 0)
+            && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 0)
+            && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 0);
         return rtn;
     }
     void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
+        gpio_dt_spec gpio_pgood_24v_dev = GET_GPIO(pgood_24v);
+        gpio_dt_spec gpio_pgood_peripheral_dev = GET_GPIO(pgood_peripheral);
+        gpio_dt_spec gpio_pgood_wheel_motor_left_dev = GET_GPIO(pgood_wheel_motor_left);
+        gpio_dt_spec gpio_pgood_wheel_motor_right_dev = GET_GPIO(pgood_wheel_motor_right);
         // 0:OK, 1:NG
-        v24 = gpio_get_value(pgood_24v) == 1;
-        v_peripheral = gpio_get_value(pgood_peripheral) == 1;
-        v_wheel_motor_left = gpio_get_value(pgood_wheel_motor_left) == 1;
-        v_wheel_motor_right = gpio_get_value(pgood_wheel_motor_right) == 1;
+        v24 = gpio_pin_get_dt(&gpio_pgood_24v_dev) == 1;
+        v_peripheral = gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 1;
+        v_wheel_motor_left = gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 1;
+        v_wheel_motor_right = gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 1;
     }
 private:
 };
@@ -642,16 +679,24 @@ public:
         fan_on();
     }
     void fan_on() {
-        gpio_set_value(fan_pwm_5v_1, 1);    // 1:ON, 0:OFF
-        gpio_set_value(fan_pwm_5v_2, 1);    // 1:ON, 0:OFF
-        gpio_set_value(fan_pwm_24v_1, 1);   // 1:ON, 0:OFF
-        gpio_set_value(fan_pwm_24v_2, 1);   // 1:ON, 0:OFF
+        gpio_dt_spec gpio_fan1_dev = GET_GPIO(fan1);
+        gpio_dt_spec gpio_fan2_dev = GET_GPIO(fan2);
+        gpio_dt_spec gpio_fan3_dev = GET_GPIO(fan3);
+        gpio_dt_spec gpio_fan4_dev = GET_GPIO(fan4);
+        gpio_pin_set_dt(&gpio_fan1_dev, 1);    // 1:ON, 0:OFF
+        gpio_pin_set_dt(&gpio_fan2_dev, 1);    // 1:ON, 0:OFF
+        gpio_pin_set_dt(&gpio_fan3_dev, 1);   // 1:ON, 0:OFF
+        gpio_pin_set_dt(&gpio_fan4_dev, 1);   // 1:ON, 0:OFF
     }
     void fan_off() {
-        gpio_set_value(fan_pwm_5v_1, 0);    // 1:ON, 0:OFF
-        gpio_set_value(fan_pwm_5v_2, 0);    // 1:ON, 0:OFF
-        gpio_set_value(fan_pwm_24v_1, 0);   // 1:ON, 0:OFF
-        gpio_set_value(fan_pwm_24v_2, 0);   // 1:ON, 0:OFF
+        gpio_dt_spec gpio_fan1_dev = GET_GPIO(fan1);
+        gpio_dt_spec gpio_fan2_dev = GET_GPIO(fan2);
+        gpio_dt_spec gpio_fan3_dev = GET_GPIO(fan3);
+        gpio_dt_spec gpio_fan4_dev = GET_GPIO(fan4);
+        gpio_pin_set_dt(&gpio_fan1_dev, 0);    // 1:ON, 0:OFF
+        gpio_pin_set_dt(&gpio_fan2_dev, 0);    // 1:ON, 0:OFF
+        gpio_pin_set_dt(&gpio_fan3_dev, 0);   // 1:ON, 0:OFF
+        gpio_pin_set_dt(&gpio_fan4_dev, 0);   // 1:ON, 0:OFF
     }
 private:
 };
@@ -817,7 +862,8 @@ private:
             bool wheel_poweroff{mbd.is_wheel_poweroff()};   // TODO mbd.is_wheel_poweroff() はLexxAutoからのモーターOFF指令
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
-                gpio_set_value(pwr_control_wheel_motor, wheel_poweroff ? 0 : 1);
+                gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
         };
@@ -870,7 +916,8 @@ private:
                 } else {
                     LOG_DBG("wait shutdown\n");
                     wait_shutdown = true;
-                    gpio_set_value(pwr_control_wheel_motor, 0);
+                    gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                    gpio_pin_set_dt(&gpio_dev, 0);
                     timer_shutdown = k_uptime_get();    // timer reset
                     if (psw_state == power_switch::STATE::PUSHED)
                         shutdown_reason = SHUTDOWN_REASON::SWITCH;
@@ -992,13 +1039,15 @@ private:
             break;
         }
         int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1};
+        gpio_dt_spec gpio_dev;
         switch (newstate) {
         case POWER_STATE::OFF:
             LOG_DBG("enter OFF\n");
             poweron_by_switch = false;
             psw.set_led(false);
             dcdc.set_enable(false);
-            gpio_set_value(pwr_control_wheel_motor, 0);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 0);
             while (true) // wait power off
                 continue;
             break;
@@ -1012,7 +1061,8 @@ private:
         case POWER_STATE::POST:
             LOG_DBG("enter POST\n");
             psw.set_led(true);
-            gpio_set_value(pwr_control_wheel_motor, 0);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 0);
             timer_post = k_uptime_get();    // timer reset
             break;
         case POWER_STATE::STANDBY:
@@ -1020,14 +1070,16 @@ private:
             psw.set_led(true);
             dcdc.set_enable(true);
             wsw.set_disable(true);
-            gpio_set_value(pwr_control_wheel_motor, bat_out_state);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             wait_shutdown = false;
             break;
         case POWER_STATE::NORMAL:
             LOG_DBG("enter NORMAL\n");
             wsw.set_disable(false);
-            gpio_set_value(pwr_control_wheel_motor, bat_out_state);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             charge_guard_asserted = true;
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
@@ -1041,13 +1093,15 @@ private:
         case POWER_STATE::MANUAL_CHARGE:
             LOG_DBG("enter MANUAL_CHARGE\n");
             wsw.set_disable(true);
-            gpio_set_value(pwr_control_wheel_motor, 0);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
             break;
         case POWER_STATE::LOCKDOWN:
             LOG_DBG("enter LOCKDOWN\n");
             wsw.set_disable(true);
-            gpio_set_value(pwr_control_wheel_motor, 0);
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
             break;
         }
