@@ -46,7 +46,6 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 
-        // dev = device_get_binding("IIM42652");
         dev = DEVICE_DT_GET(DT_NODELABEL(imu0));
 
         if (!device_is_ready(dev)) {
@@ -107,7 +106,7 @@ public:
         };
         
         // data to be read from the sensor triggered by the interrupt signal
-        if (sensor_trigger_set(dev, &data_trigger, NULL) < 0) {
+        if (sensor_trigger_set(dev, &data_trigger, cb_func) < 0) {
             LOG_ERR("Cannot configure data trigger!!!\n");
             return;
         }
@@ -176,7 +175,7 @@ public:
                     gyro_x, gyro_y, gyro_z,
                     (int16_t)message.counter);
     }
-    static void cb_func(const struct device *dev, struct sensor_trigger *trig_cb) {
+    static void cb_func(const struct device *dev, const struct sensor_trigger *trig_cb) {
         ARG_UNUSED(dev);
         ARG_UNUSED(trig_cb);
 
