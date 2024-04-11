@@ -47,47 +47,6 @@ char __aligned(4) msgq_bmu_pb_buffer[8 * sizeof (can_controller::msg_bmu)];
 char __aligned(4) msgq_board_pb_rx_buffer[8 * sizeof (msg_rcv_pb)];
 char __aligned(4) msgq_board_pb_tx_buffer[8 * sizeof (can_controller::msg_board)];
 
-// pin_def_gpio ps_sw_in{"GPIOH", 4}, ps_led_out{"GPIOH", 5}; // Power Switch handler associated pins
-// pin_def_gpio bp_left{"GPIOI", 7}; // Bumper Switch associated pins
-// pin_def_gpio es_left{"GPIOI", 4}, es_right{"GPIOI", 0}; // Emergency Switch associated pins
-// pin_def_gpio wh_left_right{"GPIOK", 3}; // Wheel switch associated pins
-// pin_def_gpio mc_din{"GPIOK", 7}; // Manual charging detection associated pins
-// pin_def_gpio ac_th_pos{"GPIOC", 4}, ac_th_neg{"GPIOC", 5}, ac_IrDA_tx{"GPIOG", 14}, ac_IrDA_rx{"GPIOG", 9}, ac_analogVol{"GPIOF", 10}, ac_chargingRelay{"GPIOD", 0}; // Auto charging detection associated pins
-// pin_def_gpio bmu_c_fet{"GPIOJ", 5}, bmu_d_fet{"GPIOJ", 12}, bmu_p_dsg{"GPIOJ", 13}; // BMU controller associated pins
-// pin_def_gpio ts_i2c_scl{"GPIOF", 14}, ts_i2c_sda{"GPIOF", 15}; // Temperature sensors associated I2C pins
-// pin_def_gpio pwr_control_24v{"GPIOC", 15}, pwr_control_peripheral{"GPIOD", 2}, pwr_control_wheel_motor{"GPIOD", 1}; // Power Control associated pins
-// pin_def_gpio pgood_24v{"GPIOH", 3}, pgood_peripheral{"GPIOH", 15}, pgood_wheel_motor_left{"GPIOH", 1}, pgood_wheel_motor_right{"GPIOH", 12}; // Power Good associated pins
-// pin_def_gpio pgood_linear_act_left{"GPIOK", 4}, pgood_linear_act_right{"GPIOK", 5}, pgood_linear_act_center{"GPIOK", 4};
-// pin_def_gpio fan_pwm_5v_1{"GPIOC", 10}, fan_pwm_5v_2{"GPIOC", 11}, fan_pwm_24v_1{"GPIOB", 14}, fan_pwm_24v_2{"GPIOB", 15}; // PWM fan signal control pin
-
-void gpio_init() {
-    // TODO  全部のIOを定義する
-    // gpio_dt_spec ac_chargingRelay_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ac_chargingRelay), gpios);
-
-    return;
-}
-
-void gpio_set_value(pin_def_gpio pin_def, uint8_t output_value) {
-    const device *gpio_dev{device_get_binding(pin_def.label)};
-
-    if (device_is_ready(gpio_dev)) {
-        gpio_pin_configure(gpio_dev, pin_def.io_number, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
-        gpio_pin_set(gpio_dev, pin_def.io_number, output_value);
-    }
-    return;
-}
-
-int8_t gpio_get_value(pin_def_gpio pin_def) {
-    int8_t rtn{-1};
-    const device *gpio_dev{device_get_binding(pin_def.label)}; 
-
-    if (device_is_ready(gpio_dev)) {
-        gpio_pin_configure(gpio_dev, pin_def.io_number, GPIO_INPUT | GPIO_ACTIVE_HIGH);
-        rtn = gpio_pin_get(gpio_dev, pin_def.io_number);
-    }
-    return rtn;
-}
-
 class power_switch_handler {  // No pins declared
 public:
     power_switch_handler(int thres_data) : thres(thres_data * 2) {
@@ -413,7 +372,7 @@ public:
 
         start_time = k_uptime_get();
 
-        dev = device_get_binding("UART_6");
+        dev = GET_DEV(usart6);
         return;
     }
     bool is_docked() const {

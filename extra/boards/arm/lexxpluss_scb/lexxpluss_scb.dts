@@ -206,6 +206,10 @@
 			compatible = "gpio-pin";
 			gpios = <&gpioj 13 GPIO_ACTIVE_HIGH>;
 		};
+		ps_lift_actuator: ps_lift_actuator {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 0 GPIO_ACTIVE_HIGH>;
+		};
 		pgood_24v: pgood_24v {
 			compatible = "gpio-pin";
 			gpios = <&gpioh 3 GPIO_ACTIVE_HIGH>;

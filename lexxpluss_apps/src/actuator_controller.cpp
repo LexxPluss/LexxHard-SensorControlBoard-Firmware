@@ -36,6 +36,7 @@
 #include "actuator_controller.hpp"
 #include "adc_reader.hpp"
 #include "can_controller.hpp"
+#include "common.hpp"
 
 extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
 {
@@ -208,21 +209,18 @@ public:
     int init(POS pos) {
         switch (pos) {
         case POS::CENTER:
-            // dev[0] = device_get_binding("PWM_5");
             dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm5));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::LEFT:
-            // dev[0] = device_get_binding("PWM_8");
             dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm8));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::RIGHT:
-            // dev[0] = device_get_binding("PWM_2");
             dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm2));
             dev[1] = dev[0];
             pin[0] = 3;
@@ -241,8 +239,6 @@ public:
             uint32_t ns{duty_rev * CONTROL_PERIOD_NS / 100};
             pulse_ns[direction < msg_control::STOP ? 0 : 1] = ns;
         }
-        // pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
-        // pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
         pwm_set(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
         pwm_set(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
         this->direction = direction;
@@ -445,14 +441,14 @@ public:
 
     void run() {
         // Enable Pin, Reset Functions
-        const device *dev_enable{device_get_binding("GPIOJ")};
-        if (device_is_ready(dev_enable))
-            gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_dt_spec dev_enable = GET_GPIO(ps_lift_actuator);
+        if (gpio_is_ready_dt(&dev_enable))
+            gpio_pin_configure_dt(&dev_enable, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         auto reset_actuator = [&]() {
-            if (device_is_ready(dev_enable)) {
-                gpio_pin_set(dev_enable, 0, 0);
+            if (gpio_is_ready_dt(&dev_enable)) {
+                gpio_pin_set_dt(&dev_enable, 0);
                 k_msleep(100);
-                gpio_pin_set(dev_enable, 0, 1);
+                gpio_pin_set_dt(&dev_enable, 1);
             }
         };
         int fail_count{0};
