@@ -30,8 +30,6 @@
 #include <zephyr/sys/reboot.h>
 #include "firmware_updater.hpp"
 
-// #define CONFIG_IMG_BLOCK_BUF_SIZE 512
-
 namespace lexxhard::firmware_updater {
 
 class {

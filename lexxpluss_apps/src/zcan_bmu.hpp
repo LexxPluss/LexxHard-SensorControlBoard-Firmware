@@ -28,13 +28,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <cstdio>
-// #include "ros/node_handle.h"
-// #include "lexxauto_msgs/Battery.h"
 #include "can_controller.hpp"
 
 namespace lexxhard::zcan_bmu {
 
-// LOG_MODULE_REGISTER(zcan_bmu);
+LOG_MODULE_REGISTER(zcan_bmu);
 
 class zcan_bmu {
 public:

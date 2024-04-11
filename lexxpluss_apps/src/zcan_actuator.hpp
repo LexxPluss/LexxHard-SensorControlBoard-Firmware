@@ -32,17 +32,17 @@
 #include <zephyr/logging/log.h>
 #include "actuator_controller.hpp"
 
-#define CAN_ID_ACTUATOR_CONTROL 0x208 // based on saito-san's CAN ID assignment
-#define CAN_ID_ACTUATOR_ENCODER 0x209 // based on saito-san's CAN ID assignment
-#define CAN_ID_ACTUATOR_CURRENT 0x20a // based on saito-san's CAN ID assignment
+#define CAN_ID_ACTUATOR_CONTROL 0x208 // based on CAN ID assignment
+#define CAN_ID_ACTUATOR_ENCODER 0x209 // based on CAN ID assignment
+#define CAN_ID_ACTUATOR_CURRENT 0x20a // based on CAN ID assignment
 #define CAN_DATALENGTH_ACTUATOR_ENCODER 6
 #define CAN_DATALENGTH_ACTUATOR_CURRENT 8
 
 namespace lexxhard::zcan_actuator {
 
-// LOG_MODULE_REGISTER(zcan_actuator);
+LOG_MODULE_REGISTER(zcan_actuator);
 char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof(actuator_controller::can_format_control)];
-// k_msgq msgq_can_actuator_control;
+
 CAN_MSGQ_DEFINE(msgq_can_actuator_control, 16);
 
 class zcan_actuator {
@@ -52,7 +52,7 @@ public:
         k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
-            // LOG_INF("CAN_2 is not ready");
+            LOG_INF("CAN_2 is not ready");
             return;
         }
 

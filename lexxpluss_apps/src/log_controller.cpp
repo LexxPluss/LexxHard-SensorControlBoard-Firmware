@@ -111,7 +111,8 @@ const log_backend_api log_backend_mem_api{
     .init = logapi_init,
 };
 
-LOG_BACKEND_DEFINE(log_backend_mem, log_backend_mem_api, true);
+// TODO 以下を有効にするとプロンプトが出なくなるので、解析が必要
+// LOG_BACKEND_DEFINE(log_backend_mem, log_backend_mem_api, true);
 
 int cmd_show(const shell *shell, size_t argc, char **argv)
 {

@@ -200,6 +200,8 @@ void power_on() {
 
 int main()
 {
+    printk("--- SensorControlBoard V2.0.0 ---\n");
+
     init_gpio();
     k_msleep(3000);
 
@@ -232,11 +234,7 @@ int main()
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
 
-    printk("--- SensorControlBoard V2.0.0 ---\n");
-
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
-    // if (gpio_is_ready_dt(&heart_beat_led))
-    //     gpio_pin_configure_dt(&heart_beat_led, GPIO_OUTPUT_INACTIVE);
 
     // Heartbeat LED
     while (true) {

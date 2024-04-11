@@ -30,7 +30,7 @@
 #include <st/f7/stm32f769b(g-i)tx-pinctrl.dtsi>
 
 / {
-	model = "LexxPluss Sensor Control Board V1";
+	model = "LexxPluss Sensor Control Board";
 	compatible = "st,stm32f769bg-lexxpluss";
 
 	chosen {
@@ -282,12 +282,12 @@
 };
 
 &usart6 {
-	pinctrl-0 = <&usart6_tx_pg14 &usart6_rx_pg9 &usart6_cts_pg13 &usart6_rts_pg12>;
+	pinctrl-0 = <&usart6_tx_pg14 &usart6_rx_pg9>;
 	pinctrl-names = "default";
 	current-speed = <115200>;
-	hw-flow-control;
 	status = "okay";
 };
+
 
 &spi5 {
 	pinctrl-0 = <&spi5_sck_pf7 &spi5_miso_pf8 &spi5_mosi_pf9>;

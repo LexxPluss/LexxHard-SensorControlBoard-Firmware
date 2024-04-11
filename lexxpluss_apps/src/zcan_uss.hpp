@@ -35,15 +35,14 @@
 
 namespace lexxhard::zcan_uss {
 
-// LOG_MODULE_REGISTER(zcan_uss);
+LOG_MODULE_REGISTER(zcan_uss);
 
 class zcan_uss {
 public:
     void init() {
-        // dev = device_get_binding("CAN_2");
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
-            // LOG_INF("CAN_2 is not ready");
+            LOG_INF("CAN_2 is not ready");
             return;
         }
     }
@@ -68,14 +67,14 @@ public:
             packedData[6] = data5 & 0xFF;
             packedData[7] = data5 >> 8;
 
-            // CANフレームにデータをセット
+            // set data to CAN frame
             can_frame frame{
                 .id = CAN_ID_USS,
                 .dlc = CAN_DATA_LENGTH_USS,
                 .data = {0}
             };
 
-            // packedDataをCANフレームのdataフィールドにコピー
+            // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_USS);
 
             can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);

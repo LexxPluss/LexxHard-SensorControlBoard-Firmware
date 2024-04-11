@@ -35,15 +35,17 @@
 
 namespace lexxhard::zcan_main {
 
-// LOG_MODULE_REGISTER(zcan_main);
+LOG_MODULE_REGISTER(zcan_main);
 
 class {
 public:
     int init() {
         // CAN baudrate setting
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
-        if (!device_is_ready(dev))
+        if (!device_is_ready(dev)) {
+            LOG_INF("CAN_2 is not ready");
             return -1;
+        }
 
         can_set_bitrate(dev, 1000000);
         can_set_mode(dev, CAN_MODE_NORMAL);

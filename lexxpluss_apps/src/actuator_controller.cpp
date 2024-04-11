@@ -475,13 +475,6 @@ public:
         };
         reset_actuator();
 
-        // Heartbeat LED 5
-        // const device *gpiog{device_get_binding("GPIOG")};
-        // if (device_is_ready(gpiog))
-        //     gpio_pin_configure(gpiog, 5, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        // int heartbeat_led{1};
-        // for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-        //     act[i].reset();
         uint32_t prev_cycle{k_cycle_get_32()};
 
         while (true) {
@@ -516,10 +509,6 @@ public:
                 actuator2can.connect = adc_reader::get(adc_reader::TROLLEY);
                 while (k_msgq_put(&msgq, &actuator2can, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
-                // if (device_is_ready(gpiog)) {
-                //     gpio_pin_set(gpiog, 5, heartbeat_led);
-                //     heartbeat_led = !heartbeat_led;
-                // }
             }
             k_msleep(10);
         }
@@ -577,10 +566,6 @@ public:
         while (k_msgq_put(&msgq_pwmtrampoline, &message, K_NO_WAIT) != 0)
             k_msgq_purge(&msgq_pwmtrampoline);
     }
-    // void set_param(float pp, float vp, float vi) {
-    //     for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-    //         act[i].set_param(pp, vp, vi);
-    // }
 private:
     void handle_control(const msg_control &msg) {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
@@ -678,19 +663,6 @@ int info(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
-// int set_param(const shell *shell, size_t argc, char **argv)
-// {
-//     float pp{0.0f}, vp{0.0f}, vi{0.0f};
-//     if (argc > 1)
-//         pp = atof(argv[1]);
-//     if (argc > 2)
-//         vp = atof(argv[2]);
-//     if (argc > 3)
-//         vi = atof(argv[3]);
-//     impl.set_param(pp, vp, vi);
-//     return 0;
-// }
-
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(duty, NULL, "Actuator duty command", cmd_duty),
     SHELL_CMD(init, NULL, "Actuator initialize command", cmd_init),
@@ -724,8 +696,6 @@ int to_location(const uint8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[
 
 k_thread thread;
 k_msgq msgq, msgq_control;
-
-// k_msgq msgq_can_actuator_control;
 
 }
 

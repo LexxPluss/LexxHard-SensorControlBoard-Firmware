@@ -100,10 +100,6 @@ class led_controller_impl {
 public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-        // dev[LED_LEFT] = device_get_binding("WS2812_0");
-        // dev[LED_RIGHT] = device_get_binding("WS2812_1");
-        // dev[2] = device_get_binding("WS2812_3");
-        // dev[3] = device_get_binding("WS2812_2");
         dev[LED_LEFT] = DEVICE_DT_GET(DT_NODELABEL(led_strip0));
         dev[LED_RIGHT] = DEVICE_DT_GET(DT_NODELABEL(led_strip1));
         dev[2] = DEVICE_DT_GET(DT_NODELABEL(led_strip3));
@@ -269,7 +265,6 @@ private:
         else
             head = PIXELS - (PIXELS * counter / thres);
         static constexpr led_rgb color{.r{0xff}, .g{0x20}, .b{0x00}};
-        // uint32_t rsoc{can_controller::get_rsoc()};
         uint32_t rsoc{board_controller::get_rsoc()};
         uint32_t n;
         if (rsoc < 100) {

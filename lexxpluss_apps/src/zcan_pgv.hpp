@@ -29,8 +29,6 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include <cstdio>
-// #include "std_msgs/UInt8.h"
-// #include "lexxauto_msgs/PositionGuideVision.h"
 #include "common.hpp"
 #include "pgv_controller.hpp"
 
@@ -41,17 +39,15 @@
 
 namespace lexxhard::zcan_pgv {
 
-// LOG_MODULE_REGISTER(zcan_pgv);
+LOG_MODULE_REGISTER(zcan_pgv);
 
 class zcan_pgv {
 public:
     void init()
     {
-        //can device bind
-        // dev = device_get_binding("CAN_2");
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
-            // LOG_INF("CAN_2 is not ready");
+            LOG_INF("CAN_2 is not ready");
             return;
         }
         ring_counter=0;
