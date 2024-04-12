@@ -508,7 +508,7 @@ class bmu_controller { // Variables Implemented
 public:
     void init() {
         k_msgq_init(&msgq_can_bmu_pb, msgq_bmu_pb_buffer, sizeof (can_controller::msg_bmu), 8);
-        dev = device_get_binding("CAN_1");
+        dev = DEVICE_DT_GET(DT_NODELABEL(can1));;
         if (!device_is_ready(dev))
             return;
         setup_can_filter();
@@ -737,10 +737,10 @@ public:
         timer_shutdown = k_uptime_get();
         timer_poweroff = k_uptime_get();
 
-        k_msgq_init(&msgq_board_pb_tx, msgq_board_pb_tx_buffer, sizeof (lexxhard::can_controller::msg_board), 8);
+        k_msgq_init(&msgq_board_pb_tx, msgq_board_pb_tx_buffer, sizeof(lexxhard::can_controller::msg_board), 8);
 
         // Setup Watch Dog Timer
-        dev_wdi = device_get_binding("IWDG");
+        dev_wdi = GET_DEV(iwdg);
         if (!device_is_ready(dev_wdi)){
             LOG_INF("Watchdog device is not ready\n");
             return;
@@ -751,7 +751,6 @@ public:
         wdt_config.window.min = 0;
         wdt_config.window.max = WDT_TIMEOUT_MS;
         wdt_config.callback = NULL;
-
 
         int wdt_channel_id = wdt_install_timeout(dev_wdi, &wdt_config);
         if (wdt_channel_id < 0) {
@@ -769,9 +768,6 @@ public:
         while(true) {
             poll();
         }
-    }
-    uint32_t get_rsoc() {
-        return bmu.get_rsoc();
     }
 private:
     static void static_poll_20ms_callback(struct k_timer *timer_id) {
@@ -1105,7 +1101,7 @@ private:
         if (state == POWER_STATE::LOCKDOWN)
             psw.toggle_led();
 
-        if (k_msgq_put(&msgq_board_pb_tx, &board2ros, K_NO_WAIT) != 0){
+        if (k_msgq_put(&msgq_board_pb_tx, &board2ros, K_NO_WAIT) != 0) {
             k_msgq_purge(&msgq_board_pb_tx);
         }
     }
@@ -1154,11 +1150,6 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
-}
-
-uint32_t get_rsoc()
-{
-    return impl.get_rsoc();
 }
 
 k_thread thread;

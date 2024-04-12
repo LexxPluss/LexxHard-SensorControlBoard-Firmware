@@ -46,7 +46,6 @@ struct msg_rcv_pb {
 
 void init();
 void run(void *p1, void *p2, void *p3);
-uint32_t get_rsoc();
 extern k_thread thread;
 extern k_msgq msgq_can_bmu_pb;
 extern k_msgq msgq_board_pb_rx, msgq_board_pb_tx;

@@ -112,8 +112,8 @@ private:
     float sum_yaw_delta_theta{0.0f};
     char log_buffer[256]{0};
     bool last_detected{false};
-    static constexpr float YAW_ACCEL_LIMIT{1.5f * M_PI};
-    static constexpr float YAW_DELTA_THETA_LIMIT{2.5f * M_PI};
+    static constexpr float YAW_ACCEL_LIMIT{1.5f * static_cast<float>(M_PI)};
+    static constexpr float YAW_DELTA_THETA_LIMIT{2.5f * static_cast<float>(M_PI)};
     static constexpr uint8_t SIZE_OF_TOPICS_QUEUE{10U};//average of ~200ms at 50Hz
     static constexpr uint8_t SIZE_OF_YAW_ACCEL_QUEUE{50U};//average of ~1000ms at 50Hz
     static constexpr uint8_t SIZE_OF_YAW_VELOCITY_QUEUE{50U};//average of ~1000ms at 50Hz

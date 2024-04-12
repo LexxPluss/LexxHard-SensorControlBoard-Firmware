@@ -61,7 +61,7 @@ public:
             .id{CAN_ID_ACTUATOR_CONTROL},
             .mask{0x7ff}
         };
-        // can_attach_msgq(dev, &msgq_can_actuator_control, &filter_actuator_control);
+
         can_add_rx_filter_msgq(dev, &msgq_can_actuator_control, &filter_actuator_control);
         return;
     }
@@ -69,7 +69,6 @@ public:
         // send to IPC of sensor informations
         actuator_controller::msg message;
         while (k_msgq_get(&actuator_controller::msgq, &message, K_NO_WAIT) == 0) {
-            // ROS:[center,left,right], ROBOT:[left,center,right]
             can_frame can_frame_actuator_encoder{
                 .id = CAN_ID_ACTUATOR_ENCODER,
                 .dlc = CAN_DATALENGTH_ACTUATOR_ENCODER

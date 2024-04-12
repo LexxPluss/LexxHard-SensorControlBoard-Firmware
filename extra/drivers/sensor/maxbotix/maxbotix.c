@@ -92,29 +92,19 @@ static int maxbotix_init(const struct device *dev)
 {
     struct maxbotix_data *data = dev->data;
     const struct maxbotix_cfg *cfg  = dev->config;
-    // data->trig_dev = device_get_binding(cfg->trig_port);
-    // data->trig_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(cfg->trig_port), trig-gpios);
-    // if (!data->trig_dev)
-    //     return -ENODEV;
-    // data->echo_dev = device_get_binding(cfg->echo_port);
-    // data->echo_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(cfg->echo_port), echo-gpios);
-    // if (!data->echo_dev)
-    //     return -ENODEV;
-    // int err = gpio_pin_configure(data->trig_dev, cfg->trig_pin, (GPIO_OUTPUT | cfg->trig_flags));
 
     int err = gpio_pin_configure_dt(&cfg->trig_dev, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
     if (err != 0)
         return err;
-    // err = gpio_pin_configure(data->echo_dev, cfg->echo_pin, (GPIO_INPUT | cfg->echo_flags));
+
     err = gpio_pin_configure_dt(&cfg->echo_dev, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
     if (err != 0)
         return err;
 
-    // err = gpio_pin_interrupt_configure(cfg->echo_dev, cfg->echo_pin, GPIO_INT_EDGE_BOTH);
     err = gpio_pin_interrupt_configure_dt(&cfg->echo_dev, GPIO_INT_EDGE_BOTH);
     if (err != 0)
         return err;
-    // gpio_init_callback(&data->cb_data.cb, input_changed, BIT(cfg->echo_pin));
+
     gpio_init_callback(&data->cb_data.cb, input_changed, BIT(cfg->echo_dev.pin));
     err = k_sem_init(&data->cb_data.semaphore, 0, 1);
     if (0 != err)

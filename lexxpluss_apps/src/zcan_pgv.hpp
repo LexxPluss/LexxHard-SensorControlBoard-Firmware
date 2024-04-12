@@ -35,8 +35,7 @@
 #define CAN_ID_PGV_1 0x200
 #define CAN_ID_PGV_2 0x201
 #define CAN_ID_PGV_3 0x202
-#define CAN_DATA_LENGTH 8
-
+#define CAN_DATA_LENGTH_PGV 8
 namespace lexxhard::zcan_pgv {
 
 LOG_MODULE_REGISTER(zcan_pgv);
@@ -60,13 +59,13 @@ public:
         {
             can_frame frame_pgv[3]{{
                 .id = CAN_ID_PGV_1,
-                .dlc = CAN_DATA_LENGTH
+                .dlc = CAN_DATA_LENGTH_PGV
             },{
                 .id = CAN_ID_PGV_2,
-                .dlc = CAN_DATA_LENGTH
+                .dlc = CAN_DATA_LENGTH_PGV
             },{
                 .id = CAN_ID_PGV_3,
-                .dlc = CAN_DATA_LENGTH,
+                .dlc = CAN_DATA_LENGTH_PGV,
             }};
 
             // 0x200 PGV( 1~ 7Byte + counter)

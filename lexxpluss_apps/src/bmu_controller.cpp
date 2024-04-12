@@ -36,7 +36,7 @@ namespace lexxhard::bmu_controller {
 
 LOG_MODULE_REGISTER(bmu);
 
-char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
+// char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
 char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (msg_rawframe_bmu)];
 
 CAN_MSGQ_DEFINE(msgq_can_recv_bmu, 16);
@@ -44,12 +44,18 @@ CAN_MSGQ_DEFINE(msgq_can_recv_bmu, 16);
 class bmu_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_parsed_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8); // For board_controller of MCU internal code
         k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (msg_rawframe_bmu), 8); // For IPC as path through from CAN_1 to CAN_2
 
         dev_can_bmu = DEVICE_DT_GET(DT_NODELABEL(can1));
         if (!device_is_ready(dev_can_bmu))
             return -1;
+
+        static const can_filter filter_bmu{
+            .id{0x100},
+            .mask{0x7c0} // This mask ranged from 0x100 to 0x13F
+        };
+
+        can_add_rx_filter_msgq(dev_can_bmu, &msgq_can_recv_bmu, &filter_bmu);
 
         can_set_bitrate(dev_can_bmu, 500000);
         can_set_mode(dev_can_bmu, CAN_MODE_NORMAL);
@@ -59,26 +65,21 @@ public:
     }
 
     void run() {
-        if (!device_is_ready(dev_can_bmu))
+        if (!device_is_ready(dev_can_bmu)){
+            LOG_INF("CAN_1 is not ready");
             return;
+        }
             
-        static const can_filter filter_bmu{
-            .id{0x100},
-            .mask{0x7c0} // This mask ranged from 0x100 to 0x13F
-        };
-        // can_attach_msgq(dev_can_bmu, &msgq_can_recv_bmu, &filter_bmu);
-        can_add_rx_filter_msgq(dev_can_bmu, &msgq_can_recv_bmu, &filter_bmu);
         while (true) {
             can_frame frame;
             if (k_msgq_get(&msgq_can_recv_bmu, &frame, K_NO_WAIT) == 0) {
                 // -> raw packet to can_bmu
-                while (k_msgq_put(&msgq_rawframe_bmu, frame.data, K_NO_WAIT) != 0)
+                handler_can_bmu(frame);
+                while (k_msgq_put(&msgq_rawframe_bmu, &can_msg, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq_rawframe_bmu);
-                // -> parsed info to board_controller
-                if (handler_bmu(frame)) {
-                    while (k_msgq_put(&msgq_parsed_bmu, &msg, K_NO_WAIT) != 0)
-                        k_msgq_purge(&msgq_parsed_bmu);
-                }
+
+                // -> parsed info to show in bmu info
+                handler_bmu(frame);
             } else {
                 k_msleep(1);
             }
@@ -115,8 +116,14 @@ public:
     }
 
 private:
-    bool handler_bmu(can_frame &frame) {
-        bool result{false};
+    void handler_can_bmu(can_frame &frame) {
+        can_msg.can_id = frame.id;
+        for (int i = 0; i < BMU_CAN_DATA_LENGTH; i++){
+            can_msg.frame[i] = frame.data[i];
+        }
+        return;
+    }
+    void handler_bmu(can_frame &frame) {
         if (frame.id == 0x100) {
             msg.mod_status1 = frame.data[0];
             msg.bmu_status = frame.data[1];
@@ -164,12 +171,12 @@ private:
             msg.manufacturing = (frame.data[0] << 8) | frame.data[1];
             msg.inspection = (frame.data[2] << 8) | frame.data[3];
             msg.serial = (frame.data[4] << 8) | frame.data[5];
-            result = true;
         }
-        return result;
+        return;
     }
 
     msg_bmu msg{0};
+    msg_can_bmu can_msg{0};
 
     const device *dev_can_bmu{nullptr};
 

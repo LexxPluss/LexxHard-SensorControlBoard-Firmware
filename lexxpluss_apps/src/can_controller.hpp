@@ -68,7 +68,6 @@ struct msg_control {
 
 void init();
 void run(void *p1, void *p2, void *p3);
-// uint32_t get_rsoc();
 bool get_emergency_switch();
 bool get_bumper_switch();
 bool is_emergency();

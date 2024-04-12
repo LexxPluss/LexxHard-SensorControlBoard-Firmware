@@ -164,7 +164,7 @@
 };
 
 &iwdg {
-			status = "okay";
+	status = "okay";
 };
 
 &spi5 {

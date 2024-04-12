@@ -28,6 +28,8 @@
 
 namespace lexxhard::bmu_controller {
 
+#define BMU_CAN_DATA_LENGTH 8
+
 struct msg_bmu {
     struct {
         uint16_t value;
@@ -45,12 +47,13 @@ struct msg_bmu {
 } __attribute__((aligned(4)));
 
 struct msg_rawframe_bmu {
-    uint8_t frame[8];
+    uint8_t frame[BMU_CAN_DATA_LENGTH];
 } __attribute__((aligned(4)));
 
 
 struct msg_can_bmu {
-    uint8_t frame[8];
+    uint8_t can_id;
+    uint8_t frame[BMU_CAN_DATA_LENGTH];
 } __attribute__((aligned(4)));
 
 void init();
