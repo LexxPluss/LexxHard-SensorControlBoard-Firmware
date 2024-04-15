@@ -741,6 +741,7 @@ public:
 
         // Setup Watch Dog Timer
         dev_wdi = GET_DEV(iwdg);
+
         if (!device_is_ready(dev_wdi)){
             LOG_INF("Watchdog device is not ready\n");
             return;

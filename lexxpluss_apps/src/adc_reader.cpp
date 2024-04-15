@@ -128,6 +128,11 @@ int32_t get(int index)
     return impl.get(index);
 }
 
+int32_t get_adc3(int index)
+{
+    return impl.get_adc3(index);
+}
+
 k_thread thread;
 
 }

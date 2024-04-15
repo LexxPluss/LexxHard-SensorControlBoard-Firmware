@@ -27,7 +27,8 @@
 #include <zephyr/drivers/gpio.h>
 #include "actuator_controller.hpp"
 #include "adc_reader.hpp"
-// #include "can_controller.hpp"
+#include "board_controller.hpp"
+#include "can_controller.hpp"
 #include "bmu_controller.hpp"
 // #include "firmware_updater.hpp"
 #include "imu_controller.hpp"
@@ -42,7 +43,8 @@ namespace {
 K_THREAD_STACK_DEFINE(actuator_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(adc_reader_stack, 2048);
 K_THREAD_STACK_DEFINE(bmu_controller_stack, 2048);
-// K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
 // K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
@@ -215,8 +217,9 @@ int main()
 
     lexxhard::actuator_controller::init();
     lexxhard::adc_reader::init();
-    // lexxhard::can_controller::init();
     lexxhard::bmu_controller::init();
+    lexxhard::board_controller::init();
+    lexxhard::can_controller::init();
     // lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
     lexxhard::led_controller::init();
@@ -227,8 +230,9 @@ int main()
 
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
-    // RUN(can_controller, 4);
     RUN(bmu_controller, 4);
+    RUN(can_controller, 4);
+    RUN(board_controller, 4); // board_controller must be started after bmu_controller (due to the CAN setting)
     // RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
     RUN(led_controller, 1);

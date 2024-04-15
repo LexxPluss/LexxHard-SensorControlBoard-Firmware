@@ -52,14 +52,14 @@ public:
         while (true) {
             bool handled{false};
 
-            // board2ros ROS->can_controller->board_controller
+            // board2ros board_controller->can_controller->ROS
             if (k_msgq_get(&board_controller::msgq_board_pb_tx, &board2ros, K_NO_WAIT) == 0) {
                 if (k_msgq_put(&msgq_board, &board2ros, K_NO_WAIT) != 0){
                     k_msgq_purge(&msgq_board);
                     handled = true;
                 }
             }
-            // ros2board board_controller->can_controller->ROS
+            // ros2board ROS->can_controller->board_controller
             if (k_msgq_get(&msgq_control, &ros2board, K_NO_WAIT) == 0) {
                 handler_to_pb();
                 if (k_msgq_put(&board_controller::msgq_board_pb_rx, &msg_board_to_pb, K_NO_WAIT) != 0){
