@@ -52,7 +52,7 @@ struct msg_rawframe_bmu {
 
 
 struct msg_can_bmu {
-    uint8_t can_id;
+    uint32_t can_id;
     uint8_t frame[BMU_CAN_DATA_LENGTH];
 } __attribute__((aligned(4)));
 

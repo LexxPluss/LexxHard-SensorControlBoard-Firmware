@@ -39,7 +39,7 @@ LOG_MODULE_REGISTER(bmu);
 // char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
 char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (msg_rawframe_bmu)];
 
-CAN_MSGQ_DEFINE(msgq_can_recv_bmu, 16);
+CAN_MSGQ_DEFINE(msgq_can_recv_bmu, 32);
 
 class bmu_controller_impl {
 public:

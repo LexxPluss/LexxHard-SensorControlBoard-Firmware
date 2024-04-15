@@ -49,20 +49,14 @@ public:
         bmu_controller::msg_can_bmu message;
 
         while (k_msgq_get(&bmu_controller::msgq_rawframe_bmu, &message, K_NO_WAIT) == 0) {
-            can_frame frame_bmu;
+            can_frame frame{
+                .id = message.can_id,
+                .dlc = BMU_CAN_DATA_LENGTH,
+                .data = {0}
+            };
 
-            frame_bmu.id = message.can_id;
-            frame_bmu.dlc = BMU_CAN_DATA_LENGTH;
-            frame_bmu.data[0] = message.frame[0];
-            frame_bmu.data[1] = message.frame[1];
-            frame_bmu.data[2] = message.frame[2];
-            frame_bmu.data[3] = message.frame[3];
-            frame_bmu.data[4] = message.frame[4];
-            frame_bmu.data[5] = message.frame[5];
-            frame_bmu.data[6] = message.frame[6];
-            frame_bmu.data[7] = message.frame[7];
-                       
-            can_send(dev, &frame_bmu, K_MSEC(100), nullptr, nullptr);
+            memcpy(frame.data, message.frame, BMU_CAN_DATA_LENGTH);
+            can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
         }
     }
 private:

@@ -51,7 +51,7 @@ public:
         can_set_mode(dev, CAN_MODE_NORMAL);
         can_start(dev);
 
-        // bmu.init();
+        bmu.init();
         // board.init();
         act.init();
         imu.init();
@@ -62,7 +62,7 @@ public:
     }
     void run() {
         while (true) {
-            // bmu.poll();
+            bmu.poll();
             // board.poll();
             act.poll();
             imu.poll();
@@ -74,7 +74,7 @@ public:
     }
 private:
     const device *dev{nullptr};
-    // lexxhard::zcan_bmu::zcan_bmu bmu;
+    lexxhard::zcan_bmu::zcan_bmu bmu;
     // lexxhard::zcan_board::zcan_board board;
     // lexxhard::zcan_dfu::zcan_dfu dfu;
     lexxhard::zcan_actuator::zcan_actuator act;
