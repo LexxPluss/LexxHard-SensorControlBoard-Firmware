@@ -551,7 +551,6 @@ private:
             .id{0x100},
             .mask{0x7c0}
         };
-        // can_attach_msgq(dev, &msgq_can_bmu_pb, &filter_bmu);
         can_add_rx_filter_msgq(dev, &msgq_can_bmu_pb, &filter_bmu);
     }
     void handle_can(can_frame &frame) {
@@ -714,6 +713,7 @@ public:
         ac.init();
         bmu.init();
         fan.init();
+        mbd.init();
 
         k_timer_init(&timer_poll_20ms, static_poll_20ms_callback, NULL);
         k_timer_user_data_set(&timer_poll_20ms, this);
@@ -829,6 +829,7 @@ private:
         mc.poll();
         ac.poll();
         bmu.poll();
+        mbd.poll();
         // TODO mbd の動作をリプレースする
         switch (state) {
         case POWER_STATE::OFF:
@@ -1004,8 +1005,8 @@ private:
             dcdc.set_enable(false);
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, 0);
-            while (true) // wait power off
-                continue;
+            // while (true) // wait power off
+            //     continue;
             break;
         case POWER_STATE::TIMEROFF:
             LOG_DBG("enter TIMEROFF\n");

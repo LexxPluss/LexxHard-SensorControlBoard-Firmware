@@ -43,8 +43,8 @@ namespace {
 K_THREAD_STACK_DEFINE(actuator_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(adc_reader_stack, 2048);
 K_THREAD_STACK_DEFINE(bmu_controller_stack, 2048);
-K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
-K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
+// K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
+// K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
 // K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
@@ -219,7 +219,7 @@ int main()
     lexxhard::adc_reader::init();
     lexxhard::bmu_controller::init();
     lexxhard::board_controller::init();
-    lexxhard::can_controller::init();
+    // lexxhard::can_controller::init();
     // lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
     lexxhard::led_controller::init();
@@ -231,8 +231,8 @@ int main()
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
     RUN(bmu_controller, 4);
-    RUN(can_controller, 4);
-    RUN(board_controller, 4); // board_controller must be started after bmu_controller (due to the CAN setting)
+    // RUN(can_controller, 4);
+    // RUN(board_controller, 4); // board_controller must be started after bmu_controller (due to the CAN setting)
     // RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
     RUN(led_controller, 1);

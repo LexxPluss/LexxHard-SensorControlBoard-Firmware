@@ -622,6 +622,33 @@ int cmd_duty(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
+{
+    int rep_num = 10000;
+
+    for (int ii{0}; ii < rep_num; ++ii) {
+        for (size_t i{0}; i < 3; ++i) {
+            uint8_t direction, duty;
+            direction = 0;
+            duty      = 100;
+            impl.pwm_trampoline(i, direction, duty);
+        }
+
+        k_msleep(5000);
+
+        for (size_t i{0}; i < 3; ++i) {
+            uint8_t direction, duty;
+            direction = 1;
+            duty      = 100;
+            impl.pwm_trampoline(i, direction, duty);
+        }
+
+        k_msleep(5000);
+    }
+    
+    return 0;
+}
+
 int cmd_init(const shell *shell, size_t argc, char **argv)
 {
     shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
@@ -661,6 +688,7 @@ int info(const shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(duty, NULL, "Actuator duty command", cmd_duty),
+    SHELL_CMD(duty_rep, NULL, "Actuator duty command", cmd_duty_rep_all),
     SHELL_CMD(init, NULL, "Actuator initialize command", cmd_init),
     SHELL_CMD(loc, NULL, "Actuator locate command", locate),
     SHELL_CMD(current, NULL, "Actuator current monitor", current),
