@@ -41,7 +41,7 @@
 
 namespace lexxhard::board_controller {
 
-LOG_MODULE_REGISTER(board);
+LOG_MODULE_REGISTER(board, LOG_LEVEL_DBG);
 
 char __aligned(4) msgq_bmu_pb_buffer[8 * sizeof (can_controller::msg_bmu)];
 char __aligned(4) msgq_board_pb_rx_buffer[8 * sizeof (msg_rcv_pb)];
@@ -507,7 +507,6 @@ CAN_MSGQ_DEFINE(msgq_can_bmu_pb, 16);
 class bmu_controller { // Variables Implemented
 public:
     void init() {
-        k_msgq_init(&msgq_can_bmu_pb, msgq_bmu_pb_buffer, sizeof (can_controller::msg_bmu), 8);
         dev = DEVICE_DT_GET(DT_NODELABEL(can1));;
         if (!device_is_ready(dev))
             return;
@@ -583,27 +582,28 @@ private:
 class dcdc_converter { // Variables Implemented
 public:
     void set_enable(bool enable) {
-        gpio_dt_spec gpio_dev;
-        // 0=OFF, 1=ON
-        if (enable) {
-            gpio_dev = GET_GPIO(v_wheel);
-            gpio_pin_set_dt(&gpio_dev, 1);
-            k_msleep(1000);
-            gpio_dev = GET_GPIO(v_peripheral);
-            gpio_pin_set_dt(&gpio_dev, 1);
-            k_msleep(1000);
-            gpio_dev = GET_GPIO(v24);
-            gpio_pin_set_dt(&gpio_dev, 1);
-        } else {
-            gpio_dev = GET_GPIO(v_wheel);
-            gpio_pin_set_dt(&gpio_dev, 0);
-            k_msleep(1000);
-            gpio_dev = GET_GPIO(v_peripheral);
-            gpio_pin_set_dt(&gpio_dev, 0);
-            k_msleep(1000);
-            gpio_dev = GET_GPIO(v24);
-            gpio_pin_set_dt(&gpio_dev, 0);
-        }
+        // TODO タイマーでオンするように変更
+        // gpio_dt_spec gpio_dev; 
+        // // 0=OFF, 1=ON
+        // if (enable) {
+        //     gpio_dev = GET_GPIO(v_wheel);
+        //     gpio_pin_set_dt(&gpio_dev, 1);
+        //     k_msleep(1000);
+        //     gpio_dev = GET_GPIO(v_peripheral);
+        //     gpio_pin_set_dt(&gpio_dev, 1);
+        //     k_msleep(1000);
+        //     gpio_dev = GET_GPIO(v24);
+        //     gpio_pin_set_dt(&gpio_dev, 1);
+        // } else {
+        //     gpio_dev = GET_GPIO(v_wheel);
+        //     gpio_pin_set_dt(&gpio_dev, 0);
+        //     k_msleep(1000);
+        //     gpio_dev = GET_GPIO(v_peripheral);
+        //     gpio_pin_set_dt(&gpio_dev, 0);
+        //     k_msleep(1000);
+        //     gpio_dev = GET_GPIO(v24);
+        //     gpio_pin_set_dt(&gpio_dev, 0);
+        // }
     }
     bool is_ok() {
         // 0:OK, 1:NG
@@ -689,7 +689,6 @@ public:
         return wheel_poweroff;
     }
 private:
-    //メッセージキューに変更 msgq_board
     void handle_board(const msg_rcv_pb &msg) {
         emergency_stop = msg.ros_emergency_stop;
         power_off = msg.ros_power_off;
@@ -714,10 +713,6 @@ public:
         bmu.init();
         fan.init();
         mbd.init();
-
-        k_timer_init(&timer_poll_20ms, static_poll_20ms_callback, NULL);
-        k_timer_user_data_set(&timer_poll_20ms, this);
-        k_timer_start(&timer_poll_20ms, K_MSEC(20), K_MSEC(20));
 
         k_timer_init(&timer_poll_100ms, static_poll_100ms_callback, NULL);
         k_timer_user_data_set(&timer_poll_100ms, this);
@@ -768,15 +763,10 @@ public:
     void run() {
         while(true) {
             poll();
+            k_msleep(20);
         }
     }
 private:
-    static void static_poll_20ms_callback(struct k_timer *timer_id) {
-        auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
-        if (instance) {
-            instance->poll();
-        }
-    }
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
         if (instance) {
@@ -815,7 +805,7 @@ private:
     };
     void poll() {
         auto wheel_relay_control = [&](){
-            bool wheel_poweroff{mbd.is_wheel_poweroff()};   // TODO mbd.is_wheel_poweroff() はLexxAutoからのモーターOFF指令
+            bool wheel_poweroff{mbd.is_wheel_poweroff()};
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
@@ -823,6 +813,7 @@ private:
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
         };
+        
         psw.poll();
         bsw.poll();
         esw.poll();

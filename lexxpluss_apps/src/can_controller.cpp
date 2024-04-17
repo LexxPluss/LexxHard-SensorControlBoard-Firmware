@@ -132,7 +132,7 @@ private:
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     bool heartbeat_timeout{true}, enable_lockdown{true};
-    static constexpr char version[]{"1.0.0"};
+    static constexpr char version[]{"2.0.0"};
 } impl;
 
 int brd_emgoff(const shell *shell, size_t argc, char **argv)

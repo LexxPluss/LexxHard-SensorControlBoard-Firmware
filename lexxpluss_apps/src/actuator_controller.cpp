@@ -545,7 +545,7 @@ public:
     void set_current_monitor() const {
     }
     void info(const shell *shell) const {
-        shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+        shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             auto [pulse, current, fail, direction, duty]{act[i].get_info()};
             shell_print(shell,
@@ -608,7 +608,7 @@ private:
 
 int cmd_duty(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <direction> <power> ...\n", argv[-1], argv[0]);
         return 1;
@@ -626,6 +626,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 {
     int rep_num = 10000;
 
+    shell_print(shell, "Repeat Up-Down 10,000 times with 5sec span.");
     for (int ii{0}; ii < rep_num; ++ii) {
         for (size_t i{0}; i < 3; ++i) {
             uint8_t direction, duty;
@@ -651,7 +652,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 
 int cmd_init(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
     if (impl.init_location() != 0)
         shell_print(shell, "init error.");
     return 0;
@@ -659,7 +660,7 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
 
 int locate(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
     uint8_t location[ACTUATOR_NUM]{0, 0, 0}, power[ACTUATOR_NUM]{0, 0, 0}, detail[ACTUATOR_NUM]{0, 0, 0};
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <location> <power> ...\n", argv[-1], argv[0]);
