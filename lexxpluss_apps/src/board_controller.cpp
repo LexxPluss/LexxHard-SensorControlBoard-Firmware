@@ -443,6 +443,7 @@ private: // Thermistor side starts here.
     void adc_read() { // Change to read the temperature sensor from ADC pin directly. Thermistor side.
         float v_th_pos{(float)(adc_reader::get(adc_reader::THERMISTOR_P) / 1000.0f)};
         float v_th_neg{(float)(adc_reader::get(adc_reader::THERMISTOR_N) / 1000.0f)};
+        // LOG_DBG("%f %f", v_th_pos, v_th_neg);
         calculate_temperature(v_th_pos, 0); // Calculate the thermistor PLUS temperature
         calculate_temperature(v_th_neg, 1); // Calculate the thermistor MINUS temperature
         return;
