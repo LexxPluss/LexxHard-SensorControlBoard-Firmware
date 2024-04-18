@@ -50,14 +50,16 @@ public:
             uint16_t data4 = (uint16_t)(message.right / 2);
             uint16_t data5 = (uint16_t)(message.back / 2);
 
-            packedData[0] = data1 & 0xFF0;                         
-            packedData[1] = (data2 >> 8) | ((data1 & 0x0F) << 4);   
+            // 8-byte : | byte0 | byte1 | byte2 | byte3 | byte4 | byte5 | byte6 | byte7 |
+            // 8-byte : |   data1   |   data2   |   data3   |   data4   |   data5   | x |
+            packedData[0] = (data1 & 0xFF0) >> 4;                         
+            packedData[1] = ((data1 & 0x00F) << 4) | (data2 >> 8);   
             packedData[2] = data2 & 0x0FF;                             
-            packedData[3] = data3 & 0xFF0;
-            packedData[4] = (data4 >> 8) | ((data3 & 0x0F) << 4);
+            packedData[3] = (data3 & 0xFF0) >> 4;
+            packedData[4] = ((data3 & 0x00F) << 4) | (data4 >> 8);
             packedData[5] = data4 & 0x0FF;
-            packedData[6] = data5 & 0xFF0;
-            packedData[7] = data5 >> 8;                          
+            packedData[6] = (data5 & 0xFF0) >> 4;
+            packedData[7] = (data5 & 0x00F) << 4;                          
 
             zcan_frame frame{
                 .id = CAN_ID_USS,
