@@ -634,7 +634,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
     for (int ii{0}; ii < rep_num; ++ii) {
         for (size_t i{0}; i < 3; ++i) {
             uint8_t direction, duty;
-            direction = 0;
+            direction = 1;
             duty      = 100;
             impl.pwm_trampoline(i, direction, duty);
         }
@@ -643,7 +643,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 
         for (size_t i{0}; i < 3; ++i) {
             uint8_t direction, duty;
-            direction = 1;
+            direction = -1;
             duty      = 100;
             impl.pwm_trampoline(i, direction, duty);
         }
