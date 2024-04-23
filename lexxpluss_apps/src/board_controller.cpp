@@ -532,10 +532,10 @@ public:
         }
     }
     bool is_ok() const {
-        LOG_DBG("data.mod_status1 %d", (data.mod_status1 & 0b10111111) == 0);
-        LOG_DBG("data.mod_status1 %d", (data.mod_status2 & 0b11100001) == 0);
-        LOG_DBG("data.bmu_alarm1 %d", (data.bmu_alarm1  & 0b11111111) == 0);
-        LOG_DBG("data.bmu_alarm2 %d", (data.bmu_alarm2  & 0b00000001) == 0);
+        // LOG_DBG("data.mod_status1 %d", (data.mod_status1 & 0b10111111) == 0);
+        // LOG_DBG("data.mod_status1 %d", (data.mod_status2 & 0b11100001) == 0);
+        // LOG_DBG("data.bmu_alarm1 %d", (data.bmu_alarm1  & 0b11111111) == 0);
+        // LOG_DBG("data.bmu_alarm2 %d", (data.bmu_alarm2  & 0b00000001) == 0);
 
         return ((data.mod_status1 & 0b10111111) == 0 ||
                 (data.mod_status2 & 0b11100001) == 0 ||
@@ -593,7 +593,6 @@ private:
 class dcdc_converter { // Variables Implemented
 public:
     void set_enable(bool enable) {
-        // TODO タイマーでオンするように変更
         gpio_dt_spec gpio_dev; 
         // 0=OFF, 1=ON
         if (enable) {
@@ -627,7 +626,7 @@ public:
             && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 0)
             && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 0);
         if (rtn == false) {
-            LOG_DBG("dcdc is_ok() NG: %d", rtn);
+            LOG_ERR("dcdc is_ok() NG: %d", rtn);
         }
 
         return rtn;
@@ -843,7 +842,9 @@ private:
         
         switch (state) {
         case POWER_STATE::OFF:
-            set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
+            if (psw.get_state() == power_switch::STATE::PUSHED) {
+                set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
+            }
             break;
         case POWER_STATE::TIMEROFF:
             if ((k_uptime_get() - timer_poweroff) > 5000)
@@ -879,12 +880,18 @@ private:
                 set_new_state(wait_shutdown ? POWER_STATE::TIMEROFF : POWER_STATE::LOCKDOWN);
             } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 if (wait_shutdown) {
-                    if ((k_uptime_get() - timer_shutdown)> 60000)
+                    if ((k_uptime_get() - timer_shutdown)> 60000) {
                         set_new_state(POWER_STATE::OFF);
+                        gpio_dt_spec gpio_dev = GET_GPIO(v24);
+                        gpio_pin_set_dt(&gpio_dev, 0);
+                        psw.reset_state();
+                    }
                 } else {
                     LOG_DBG("wait shutdown\n");
                     wait_shutdown = true;
                     gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                    gpio_pin_set_dt(&gpio_dev, 0);
+                    gpio_dev = GET_GPIO(v_peripheral);
                     gpio_pin_set_dt(&gpio_dev, 0);
                     timer_shutdown = k_uptime_get();    // timer reset
                     if (psw_state == power_switch::STATE::PUSHED)

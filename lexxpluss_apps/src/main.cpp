@@ -212,7 +212,7 @@ int main()
 
     // /*** Function Only for Zephyr V2 ***/
     fan_on();
-    power_on();
+    // power_on();
     // /***********************************/
 
     lexxhard::actuator_controller::init();
