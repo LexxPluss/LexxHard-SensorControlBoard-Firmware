@@ -37,32 +37,30 @@ namespace lexxhard {
 class ros_uss {
 public:
     void init() {
-        /* TODO 初期化が他に必要か調べる */
-        dev = device_get_binding("CAN_2");  /* TODO CAN_2 かどうか調べる（デバイス定義） */
+        dev = device_get_binding("CAN_2"); 
     }
     void poll() {
         uss_controller::msg message;
 
         while (k_msgq_get(&uss_controller::msgq, &message, K_NO_WAIT) == 0) {
-            uint8_t packedData[CAN_DATA_LENGTH_USS] {0}; // 8バイトのデータ配列 0で初期化
+            uint8_t packedData[CAN_DATA_LENGTH_USS] {0}; 
+            uint16_t data1 = (uint16_t)(message.front_left / 2);
+            uint16_t data2 = (uint16_t)(message.front_right / 2);
+            uint16_t data3 = (uint16_t)(message.left / 2);
+            uint16_t data4 = (uint16_t)(message.right / 2);
+            uint16_t data5 = (uint16_t)(message.back / 2);
 
-            /* TODO USSのデータ出力サイズを調べる(2mm解像度で12bit?) */
-            uint16_t data1 = (uint16_t)(message.front_left / 1000);
-            uint16_t data2 = (uint16_t)(message.front_right / 1000);
-            uint16_t data3 = (uint16_t)(message.left / 1000);
-            uint16_t data4 = (uint16_t)(message.right / 1000);
-            uint16_t data5 = (uint16_t)(message.back / 1000);
+            // 8-byte : | byte0 | byte1 | byte2 | byte3 | byte4 | byte5 | byte6 | byte7 |
+            // 8-byte : |   data1   |   data2   |   data3   |   data4   |   data5   | x |
+            packedData[0] = (data1 & 0xFF0) >> 4;                         
+            packedData[1] = ((data1 & 0x00F) << 4) | (data2 >> 8);   
+            packedData[2] = data2 & 0x0FF;                             
+            packedData[3] = (data3 & 0xFF0) >> 4;
+            packedData[4] = ((data3 & 0x00F) << 4) | (data4 >> 8);
+            packedData[5] = data4 & 0x0FF;
+            packedData[6] = (data5 & 0xFF0) >> 4;
+            packedData[7] = (data5 & 0x00F) << 4;                          
 
-            packedData[0] = data1 & 0xFF;                           // data1の下位8ビット
-            packedData[1] = (data1 >> 8) | ((data2 & 0x0F) << 4);   // data1の上位4ビットとdata2の下位4ビット
-            packedData[2] = data2 >> 4;                             // data2の上位8ビット
-            packedData[3] = data3 & 0xFF;
-            packedData[4] = (data3 >> 8) | ((data4 & 0x0F) << 4);
-            packedData[5] = data4 >> 4;
-            packedData[6] = data5 & 0xFF;
-            packedData[7] = data5 >> 8;                             // data5の上位4ビットのみ使用
-
-            // CANフレームにデータをセット
             zcan_frame frame{
                 .id = CAN_ID_USS,
                 .rtr = CAN_DATAFRAME,
@@ -71,7 +69,6 @@ public:
                 .data = {0}
             };
 
-            // packedDataをCANフレームのdataフィールドにコピー
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_USS);
 
             can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
