@@ -363,6 +363,7 @@ private:
 #define AUTO_CHARGE_DOCKED_TIMEOUT_MS 5000
 #define IRDA_DATA_LEN 8
 #define IRDA_TX_TIMEOUT_MS 1000
+
 class auto_charger { // Variables Half-Implemented (Not Thermistors ADC)
 public:
     void init() {
@@ -373,6 +374,17 @@ public:
         start_time = k_uptime_get();
 
         dev = GET_DEV(usart6);
+
+        uart_config uart_cfg = {
+            .baudrate = 4800,
+            .parity = UART_CFG_PARITY_NONE,
+            .stop_bits = UART_CFG_STOP_BITS_1,
+            .data_bits = UART_CFG_DATA_BITS_8,
+            .flow_ctrl = UART_CFG_FLOW_CTRL_NONE
+        };
+        
+        uart_configure(dev, &uart_cfg);
+
         return;
     }
     bool is_docked() const {
@@ -486,10 +498,11 @@ private: // Thermistor side starts here.
             return;
         }
 
-        int ret = uart_tx(dev, buf, IRDA_DATA_LEN, IRDA_TX_TIMEOUT_MS);
-        if (ret < 0) {
-            LOG_DBG("Failed to send data over UART\n");
+        for (int ii = 0; ii < IRDA_DATA_LEN; ++ii) {
+            uart_poll_out(dev, buf[ii]);
         }
+       
+        LOG_DBG("Hearbeat Send\n");
     } // Declaration of variables
 
     const device* dev{nullptr};
