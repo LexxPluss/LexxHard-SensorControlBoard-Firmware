@@ -484,9 +484,9 @@ private: // Thermistor side starts here.
     void send_heartbeat() {  /* Creates the message to send to the robot using the "compose" function below */
         uint8_t sw_state{0};
 
-        if(is_connected()){
+        if (is_connected()) {
             sw_state = 1;
-        }else{
+        } else {
             sw_state = 0;
         }
 
@@ -517,22 +517,26 @@ private: // Thermistor side starts here.
                            CONNECT_THRES_VOLTAGE{3.3f * 0.5f * 1000.0f / (9100.0f + 1000.0f)};
 };
 
-CAN_MSGQ_DEFINE(msgq_can_bmu_pb, 16);
+char __aligned(4) msgq_can_bmu_pb_buffer[8 * sizeof (can_frame)];
 class bmu_controller { // Variables Implemented
 public:
     void init() {
-        dev = DEVICE_DT_GET(DT_NODELABEL(can1));;
-        if (!device_is_ready(dev))
-            return;
-        setup_can_filter();
+        k_msgq_init(&msgq_can_bmu_pb, msgq_can_bmu_pb_buffer, sizeof (can_frame), 8);
     }
     void poll() {
         can_frame frame;
+
+        // BMU CAN data from bmu_controller
         while (k_msgq_get(&msgq_can_bmu_pb, &frame, K_NO_WAIT) == 0){
             handle_can(frame);
         }
     }
     bool is_ok() const {
+        LOG_DBG("data.mod_status1 %d", (data.mod_status1 & 0b10111111) == 0);
+        LOG_DBG("data.mod_status1 %d", (data.mod_status2 & 0b11100001) == 0);
+        LOG_DBG("data.bmu_alarm1 %d", (data.bmu_alarm1  & 0b11111111) == 0);
+        LOG_DBG("data.bmu_alarm2 %d", (data.bmu_alarm2  & 0b00000001) == 0);
+
         return ((data.mod_status1 & 0b10111111) == 0 ||
                 (data.mod_status2 & 0b11100001) == 0 ||
                 (data.bmu_alarm1  & 0b11111111) == 0 ||
@@ -559,13 +563,6 @@ public:
         return data.rsoc;
     }
 private:
-    void setup_can_filter() const {
-        static const can_filter filter_bmu{
-            .id{0x100},
-            .mask{0x7c0}
-        };
-        can_add_rx_filter_msgq(dev, &msgq_can_bmu_pb, &filter_bmu);
-    }
     void handle_can(can_frame &frame) {
         switch (frame.id) {
         case 0x100:
@@ -597,27 +594,27 @@ class dcdc_converter { // Variables Implemented
 public:
     void set_enable(bool enable) {
         // TODO タイマーでオンするように変更
-        // gpio_dt_spec gpio_dev; 
-        // // 0=OFF, 1=ON
-        // if (enable) {
-        //     gpio_dev = GET_GPIO(v_wheel);
-        //     gpio_pin_set_dt(&gpio_dev, 1);
-        //     k_msleep(1000);
-        //     gpio_dev = GET_GPIO(v_peripheral);
-        //     gpio_pin_set_dt(&gpio_dev, 1);
-        //     k_msleep(1000);
-        //     gpio_dev = GET_GPIO(v24);
-        //     gpio_pin_set_dt(&gpio_dev, 1);
-        // } else {
-        //     gpio_dev = GET_GPIO(v_wheel);
-        //     gpio_pin_set_dt(&gpio_dev, 0);
-        //     k_msleep(1000);
-        //     gpio_dev = GET_GPIO(v_peripheral);
-        //     gpio_pin_set_dt(&gpio_dev, 0);
-        //     k_msleep(1000);
-        //     gpio_dev = GET_GPIO(v24);
-        //     gpio_pin_set_dt(&gpio_dev, 0);
-        // }
+        gpio_dt_spec gpio_dev; 
+        // 0=OFF, 1=ON
+        if (enable) {
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 1);
+            k_msleep(3000);
+            gpio_dev = GET_GPIO(v_peripheral);
+            gpio_pin_set_dt(&gpio_dev, 1);
+            k_msleep(3000);
+            gpio_dev = GET_GPIO(v24);
+            gpio_pin_set_dt(&gpio_dev, 1);
+        } else {
+            gpio_dev = GET_GPIO(v_wheel);
+            gpio_pin_set_dt(&gpio_dev, 0);
+            k_msleep(3000);
+            gpio_dev = GET_GPIO(v_peripheral);
+            gpio_pin_set_dt(&gpio_dev, 0);
+            k_msleep(3000);
+            gpio_dev = GET_GPIO(v24);
+            gpio_pin_set_dt(&gpio_dev, 0);
+        }
     }
     bool is_ok() {
         // 0:OK, 1:NG
@@ -629,6 +626,10 @@ public:
             && (gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 0)
             && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 0)
             && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 0);
+        if (rtn == false) {
+            LOG_DBG("dcdc is_ok() NG: %d", rtn);
+        }
+
         return rtn;
     }
     void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
@@ -710,8 +711,12 @@ private:
         wheel_poweroff = msg.ros_wheel_power_off;
 
         // heartbeat is not timeout means heartbeat is detected
-        if (ros_heartbeat_timeout == false)
+        if (ros_heartbeat_timeout == false) {
             heartbeat_detect = true;
+        } else {
+            heartbeat_detect = false;
+            LOG_DBG("ROS Heartbeat Timeout");
+        }
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
         wheel_poweroff{false};
@@ -835,7 +840,7 @@ private:
         ac.poll();
         bmu.poll();
         mbd.poll();
-        // TODO mbd の動作をリプレースする
+        
         switch (state) {
         case POWER_STATE::OFF:
             set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
@@ -861,6 +866,7 @@ private:
                 LOG_DBG("BMU and temperature OK\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if ((k_uptime_get() - timer_post) > 3000) {
+                LOG_DBG("timer_post > 3000\n");
                 set_new_state(POWER_STATE::OFF);
             }
             break;
@@ -1008,8 +1014,6 @@ private:
             poweron_by_switch = false;
             psw.set_led(false);
             dcdc.set_enable(false);
-            gpio_dev = GET_GPIO(v_wheel);
-            gpio_pin_set_dt(&gpio_dev, 0);
             // while (true) // wait power off
             //     continue;
             break;
@@ -1160,7 +1164,7 @@ void run(void *p1, void *p2, void *p3)
 }
 
 k_thread thread;
-k_msgq msgq_board_pb_rx, msgq_board_pb_tx;
+k_msgq msgq_board_pb_rx, msgq_board_pb_tx, msgq_can_bmu_pb;
 
 }
 

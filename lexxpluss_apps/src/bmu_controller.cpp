@@ -31,6 +31,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include "bmu_controller.hpp"
+#include "board_controller.hpp"
 
 namespace lexxhard::bmu_controller { 
 
@@ -77,6 +78,9 @@ public:
                 handler_can_bmu(frame);
                 while (k_msgq_put(&msgq_rawframe_bmu, &can_msg, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq_rawframe_bmu);
+                // -> can frame to board_controller
+                while (k_msgq_put(&board_controller::msgq_can_bmu_pb, &frame, K_NO_WAIT) != 0)
+                    k_msgq_purge(&board_controller::msgq_can_bmu_pb);
 
                 // -> parsed info to show in bmu info
                 handler_bmu(frame);
