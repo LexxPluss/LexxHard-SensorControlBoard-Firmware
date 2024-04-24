@@ -61,7 +61,6 @@ K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 void init_gpio() {
     gpio_dt_spec gpio_dev;
 
-    // TODO 全部のGPIOを初期化する
     // Output
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_led_out), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
@@ -96,6 +95,9 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_lift_actuator), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ipc_power_sw_fp), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
     
     // Input
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_sw_in), gpios);
@@ -124,17 +126,18 @@ void init_gpio() {
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_24v), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_peripheral), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_wheel_motor_left), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_wheel_motor_right), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
     
+    // LED
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_INACTIVE);

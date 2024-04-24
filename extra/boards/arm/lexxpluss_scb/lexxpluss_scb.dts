@@ -114,6 +114,7 @@
 	};
 
 	iofunc {
+		/* Actuator */
 		act_c_fail: act_c_fail {
 			compatible = "gpio-pin";
 			gpios = <&gpiod 10 GPIO_ACTIVE_HIGH>;
@@ -126,6 +127,40 @@
 			compatible = "gpio-pin";
 			gpios = <&gpioe 10 GPIO_ACTIVE_HIGH>;
 		};
+		ps_lift_actuator: ps_lift_actuator {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 0 GPIO_ACTIVE_HIGH>;
+		};
+		pgood_linear_act_left: pgood_linear_act_left {
+			compatible = "gpio-pin";
+			gpios = <&gpiok 4 GPIO_ACTIVE_HIGH>;
+		};
+		pgood_linear_act_right: pgood_linear_act_right {
+			compatible = "gpio-pin";
+			gpios = <&gpiok 5 GPIO_ACTIVE_HIGH>;
+		};
+		pgood_linear_act_center: pgood_linear_act_center {
+			compatible = "gpio-pin";
+			gpios = <&gpiok 6 GPIO_ACTIVE_HIGH>;
+		};
+		encoder_left_actuator_ch1: encoder_left_actuator_ch1 {
+			compatible = "gpio-pin";
+			gpios = <&gpioa 3 GPIO_ACTIVE_HIGH>;
+		};
+		encoder_left_actuator_ch2: encoder_left_actuator_ch2 {
+			compatible = "gpio-pin";
+			gpios = <&gpioa 4 GPIO_ACTIVE_HIGH>;
+		};
+		encoder_right_actuator_ch1: encoder_right_actuator_ch1 {
+			compatible = "gpio-pin";
+			gpios = <&gpioh 6 GPIO_ACTIVE_HIGH>;
+		};
+		encoder_right_actuator_ch2: encoder_right_actuator_ch2 {
+			compatible = "gpio-pin";
+			gpios = <&gpioh 9 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* Power */
 		v24: v24 {
 			compatible = "gpio-pin";
 			gpios = <&gpioc 15 GPIO_ACTIVE_HIGH>;
@@ -141,74 +176,6 @@
 		v_peripheral: v_peripheral {
 			compatible = "gpio-pin";
 			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
-		};
-		fan1: fan1 {
-			compatible = "gpio-pin";
-			gpios = <&gpioc 10 GPIO_ACTIVE_HIGH>;
-		};
-		fan2: fan2 {
-			compatible = "gpio-pin";
-			gpios = <&gpioc 11 GPIO_ACTIVE_HIGH>;
-		};
-		fan3: fan3 {
-			compatible = "gpio-pin";
-			gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
-		};
-		fan4: fan4 {
-			compatible = "gpio-pin";
-			gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>;
-		};
-		pgv_en: pgv_en {
-			compatible = "gpio-pin";
-			gpios = <&gpioh 2 GPIO_ACTIVE_HIGH>;
-		};
-		pgv_en_n: pgv_en_n {
-			compatible = "gpio-pin";
-			gpios = <&gpioa 2 GPIO_ACTIVE_HIGH>;
-		};
-		wheel_en: wheel_en {
-			compatible = "gpio-pin";
-			gpios = <&gpiok 3 GPIO_ACTIVE_HIGH>;
-		};
-		ps_sw_in: ps_sw_in {
-			compatible = "gpio-pin";
-			gpios = <&gpioh 4 GPIO_ACTIVE_HIGH>;
-		};
-		ps_led_out: ps_led_out {
-			compatible = "gpio-pin";
-			gpios = <&gpioh 5 GPIO_ACTIVE_HIGH>;
-		};
-		bp_left: bp_left {
-			compatible = "gpio-pin";
-			gpios = <&gpioi 7 GPIO_ACTIVE_HIGH>;
-		};
-		es_left: es_left {
-			compatible = "gpio-pin";
-			gpios = <&gpioi 4 GPIO_ACTIVE_HIGH>;
-		};
-		es_right: es_right {
-			compatible = "gpio-pin";
-			gpios = <&gpioi 0 GPIO_ACTIVE_HIGH>;
-		};
-		mc_din: mc_din {
-			compatible = "gpio-pin";
-			gpios = <&gpiok 7 GPIO_ACTIVE_HIGH>;
-		};
-		bmu_c_fet: bmu_c_fet {
-			compatible = "gpio-pin";
-			gpios = <&gpioj 5 GPIO_ACTIVE_HIGH>;
-		};
-		bmu_d_fet: bmu_d_fet {
-			compatible = "gpio-pin";
-			gpios = <&gpioj 12 GPIO_ACTIVE_HIGH>;
-		};
-		bmu_p_dsg: bmu_p_dsg {
-			compatible = "gpio-pin";
-			gpios = <&gpioj 13 GPIO_ACTIVE_HIGH>;
-		};
-		ps_lift_actuator: ps_lift_actuator {
-			compatible = "gpio-pin";
-			gpios = <&gpioj 0 GPIO_ACTIVE_HIGH>;
 		};
 		pgood_24v: pgood_24v {
 			compatible = "gpio-pin";
@@ -226,17 +193,213 @@
 			compatible = "gpio-pin";
 			gpios = <&gpioh 12 GPIO_ACTIVE_HIGH>;
 		};
-		pgood_linear_act_left: pgood_linear_act_left {
+
+		/* Fan */
+		fan1: fan1 {
 			compatible = "gpio-pin";
-			gpios = <&gpiok 4 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpioc 10 GPIO_ACTIVE_HIGH>;
 		};
-		pgood_linear_act_right: pgood_linear_act_right {
+		fan2: fan2 {
 			compatible = "gpio-pin";
-			gpios = <&gpiok 5 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpioc 11 GPIO_ACTIVE_HIGH>;
 		};
-		pgood_linear_act_center: pgood_linear_act_center {
+		fan3: fan3 {
 			compatible = "gpio-pin";
-			gpios = <&gpiok 6 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
+		};
+		fan4: fan4 {
+			compatible = "gpio-pin";
+			gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>;
+		};
+		
+		/* PGV */
+		pgv_en_n: pgv_en_n {
+			compatible = "gpio-pin";
+			gpios = <&gpioa 2 GPIO_ACTIVE_HIGH>;
+		};
+		pgv_en: pgv_en {
+			compatible = "gpio-pin";
+			gpios = <&gpioh 2 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* Power SW */
+		ps_sw_in: ps_sw_in {
+			compatible = "gpio-pin";
+			gpios = <&gpioh 4 GPIO_ACTIVE_HIGH>;
+		};
+		ps_led_out: ps_led_out {
+			compatible = "gpio-pin";
+			gpios = <&gpioh 5 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* Safety */
+		wheel_en: wheel_en {
+			compatible = "gpio-pin";
+			gpios = <&gpiok 3 GPIO_ACTIVE_HIGH>;
+		};
+		bp_left: bp_left {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 7 GPIO_ACTIVE_HIGH>;
+		};
+		es_left: es_left {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 4 GPIO_ACTIVE_HIGH>;
+		};
+		es_right: es_right {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 0 GPIO_ACTIVE_HIGH>;
+		};
+		mc_din: mc_din {
+			compatible = "gpio-pin";
+			gpios = <&gpiok 7 GPIO_ACTIVE_HIGH>;
+		};
+		es_option_1: es_option_1 {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 14 GPIO_ACTIVE_HIGH>;
+		};
+		es_option_2: es_option_2 {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 15 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* BMU */
+		bmu_c_fet: bmu_c_fet {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 5 GPIO_ACTIVE_HIGH>;
+		};
+		bmu_d_fet: bmu_d_fet {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 12 GPIO_ACTIVE_HIGH>;
+		};
+		bmu_p_dsg: bmu_p_dsg {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 13 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* IPC GPIO */
+		ipc_gpio_2: ipc_gpio_2 {
+			compatible = "gpio-pin";
+			gpios = <&gpiof 12 GPIO_ACTIVE_HIGH>;
+		};
+		ipc_gpio_3: ipc_gpio_3 {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 7 GPIO_ACTIVE_HIGH>;
+		};
+		ipc_gpio_4: ipc_gpio_4 {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 8 GPIO_ACTIVE_HIGH>;
+		};
+		ipc_gpio_5: ipc_gpio_5 {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 9 GPIO_ACTIVE_HIGH>;
+		};
+		ipc_gpio_6: ipc_gpio_6 {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 11 GPIO_ACTIVE_HIGH>;
+		};
+		ipc_gpio_7: ipc_gpio_7 {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 1 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* Wheel Encoder */
+		encoder_wheel_left_z: encoder_wheel_left_z {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 0 GPIO_ACTIVE_HIGH>;
+		};
+		encoder_wheel_right_z: encoder_wheel_right_z {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 12 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* DIPSW */
+		dipsw_bit_1: dipsw_bit_1 {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 13 GPIO_ACTIVE_HIGH>;
+		};
+		dipsw_bit_2: dipsw_bit_2 {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 14 GPIO_ACTIVE_HIGH>;
+		};
+		dipsw_bit_3: dipsw_bit_3 {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 15 GPIO_ACTIVE_HIGH>;
+		};
+		dipsw_bit_4: dipsw_bit_4 {
+			compatible = "gpio-pin";
+			gpios = <&gpiof 3 GPIO_ACTIVE_HIGH>;
+		};
+		
+		/* IPC Power */
+		ipc_power_sw_fp: ipc_power_sw_fp {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 7 GPIO_ACTIVE_HIGH>;
+		};
+		ipc_power_status_fp: ipc_power_status_fp {
+			compatible = "gpio-pin";
+			gpios = <&gpioe 8 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* Switch */
+		key_switch_center: key_switch_center {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 9 GPIO_ACTIVE_HIGH>;
+		};
+		key_switch_left: key_switch_left {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 10 GPIO_ACTIVE_HIGH>;
+		};
+		key_switch_right: key_switch_right {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 11 GPIO_ACTIVE_HIGH>;
+		};
+		switch_start: switch_start {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 12 GPIO_ACTIVE_HIGH>;
+		};
+		switch_stop: switch_stop {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 13 GPIO_ACTIVE_HIGH>;
+		};
+		switch_resume: switch_resume {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 14 GPIO_ACTIVE_HIGH>;
+		};
+		lift_up_switch: lift_up_switch {
+			compatible = "gpio-pin";
+			gpios = <&gpiog 0 GPIO_ACTIVE_HIGH>;
+		};
+		lift_down_switch: lift_down_switch {
+			compatible = "gpio-pin";
+			gpios = <&gpiog 1 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* Spare GPIO */
+		spare_gpio_1: spare_gpio_1 {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 15 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_2: spare_gpio_2 {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 1 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_3: spare_gpio_3 {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 2 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_4: spare_gpio_4 {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 3 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_5: spare_gpio_5 {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 4 GPIO_ACTIVE_HIGH>;
+		};
+
+		/* etc */
+		adc_alert: adc_alert {
+			compatible = "gpio-pin";
+			gpios = <&gpioc 12 GPIO_ACTIVE_HIGH>;
 		};
 	};
 };
