@@ -37,7 +37,7 @@
 #include "board_controller.hpp"
 #include "can_controller.hpp"
 #include "common.hpp"
-
+#include "led_controller.hpp"
 
 namespace lexxhard::board_controller {
 
@@ -1015,14 +1015,19 @@ private:
         }
         int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1};
         gpio_dt_spec gpio_dev;
+        led_controller::msg msg_led;
         switch (newstate) {
         case POWER_STATE::OFF:
             LOG_DBG("enter OFF\n");
             poweron_by_switch = false;
             psw.set_led(false);
             dcdc.set_enable(false);
-            // while (true) // wait power off
-            //     continue;
+
+            // Set LED OFF
+            msg_led.pattern = led_controller::msg::NONE;
+            msg_led.interrupt_ms = 0;
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                        k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::TIMEROFF:
             LOG_DBG("enter TIMEROFF\n");
@@ -1047,6 +1052,12 @@ private:
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             wait_shutdown = false;
+
+            // Set LED SHOWTIME
+            msg_led.pattern = led_controller::msg::SHOWTIME;
+            msg_led.interrupt_ms = 0;
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                        k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::NORMAL:
             LOG_DBG("enter NORMAL\n");

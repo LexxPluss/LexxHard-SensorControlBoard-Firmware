@@ -43,7 +43,8 @@ char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 class led_message_receiver {
 public:
     led_message_receiver() {
-        message.pattern = msg::SHOWTIME;
+        // message.pattern = msg::SHOWTIME;
+        message.pattern = msg::NONE;
         message.interrupt_ms = 0;
     }
     bool get_message(msg &output) {
