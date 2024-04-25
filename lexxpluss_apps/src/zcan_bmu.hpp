@@ -26,6 +26,7 @@
 // #pragma once
 
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include <cstdio>
 #include "bmu_controller.hpp"
@@ -46,17 +47,10 @@ public:
         return;
     }
     void poll() {
-        bmu_controller::msg_can_bmu message;
+        can_frame message;
 
         while (k_msgq_get(&bmu_controller::msgq_rawframe_bmu, &message, K_NO_WAIT) == 0) {
-            can_frame frame{
-                .id = message.can_id,
-                .dlc = BMU_CAN_DATA_LENGTH,
-                .data = {0}
-            };
-
-            memcpy(frame.data, message.frame, BMU_CAN_DATA_LENGTH);
-            can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+            can_send(dev, &message, K_MSEC(100), nullptr, nullptr);
         }
     }
 private:

@@ -37,15 +37,14 @@ namespace lexxhard::bmu_controller {
 
 LOG_MODULE_REGISTER(bmu);
 
-// char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
-char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (msg_rawframe_bmu)];
+char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (can_frame)];
 
 CAN_MSGQ_DEFINE(msgq_can_recv_bmu, 32);
 
 class bmu_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (msg_rawframe_bmu), 8); // For IPC as path through from CAN_1 to CAN_2
+        k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (can_frame), 8); // For IPC as path through from CAN_1 to CAN_2
 
         dev_can_bmu = DEVICE_DT_GET(DT_NODELABEL(can1));
         if (!device_is_ready(dev_can_bmu))
@@ -75,8 +74,7 @@ public:
             can_frame frame;
             if (k_msgq_get(&msgq_can_recv_bmu, &frame, K_NO_WAIT) == 0) {
                 // -> raw packet to can_bmu
-                handler_can_bmu(frame);
-                while (k_msgq_put(&msgq_rawframe_bmu, &can_msg, K_NO_WAIT) != 0)
+                while (k_msgq_put(&msgq_rawframe_bmu, &frame, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq_rawframe_bmu);
                 // -> can frame to board_controller
                 while (k_msgq_put(&board_controller::msgq_can_bmu_pb, &frame, K_NO_WAIT) != 0)
@@ -120,13 +118,6 @@ public:
     }
 
 private:
-    void handler_can_bmu(can_frame &frame) {
-        can_msg.can_id = frame.id;
-        for (int i = 0; i < BMU_CAN_DATA_LENGTH; i++){
-            can_msg.frame[i] = frame.data[i];
-        }
-        return;
-    }
     void handler_bmu(can_frame &frame) {
         if (frame.id == 0x100) {
             msg.mod_status1 = frame.data[0];
