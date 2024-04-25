@@ -29,9 +29,9 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
-#include "led_controller.hpp"
 #include "can_controller.hpp"
 #include "board_controller.hpp"
+#include "led_controller.hpp"
 
 namespace lexxhard::can_controller {
 
@@ -86,9 +86,13 @@ public:
 	return board2ros.bumper_switch_asserted;
     }
     bool is_emergency() const {
-        return board2ros.emergency_switch_asserted ||
+        bool rtn{false};
+        if (board2ros.state != 0) {
+            rtn = board2ros.emergency_switch_asserted ||
                board2ros.bumper_switch_asserted ||
                ros2board.emergency_stop;
+        }
+        return rtn;
     }
     void brd_emgoff() {
         ros2board.emergency_stop = false;
