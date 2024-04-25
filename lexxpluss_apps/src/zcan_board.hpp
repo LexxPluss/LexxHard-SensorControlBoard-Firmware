@@ -29,8 +29,9 @@
 #include <zephyr/logging/log.h>
 #include "can_controller.hpp"
 
-#define CAN_ID_BOARD 0x20C
-#define CAN_TX_DATA_LENGTH_BOARD 8
+#define CAN_ID_BOARD_TX 0x20C
+#define CAN_ID_BOARD_RX 0x20F
+#define CAN_TX_DATA_LENGTH_BOARD 6
 #define CAN_RX_DATA_LENGTH_BOARD 4
 
 namespace lexxhard::zcan_board {
@@ -50,7 +51,7 @@ public:
         }
 
         static const can_filter filter_led{
-            .id{CAN_ID_BOARD},
+            .id{CAN_ID_BOARD_RX},
             .mask{0x7ff}
         };
 
@@ -64,31 +65,38 @@ public:
 
         while (k_msgq_get(&can_controller::msgq_board, &message, K_NO_WAIT) == 0) {
             can_frame frame{
-                .id = CAN_ID_BOARD,
+                .id = CAN_ID_BOARD_TX,
                 .dlc = CAN_TX_DATA_LENGTH_BOARD,
                 .data = {0}
             };
 
-            packedData[0] = message.state;
+            packedData[0] = 0;
 
-            if(message.auto_charging_status){
+            if (message.bumper_switch_asserted) {
+                packedData[0] |= 0b11000000;
+            }
+            if (message.emergency_switch_asserted) {
+                packedData[0] |= 0b00110000;
+            }
+            if (message.wait_shutdown_state) {
+                packedData[0] |= 0b00001000;
+            }
+
+            if (message.auto_charging_status){
                 packedData[1] = 0x01;
-            }else if(message.manual_charging_status) {
+            } else if (message.manual_charging_status) {
                 packedData[1] = 0x02;
-            }else {
+            } else {
                 packedData[1] = 0x00;
             }
 
-            packedData[2] = message.wait_shutdown_state ? message.shutdown_reason : 0;
+            packedData[2] = message.shutdown_reason;
             packedData[3] = message.charge_heartbeat_delay;
 
             uint16_t scaled_voltage = (uint16_t)(message.charge_connector_voltage * 1000);
 
             packedData[4] = (uint8_t)(scaled_voltage >> 8);   // Upper Byte
             packedData[5] = (uint8_t)(scaled_voltage & 0xFF); // Lower Byte
-
-            packedData[6] = message.bumper_switch_asserted;
-            packedData[7] = message.emergency_switch_asserted;
 
             memcpy(frame.data, packedData, CAN_TX_DATA_LENGTH_BOARD);
             can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);

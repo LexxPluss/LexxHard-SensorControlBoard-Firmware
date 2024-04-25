@@ -900,6 +900,12 @@ private:
                         shutdown_reason = SHUTDOWN_REASON::ROS;
                     if (!bmu.is_ok())
                         shutdown_reason = SHUTDOWN_REASON::BMU;
+                    // Set LED
+                    led_controller::msg msg_led;
+                    msg_led.pattern = led_controller::msg::SHOWTIME;
+                    msg_led.interrupt_ms = 0;
+                    while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                                k_msgq_purge(&led_controller::msgq);
                 }
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
@@ -1042,6 +1048,11 @@ private:
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, 0);
             timer_post = k_uptime_get();    // timer reset
+            // Set LED
+            msg_led.pattern = led_controller::msg::SHOWTIME;
+            msg_led.interrupt_ms = 0;
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                        k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::STANDBY:
             LOG_DBG("enter STANDBY\n");
@@ -1052,12 +1063,6 @@ private:
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             wait_shutdown = false;
-
-            // Set LED SHOWTIME
-            msg_led.pattern = led_controller::msg::SHOWTIME;
-            msg_led.interrupt_ms = 0;
-            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::NORMAL:
             LOG_DBG("enter NORMAL\n");
@@ -1073,6 +1078,12 @@ private:
             ac.set_enable(true);
             current_check_enable = false;
             k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
+
+            // Set LED
+            msg_led.pattern = led_controller::msg::CHARGE_LEVEL;
+            msg_led.interrupt_ms = 2000;
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                        k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::MANUAL_CHARGE:
             LOG_DBG("enter MANUAL_CHARGE\n");
@@ -1087,6 +1098,12 @@ private:
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
+
+            // Set LED
+            msg_led.pattern = led_controller::msg::LOCKDOWN;
+            msg_led.interrupt_ms = 1000000000;
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                        k_msgq_purge(&led_controller::msgq);
             break;
         }
         state = newstate;
