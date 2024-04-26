@@ -111,6 +111,23 @@ public:
             msg.wheel_power_off = frame.data[2] & 0x01;
             msg.heart_beat = frame.data[3] & 0x01;
 
+            if(prev_msg.emergency_stop != msg.emergency_stop) {
+                LOG_INF("Emergency Stop: %d", msg.emergency_stop);
+                prev_msg.emergency_stop = msg.emergency_stop;
+            }
+            if (prev_msg.power_off != msg.power_off) {
+                LOG_INF("Power Off: %d", msg.power_off);
+                prev_msg.power_off = msg.power_off;
+            }
+            if (prev_msg.wheel_power_off != msg.wheel_power_off) {
+                LOG_INF("Wheel Power Off: %d", msg.wheel_power_off);
+                prev_msg.wheel_power_off = msg.wheel_power_off;
+            }
+            if (prev_msg.heart_beat != msg.heart_beat) {
+                LOG_INF("Heart Beat: %d", msg.heart_beat);
+                prev_msg.heart_beat = msg.heart_beat;
+            }
+
             while (k_msgq_put(&can_controller::msgq_control, &msg, K_NO_WAIT) != 0)
                 k_msgq_purge(&can_controller::msgq_control);
         }
@@ -120,6 +137,7 @@ public:
 
 private:
     const device *dev{nullptr};
+    can_controller::msg_control prev_msg{0};
 };
 
 }

@@ -41,7 +41,7 @@
 
 namespace lexxhard::board_controller {
 
-LOG_MODULE_REGISTER(board, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(board);
 
 char __aligned(4) msgq_bmu_pb_buffer[8 * sizeof (can_controller::msg_bmu)];
 char __aligned(4) msgq_board_pb_rx_buffer[8 * sizeof (msg_rcv_pb)];
@@ -532,10 +532,10 @@ public:
         }
     }
     bool is_ok() const {
-        // LOG_DBG("data.mod_status1 %d", (data.mod_status1 & 0b10111111) == 0);
-        // LOG_DBG("data.mod_status1 %d", (data.mod_status2 & 0b11100001) == 0);
-        // LOG_DBG("data.bmu_alarm1 %d", (data.bmu_alarm1  & 0b11111111) == 0);
-        // LOG_DBG("data.bmu_alarm2 %d", (data.bmu_alarm2  & 0b00000001) == 0);
+        LOG_DBG("data.mod_status1 %d", (data.mod_status1 & 0b10111111) == 0);
+        LOG_DBG("data.mod_status1 %d", (data.mod_status2 & 0b11100001) == 0);
+        LOG_DBG("data.bmu_alarm1 %d", (data.bmu_alarm1  & 0b11111111) == 0);
+        LOG_DBG("data.bmu_alarm2 %d", (data.bmu_alarm2  & 0b00000001) == 0);
 
         return ((data.mod_status1 & 0b10111111) == 0 ||
                 (data.mod_status2 & 0b11100001) == 0 ||
@@ -714,7 +714,7 @@ private:
             heartbeat_detect = true;
         } else {
             heartbeat_detect = false;
-            LOG_DBG("ROS Heartbeat Timeout");
+            LOG_ERR("ROS Heartbeat Timeout");
         }
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
@@ -1024,7 +1024,7 @@ private:
         led_controller::msg msg_led;
         switch (newstate) {
         case POWER_STATE::OFF:
-            LOG_DBG("enter OFF\n");
+            LOG_INF("enter OFF\n");
             poweron_by_switch = false;
             psw.set_led(false);
             dcdc.set_enable(false);
@@ -1036,14 +1036,14 @@ private:
                         k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::TIMEROFF:
-            LOG_DBG("enter TIMEROFF\n");
+            LOG_INF("enter TIMEROFF\n");
             timer_poweroff = k_uptime_get();    // timer reset
             break;
         case POWER_STATE::WAIT_SW:
-            LOG_DBG("enter WAIT_SW\n");
+            LOG_INF("enter WAIT_SW\n");
             break;
         case POWER_STATE::POST:
-            LOG_DBG("enter POST\n");
+            LOG_INF("enter POST\n");
             psw.set_led(true);
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, 0);
@@ -1055,7 +1055,7 @@ private:
                         k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::STANDBY:
-            LOG_DBG("enter STANDBY\n");
+            LOG_INF("enter STANDBY\n");
             psw.set_led(true);
             dcdc.set_enable(true);
             wsw.set_disable(true);
@@ -1065,7 +1065,7 @@ private:
             wait_shutdown = false;
             break;
         case POWER_STATE::NORMAL:
-            LOG_DBG("enter NORMAL\n");
+            LOG_INF("enter NORMAL\n");
             wsw.set_disable(false);
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
@@ -1074,7 +1074,7 @@ private:
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
             break;
         case POWER_STATE::AUTO_CHARGE:
-            LOG_DBG("enter AUTO_CHARGE\n");
+            LOG_INF("enter AUTO_CHARGE\n");
             ac.set_enable(true);
             current_check_enable = false;
             k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
@@ -1086,14 +1086,14 @@ private:
                         k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::MANUAL_CHARGE:
-            LOG_DBG("enter MANUAL_CHARGE\n");
+            LOG_INF("enter MANUAL_CHARGE\n");
             wsw.set_disable(true);
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
             break;
         case POWER_STATE::LOCKDOWN:
-            LOG_DBG("enter LOCKDOWN\n");
+            LOG_INF("enter LOCKDOWN\n");
             wsw.set_disable(true);
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, 0);
