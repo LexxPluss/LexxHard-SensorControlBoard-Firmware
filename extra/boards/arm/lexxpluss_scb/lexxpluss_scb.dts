@@ -143,6 +143,14 @@
 			compatible = "gpio-pin";
 			gpios = <&gpiok 6 GPIO_ACTIVE_HIGH>;
 		};
+		encoder_center_actuator_ch1: encoder_center_actuator_ch1 {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 12 GPIO_ACTIVE_HIGH>;
+		};
+		encoder_center_actuator_ch2: encoder_center_actuator_ch2 {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 13 GPIO_ACTIVE_HIGH>;
+		};
 		encoder_left_actuator_ch1: encoder_left_actuator_ch1 {
 			compatible = "gpio-pin";
 			gpios = <&gpioa 3 GPIO_ACTIVE_HIGH>;

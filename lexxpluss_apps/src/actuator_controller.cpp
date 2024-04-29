@@ -38,39 +38,40 @@
 #include "can_controller.hpp"
 #include "common.hpp"
 
-extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
-{
-    GPIO_InitTypeDef GPIO_InitStruct{0};
-    // if(htim_encoder->Instance == TIM1) {
-    //     __HAL_RCC_TIM1_CLK_ENABLE();
-    //     __HAL_RCC_GPIOE_CLK_ENABLE();
-    //     GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_11;
-    //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    //     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    //     GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
-    //     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-    // } else if(htim_encoder->Instance == TIM3) {
-    //     __HAL_RCC_TIM3_CLK_ENABLE();
-    //     __HAL_RCC_GPIOC_CLK_ENABLE();
-    //     GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-    //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    //     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    //     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
-    //     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-    // } else 
-    if(htim_encoder->Instance == TIM4) {
-        __HAL_RCC_TIM4_CLK_ENABLE();
-        __HAL_RCC_GPIOD_CLK_ENABLE();
-        GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-        GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
-        HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-    }
-}
+// for HW counter
+// extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
+// {
+//     GPIO_InitTypeDef GPIO_InitStruct{0};
+//     // if(htim_encoder->Instance == TIM1) {
+//     //     __HAL_RCC_TIM1_CLK_ENABLE();
+//     //     __HAL_RCC_GPIOE_CLK_ENABLE();
+//     //     GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_11;
+//     //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+//     //     GPIO_InitStruct.Pull = GPIO_NOPULL;
+//     //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+//     //     GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
+//     //     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+//     // } else if(htim_encoder->Instance == TIM3) {
+//     //     __HAL_RCC_TIM3_CLK_ENABLE();
+//     //     __HAL_RCC_GPIOC_CLK_ENABLE();
+//     //     GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+//     //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+//     //     GPIO_InitStruct.Pull = GPIO_NOPULL;
+//     //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+//     //     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
+//     //     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+//     // } else 
+//     if(htim_encoder->Instance == TIM4) {
+//         __HAL_RCC_TIM4_CLK_ENABLE();
+//         __HAL_RCC_GPIOD_CLK_ENABLE();
+//         GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
+//         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+//         GPIO_InitStruct.Pull = GPIO_NOPULL;
+//         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+//         GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+//         HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+//     }
+// }
 
 namespace lexxhard::actuator_controller {
 
@@ -93,54 +94,205 @@ enum class POS {
     CENTER, LEFT, RIGHT
 };
 
-// This is the class of the HAL encoder so we will use only for center actuator probably
+// for HW counter
+// class encoder {
+// public:
+//     int init(TIM_TypeDef *tim) {
+//         this->tim = tim;
+//         TIM_Encoder_InitTypeDef sConfig{0};
+//         TIM_MasterConfigTypeDef sMasterConfig{0};
+//         if (tim == TIM1) {
+//             timh.Init.RepetitionCounter = 0;
+//             sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+//         }
+//         timh.Instance = tim;
+//         timh.Init.Prescaler = 0;
+//         timh.Init.CounterMode = TIM_COUNTERMODE_UP;
+//         timh.Init.Period = 65535;
+//         timh.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+//         timh.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+//         sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+//         sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+//         sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+//         sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+//         sConfig.IC1Filter = 0b1111;
+//         sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+//         sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+//         sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+//         sConfig.IC2Filter = 0b1111;
+//         if (HAL_TIM_Encoder_Init(&timh, &sConfig) != HAL_OK)
+//             return -1;
+//         sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+//         sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+//         if (HAL_TIMEx_MasterConfigSynchronization(&timh, &sMasterConfig) != HAL_OK)
+//             return -1;
+//         HAL_TIM_Encoder_Start(&timh, TIM_CHANNEL_ALL);
+//         return 0;
+//     }
+//     int16_t get() const {
+//         int16_t count{static_cast<int16_t>(tim->CNT)};
+//         tim->CNT = 0;
+//         return -count;
+//     }
+// private:
+//     TIM_TypeDef *tim{nullptr};
+//     TIM_HandleTypeDef timh;
+// };
+
+#define TIMER_PERIOD_MS 2
 class encoder {
 public:
-    int init(TIM_TypeDef *tim) {
-        this->tim = tim;
-        TIM_Encoder_InitTypeDef sConfig{0};
-        TIM_MasterConfigTypeDef sMasterConfig{0};
-        if (tim == TIM1) {
-            timh.Init.RepetitionCounter = 0;
-            sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+    int init(POS pos) {
+        gpio_dt_spec dev;
+        switch (pos) {
+        case POS::CENTER:
+            // init IO dev exists for each instances
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch1), gpios);
+            // PD12 CH1, PD13 CH2
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch2), gpios);
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+        
+            // set callback function for center
+            k_timer_init(&encoder_count_c, static_center_enc_callback, NULL);
+            k_timer_user_data_set(&encoder_count_c, this);
+            k_timer_start(&encoder_count_c, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            break;
+        case POS::LEFT:
+            // init IO dev exists for each instances
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch1), gpios);
+            // PD12 CH1, PD13 CH2
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch2), gpios);
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            // set callback function for LEFT
+            k_timer_init(&encoder_count_l, static_center_left_callback, NULL);
+            k_timer_user_data_set(&encoder_count_l, this);
+            k_timer_start(&encoder_count_l, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            break;
+        case POS::RIGHT:
+        // init IO dev exists for each instances
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch1), gpios);
+            // PD12 CH1, PD13 CH2
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch2), gpios);
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            // set callback function for RIGHT
+            k_timer_init(&encoder_count_r, static_center_right_callback, NULL);
+            k_timer_user_data_set(&encoder_count_r, this);
+            k_timer_start(&encoder_count_r, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            break;
         }
-        timh.Instance = tim;
-        timh.Init.Prescaler = 0;
-        timh.Init.CounterMode = TIM_COUNTERMODE_UP;
-        timh.Init.Period = 65535;
-        timh.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-        timh.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-        sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-        sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC1Filter = 0b1111;
-        sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC2Filter = 0b1111;
-        if (HAL_TIM_Encoder_Init(&timh, &sConfig) != HAL_OK)
-            return -1;
-        sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-        sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-        if (HAL_TIMEx_MasterConfigSynchronization(&timh, &sMasterConfig) != HAL_OK)
-            return -1;
-        HAL_TIM_Encoder_Start(&timh, TIM_CHANNEL_ALL);
+        
         return 0;
     }
     int16_t get() const {
-        int16_t count{static_cast<int16_t>(tim->CNT)};
-        tim->CNT = 0;
-        return -count;
+        return count;
     }
 private:
-    TIM_TypeDef *tim{nullptr};
-    TIM_HandleTypeDef timh;
+    static void static_center_enc_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<encoder*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            int ch1{0}, ch2{0};
+            gpio_dt_spec dev_ch1 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch1), gpios);
+            gpio_dt_spec dev_ch2 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch2), gpios);
+
+            if(gpio_is_ready_dt(&dev_ch1)) {
+                ch1 = gpio_pin_get_dt(&dev_ch1);
+            }
+
+            if(gpio_is_ready_dt(&dev_ch2)) {
+                ch2 = gpio_pin_get_dt(&dev_ch2);
+            }
+
+            // catch rise edge
+            if (instance->ch1_prev == 0 && ch1 == 1) {
+                if (ch2 == 0) {
+                    instance->count++;
+                } else {
+                    instance->count--;
+                }
+            }
+
+            instance->ch1_prev = ch1;
+        }
+    }
+    static void static_center_left_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<encoder*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            int ch1{0}, ch2{0};
+            gpio_dt_spec dev_ch1 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch1), gpios);
+            gpio_dt_spec dev_ch2 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch2), gpios);
+
+            if(gpio_is_ready_dt(&dev_ch1)) {
+                ch1 = gpio_pin_get_dt(&dev_ch1);
+            }
+
+            if(gpio_is_ready_dt(&dev_ch2)) {
+                ch2 = gpio_pin_get_dt(&dev_ch2);
+            }
+
+            // catch rise edge
+            if (instance->ch1_prev == 0 && ch1 == 1) {
+                if (ch2 == 0) {
+                    instance->count++;
+                } else {
+                    instance->count--;
+                }
+            }
+
+            instance->ch1_prev = ch1;
+        }
+    }
+    static void static_center_right_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<encoder*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            int ch1{0}, ch2{0};
+            gpio_dt_spec dev_ch1 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch1), gpios);
+            gpio_dt_spec dev_ch2 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch2), gpios);
+
+            if(gpio_is_ready_dt(&dev_ch1)) {
+                ch1 = gpio_pin_get_dt(&dev_ch1);
+            }
+
+            if(gpio_is_ready_dt(&dev_ch2)) {
+                ch2 = gpio_pin_get_dt(&dev_ch2);
+            }
+
+            // catch rise edge
+            if (instance->ch1_prev == 0 && ch1 == 1) {
+                if (ch2 == 0) {
+                    instance->count++;
+                } else {
+                    instance->count--;
+                }
+            }
+
+            instance->ch1_prev = ch1;
+        }
+    }
+    k_timer encoder_count_c, encoder_count_l, encoder_count_r;
+    int ch1_prev{0}, ch2_prev{0};
+    int16_t count{0};
+    bool is_rise_edge{false};
 };
-
-// This class for encoder count, this calls encoder class
-
-// May be we can add software-encoder features here?
 
 class counter {
 public:
@@ -148,16 +300,18 @@ public:
         int result{0};
         switch (pos) {
         case POS::CENTER:
-            result = enc.init(TIM4);
-            mm_per_pulse = 50.0f / 1054.0f;
+            // result = enc.init(TIM4); // for HW counter
+            result = enc.init(pos);
+            // mm_per_pulse = 50.0f / 1054.0f; // for HW counter
+            mm_per_pulse = 50.0f / 144.0f;
             break;
         case POS::LEFT:
-            result = enc.init(TIM3);
-            mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(pos);
+            mm_per_pulse = 50.0f / 144.0f;
             break;
         case POS::RIGHT:
-            result = enc.init(TIM1);
-            mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(pos);
+            mm_per_pulse = 50.0f / 144.0f;
             break;
         }
         reset_pulse();
@@ -176,6 +330,7 @@ public:
     int32_t get_location() const {return pulse_value * mm_per_pulse;}
     int32_t get_velocity() const {return velocity;}
     int32_t get_pulse() const {return pulse_value;}
+    int32_t get_enc_pulse() const {return enc.get();}
     int32_t get_delta_pulse() {
         int32_t value{pulse_value - prev_pulse_value};
         prev_pulse_value = pulse_value;
@@ -195,7 +350,8 @@ private:
     }
     int16_t update_pulse() {
         int16_t pulse{enc.get()};
-        pulse_value += pulse;
+        // pulse_value += pulse;
+        pulse_value = pulse;
         return pulse;
     }
     encoder enc;
@@ -630,7 +786,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
     for (int ii{0}; ii < rep_num; ++ii) {
         for (size_t i{0}; i < 3; ++i) {
             uint8_t direction, duty;
-            direction = 0;
+            direction = 1;
             duty      = 100;
             impl.pwm_trampoline(i, direction, duty);
         }
@@ -639,7 +795,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 
         for (size_t i{0}; i < 3; ++i) {
             uint8_t direction, duty;
-            direction = 1;
+            direction = -1;
             duty      = 100;
             impl.pwm_trampoline(i, direction, duty);
         }

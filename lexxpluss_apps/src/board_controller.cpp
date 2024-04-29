@@ -215,11 +215,11 @@ public:
     void set_disable(bool disable) {
         if (disable) {
             gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
-            gpio_pin_set_dt(&gpio_dev, 1);
+            gpio_pin_set_dt(&gpio_dev, 0);
             left_right_disable = true; 
         } else {
             gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
-            gpio_pin_set_dt(&gpio_dev, 0);
+            gpio_pin_set_dt(&gpio_dev, 1);
             left_right_disable = false;
         }
     }
@@ -784,6 +784,27 @@ public:
             k_msleep(20);
         }
     }
+    void power_on() {
+        dcdc.set_enable(true);
+    }
+    void power_off() {
+        dcdc.set_enable(false);
+    }
+    void auto_charge_on() {
+        ac.set_enable(true);
+    }
+    void auto_charge_off() {
+        ac.set_enable(false);
+    }
+    bool is_bmu_ok_dbg() {
+        return bmu.is_ok();
+    }
+    void set_wheel_enable(){
+        wsw.set_disable(false);
+    }
+    void set_wheel_disable(){
+        wsw.set_disable(true);
+    }
 private:
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
@@ -1187,6 +1208,83 @@ private:
     bool poweron_by_switch{false}, wait_shutdown{false}, current_check_enable{false}, charge_guard_asserted{false},
          last_wheel_poweroff{false};
 } impl;
+
+int cmd_power_on(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "Force Power ON for Debug purpuse");
+    
+    impl.power_on();
+
+    return 0;
+}
+
+int cmd_power_off(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "Force Power OFF for Debug purpuse");
+    
+    impl.power_off();
+
+    return 0;
+}
+
+int cmd_auto_charge_on(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "Force Power ON for Debug purpuse");
+    
+    impl.auto_charge_on();
+
+    return 0;
+}
+
+int cmd_auto_charge_off(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "Force Power OFF for Debug purpuse");
+    
+    impl.auto_charge_off();
+
+    return 0;
+}
+
+int cmd_is_bmu_ok(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "BMU status check");
+    
+    bool result = impl.is_bmu_ok_dbg();
+
+    shell_print(shell, "BMU status[1:OK 0:NG]: %d", result);
+
+    return 0;
+}
+
+int cmd_set_wheel_enable(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "Wheel Enable");
+    
+    impl.set_wheel_enable();
+
+    return 0;
+}
+
+int cmd_set_wheel_disable(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "Wheel Disable");
+    
+    impl.set_wheel_disable();
+
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub,
+    SHELL_CMD(power_on, NULL, "Force Power ON command", cmd_power_on),
+    SHELL_CMD(power_off, NULL, "Force Power OFF command", cmd_power_off),
+    SHELL_CMD(auto_charge_on, NULL, "Auto Charge ON command", cmd_auto_charge_on),
+    SHELL_CMD(auto_charge_off, NULL, "Auto Charge OFF command", cmd_auto_charge_off),
+    SHELL_CMD(is_bmu_ok, NULL, "BMU status check command", cmd_is_bmu_ok),
+    SHELL_CMD(set_wheel_enable, NULL, "Wheel Enable command", cmd_set_wheel_enable),
+    SHELL_CMD(set_wheel_disable, NULL, "Wheel Disable command", cmd_set_wheel_disable),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(pbrd, &sub, "PowerBoard commands", NULL);
 
 void init()
 {
