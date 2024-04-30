@@ -56,17 +56,22 @@ public:
             if (k_msgq_get(&board_controller::msgq_board_pb_tx, &board2ros, K_NO_WAIT) == 0) {
                 if (k_msgq_put(&msgq_board, &board2ros, K_NO_WAIT) != 0){
                     k_msgq_purge(&msgq_board);
-                    handled = true;
                 }
+                handled = true;
             }
             // ros2board ROS->can_controller->board_controller
-            if (k_msgq_get(&msgq_control, &ros2board, K_NO_WAIT) == 0) {
+            if ((k_msgq_get(&msgq_control, &ros2board, K_NO_WAIT) == 0) | heartbeat_timeout) {
                 handler_to_pb();
                 if (k_msgq_put(&board_controller::msgq_board_pb_rx, &msg_board_to_pb, K_NO_WAIT) != 0){
                     k_msgq_purge(&msgq_board);
-                    prev_cycle_ros = k_cycle_get_32();
-                    handled = true;
                 }
+                prev_cycle_ros = k_cycle_get_32();
+                handled = true;
+            }
+
+            // if the board_controller state is 0 (OFF), prev_cycle_ros is reset
+            if (board2ros.state == 0) {
+                prev_cycle_ros = 0;
             }
 
             uint32_t now_cycle{k_cycle_get_32()};
@@ -135,7 +140,7 @@ private:
     msg_control ros2board{0};
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
-    bool heartbeat_timeout{true}, enable_lockdown{true};
+    bool heartbeat_timeout{false}, enable_lockdown{true};
     static constexpr char version[]{"2.0.0"};
 } impl;
 

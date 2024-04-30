@@ -704,6 +704,19 @@ public:
     }
 private:
     void handle_board(const msg_rcv_pb &msg) {
+        if (emergency_stop != msg.ros_emergency_stop) {
+            LOG_INF("ROS Emergency Stop: %d", msg.ros_emergency_stop);
+        }
+        if (power_off != msg.ros_power_off) {
+            LOG_INF("ROS Power Off: %d", msg.ros_power_off);
+        }
+        if (ros_heartbeat_timeout != msg.ros_heartbeat_timeout) {
+            LOG_INF("ROS Heartbeat Timeout: %d", msg.ros_heartbeat_timeout);
+        }
+        if (wheel_poweroff != msg.ros_wheel_power_off) {
+            LOG_INF("ROS Wheel Power Off: %d", msg.ros_wheel_power_off);
+        }
+
         emergency_stop = msg.ros_emergency_stop;
         power_off = msg.ros_power_off;
         ros_heartbeat_timeout = msg.ros_heartbeat_timeout;
@@ -712,6 +725,7 @@ private:
         // heartbeat is not timeout means heartbeat is detected
         if (ros_heartbeat_timeout == false) {
             heartbeat_detect = true;
+            //LOG_INF("ROS Heartbeat Detected");
         } else {
             heartbeat_detect = false;
             LOG_ERR("ROS Heartbeat Timeout");
@@ -926,7 +940,7 @@ private:
                     msg_led.pattern = led_controller::msg::SHOWTIME;
                     msg_led.interrupt_ms = 0;
                     while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                                k_msgq_purge(&led_controller::msgq);
+                        k_msgq_purge(&led_controller::msgq);
                 }
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
@@ -1054,7 +1068,7 @@ private:
             msg_led.pattern = led_controller::msg::NONE;
             msg_led.interrupt_ms = 0;
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
+                k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::TIMEROFF:
             LOG_INF("enter TIMEROFF\n");
@@ -1073,7 +1087,7 @@ private:
             msg_led.pattern = led_controller::msg::SHOWTIME;
             msg_led.interrupt_ms = 0;
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
+                k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::STANDBY:
             LOG_INF("enter STANDBY\n");
@@ -1104,7 +1118,7 @@ private:
             msg_led.pattern = led_controller::msg::CHARGE_LEVEL;
             msg_led.interrupt_ms = 2000;
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
+                k_msgq_purge(&led_controller::msgq);
             break;
         case POWER_STATE::MANUAL_CHARGE:
             LOG_INF("enter MANUAL_CHARGE\n");
@@ -1124,7 +1138,7 @@ private:
             msg_led.pattern = led_controller::msg::LOCKDOWN;
             msg_led.interrupt_ms = 1000000000;
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
+                k_msgq_purge(&led_controller::msgq);
             break;
         }
         state = newstate;

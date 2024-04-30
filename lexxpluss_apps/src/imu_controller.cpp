@@ -143,7 +143,7 @@ public:
 
                     // to ZCAN module
                     while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
-                                k_msgq_purge(&msgq);
+                        k_msgq_purge(&msgq);
 
                     runaway_detector::msg message_runaway{
                         .accel{sensor_value_to_float(&accel[1]), sensor_value_to_float(&accel[0]), sensor_value_to_float(&accel[2])},
