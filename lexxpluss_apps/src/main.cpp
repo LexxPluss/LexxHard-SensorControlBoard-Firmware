@@ -108,10 +108,10 @@ void init_gpio() {
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(es_left), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_LOW);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(es_right), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_LOW);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(mc_din), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);

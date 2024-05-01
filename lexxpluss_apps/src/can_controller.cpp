@@ -46,6 +46,9 @@ public:
     int init() {
         k_msgq_init(&msgq_board, msgq_board_buffer, sizeof (msg_board), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
+
+        ros2board.emergency_stop = true;
+
         return 0;
     }
     void run() {
@@ -72,6 +75,13 @@ public:
             // if the board_controller state is 0 (OFF), prev_cycle_ros is reset
             if (board2ros.state == 0) {
                 prev_cycle_ros = 0;
+                prev_cycle_send = 0;
+                ros2board.emergency_stop = true;
+                ros2board.heart_beat = false;
+                ros2board.power_off = false;
+                ros2board.wheel_power_off = false;
+                heartbeat_timeout = false;
+                enable_lockdown = true;
             }
 
             uint32_t now_cycle{k_cycle_get_32()};
@@ -102,6 +112,12 @@ public:
     void brd_emgoff() {
         ros2board.emergency_stop = false;
         heartbeat_timeout = false;
+
+        // if changed send to board_controller
+        handler_to_pb();
+        if (k_msgq_put(&board_controller::msgq_board_pb_rx, &msg_board_to_pb, K_NO_WAIT) != 0){
+            k_msgq_purge(&msgq_board);
+        }
     }
     void brd_lockdown(bool enable) {
         enable_lockdown = enable;
@@ -137,7 +153,7 @@ private:
         msg_board_to_pb.ros_wheel_power_off = ros2board.wheel_power_off;
     }
     msg_board board2ros{0};
-    msg_control ros2board{0};
+    msg_control ros2board{true, false, false, false};
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     bool heartbeat_timeout{false}, enable_lockdown{true};

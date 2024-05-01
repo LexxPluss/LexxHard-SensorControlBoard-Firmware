@@ -123,7 +123,7 @@ public:
     }
     void set_led(bool enabled) {
         gpio_dt_spec gpio_dev = GET_GPIO(ps_led_out);
-        gpio_pin_set_dt(&gpio_dev, enabled ? 1 : 0);
+        gpio_pin_set_dt(&gpio_dev, enabled ? 0 : 1);
     }
     void toggle_led() {
         set_led(led_en);
@@ -197,6 +197,11 @@ public:
             right_count = COUNT;
             right_asserted = now == 1;
         }
+    }
+    void reset_state() {
+        left_count = right_count = 0;
+        left_asserted = right_asserted = false;
+        left_prev = right_prev = -1;
     }
     bool is_asserted() const {return left_asserted || right_asserted;}
     void get_raw_state(bool &left, bool &right) const {
@@ -603,7 +608,7 @@ public:
             gpio_pin_set_dt(&gpio_dev, 1);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v24);
-            gpio_pin_set_dt(&gpio_dev, 1);
+            gpio_pin_set_dt(&gpio_dev, 0);
         } else {
             gpio_dev = GET_GPIO(v_wheel);
             gpio_pin_set_dt(&gpio_dev, 0);
@@ -612,7 +617,7 @@ public:
             gpio_pin_set_dt(&gpio_dev, 0);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v24);
-            gpio_pin_set_dt(&gpio_dev, 0);
+            gpio_pin_set_dt(&gpio_dev, 1);
         }
     }
     bool is_ok() {
@@ -819,6 +824,9 @@ public:
     void set_wheel_disable(){
         wsw.set_disable(true);
     }
+    bool is_esw_asserted(){
+        return esw.is_asserted();
+    }
 private:
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
@@ -917,17 +925,13 @@ private:
                 if (wait_shutdown) {
                     if ((k_uptime_get() - timer_shutdown)> 60000) {
                         set_new_state(POWER_STATE::OFF);
-                        gpio_dt_spec gpio_dev = GET_GPIO(v24);
-                        gpio_pin_set_dt(&gpio_dev, 0);
+                        dcdc.set_enable(false);
                         psw.reset_state();
+                        esw.reset_state();
                     }
                 } else {
                     LOG_DBG("wait shutdown\n");
                     wait_shutdown = true;
-                    gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
-                    gpio_pin_set_dt(&gpio_dev, 0);
-                    gpio_dev = GET_GPIO(v_peripheral);
-                    gpio_pin_set_dt(&gpio_dev, 0);
                     timer_shutdown = k_uptime_get();    // timer reset
                     if (psw_state == power_switch::STATE::PUSHED)
                         shutdown_reason = SHUTDOWN_REASON::SWITCH;
@@ -1287,6 +1291,16 @@ int cmd_set_wheel_disable(const shell *shell, size_t argc, char **argv)
 
     return 0;
 }
+int cmd_is_esw_asserted(const shell *shell, size_t argc, char **argv)
+{
+    shell_print(shell, "Wheel Disable");
+    
+    bool result = impl.is_esw_asserted();
+
+    shell_print(shell, "ESW Asserted[1:True 0:False]: %d", result);
+
+    return 0;
+}
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(power_on, NULL, "Force Power ON command", cmd_power_on),
@@ -1296,6 +1310,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(is_bmu_ok, NULL, "BMU status check command", cmd_is_bmu_ok),
     SHELL_CMD(set_wheel_enable, NULL, "Wheel Enable command", cmd_set_wheel_enable),
     SHELL_CMD(set_wheel_disable, NULL, "Wheel Disable command", cmd_set_wheel_disable),
+    SHELL_CMD(is_esw_asserted, NULL, "ESW status check command", cmd_is_esw_asserted),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(pbrd, &sub, "PowerBoard commands", NULL);
