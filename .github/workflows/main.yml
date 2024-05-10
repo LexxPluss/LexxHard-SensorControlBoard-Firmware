@@ -42,7 +42,7 @@ jobs:
       - name: build
         id: build
         run: |
-          # set -e
+          set -e
           # west init -l lexxpluss_apps
           # west update
           # west config --global zephyr.base-prefer configfile
