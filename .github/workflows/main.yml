@@ -44,7 +44,6 @@ jobs:
         run: |
           set -e
           make build
-          sudo chown -R runner:docker /workdir/
           make setup
           make update
           make all
