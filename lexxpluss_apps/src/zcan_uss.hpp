@@ -74,7 +74,7 @@ public:
                 .dlc = CAN_DATA_LENGTH_USS,
                 .data = {0}
             };
-
+            
             // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_USS);
 
