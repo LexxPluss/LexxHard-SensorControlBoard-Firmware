@@ -43,7 +43,6 @@ char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 class led_message_receiver {
 public:
     led_message_receiver() {
-        // message.pattern = msg::SHOWTIME;
         message.pattern = msg::NONE;
         message.interrupt_ms = 0;
     }
@@ -307,6 +306,9 @@ private:
     }
     led_rgb fader(const led_rgb &color, int percent) const {
         led_rgb color_;
+        if (percent > 100)
+            percent = 100;
+
         color_.r = color.r * percent / 100;
         color_.g = color.g * percent / 100;
         color_.b = color.b * percent / 100;

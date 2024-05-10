@@ -62,6 +62,13 @@ public:
             counter = 0;
             activated = false;
         }
+        if (activated && (thres == 4)) {
+            led_controller::msg msg_led;
+            msg_led.pattern = led_controller::msg::CHARGE_LEVEL;
+            msg_led.interrupt_ms = 2000;
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                k_msgq_purge(&led_controller::msgq);
+        }
     }
     bool is_activated() const {
         return activated;
@@ -366,6 +373,7 @@ private:
 };
 
 #define AUTO_CHARGE_DOCKED_TIMEOUT_MS 5000
+#define CHARGER_HEARTBEAT_TIMEOUT_MS 1000
 #define IRDA_DATA_LEN 8
 #define IRDA_TX_TIMEOUT_MS 1000
 
@@ -389,6 +397,14 @@ public:
         };
         
         uart_configure(dev, &uart_cfg);
+
+        int ret = uart_irq_callback_user_data_set(dev, static_serial_read_callback, NULL);
+
+        if (ret != 0) {
+            LOG_INF("UART IRQ Error");
+            return;
+        }
+        uart_irq_rx_enable(dev);
 
         return;
     }
@@ -442,6 +458,7 @@ public:
             if (prev_connect_check_count >= CONNECT_THRES_COUNT)
                 LOG_DBG("disconnected from the charger.\n");
         }
+
         adc_read();
         return;
     }
@@ -454,6 +471,13 @@ private: // Thermistor side starts here.
         auto* instance = static_cast<auto_charger*>(k_timer_user_data_get(timer_id));
         if (instance) {
             instance->poll_1s();
+        }
+        return;
+    }
+    static void static_serial_read_callback(const struct device *uart_dev, void *user_data) {
+        auto* instance = static_cast<auto_charger*>(const_cast<void*>(user_data));
+        if (instance) {
+            instance->serial_read();
         }
         return;
     }
@@ -496,7 +520,7 @@ private: // Thermistor side starts here.
         }
 
         uint8_t buf[IRDA_DATA_LEN], param[3]{++heartbeat_counter, sw_state, rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
-        serial_message::compose(buf, serial_message::HEARTBEAT, param);
+        s_msg.compose(buf, s_msg.HEARTBEAT, param);
 
         if (!device_is_ready(dev)) {
             LOG_DBG("UART device is not ready\n");
@@ -509,13 +533,38 @@ private: // Thermistor side starts here.
        
         LOG_DBG("Hearbeat Send\n");
     } // Declaration of variables
+    void serial_read() {
+        if (!uart_irq_update(dev)) {
+            LOG_INF("uart_irq_update Failed\n");
+            return;
+        }
 
-    const device* dev{nullptr};
-    int64_t start_time{0};
+        if (!uart_irq_rx_ready(dev)) {
+            LOG_INF("uart_irq_rx_ready Failed\n");
+            return;
+        }
+
+        if ((k_uptime_get() - start_time) > CHARGER_HEARTBEAT_TIMEOUT_MS) {
+            s_msg.reset();
+        }
+            
+        uint8_t data;
+        uart_fifo_read(dev, &data, 1);
+        if (s_msg.decode(data)) {
+            uint8_t param[3];
+            uint8_t command{s_msg.get_command(param)};
+            if (command == serial_message::HEARTBEAT && param[0] == heartbeat_counter)
+                start_time = k_uptime_get();
+        }
+    }
+
+    const device* dev{nullptr}; // UART device
+    int64_t start_time{0};      // Heartbeat timer for Charger
     uint8_t heartbeat_counter{0}, rsoc{0};
     float connector_v{0.0f}, connector_temp[2]{0.0f, 0.0f};
     uint32_t connect_check_count{0};
     k_timer timer_poll_1s;
+    serial_message s_msg;
     static constexpr int ADDR{0b10010010}; // I2C adress for temp sensor
     static constexpr uint32_t CONNECT_THRES_COUNT{100}; // Number of times that ...
     static constexpr float CHARGING_VOLTAGE{30.0f * 1000.0f / (9100.0f + 1000.0f)},
