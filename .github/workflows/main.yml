@@ -44,6 +44,7 @@ jobs:
         run: |
           set -e
           make build
+          sudo chmod -R 775 /workdir
           make setup
           make update
           make all
