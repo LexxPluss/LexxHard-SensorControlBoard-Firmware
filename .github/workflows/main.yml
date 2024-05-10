@@ -44,6 +44,7 @@ jobs:
         run: |
           set -e
           make build
+          sudo chmod 775 /workdir/.west
           make setup
           make update
           make all
