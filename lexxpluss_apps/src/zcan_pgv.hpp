@@ -46,7 +46,7 @@ public:
     {
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
-            LOG_INF("CAN_2 is not ready");
+            LOG_ERR("CAN_2 is not ready");
             return;
         }
         ring_counter=0;

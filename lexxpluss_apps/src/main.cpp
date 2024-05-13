@@ -208,15 +208,10 @@ void power_on() {
 
 int main()
 {
-    printk("--- SensorControlBoard V2.0.0 ---\n");
-
     init_gpio();
     k_msleep(3000);
 
-    // /*** Function Only for Zephyr V2 ***/
     fan_on();
-    // power_on();
-    // /***********************************/
 
     lexxhard::actuator_controller::init();
     lexxhard::adc_reader::init();

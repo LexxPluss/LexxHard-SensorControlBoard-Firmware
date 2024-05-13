@@ -87,8 +87,11 @@ public:
         RELEASED, PUSHED, LONG_PUSHED,
     };
     void poll() {
+        int now{0};
         gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
-        int now{gpio_pin_get_dt(&gpio_dev)};
+        if (gpio_is_ready_dt(&gpio_dev)) {
+            now = gpio_pin_get_dt(&gpio_dev);
+        }
         if (prev_raw != now) {
             prev_raw = now;
             count = 0;
@@ -523,12 +526,12 @@ private: // Thermistor side starts here.
         s_msg.compose(buf, s_msg.HEARTBEAT, param);
 
         if (!device_is_ready(dev)) {
-            LOG_DBG("UART device is not ready\n");
+            LOG_ERR("UART device is not ready\n");
             return;
         }
 
-        for (int ii = 0; ii < IRDA_DATA_LEN; ++ii) {
-            uart_poll_out(dev, buf[ii]);
+        for (int i{0}; i < IRDA_DATA_LEN; ++i) {
+            uart_poll_out(dev, buf[i]);
         }
        
         LOG_DBG("Hearbeat Send\n");
@@ -824,7 +827,7 @@ public:
         dev_wdi = GET_DEV(iwdg);
 
         if (!device_is_ready(dev_wdi)){
-            LOG_INF("Watchdog device is not ready\n");
+            LOG_ERR("Watchdog device is not ready\n");
             return;
         }
 
@@ -836,13 +839,13 @@ public:
 
         int wdt_channel_id = wdt_install_timeout(dev_wdi, &wdt_config);
         if (wdt_channel_id < 0) {
-            LOG_INF("WDT install timeout error\n");
+            LOG_ERR("WDT install timeout error\n");
             return;
         }
         
         int err_setup = wdt_setup(dev_wdi, WDT_OPT_PAUSE_HALTED_BY_DBG);
         if (err_setup) {
-            LOG_INF("WDT setup error: %d\n", err_setup);
+            LOG_ERR("WDT setup error: %d\n", err_setup);
             return;
         }
     }

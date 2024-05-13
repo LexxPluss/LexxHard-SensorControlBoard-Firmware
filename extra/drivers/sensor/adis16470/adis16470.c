@@ -146,7 +146,7 @@ static int adis16470_reg_read_pair(const struct spi_dt_spec *bus, uint8_t reg[2]
 static void adis16470_gpio_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
     struct adis16470_cb_data *cb_data = (struct adis16470_cb_data*)cb;
-    k_sem_give(&cb_data->sem);
+    k_sem_give(&(cb_data->sem));
 }
 
 static int adis16470_trigger_init(const struct device *dev)

@@ -28,11 +28,6 @@ compatible: "maxbotix,maxbotix"
 include: base.yaml
 
 properties:
-  # label:
-  #   required: true
-  #   type: string
-  #   description: Human readable string describing the device (used as device_get_binding() argument)
-
   status:
     required: true
     type: string

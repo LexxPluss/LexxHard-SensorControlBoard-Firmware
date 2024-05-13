@@ -66,7 +66,7 @@ public:
 
     void run() {
         if (!device_is_ready(dev_can_bmu)){
-            LOG_INF("CAN_1 is not ready");
+            LOG_ERR("CAN_1 is not ready");
             return;
         }
             

@@ -51,20 +51,12 @@ struct maxbotix_callback_data {
 
 struct maxbotix_data {
     struct sensor_value sensor_value;
-    // const struct device *trig_dev;
-    // const struct device *echo_dev;
     struct maxbotix_callback_data cb_data;
 };
 
 struct maxbotix_cfg {
     struct gpio_dt_spec trig_dev;
     struct gpio_dt_spec echo_dev;
-    // const char * const trig_port;
-    // const uint8_t trig_pin;
-    // const uint32_t trig_flags;
-    // const char * const echo_port;
-    // const uint8_t echo_pin;
-    // const uint32_t echo_flags;
 };
 
 static void input_changed(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
