@@ -43,9 +43,9 @@ jobs:
         id: build
         run: |
           set -e
-          mkdir -p ~/.cmake/packages/Zephyr && hash=`echo -n "/workdir/zephyr" | md5sum | cut -d ' ' -f1` && echo "/workdir/zephyr" > ~/.cmake/packages/Zephyr/$hash
           west init -l lexxpluss_apps
           west update
+          mkdir -p ~/.cmake/packages/Zephyr && hash=`echo -n "/workdir/zephyr" | md5sum | cut -d ' ' -f1` && echo "/workdir/zephyr" > ~/.cmake/packages/Zephyr/$hash
           west config --global zephyr.base-prefer configfile
           west zephyr-export
           west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=$(pwd)/extra
