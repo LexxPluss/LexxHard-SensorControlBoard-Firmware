@@ -132,7 +132,7 @@ public:
         gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
         if (!gpio_is_ready_dt(&gpio_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
-            return -1;
+            return false;
         }
         return gpio_pin_get_dt(&gpio_dev) == 0;
     }
@@ -172,16 +172,16 @@ public:
             if ((k_uptime_get() - start_time) > BUMPER_SWITCH_HOLD_TIME_MS) {
                 asserted_flag = false;
             }
-        } else {
-            gpio_dt_spec gpio_dev = GET_GPIO(bp_left);
-            if (!gpio_is_ready_dt(&gpio_dev)) {
-                LOG_ERR("gpio_is_ready_dt Failed\n");
-                return;
-            }
-            if (gpio_pin_get_dt(&gpio_dev) == 0) {
-                asserted_flag = true;
-                start_time = k_uptime_get();
-            }
+        } 
+        // Bumper is asserted as long as it's pressed, and for 1 second after it's released
+        gpio_dt_spec gpio_dev = GET_GPIO(bp_left);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (gpio_pin_get_dt(&gpio_dev) == 0) {
+            asserted_flag = true;
+            start_time = k_uptime_get();
         }
     }
     void get_raw_state(bool &left, bool &right) const {
@@ -757,19 +757,19 @@ public:
         gpio_dt_spec gpio_pgood_wheel_motor_right_dev = GET_GPIO(pgood_wheel_motor_right);
         if (!gpio_is_ready_dt(&gpio_pgood_24v_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
-            return -1;
+            return false;
         }
         if (!gpio_is_ready_dt(&gpio_pgood_peripheral_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
-            return -1;
+            return false;
         }
         if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_left_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
-            return -1;
+            return false;
         }
         if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_right_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
-            return -1;
+            return false;
         }
         bool rtn = (gpio_pin_get_dt(&gpio_pgood_24v_dev) == 0)                  
             && (gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 0)
