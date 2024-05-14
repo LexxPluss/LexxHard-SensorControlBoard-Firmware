@@ -43,6 +43,7 @@ jobs:
         id: build
         run: |
           set -e
+          cp -a /home/user/.cmake $HOME
           west init -l lexxpluss_apps
           west update
           west config --global zephyr.base-prefer configfile
