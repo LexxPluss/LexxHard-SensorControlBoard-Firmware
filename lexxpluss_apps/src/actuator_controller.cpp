@@ -782,7 +782,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 {
     int rep_num = 10000;
 
-    shell_print(shell, "Repeat Up-Down 10,000 times with 5sec span.");
+    shell_print(shell, "Repeat Up-Down 10,000 times with 5sec interval.");
     for (int ii{0}; ii < rep_num; ++ii) {
         for (size_t i{0}; i < 3; ++i) {
             uint8_t direction, duty;

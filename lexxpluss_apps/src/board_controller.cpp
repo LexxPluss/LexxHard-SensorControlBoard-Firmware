@@ -579,12 +579,12 @@ private: // Thermistor side starts here.
     } // Declaration of variables
     void serial_read() {
         if (!uart_irq_update(dev)) {
-            LOG_INF("uart_irq_update Failed\n");
+            LOG_ERR("uart_irq_update Failed\n");
             return;
         }
 
         if (!uart_irq_rx_ready(dev)) {
-            LOG_INF("uart_irq_rx_ready Failed\n");
+            LOG_ERR("uart_irq_rx_ready Failed\n");
             return;
         }
 
