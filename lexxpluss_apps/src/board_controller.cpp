@@ -87,11 +87,12 @@ public:
         RELEASED, PUSHED, LONG_PUSHED,
     };
     void poll() {
-        int now{0};
         gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
-        if (gpio_is_ready_dt(&gpio_dev)) {
-            now = gpio_pin_get_dt(&gpio_dev);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
         }
+        int now{gpio_pin_get_dt(&gpio_dev)};
         if (prev_raw != now) {
             prev_raw = now;
             count = 0;
@@ -129,10 +130,18 @@ public:
     STATE get_state() const {return state;}
     bool get_raw_state() {
         gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return -1;
+        }
         return gpio_pin_get_dt(&gpio_dev) == 0;
     }
     void set_led(bool enabled) {
         gpio_dt_spec gpio_dev = GET_GPIO(ps_led_out);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         gpio_pin_set_dt(&gpio_dev, enabled ? 0 : 1);
     }
     void toggle_led() {
@@ -165,6 +174,10 @@ public:
             }
         } else {
             gpio_dt_spec gpio_dev = GET_GPIO(bp_left);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             if (gpio_pin_get_dt(&gpio_dev) == 0) {
                 asserted_flag = true;
                 start_time = k_uptime_get();
@@ -184,6 +197,10 @@ class emergency_switch { // Variables Implemented
 public:
     void poll() {
         gpio_dt_spec gpio_dev = GET_GPIO(es_left);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         int now{gpio_pin_get_dt(&gpio_dev)};
         if (left_prev != now) {
             left_prev = now;
@@ -196,6 +213,10 @@ public:
             left_asserted = now == 1;
         }
         gpio_dev = GET_GPIO(es_right);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         now = gpio_pin_get_dt(&gpio_dev);
         if (right_prev != now) {
             right_prev = now;
@@ -230,10 +251,18 @@ public:
     void set_disable(bool disable) {
         if (disable) {
             gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 0);
             left_right_disable = true; 
         } else {
             gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 1);
             left_right_disable = false;
         }
@@ -255,6 +284,10 @@ public:
     }
     void poll() {
         gpio_dt_spec gpio_dev = GET_GPIO(mc_din);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         int now{gpio_pin_get_dt(&gpio_dev)};
         if (prev != now) {
             prev = now;
@@ -273,6 +306,10 @@ private:
         int plugged_count{0};
         for (int i{0}; i < 10; ++i) {
             gpio_dt_spec gpio_dev = GET_GPIO(mc_din);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             if (gpio_pin_get_dt(&gpio_dev) == 0)
                 ++plugged_count;
             k_msleep(5);
@@ -416,6 +453,10 @@ public:
     }
     void set_enable(bool enable) {
         gpio_dt_spec gpio_dev = GET_GPIO(v_autocharge);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         gpio_pin_set_dt(&gpio_dev, enable ? 1 : 0);
     }
     void force_stop() {
@@ -603,6 +644,18 @@ public:
         gpio_dt_spec gpio_c_dev = GET_GPIO(bmu_c_fet);
         gpio_dt_spec gpio_d_dev = GET_GPIO(bmu_d_fet);
         gpio_dt_spec gpio_p_dev = GET_GPIO(bmu_p_dsg);
+        if (!gpio_is_ready_dt(&gpio_c_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_d_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_p_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         c_fet = gpio_pin_get_dt(&gpio_c_dev) == 1;
         d_fet = gpio_pin_get_dt(&gpio_d_dev) == 1;
         p_dsg = gpio_pin_get_dt(&gpio_p_dev) == 1;
@@ -654,21 +707,45 @@ public:
         // 0=OFF, 1=ON
         if (enable) {
             gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 1);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v_peripheral);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 1);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v24);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 0);
         } else {
             gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 0);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v_peripheral);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 0);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v24);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 1);
         }
     }
@@ -678,6 +755,22 @@ public:
         gpio_dt_spec gpio_pgood_peripheral_dev = GET_GPIO(pgood_peripheral);
         gpio_dt_spec gpio_pgood_wheel_motor_left_dev = GET_GPIO(pgood_wheel_motor_left);
         gpio_dt_spec gpio_pgood_wheel_motor_right_dev = GET_GPIO(pgood_wheel_motor_right);
+        if (!gpio_is_ready_dt(&gpio_pgood_24v_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return -1;
+        }
+        if (!gpio_is_ready_dt(&gpio_pgood_peripheral_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return -1;
+        }
+        if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_left_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return -1;
+        }
+        if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_right_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return -1;
+        }
         bool rtn = (gpio_pin_get_dt(&gpio_pgood_24v_dev) == 0)                  
             && (gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 0)
             && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 0)
@@ -693,6 +786,22 @@ public:
         gpio_dt_spec gpio_pgood_peripheral_dev = GET_GPIO(pgood_peripheral);
         gpio_dt_spec gpio_pgood_wheel_motor_left_dev = GET_GPIO(pgood_wheel_motor_left);
         gpio_dt_spec gpio_pgood_wheel_motor_right_dev = GET_GPIO(pgood_wheel_motor_right);
+        if (!gpio_is_ready_dt(&gpio_pgood_24v_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_pgood_peripheral_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_left_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_right_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         // 0:OK, 1:NG
         v24 = gpio_pin_get_dt(&gpio_pgood_24v_dev) == 1;
         v_peripheral = gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 1;
@@ -712,6 +821,22 @@ public:
         gpio_dt_spec gpio_fan2_dev = GET_GPIO(fan2);
         gpio_dt_spec gpio_fan3_dev = GET_GPIO(fan3);
         gpio_dt_spec gpio_fan4_dev = GET_GPIO(fan4);
+        if (!gpio_is_ready_dt(&gpio_fan1_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_fan2_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_fan3_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_fan4_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         gpio_pin_set_dt(&gpio_fan1_dev, 1);    // 1:ON, 0:OFF
         gpio_pin_set_dt(&gpio_fan2_dev, 1);    // 1:ON, 0:OFF
         gpio_pin_set_dt(&gpio_fan3_dev, 1);   // 1:ON, 0:OFF
@@ -722,6 +847,22 @@ public:
         gpio_dt_spec gpio_fan2_dev = GET_GPIO(fan2);
         gpio_dt_spec gpio_fan3_dev = GET_GPIO(fan3);
         gpio_dt_spec gpio_fan4_dev = GET_GPIO(fan4);
+        if (!gpio_is_ready_dt(&gpio_fan1_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_fan2_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_fan3_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        if (!gpio_is_ready_dt(&gpio_fan4_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
         gpio_pin_set_dt(&gpio_fan1_dev, 0);    // 1:ON, 0:OFF
         gpio_pin_set_dt(&gpio_fan2_dev, 0);    // 1:ON, 0:OFF
         gpio_pin_set_dt(&gpio_fan3_dev, 0);   // 1:ON, 0:OFF
@@ -922,6 +1063,10 @@ private:
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                if (!gpio_is_ready_dt(&gpio_dev)) {
+                    LOG_ERR("gpio_is_ready_dt Failed\n");
+                    return;
+                }
                 gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
@@ -1137,6 +1282,10 @@ private:
             LOG_INF("enter POST\n");
             psw.set_led(true);
             gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 0);
             timer_post = k_uptime_get();    // timer reset
             // Set LED
@@ -1151,6 +1300,10 @@ private:
             dcdc.set_enable(true);
             wsw.set_disable(true);
             gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             wait_shutdown = false;
@@ -1159,6 +1312,10 @@ private:
             LOG_INF("enter NORMAL\n");
             wsw.set_disable(false);
             gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             charge_guard_asserted = true;
@@ -1180,6 +1337,10 @@ private:
             LOG_INF("enter MANUAL_CHARGE\n");
             wsw.set_disable(true);
             gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
             break;
@@ -1187,6 +1348,10 @@ private:
             LOG_INF("enter LOCKDOWN\n");
             wsw.set_disable(true);
             gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
             gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
 
