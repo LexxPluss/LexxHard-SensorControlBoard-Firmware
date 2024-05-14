@@ -45,7 +45,7 @@ jobs:
           west update
           west config --global zephyr.base-prefer configfile
           west zephyr-export
-          export ZEPHYR_SDK_INSTALL_DIR=/opt/toolchains/zephyr-sdk-0.16.5-1
+          export Zephyr-sdk_DIR=/opt/toolchains/zephyr-sdk-0.16.5-1
           west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=$(pwd)/extra
           west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=$(pwd)/extra -DZEPHYR_EXTRA_MODULES=$(pwd)/extra
           dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
