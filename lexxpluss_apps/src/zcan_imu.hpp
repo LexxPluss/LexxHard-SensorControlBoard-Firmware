@@ -25,34 +25,37 @@
 
 #pragma once
 
-#include <zephyr.h>
-#include <drivers/can.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include "imu_controller.hpp"
 
 #define CAN_ID_ACCL 0x206
 #define CAN_ID_GYRO 0x207
 #define CAN_DATA_LENGTH_IMU 7
 
-namespace lexxhard {
+namespace lexxhard::zcan_imu {
+
+LOG_MODULE_REGISTER(zcan_imu);
 
 class zcan_imu {
 public:
-    int init() {
-        dev = device_get_binding("CAN_2");  //CAN(to IPC)
-        if (!device_is_ready(dev))
-            return -1;
+    void init() {
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));    //CAN(to IPC)
+        if (!device_is_ready(dev)){
+            LOG_ERR("CAN_2 is not ready");
+            return;
+        }
 
-        return 0;
+        return;
     }
     void poll() {
         imu_controller::msg message;
 
         while (k_msgq_get(&imu_controller::msgq, &message, K_NO_WAIT) == 0) {
-            zcan_frame frame_imu[2]{
+            can_frame frame_imu[2]{
                 {
                     .id = CAN_ID_ACCL,
-                    .rtr = CAN_DATAFRAME,
-                    .id_type = CAN_STANDARD_IDENTIFIER,
                     .dlc = CAN_DATA_LENGTH_IMU,
                     .data{
                         message.accel_data_upper[0],
@@ -66,8 +69,6 @@ public:
                 },
                 {
                     .id = CAN_ID_GYRO,
-                    .rtr = CAN_DATAFRAME,
-                    .id_type = CAN_STANDARD_IDENTIFIER,
                     .dlc = CAN_DATA_LENGTH_IMU,
                     .data{
                         message.gyro_data_upper[0],

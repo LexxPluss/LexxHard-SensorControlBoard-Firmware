@@ -23,10 +23,11 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <devicetree.h>
-#include <storage/flash_map.h>
-#include <sys/reboot.h>
+#include <zephyr/kernel.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/storage/flash_map.h>
+// #include <zephyr/dfu/flash_img.h>
+#include <zephyr/sys/reboot.h>
 #include "firmware_updater.hpp"
 
 namespace lexxhard::firmware_updater {
@@ -99,30 +100,31 @@ private:
         }
     }
     void cmd_start(const uint8_t *data) {
-        if (fa != nullptr)
-            flash_area_reset();
-        dfu_start_cycle = k_cycle_get_32();
-        if (!DT_NODE_EXISTS(DT_NODELABEL(image_0_secondary_partition))) {
-            respond(RESP::ERR_PARTITION);
-            return;
-        }
-        if (flash_area_open(FLASH_AREA_ID(image_1), &fa) != 0) {
-            respond(RESP::ERR_FLASH_AREA);
-            return;
-        }
-        static constexpr uint32_t LENGTH{0x00040000};
-        for (uint32_t current_offset{0}; current_offset < LENGTH; current_offset += 4) {
-            uint32_t buf{0};
-            flash_area_read(fa, current_offset, &buf, sizeof buf);
-            if (buf != 0xffffffff) {
-                if (flash_area_erase(fa, 0, LENGTH) != 0) {
-                    flash_area_reset();
-                    respond(RESP::ERR_FLASH_ERASE);
-                    return;
-                }
-            }
-        }
-        cmd_data(data);
+        // TODO need to revice FLASH_AREA_ID(image_1) to different definition
+        // if (fa != nullptr)
+        //     flash_area_reset();
+        // dfu_start_cycle = k_cycle_get_32();
+        // if (!DT_NODE_EXISTS(DT_NODELABEL(image_0_secondary_partition))) {
+        //     respond(RESP::ERR_PARTITION);
+        //     return;
+        // }
+        // if (flash_area_open(FLASH_AREA_ID(image_1), &fa) != 0) {
+        //     respond(RESP::ERR_FLASH_AREA);
+        //     return;
+        // }
+        // static constexpr uint32_t LENGTH{0x00040000};
+        // for (uint32_t current_offset{0}; current_offset < LENGTH; current_offset += 4) {
+        //     uint32_t buf{0};
+        //     flash_area_read(fa, current_offset, &buf, sizeof buf);
+        //     if (buf != 0xffffffff) {
+        //         if (flash_area_erase(fa, 0, LENGTH) != 0) {
+        //             flash_area_reset();
+        //             respond(RESP::ERR_FLASH_ERASE);
+        //             return;
+        //         }
+        //     }
+        // }
+        // cmd_data(data);
     }
     void cmd_data(const uint8_t *data) {
         if (fa == nullptr) {

@@ -25,19 +25,26 @@
 
 #pragma once
 
-#include <zephyr.h>
-#include <drivers/can.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include "uss_controller.hpp"
 
 #define CAN_ID_USS 0x204
 #define CAN_DATA_LENGTH_USS 8
 
-namespace lexxhard {
+namespace lexxhard::zcan_uss {
 
-class ros_uss {
+LOG_MODULE_REGISTER(zcan_uss);
+
+class zcan_uss {
 public:
     void init() {
-        dev = device_get_binding("CAN_2"); 
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
+        if (!device_is_ready(dev)){
+            LOG_ERR("CAN_2 is not ready");
+            return;
+        }
     }
     void poll() {
         uss_controller::msg message;
@@ -59,16 +66,16 @@ public:
             packedData[4] = ((data3 & 0x00F) << 4) | (data4 >> 8);
             packedData[5] = data4 & 0x0FF;
             packedData[6] = (data5 & 0xFF0) >> 4;
-            packedData[7] = (data5 & 0x00F) << 4;                          
+            packedData[7] = (data5 & 0x00F) << 4;    
 
-            zcan_frame frame{
+            // set data to CAN frame
+            can_frame frame{
                 .id = CAN_ID_USS,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
                 .dlc = CAN_DATA_LENGTH_USS,
                 .data = {0}
             };
-
+            
+            // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_USS);
 
             can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);

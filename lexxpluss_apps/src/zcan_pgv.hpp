@@ -25,52 +25,47 @@
 
 #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include <cstdio>
-#include <drivers/can.h>
-#include "std_msgs/UInt8.h"
-#include "lexxauto_msgs/PositionGuideVision.h"
 #include "common.hpp"
 #include "pgv_controller.hpp"
 
 #define CAN_ID_PGV_1 0x200
 #define CAN_ID_PGV_2 0x201
 #define CAN_ID_PGV_3 0x202
-#define CAN_DATA_LENGTH 8
+#define CAN_DATA_LENGTH_PGV 8
+namespace lexxhard::zcan_pgv {
 
-namespace lexxhard {
+LOG_MODULE_REGISTER(zcan_pgv);
 
-class can_pgv {
+class zcan_pgv {
 public:
-    int init()
+    void init()
     {
-        //can device bind
-        dev = device_get_binding("CAN_2");
-        if (!device_is_ready(dev))
-            return -1;
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
+        if (!device_is_ready(dev)){
+            LOG_ERR("CAN_2 is not ready");
+            return;
+        }
         ring_counter=0;
-        return 0;
+        return;
     }
 
     void poll() {
         pgv_controller::msg message;
         while (k_msgq_get(&pgv_controller::msgq, &message, K_NO_WAIT) == 0)
         {
-            zcan_frame frame_pgv[3]{{
+            can_frame frame_pgv[3]{{
                 .id = CAN_ID_PGV_1,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
-                .dlc = CAN_DATA_LENGTH
+                .dlc = CAN_DATA_LENGTH_PGV
             },{
                 .id = CAN_ID_PGV_2,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
-                .dlc = CAN_DATA_LENGTH
+                .dlc = CAN_DATA_LENGTH_PGV
             },{
                 .id = CAN_ID_PGV_3,
-                .rtr = CAN_DATAFRAME,
-                .id_type = CAN_STANDARD_IDENTIFIER,
-                .dlc = CAN_DATA_LENGTH,
+                .dlc = CAN_DATA_LENGTH_PGV,
             }};
 
             // 0x200 PGV( 1~ 7Byte + counter)
@@ -96,26 +91,26 @@ private:
 
     //THIS FUNCTION SHOULD RE-WRITE WHEN USE BECAUSE STILL NOT CHANGED UNTIL ROS-SERIAL GEN
     //BUT THIS FUNCTION NOT USED
-    void callback(const std_msgs::UInt8 &req) {
-        switch (req.data) {
-        case 0:
-            snprintf(direction, sizeof direction, "No lane is selected");
-            break;
-        case 1:
-            snprintf(direction, sizeof direction, "Right lane is selected");
-            break;
-        case 2:
-            snprintf(direction, sizeof direction, "Left lane is selected");
-            break;
-        case 3:
-            snprintf(direction, sizeof direction, "Straight Ahead");
-            break;
-        }
-        pgv_controller::msg_control can2pgv;
-        can2pgv.dir_command = req.data;
-        while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
-            k_msgq_purge(&pgv_controller::msgq_control);
-    }
+    // void callback(const std_msgs::UInt8 &req) {
+    //     switch (req.data) {
+    //     case 0:
+    //         snprintf(direction, sizeof direction, "No lane is selected");
+    //         break;
+    //     case 1:
+    //         snprintf(direction, sizeof direction, "Right lane is selected");
+    //         break;
+    //     case 2:
+    //         snprintf(direction, sizeof direction, "Left lane is selected");
+    //         break;
+    //     case 3:
+    //         snprintf(direction, sizeof direction, "Straight Ahead");
+    //         break;
+    //     }
+    //     pgv_controller::msg_control can2pgv;
+    //     can2pgv.dir_command = req.data;
+    //     while (k_msgq_put(&pgv_controller::msgq_control, &can2pgv, K_NO_WAIT) != 0)
+    //         k_msgq_purge(&pgv_controller::msgq_control);
+    // }
     char direction[64]{"Straight Ahead"};
     const device *dev{nullptr};
 };

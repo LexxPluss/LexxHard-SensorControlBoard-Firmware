@@ -23,8 +23,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <cstdio>
 #include <cmath>
 #include <queue>
@@ -40,8 +40,10 @@ public:
     void new_topic(float vz, uint32_t current_cycle) {
         bool detected{yaw_error_detected(vz, current_cycle)};
         if (!last_detected && detected) {
-            snprintf(log_buffer, sizeof log_buffer, "Emergency! ACC:%4.2f VEL:%4.2f DELTA:%4.2f\n", avg_yaw_accel, avg_yaw_velocity, sum_yaw_delta_theta);
-            LOG_ERR("%s", log_strdup(log_buffer));
+            snprintf(log_buffer, sizeof log_buffer, "Emergency! ACC:%4.2f VEL:%4.2f DELTA:%4.2f\n", 
+                static_cast<double>(avg_yaw_accel), static_cast<double>(avg_yaw_velocity), static_cast<double>(sum_yaw_delta_theta));
+            // TODO log_strdup(log_buffer) makes build error
+            // LOG_ERR("%s", log_strdup(log_buffer));
             // @@ do something. (emergency stop, etc.)
         }
         last_detected = detected;
@@ -110,8 +112,8 @@ private:
     float sum_yaw_delta_theta{0.0f};
     char log_buffer[256]{0};
     bool last_detected{false};
-    static constexpr float YAW_ACCEL_LIMIT{1.5f * M_PI};
-    static constexpr float YAW_DELTA_THETA_LIMIT{2.5f * M_PI};
+    static constexpr float YAW_ACCEL_LIMIT{1.5f * static_cast<float>(M_PI)};
+    static constexpr float YAW_DELTA_THETA_LIMIT{2.5f * static_cast<float>(M_PI)};
     static constexpr uint8_t SIZE_OF_TOPICS_QUEUE{10U};//average of ~200ms at 50Hz
     static constexpr uint8_t SIZE_OF_YAW_ACCEL_QUEUE{50U};//average of ~1000ms at 50Hz
     static constexpr uint8_t SIZE_OF_YAW_VELOCITY_QUEUE{50U};//average of ~1000ms at 50Hz

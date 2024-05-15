@@ -31,9 +31,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # container:
-    #   image: zephyrprojectrtos/zephyr-build:v0.21.0
-    #   options: --user root
+    container:
+      image: zephyrprojectrtos/zephyr-build:v0.26.9
+      options: --user root
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
@@ -43,10 +43,13 @@ jobs:
         id: build
         run: |
           set -e
-          make build
-          make setup
-          make update
-          make all
+          cp -a /home/user/.cmake $HOME
+          west init -l lexxpluss_apps
+          west update
+          west config --global zephyr.base-prefer configfile
+          west zephyr-export
+          west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=$(pwd)/extra
+          west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=$(pwd)/extra -DZEPHYR_EXTRA_MODULES=$(pwd)/extra
       - name: Notification
         uses: act10ns/slack@v1
         with:

@@ -25,9 +25,9 @@
 
 #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
 
-namespace lexxhard::rosserial {
+namespace lexxhard::zcan_main {
 
 void init();
 void run(void *p1, void *p2, void *p3);

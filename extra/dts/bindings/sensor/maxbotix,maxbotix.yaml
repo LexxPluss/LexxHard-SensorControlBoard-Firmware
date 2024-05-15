@@ -28,22 +28,17 @@ compatible: "maxbotix,maxbotix"
 include: base.yaml
 
 properties:
-  label:
-    required: true
-    type: string
-    description: Human readable string describing the device (used as device_get_binding() argument)
-
   status:
     required: true
     type: string
     description: Human readable string describing the device's status
 
-  trig-gpios:
+  trig_gpios:
     type: phandle-array
     description: Trigger pin
     required: true
 
-  echo-gpios:
+  echo_gpios:
     type: phandle-array
     description: Echo pin
     required: true

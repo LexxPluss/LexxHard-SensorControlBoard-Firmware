@@ -24,60 +24,65 @@
  */
 
 
-#include <zephyr.h>
-#include <device.h>
-#include <drivers/can.h>
-#include <drivers/gpio.h>
-#include <logging/log.h>
-#include <shell/shell.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include "bmu_controller.hpp"
+#include "board_controller.hpp"
 
 namespace lexxhard::bmu_controller { 
 
 LOG_MODULE_REGISTER(bmu);
 
-char __aligned(4) msgq_bmu_buffer[8 * sizeof (msg_bmu)];
-char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (msg_rawframe_bmu)];
+char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (can_frame)];
 
-CAN_DEFINE_MSGQ(msgq_can_recv_bmu, 16);
+CAN_MSGQ_DEFINE(msgq_can_recv_bmu, 32);
 
 class bmu_controller_impl {
 public:
     int init() {
-        k_msgq_init(&msgq_parsed_bmu, msgq_bmu_buffer, sizeof (msg_bmu), 8); // For board_controller of MCU internal code
-        k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (msg_rawframe_bmu), 8); // For IPC as path through from CAN_1 to CAN_2
-        dev_can_bmu = device_get_binding("CAN_1");
+        k_msgq_init(&msgq_rawframe_bmu, msgq_rawframe_bmu_buffer, sizeof (can_frame), 8); // For IPC as path through from CAN_1 to CAN_2
+
+        dev_can_bmu = DEVICE_DT_GET(DT_NODELABEL(can1));
         if (!device_is_ready(dev_can_bmu))
             return -1;
-        can_configure(dev_can_bmu, CAN_NORMAL_MODE, 500000);
+
+        static const can_filter filter_bmu{
+            .id{0x100},
+            .mask{0x7c0} // This mask ranged from 0x100 to 0x13F
+        };
+
+        can_add_rx_filter_msgq(dev_can_bmu, &msgq_can_recv_bmu, &filter_bmu);
+
+        can_set_bitrate(dev_can_bmu, 500000);
+        can_set_mode(dev_can_bmu, CAN_MODE_NORMAL);
+        can_start(dev_can_bmu);
+
         return 0;
     }
 
     void run() {
-        if (!device_is_ready(dev_can_bmu))
+        if (!device_is_ready(dev_can_bmu)){
+            LOG_ERR("CAN_1 is not ready");
             return;
-        static const zcan_filter filter_bmu{
-            .id{0x100},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7c0}, // This mask ranged from 0x100 to 0x13F
-            .rtr_mask{1}
-        };
-        can_attach_msgq(dev_can_bmu, &msgq_can_recv_bmu, &filter_bmu);
+        }
+            
         while (true) {
-            zcan_frame frame;
+            can_frame frame;
             if (k_msgq_get(&msgq_can_recv_bmu, &frame, K_NO_WAIT) == 0) {
                 // -> raw packet to can_bmu
-                while (k_msgq_put(&msgq_rawframe_bmu, frame.data, K_NO_WAIT) != 0)
+                while (k_msgq_put(&msgq_rawframe_bmu, &frame, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq_rawframe_bmu);
-                // -> parsed info to board_controller
-                if (handler_bmu(frame)) {
-                    while (k_msgq_put(&msgq_parsed_bmu, &msg, K_NO_WAIT) != 0)
-                        k_msgq_purge(&msgq_parsed_bmu);
-                }
-            }
-            else
-            {
+                // -> can frame to board_controller
+                while (k_msgq_put(&board_controller::msgq_can_bmu_pb, &frame, K_NO_WAIT) != 0)
+                    k_msgq_purge(&board_controller::msgq_can_bmu_pb);
+
+                // -> parsed info to show in bmu info
+                handler_bmu(frame);
+            } else {
                 k_msleep(1);
             }
         }
@@ -113,8 +118,7 @@ public:
     }
 
 private:
-    bool handler_bmu(zcan_frame &frame) {
-        bool result{false};
+    void handler_bmu(can_frame &frame) {
         if (frame.id == 0x100) {
             msg.mod_status1 = frame.data[0];
             msg.bmu_status = frame.data[1];
@@ -162,12 +166,12 @@ private:
             msg.manufacturing = (frame.data[0] << 8) | frame.data[1];
             msg.inspection = (frame.data[2] << 8) | frame.data[3];
             msg.serial = (frame.data[4] << 8) | frame.data[5];
-            result = true;
         }
-        return result;
+        return;
     }
 
     msg_bmu msg{0};
+    msg_can_bmu can_msg{0};
 
     const device *dev_can_bmu{nullptr};
 

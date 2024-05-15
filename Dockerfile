@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, LexxPluss Inc.
+# Copyright (c) 2024, LexxPluss Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -21,6 +21,5 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-add_subdirectory_ifdef(CONFIG_MAXBOTIX maxbotix)
-add_subdirectory_ifdef(CONFIG_ADIS16470 adis16470)
-add_subdirectory_ifdef(CONFIG_IIM42652 iim42652)
+FROM zephyrprojectrtos/zephyr-build:v0.26.9
+RUN mkdir -p ~/.cmake/packages/Zephyr && hash=`echo -n "/workdir/zephyr" | md5sum | cut -d ' ' -f1` && echo "/workdir/zephyr" > ~/.cmake/packages/Zephyr/$hash

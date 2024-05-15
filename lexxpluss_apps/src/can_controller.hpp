@@ -25,45 +25,49 @@
 
 #pragma once
 
-#include <zephyr.h>
+#include <zephyr/kernel.h>
 
 namespace lexxhard::can_controller {
 
-// struct msg_bmu {
-//     struct {
-//         uint16_t value;
-//         uint8_t id;
-//     } max_voltage, min_voltage, max_cell_voltage, min_cell_voltage;
-//     struct {
-//         int16_t value;
-//         uint8_t id;
-//     } max_temp, min_temp, max_current, min_current;
-//     int16_t fet_temp, pack_current;
-//     uint16_t charging_current, pack_voltage, design_capacity, full_charge_capacity, remain_capacity;
-//     uint16_t manufacturing, inspection, serial;
-//     uint8_t mod_status1, mod_status2, bmu_status, asoc, rsoc, soh;
-//     uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
-// } __attribute__((aligned(4)));
+struct msg_bmu {
+    struct {
+        uint16_t value;
+        uint8_t id;
+    } max_voltage, min_voltage, max_cell_voltage, min_cell_voltage;
+    struct {
+        int16_t value;
+        uint8_t id;
+    } max_temp, min_temp, max_current, min_current;
+    int16_t fet_temp, pack_current;
+    uint16_t charging_current, pack_voltage, design_capacity, full_charge_capacity, remain_capacity;
+    uint16_t manufacturing, inspection, serial;
+    uint8_t mod_status1, mod_status2, bmu_status, asoc, rsoc, soh;
+    uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
+} __attribute__((aligned(4)));
 
 struct msg_board {
-    float main_board_temp, actuator_board_temp[3], charge_connector_voltage;
-    int16_t charge_connector_temp[2], power_board_temp;
+    float wheel_motor_lr_loadsw_temp, peripheral_loadsw_temp, auto_charge_loadsw_temp, charge_connector_voltage;
+    float wheel_motor_l_loadsw_cs, wheel_motor_r_loadsw_cs, peripheral_loadsw_cs;
+    int16_t charge_connector_p_temp, charge_connector_n_temp;
     uint8_t fan_duty, shutdown_reason, state, charge_check_count, charge_heartbeat_delay;
-    bool bumper_switch[2];
-    bool emergency_switch[2];
-    bool power_switch, wait_shutdown, auto_charging, manual_charging;
-    bool c_fet, d_fet, p_dsg, v5_fail, v16_fail;
-    bool wheel_disable[2];
-    bool charge_temperature_error;
+    bool bumper_switch_asserted;
+    bool emergency_switch_asserted;
+    bool power_switch_state, wait_shutdown_state, auto_charging_status, manual_charging_status;
+    bool c_fet, d_fet, p_dsg;
+    bool is_activated_battery;
+    bool v24_loadsw_on, v_wheel_motor_lr_loadsw_on, auto_charge_loadsw_on, v_peripheral_loadsw_on;
+    bool v24_pgood, v_wheel_motor_l_pgood, v_wheel_motor_r_pgood, v_peripheral_pgood;
+    bool c_act_pgood, l_act_pgood, r_act_pgood;
+    bool wheel_enable;
+    bool charge_temperature_good;
 } __attribute__((aligned(4)));
 
 struct msg_control {
-    bool emergency_stop, power_off, wheel_power_off;
+    bool emergency_stop, power_off, wheel_power_off, heart_beat;
 } __attribute__((aligned(4)));
 
 void init();
 void run(void *p1, void *p2, void *p3);
-// uint32_t get_rsoc();
 bool get_emergency_switch();
 bool get_bumper_switch();
 bool is_emergency();

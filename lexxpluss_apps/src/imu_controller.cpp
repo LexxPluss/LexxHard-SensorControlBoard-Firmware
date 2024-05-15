@@ -23,12 +23,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <drivers/gpio.h>
-#include <device.h>
-#include <drivers/sensor.h>
-#include <logging/log.h>
-#include <shell/shell.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include "common.hpp"
 #include "imu_controller.hpp"
 #include "runaway_detector.hpp"
@@ -46,7 +46,7 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
 
-        dev = device_get_binding("IIM42652");
+        dev = DEVICE_DT_GET(DT_NODELABEL(imu0));
 
         if (!device_is_ready(dev)) {
             LOG_ERR("IMU device not found");
@@ -143,7 +143,7 @@ public:
 
                     // to ZCAN module
                     while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
-                                k_msgq_purge(&msgq);
+                        k_msgq_purge(&msgq);
 
                     runaway_detector::msg message_runaway{
                         .accel{sensor_value_to_float(&accel[1]), sensor_value_to_float(&accel[0]), sensor_value_to_float(&accel[2])},
@@ -175,7 +175,7 @@ public:
                     gyro_x, gyro_y, gyro_z,
                     (int16_t)message.counter);
     }
-    static void cb_func(const struct device *dev, struct sensor_trigger *trig_cb) {
+    static void cb_func(const struct device *dev, const struct sensor_trigger *trig_cb) {
         ARG_UNUSED(dev);
         ARG_UNUSED(trig_cb);
 
@@ -204,7 +204,7 @@ private:
     int16_t gyro_rad_to_deg_int16_t(const struct sensor_value *val) {
         int64_t temp_value{0};
         
-        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6f) * (180.0 / M_PI) * 1e3f);
+        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6) * (180.0 / M_PI) * 1e3);
 
         if(temp_value > INT16_MAX) {
             temp_value = INT16_MAX;

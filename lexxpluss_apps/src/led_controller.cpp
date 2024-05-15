@@ -23,11 +23,11 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <device.h>
-#include <devicetree.h>
-#include <drivers/led_strip.h>
-#include <logging/log.h>
-#include <shell/shell.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/led_strip.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include <algorithm>
 #include <cstdlib>
 #include "bmu_controller.hpp"
@@ -43,7 +43,7 @@ char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 class led_message_receiver {
 public:
     led_message_receiver() {
-        message.pattern = msg::SHOWTIME;
+        message.pattern = msg::NONE;
         message.interrupt_ms = 0;
     }
     bool get_message(msg &output) {
@@ -100,10 +100,10 @@ class led_controller_impl {
 public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-        dev[LED_LEFT] = device_get_binding("WS2812_0");
-        dev[LED_RIGHT] = device_get_binding("WS2812_1");
-        dev[2] = device_get_binding("WS2812_3");
-        dev[3] = device_get_binding("WS2812_2");
+        dev[LED_LEFT] = DEVICE_DT_GET(DT_NODELABEL(led_strip0));
+        dev[LED_RIGHT] = DEVICE_DT_GET(DT_NODELABEL(led_strip1));
+        dev[2] = DEVICE_DT_GET(DT_NODELABEL(led_strip3));
+        dev[3] = DEVICE_DT_GET(DT_NODELABEL(led_strip2));
         if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]) ||
             !device_is_ready(dev[2]) || !device_is_ready(dev[3]))
             return -1;
@@ -306,6 +306,9 @@ private:
     }
     led_rgb fader(const led_rgb &color, int percent) const {
         led_rgb color_;
+        if (percent > 100)
+            percent = 100;
+
         color_.r = color.r * percent / 100;
         color_.g = color.g * percent / 100;
         color_.b = color.b * percent / 100;

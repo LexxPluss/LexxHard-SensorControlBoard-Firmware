@@ -25,13 +25,13 @@
 
 #define DT_DRV_COMPAT maxbotix_maxbotix
 
-#include <kernel.h>
-#include <device.h>
-#include <drivers/gpio.h>
-#include <drivers/sensor.h>
-#include <device.h>
-#include <devicetree.h>
-#include <logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(maxbotix, CONFIG_MAXBOTIX_LOG_LEVEL);
 
@@ -51,18 +51,12 @@ struct maxbotix_callback_data {
 
 struct maxbotix_data {
     struct sensor_value sensor_value;
-    const struct device *trig_dev;
-    const struct device *echo_dev;
     struct maxbotix_callback_data cb_data;
 };
 
 struct maxbotix_cfg {
-    const char * const trig_port;
-    const uint8_t trig_pin;
-    const uint32_t trig_flags;
-    const char * const echo_port;
-    const uint8_t echo_pin;
-    const uint32_t echo_flags;
+    struct gpio_dt_spec trig_dev;
+    struct gpio_dt_spec echo_dev;
 };
 
 static void input_changed(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
@@ -90,26 +84,24 @@ static int maxbotix_init(const struct device *dev)
 {
     struct maxbotix_data *data = dev->data;
     const struct maxbotix_cfg *cfg  = dev->config;
-    data->trig_dev = device_get_binding(cfg->trig_port);
-    if (!data->trig_dev)
-        return -ENODEV;
-    data->echo_dev = device_get_binding(cfg->echo_port);
-    if (!data->echo_dev)
-        return -ENODEV;
-    int err = gpio_pin_configure(data->trig_dev, cfg->trig_pin, (GPIO_OUTPUT | cfg->trig_flags));
+
+    int err = gpio_pin_configure_dt(&cfg->trig_dev, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
     if (err != 0)
         return err;
-    err = gpio_pin_configure(data->echo_dev, cfg->echo_pin, (GPIO_INPUT | cfg->echo_flags));
+
+    err = gpio_pin_configure_dt(&cfg->echo_dev, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
     if (err != 0)
         return err;
-    err = gpio_pin_interrupt_configure(data->echo_dev, cfg->echo_pin, GPIO_INT_EDGE_BOTH);
+
+    err = gpio_pin_interrupt_configure_dt(&cfg->echo_dev, GPIO_INT_EDGE_BOTH);
     if (err != 0)
         return err;
-    gpio_init_callback(&data->cb_data.cb, input_changed, BIT(cfg->echo_pin));
+
+    gpio_init_callback(&data->cb_data.cb, input_changed, BIT(cfg->echo_dev.pin));
     err = k_sem_init(&data->cb_data.semaphore, 0, 1);
     if (0 != err)
         return err;
-    gpio_pin_set(data->trig_dev, cfg->trig_pin, 0);
+    gpio_pin_set_dt(&cfg->trig_dev, 0);
     data->sensor_value.val1 = 0;
     data->sensor_value.val2 = 0;
     data->cb_data.state = MAXBOTIX_STATE_IDLE;
@@ -123,14 +115,14 @@ static int maxbotix_sample_fetch(const struct device *dev, enum sensor_channel c
     const struct maxbotix_cfg *cfg  = dev->config;
     if (unlikely((SENSOR_CHAN_ALL != chan) && (SENSOR_CHAN_DISTANCE != chan)))
         return -ENOTSUP;
-    gpio_add_callback(data->echo_dev, &data->cb_data.cb);
+    gpio_add_callback(cfg->echo_dev.port, &data->cb_data.cb);
     data->cb_data.state = MAXBOTIX_STATE_RISING_EDGE;
-    gpio_pin_set(data->trig_dev, cfg->trig_pin, 1);
+    gpio_pin_set_dt(&cfg->trig_dev, 1);
     k_busy_wait(20);
-    gpio_pin_set(data->trig_dev, cfg->trig_pin, 0);
+    gpio_pin_set_dt(&cfg->trig_dev, 0);
     if (k_sem_take(&data->cb_data.semaphore, K_MSEC(200)) || data->cb_data.state != MAXBOTIX_STATE_FINISHED) {
         LOG_DBG("No response from MAXBOTIX");
-        gpio_remove_callback(data->echo_dev, &data->cb_data.cb);
+        gpio_remove_callback(cfg->echo_dev.port, &data->cb_data.cb);
         return -EIO;
     }
     int result = 0;
@@ -172,29 +164,23 @@ static const struct sensor_driver_api maxbotix_driver_api = {
     .channel_get  = maxbotix_channel_get,
 };
 
-#define INST(num) DT_INST(num, maxbotix_maxbotix)
+#define MAXBOTIX_DEFINE_CONFIG(index)					\
+	static const struct maxbotix_cfg maxbotix_cfg_##index = {	\
+		.trig_dev = GPIO_DT_SPEC_INST_GET(index, trig_gpios),    \
+		.echo_dev = GPIO_DT_SPEC_INST_GET(index, echo_gpios),    \
+	}
 
-#define MAXBOTIX_DEVICE(n) \
-    static const struct maxbotix_cfg maxbotix_cfg_##n = { \
-        .trig_port  = DT_GPIO_LABEL(INST(n), trig_gpios), \
-        .trig_pin   = DT_GPIO_PIN(INST(n),   trig_gpios), \
-        .trig_flags = DT_GPIO_FLAGS(INST(n), trig_gpios), \
-        .echo_port  = DT_GPIO_LABEL(INST(n), echo_gpios), \
-        .echo_pin   = DT_GPIO_PIN(INST(n),   echo_gpios), \
-        .echo_flags = DT_GPIO_FLAGS(INST(n), echo_gpios), \
-    }; \
-    static struct maxbotix_data maxbotix_data_##n; \
-    DEVICE_DEFINE(maxbotix_##n, \
-                DT_LABEL(INST(n)), \
-                maxbotix_init, \
-                NULL, \
-                &maxbotix_data_##n, \
-                &maxbotix_cfg_##n, \
-                POST_KERNEL, \
-                CONFIG_SENSOR_INIT_PRIORITY, \
-                &maxbotix_driver_api);
+#define MAXBOTIX_INIT(index)						\
+	MAXBOTIX_DEFINE_CONFIG(index);					\
+	static struct maxbotix_data maxbotix_data_##index;		\
+	SENSOR_DEVICE_DT_INST_DEFINE(index, maxbotix_init,		\
+			    NULL,					\
+			    &maxbotix_data_##index,			\
+			    &maxbotix_cfg_##index, POST_KERNEL,		\
+			    CONFIG_SENSOR_INIT_PRIORITY,		\
+			    &maxbotix_driver_api);
 
-DT_INST_FOREACH_STATUS_OKAY(MAXBOTIX_DEVICE)
+DT_INST_FOREACH_STATUS_OKAY(MAXBOTIX_INIT)
 
 #if DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 0
 #warning "MAXBOTIX driver enabled without any devices"

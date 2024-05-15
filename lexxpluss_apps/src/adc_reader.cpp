@@ -23,9 +23,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <device.h>
-#include <drivers/adc.h>
-#include <logging/log.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/adc.h>
+#include <zephyr/logging/log.h>
 #include "adc_reader.hpp"
 
 namespace lexxhard::adc_reader {
@@ -35,11 +35,12 @@ LOG_MODULE_REGISTER(adc);
 class {
 public:
     int init() {
-        dev = device_get_binding("ADC_1");
-        return device_is_ready(dev) ? 0 : -1;
+        dev = DEVICE_DT_GET(DT_NODELABEL(adc1));
+        dev_adc3 = DEVICE_DT_GET(DT_NODELABEL(adc3));
+        return (device_is_ready(dev) && device_is_ready(dev_adc3)) ? 0 : -1;
     }
     void run() {
-        if (!device_is_ready(dev))
+        if (!device_is_ready(dev) && !device_is_ready(dev_adc3))
             return;
         while (true) {
             read_all_channels();
@@ -52,9 +53,17 @@ public:
             adc_raw_to_millivolts(ref, ADC_GAIN_1, 12, &value);
         return value;
     }
+
+    int32_t get_adc3(int index) const {
+        int32_t value_adc3{buffer_adc3[index]};
+        if (int32_t ref_adc3{adc_ref_internal(dev_adc3)}; ref_adc3 > 0)
+            adc_raw_to_millivolts(ref_adc3, ADC_GAIN_1, 12, &value_adc3);
+        return value_adc3;
+    }
 private:
     void read_all_channels() {
-        static constexpr uint8_t ch[NUM_CHANNELS]{8, 9, 10, 11, 12, 13};
+        /*  ADC1 */
+        static constexpr uint8_t ch[NUM_CHANNELS]{8, 9, 10, 11, 12, 13, 14, 15};
         for (int i{0}; i < NUM_CHANNELS; ++i) {
             // Only single channel supported
             adc_channel_cfg channel_cfg{
@@ -76,9 +85,32 @@ private:
             };
             adc_read(dev, &sequence);
         }
+        /* ADC3 */
+        static constexpr uint8_t ch_adc3[NUM_CHANNELS_ADC3]{8};
+        for (int i{0}; i < NUM_CHANNELS_ADC3; ++i) {
+            // Only single channel supported
+            adc_channel_cfg channel_cfg_adc3{
+                .gain{ADC_GAIN_1},
+                .reference{ADC_REF_INTERNAL},
+                .acquisition_time{ADC_ACQ_TIME_DEFAULT},
+                .channel_id{ch_adc3[i]},
+                .differential{0}
+            };
+            adc_channel_setup(dev_adc3, &channel_cfg_adc3);
+            adc_sequence sequence_adc3{
+                .options{nullptr},
+                .channels{BIT(ch_adc3[i])},
+                .buffer{&buffer_adc3[i]},
+                .buffer_size{sizeof buffer_adc3[i]},
+                .resolution{12},
+                .oversampling{0},
+                .calibrate{0}
+            };
+            adc_read(dev_adc3, &sequence_adc3);
+        }
     }
-    const device *dev{nullptr};
-    uint16_t buffer[NUM_CHANNELS];
+    const device *dev{nullptr}, *dev_adc3{nullptr};
+    uint16_t buffer[NUM_CHANNELS], buffer_adc3[NUM_CHANNELS_ADC3];
 } impl;
 
 void init()
@@ -94,6 +126,11 @@ void run(void *p1, void *p2, void *p3)
 int32_t get(int index)
 {
     return impl.get(index);
+}
+
+int32_t get_adc3(int index)
+{
+    return impl.get_adc3(index);
 }
 
 k_thread thread;

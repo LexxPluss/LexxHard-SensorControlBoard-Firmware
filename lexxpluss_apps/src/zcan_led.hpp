@@ -25,39 +25,43 @@
 
 #pragma once
 
-#include <zephyr.h>
-#include <device.h>
-#include <drivers/gpio.h>
-#include <drivers/can.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/can.h>
+#include <zephyr/logging/log.h>
 #include "led_controller.hpp"
 
-#define CAN_ID_LED 0x205 //based on saito-san's CAN ID assignment
+#define CAN_ID_LED 0x205 //based on CAN ID assignment
 
-namespace lexxhard {
+namespace lexxhard::zcan_led {
+
+LOG_MODULE_REGISTER(zcan_led);
 
 char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
-k_msgq msgq_can_led;
 
-class can_led {
+CAN_MSGQ_DEFINE(msgq_can_led, 16);
+
+class zcan_led {
 public:
-    int init()
-    {
-        //can device bind`
+    void init() {
+        //can device bind
         k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (led_controller::msg), 8);
-        dev = device_get_binding("CAN_2");
-        if (!device_is_ready(dev))
-            return -1;
+
+        dev = DEVICE_DT_GET(DT_NODELABEL(can2));
+        if (!device_is_ready(dev)){
+            LOG_ERR("CAN_2 is not ready");
+            return;
+        }
 
         //setup can filter
-        static const zcan_filter filter_led{
+        static const can_filter filter_led{
             .id{CAN_ID_LED},
-            .rtr{CAN_DATAFRAME},
-            .id_type{CAN_STANDARD_IDENTIFIER},
-            .id_mask{0x7ff},
-            .rtr_mask{1}
+            .mask{0x7ff}
         };
-        can_attach_msgq(dev, &msgq_can_led, &filter_led);
-        return 0;
+
+        can_add_rx_filter_msgq(dev, &msgq_can_led, &filter_led);
+        return;
     }
 
     void poll()

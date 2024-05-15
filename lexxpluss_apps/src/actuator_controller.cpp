@@ -23,12 +23,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <device.h>
-#include <drivers/gpio.h>
-#include <drivers/pwm.h>
-#include <logging/log.h>
-#include <shell/shell.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -36,40 +36,42 @@
 #include "actuator_controller.hpp"
 #include "adc_reader.hpp"
 #include "can_controller.hpp"
+#include "common.hpp"
 
-extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
-{
-    GPIO_InitTypeDef GPIO_InitStruct{0};
-    // if(htim_encoder->Instance == TIM1) {
-    //     __HAL_RCC_TIM1_CLK_ENABLE();
-    //     __HAL_RCC_GPIOE_CLK_ENABLE();
-    //     GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_11;
-    //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    //     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    //     GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
-    //     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-    // } else if(htim_encoder->Instance == TIM3) {
-    //     __HAL_RCC_TIM3_CLK_ENABLE();
-    //     __HAL_RCC_GPIOC_CLK_ENABLE();
-    //     GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-    //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    //     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    //     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
-    //     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-    // } else 
-    if(htim_encoder->Instance == TIM4) {
-        __HAL_RCC_TIM4_CLK_ENABLE();
-        __HAL_RCC_GPIOD_CLK_ENABLE();
-        GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-        GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
-        HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-    }
-}
+// for HW counter
+// extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
+// {
+//     GPIO_InitTypeDef GPIO_InitStruct{0};
+//     // if(htim_encoder->Instance == TIM1) {
+//     //     __HAL_RCC_TIM1_CLK_ENABLE();
+//     //     __HAL_RCC_GPIOE_CLK_ENABLE();
+//     //     GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_11;
+//     //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+//     //     GPIO_InitStruct.Pull = GPIO_NOPULL;
+//     //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+//     //     GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
+//     //     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+//     // } else if(htim_encoder->Instance == TIM3) {
+//     //     __HAL_RCC_TIM3_CLK_ENABLE();
+//     //     __HAL_RCC_GPIOC_CLK_ENABLE();
+//     //     GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+//     //     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+//     //     GPIO_InitStruct.Pull = GPIO_NOPULL;
+//     //     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+//     //     GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
+//     //     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+//     // } else 
+//     if(htim_encoder->Instance == TIM4) {
+//         __HAL_RCC_TIM4_CLK_ENABLE();
+//         __HAL_RCC_GPIOD_CLK_ENABLE();
+//         GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
+//         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+//         GPIO_InitStruct.Pull = GPIO_NOPULL;
+//         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+//         GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+//         HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+//     }
+// }
 
 namespace lexxhard::actuator_controller {
 
@@ -92,54 +94,205 @@ enum class POS {
     CENTER, LEFT, RIGHT
 };
 
-// This is the class of the HAL encoder so we will use only for center actuator probably
+// for HW counter
+// class encoder {
+// public:
+//     int init(TIM_TypeDef *tim) {
+//         this->tim = tim;
+//         TIM_Encoder_InitTypeDef sConfig{0};
+//         TIM_MasterConfigTypeDef sMasterConfig{0};
+//         if (tim == TIM1) {
+//             timh.Init.RepetitionCounter = 0;
+//             sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+//         }
+//         timh.Instance = tim;
+//         timh.Init.Prescaler = 0;
+//         timh.Init.CounterMode = TIM_COUNTERMODE_UP;
+//         timh.Init.Period = 65535;
+//         timh.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+//         timh.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+//         sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+//         sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+//         sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+//         sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+//         sConfig.IC1Filter = 0b1111;
+//         sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+//         sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+//         sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+//         sConfig.IC2Filter = 0b1111;
+//         if (HAL_TIM_Encoder_Init(&timh, &sConfig) != HAL_OK)
+//             return -1;
+//         sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+//         sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+//         if (HAL_TIMEx_MasterConfigSynchronization(&timh, &sMasterConfig) != HAL_OK)
+//             return -1;
+//         HAL_TIM_Encoder_Start(&timh, TIM_CHANNEL_ALL);
+//         return 0;
+//     }
+//     int16_t get() const {
+//         int16_t count{static_cast<int16_t>(tim->CNT)};
+//         tim->CNT = 0;
+//         return -count;
+//     }
+// private:
+//     TIM_TypeDef *tim{nullptr};
+//     TIM_HandleTypeDef timh;
+// };
+
+#define TIMER_PERIOD_MS 2
 class encoder {
 public:
-    int init(TIM_TypeDef *tim) {
-        this->tim = tim;
-        TIM_Encoder_InitTypeDef sConfig{0};
-        TIM_MasterConfigTypeDef sMasterConfig{0};
-        if (tim == TIM1) {
-            timh.Init.RepetitionCounter = 0;
-            sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+    int init(POS pos) {
+        gpio_dt_spec dev;
+        switch (pos) {
+        case POS::CENTER:
+            // init IO dev exists for each instances
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch1), gpios);
+            // PD12 CH1, PD13 CH2
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch2), gpios);
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+        
+            // set callback function for center
+            k_timer_init(&encoder_count_c, static_center_enc_callback, NULL);
+            k_timer_user_data_set(&encoder_count_c, this);
+            k_timer_start(&encoder_count_c, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            break;
+        case POS::LEFT:
+            // init IO dev exists for each instances
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch1), gpios);
+            // PD12 CH1, PD13 CH2
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch2), gpios);
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            // set callback function for LEFT
+            k_timer_init(&encoder_count_l, static_center_left_callback, NULL);
+            k_timer_user_data_set(&encoder_count_l, this);
+            k_timer_start(&encoder_count_l, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            break;
+        case POS::RIGHT:
+        // init IO dev exists for each instances
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch1), gpios);
+            // PD12 CH1, PD13 CH2
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch2), gpios);
+            if (gpio_is_ready_dt(&dev)) {
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+            }
+
+            // set callback function for RIGHT
+            k_timer_init(&encoder_count_r, static_center_right_callback, NULL);
+            k_timer_user_data_set(&encoder_count_r, this);
+            k_timer_start(&encoder_count_r, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            break;
         }
-        timh.Instance = tim;
-        timh.Init.Prescaler = 0;
-        timh.Init.CounterMode = TIM_COUNTERMODE_UP;
-        timh.Init.Period = 65535;
-        timh.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-        timh.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-        sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-        sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC1Filter = 0b1111;
-        sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-        sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-        sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-        sConfig.IC2Filter = 0b1111;
-        if (HAL_TIM_Encoder_Init(&timh, &sConfig) != HAL_OK)
-            return -1;
-        sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-        sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-        if (HAL_TIMEx_MasterConfigSynchronization(&timh, &sMasterConfig) != HAL_OK)
-            return -1;
-        HAL_TIM_Encoder_Start(&timh, TIM_CHANNEL_ALL);
+        
         return 0;
     }
     int16_t get() const {
-        int16_t count{static_cast<int16_t>(tim->CNT)};
-        tim->CNT = 0;
-        return -count;
+        return count;
     }
 private:
-    TIM_TypeDef *tim{nullptr};
-    TIM_HandleTypeDef timh;
+    static void static_center_enc_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<encoder*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            int ch1{0}, ch2{0};
+            gpio_dt_spec dev_ch1 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch1), gpios);
+            gpio_dt_spec dev_ch2 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch2), gpios);
+
+            if(gpio_is_ready_dt(&dev_ch1)) {
+                ch1 = gpio_pin_get_dt(&dev_ch1);
+            }
+
+            if(gpio_is_ready_dt(&dev_ch2)) {
+                ch2 = gpio_pin_get_dt(&dev_ch2);
+            }
+
+            // catch rise edge
+            if (instance->ch1_prev == 0 && ch1 == 1) {
+                if (ch2 == 0) {
+                    instance->count++;
+                } else {
+                    instance->count--;
+                }
+            }
+
+            instance->ch1_prev = ch1;
+        }
+    }
+    static void static_center_left_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<encoder*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            int ch1{0}, ch2{0};
+            gpio_dt_spec dev_ch1 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch1), gpios);
+            gpio_dt_spec dev_ch2 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch2), gpios);
+
+            if(gpio_is_ready_dt(&dev_ch1)) {
+                ch1 = gpio_pin_get_dt(&dev_ch1);
+            }
+
+            if(gpio_is_ready_dt(&dev_ch2)) {
+                ch2 = gpio_pin_get_dt(&dev_ch2);
+            }
+
+            // catch rise edge
+            if (instance->ch1_prev == 0 && ch1 == 1) {
+                if (ch2 == 0) {
+                    instance->count++;
+                } else {
+                    instance->count--;
+                }
+            }
+
+            instance->ch1_prev = ch1;
+        }
+    }
+    static void static_center_right_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<encoder*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            int ch1{0}, ch2{0};
+            gpio_dt_spec dev_ch1 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch1), gpios);
+            gpio_dt_spec dev_ch2 = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch2), gpios);
+
+            if(gpio_is_ready_dt(&dev_ch1)) {
+                ch1 = gpio_pin_get_dt(&dev_ch1);
+            }
+
+            if(gpio_is_ready_dt(&dev_ch2)) {
+                ch2 = gpio_pin_get_dt(&dev_ch2);
+            }
+
+            // catch rise edge
+            if (instance->ch1_prev == 0 && ch1 == 1) {
+                if (ch2 == 0) {
+                    instance->count++;
+                } else {
+                    instance->count--;
+                }
+            }
+
+            instance->ch1_prev = ch1;
+        }
+    }
+    k_timer encoder_count_c, encoder_count_l, encoder_count_r;
+    int ch1_prev{0}, ch2_prev{0};
+    int16_t count{0};
+    bool is_rise_edge{false};
 };
-
-// This class for encoder count, this calls encoder class
-
-// May be we can add software-encoder features here?
 
 class counter {
 public:
@@ -147,16 +300,18 @@ public:
         int result{0};
         switch (pos) {
         case POS::CENTER:
-            result = enc.init(TIM4);
-            mm_per_pulse = 50.0f / 1054.0f;
+            // result = enc.init(TIM4); // for HW counter
+            result = enc.init(pos);
+            // mm_per_pulse = 50.0f / 1054.0f; // for HW counter
+            mm_per_pulse = 50.0f / 144.0f;
             break;
         case POS::LEFT:
-            result = enc.init(TIM3);
-            mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(pos);
+            mm_per_pulse = 50.0f / 144.0f;
             break;
         case POS::RIGHT:
-            result = enc.init(TIM1);
-            mm_per_pulse = 50.0f / 1054.0f;
+            result = enc.init(pos);
+            mm_per_pulse = 50.0f / 144.0f;
             break;
         }
         reset_pulse();
@@ -175,6 +330,7 @@ public:
     int32_t get_location() const {return pulse_value * mm_per_pulse;}
     int32_t get_velocity() const {return velocity;}
     int32_t get_pulse() const {return pulse_value;}
+    int32_t get_enc_pulse() const {return enc.get();}
     int32_t get_delta_pulse() {
         int32_t value{pulse_value - prev_pulse_value};
         prev_pulse_value = pulse_value;
@@ -194,7 +350,8 @@ private:
     }
     int16_t update_pulse() {
         int16_t pulse{enc.get()};
-        pulse_value += pulse;
+        // pulse_value += pulse;
+        pulse_value = pulse;
         return pulse;
     }
     encoder enc;
@@ -208,19 +365,19 @@ public:
     int init(POS pos) {
         switch (pos) {
         case POS::CENTER:
-            dev[0] = device_get_binding("PWM_5");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm5));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::LEFT:
-            dev[0] = device_get_binding("PWM_8");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm8));
             dev[1] = dev[0];
             pin[0] = 1;
             pin[1] = 2;
             break;
         case POS::RIGHT:
-            dev[0] = device_get_binding("PWM_2");
+            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm2));
             dev[1] = dev[0];
             pin[0] = 3;
             pin[1] = 4;
@@ -238,8 +395,8 @@ public:
             uint32_t ns{duty_rev * CONTROL_PERIOD_NS / 100};
             pulse_ns[direction < msg_control::STOP ? 0 : 1] = ns;
         }
-        pwm_pin_set_nsec(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
-        pwm_pin_set_nsec(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
+        pwm_set(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
+        pwm_set(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
         this->direction = direction;
         this->duty = duty;
     }
@@ -302,11 +459,6 @@ public:
         int32_t diff_abs{abs(target_position - cnt.get_location())};
         return diff_abs < thres_mm;
     }
-    // void set_param(float pp, float vp, float vi) {
-    //     POS_P = pp;
-    //     VEL_P = vp;
-    //     VEL_I = vi;
-    // }
 private:
     counter &cnt;
     float control_i{0.0f};
@@ -322,19 +474,23 @@ public:
         if (pwm.init(pos) != 0)
             return -1;
         cnt.init(pos);
+
         switch (pos) {
         case POS::CENTER:
             current_adc = adc_reader::ACTUATOR_C;
-            fail_checker.init("GPIOD", 10);
+            fail_checker.init(POS::CENTER);
             break;
         case POS::LEFT:
             current_adc = adc_reader::ACTUATOR_L;
-            fail_checker.init("GPIOG", 8);
+            fail_checker.init(POS::LEFT);
             break;
         case POS::RIGHT:
             current_adc = adc_reader::ACTUATOR_R;
-            fail_checker.init("GPIOE", 10);
+            fail_checker.init(POS::RIGHT);
             break;
+        default:
+            LOG_INF("invalid actuator position.");
+            return -1;
         }
         if (!fail_checker.ready())
             return -1;
@@ -382,9 +538,6 @@ public:
             duty
         };
     }
-    // void set_param(float pp, float vp, float vi) {
-    //     posctl.set_param(pp, vp, vi);
-    // }
 private:
     int32_t calc_current(int32_t adc_voltage_mv) const {
         static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
@@ -398,19 +551,35 @@ private:
     int32_t current_adc{-1};
     class {
     public:
-        void init(const char *devname, uint32_t pin) {
-            dev = device_get_binding(devname);
-            if (device_is_ready(dev))
-                gpio_pin_configure(dev, pin, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+        void init(POS pos) {
+            switch (pos) {
+            case POS::CENTER:
+                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_c_fail), gpios);
+                break;
+            case POS::LEFT:
+                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_l_fail), gpios);
+                break;
+            case POS::RIGHT:
+                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_r_fail), gpios);
+                break;
+            default:
+                LOG_INF("invalid actuator position.");
+                return;
+            }
+            
+            if (gpio_is_ready_dt(&dev))
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
             this->pin = pin;
         }
-        bool ready() const {return device_is_ready(dev);}
+        bool ready() const {return gpio_is_ready_dt(&dev);}
+        
         bool is_failed() const {
-            return ready() ? gpio_pin_get(dev, pin) == 0 : false;
+            return ready() ? gpio_pin_get_dt(&dev) == 0 : false;
         }
     private:
         uint32_t pin{0};
-        const device *dev{nullptr};
+        // const device *dev{nullptr};
+        gpio_dt_spec dev;
     } fail_checker;
 };
 
@@ -428,14 +597,14 @@ public:
 
     void run() {
         // Enable Pin, Reset Functions
-        const device *dev_enable{device_get_binding("GPIOJ")};
-        if (device_is_ready(dev_enable))
-            gpio_pin_configure(dev_enable, 0, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+        gpio_dt_spec dev_enable = GET_GPIO(ps_lift_actuator);
+        if (gpio_is_ready_dt(&dev_enable))
+            gpio_pin_configure_dt(&dev_enable, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
         auto reset_actuator = [&]() {
-            if (device_is_ready(dev_enable)) {
-                gpio_pin_set(dev_enable, 0, 0);
+            if (gpio_is_ready_dt(&dev_enable)) {
+                gpio_pin_set_dt(&dev_enable, 0);
                 k_msleep(100);
-                gpio_pin_set(dev_enable, 0, 1);
+                gpio_pin_set_dt(&dev_enable, 1);
             }
         };
         int fail_count{0};
@@ -458,13 +627,6 @@ public:
         };
         reset_actuator();
 
-        // Heartbeat LED 5
-        // const device *gpiog{device_get_binding("GPIOG")};
-        // if (device_is_ready(gpiog))
-        //     gpio_pin_configure(gpiog, 5, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-        // int heartbeat_led{1};
-        // for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-        //     act[i].reset();
         uint32_t prev_cycle{k_cycle_get_32()};
 
         while (true) {
@@ -499,10 +661,6 @@ public:
                 actuator2can.connect = adc_reader::get(adc_reader::TROLLEY);
                 while (k_msgq_put(&msgq, &actuator2can, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
-                // if (device_is_ready(gpiog)) {
-                //     gpio_pin_set(gpiog, 5, heartbeat_led);
-                //     heartbeat_led = !heartbeat_led;
-                // }
             }
             k_msleep(10);
         }
@@ -543,7 +701,7 @@ public:
     void set_current_monitor() const {
     }
     void info(const shell *shell) const {
-        shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+        shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             auto [pulse, current, fail, direction, duty]{act[i].get_info()};
             shell_print(shell,
@@ -560,10 +718,6 @@ public:
         while (k_msgq_put(&msgq_pwmtrampoline, &message, K_NO_WAIT) != 0)
             k_msgq_purge(&msgq_pwmtrampoline);
     }
-    // void set_param(float pp, float vp, float vi) {
-    //     for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-    //         act[i].set_param(pp, vp, vi);
-    // }
 private:
     void handle_control(const msg_control &msg) {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
@@ -610,7 +764,7 @@ private:
 
 int cmd_duty(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <direction> <power> ...\n", argv[-1], argv[0]);
         return 1;
@@ -624,9 +778,37 @@ int cmd_duty(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
+{
+    int rep_num = 10000;
+
+    shell_print(shell, "Repeat Up-Down 10,000 times with 5sec interval.");
+    for (int ii{0}; ii < rep_num; ++ii) {
+        for (size_t i{0}; i < 3; ++i) {
+            uint8_t direction, duty;
+            direction = 1;
+            duty      = 100;
+            impl.pwm_trampoline(i, direction, duty);
+        }
+
+        k_msleep(5000);
+
+        for (size_t i{0}; i < 3; ++i) {
+            uint8_t direction, duty;
+            direction = -1;
+            duty      = 100;
+            impl.pwm_trampoline(i, direction, duty);
+        }
+
+        k_msleep(5000);
+    }
+    
+    return 0;
+}
+
 int cmd_init(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
     if (impl.init_location() != 0)
         shell_print(shell, "init error.");
     return 0;
@@ -634,7 +816,7 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
 
 int locate(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] The order changed from Left-Center-Right(prev) -> Center-Left-Right(NOW)");
+    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
     uint8_t location[ACTUATOR_NUM]{0, 0, 0}, power[ACTUATOR_NUM]{0, 0, 0}, detail[ACTUATOR_NUM]{0, 0, 0};
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <location> <power> ...\n", argv[-1], argv[0]);
@@ -661,21 +843,9 @@ int info(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
-// int set_param(const shell *shell, size_t argc, char **argv)
-// {
-//     float pp{0.0f}, vp{0.0f}, vi{0.0f};
-//     if (argc > 1)
-//         pp = atof(argv[1]);
-//     if (argc > 2)
-//         vp = atof(argv[2]);
-//     if (argc > 3)
-//         vi = atof(argv[3]);
-//     impl.set_param(pp, vp, vi);
-//     return 0;
-// }
-
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(duty, NULL, "Actuator duty command", cmd_duty),
+    SHELL_CMD(duty_rep, NULL, "Actuator duty command", cmd_duty_rep_all),
     SHELL_CMD(init, NULL, "Actuator initialize command", cmd_init),
     SHELL_CMD(loc, NULL, "Actuator locate command", locate),
     SHELL_CMD(current, NULL, "Actuator current monitor", current),
@@ -707,8 +877,6 @@ int to_location(const uint8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[
 
 k_thread thread;
 k_msgq msgq, msgq_control;
-
-// k_msgq msgq_can_actuator_control;
 
 }
 

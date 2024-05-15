@@ -23,10 +23,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <zephyr.h>
-#include <logging/log_backend.h>
-#include <logging/log_backend_std.h>
-#include <shell/shell.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log_backend.h>
+#include <zephyr/logging/log_backend_std.h>
+#include <zephyr/shell/shell.h>
 
 namespace lexxhard::log_controller {
 
@@ -86,9 +86,9 @@ void logapi_init(const log_backend *const backend)
     ringbuf.init();
 }
 
-void logapi_put(const log_backend *const backend, log_msg *msg)
+void logapi_put(const log_backend *const backend, log_msg_generic *msg)
 {
-    log_backend_std_put(&log_output, 0, msg);
+    log_backend_msg_process(backend, msg);
 }
 
 void logapi_panic(log_backend const *const backend)
@@ -102,13 +102,14 @@ void logapi_dropped(const log_backend *const backend, uint32_t cnt)
 }
 
 const log_backend_api log_backend_mem_api{
-    .put = logapi_put,
+    .process = logapi_put,
     .dropped = logapi_dropped,
     .panic = logapi_panic,
     .init = logapi_init,
 };
 
-LOG_BACKEND_DEFINE(log_backend_mem, log_backend_mem_api, true);
+// TODO Enabling the following will not prompt, so analysis is required
+// LOG_BACKEND_DEFINE(log_backend_mem, log_backend_mem_api, true);
 
 int cmd_show(const shell *shell, size_t argc, char **argv)
 {

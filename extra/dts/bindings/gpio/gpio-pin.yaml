@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, LexxPluss Inc.
+# Copyright (c) 2024, LexxPluss Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -21,6 +21,13 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-add_subdirectory_ifdef(CONFIG_MAXBOTIX maxbotix)
-add_subdirectory_ifdef(CONFIG_ADIS16470 adis16470)
-add_subdirectory_ifdef(CONFIG_IIM42652 iim42652)
+description: GPIO pin
+
+compatible: "gpio-pin"
+
+properties:
+  gpios:
+    type: phandle-array
+    required: true
+    description: |
+      The GPIO pin to be used.

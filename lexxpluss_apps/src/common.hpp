@@ -24,5 +24,26 @@
  */
 
 #pragma once
+#include <zephyr/drivers/gpio.h>
 
 #define M_PI 3.14159265358979323846
+
+/**
+ * @brief Equivalent to GPIO_DT_SPEC_GET(node_id, gpios).
+ *
+ * @param node_id devicetree node identifier
+ * @return static initializer for a struct gpio_dt_spec for the property
+ * @see GPIO_DT_SPEC_GET(DT_NODELABEL())
+ */
+#define GET_GPIO(node_id) \
+    GPIO_DT_SPEC_GET(DT_NODELABEL(node_id), gpios)
+
+/**
+ * @brief Equivalent to GPIO_DT_SPEC_GET(node_id, gpios).
+ *
+ * @param node_id devicetree node identifier
+ * @return static initializer for a struct gpio_dt_spec for the property
+ * @see DEVICE_DT_GET(DT_NODELABEL())
+ */
+#define GET_DEV(node_id) \
+    DEVICE_DT_GET(DT_NODELABEL(node_id))

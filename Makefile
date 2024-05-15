@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, LexxPluss Inc.
+# Copyright (c) 2024, LexxPluss Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -21,6 +21,37 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-add_subdirectory_ifdef(CONFIG_MAXBOTIX maxbotix)
-add_subdirectory_ifdef(CONFIG_ADIS16470 adis16470)
-add_subdirectory_ifdef(CONFIG_IIM42652 iim42652)
+.PHONY: all
+all: bootloader firmware
+
+.PHONY: clean
+clean:
+	rm -rf build-mcuboot build
+
+.PHONY: distclean
+distclean: clean
+	rm -rf build-mcuboot build bootloader modules ros_msgs tools zephyr
+
+.PHONY: build
+build: docker-compose.yml Dockerfile
+	docker compose build
+
+.PHONY: setup
+setup:
+	docker compose run --rm zephyrbuilder west init -l lexxpluss_apps
+
+.PHONY: update
+update:
+	docker compose run --rm zephyrbuilder west update
+
+.PHONY: bootloader
+bootloader:
+	docker compose run --rm zephyrbuilder west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/workdir/extra
+
+.PHONY: firmware
+firmware:
+	docker compose run --rm zephyrbuilder west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/workdir/extra -DZEPHYR_EXTRA_MODULES=/workdir/extra
+
+.PHONY: firmware_interlock
+firmware_interlock:
+	docker compose run --rm zephyrbuilder west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/workdir/extra -DZEPHYR_EXTRA_MODULES=/workdir/extra
