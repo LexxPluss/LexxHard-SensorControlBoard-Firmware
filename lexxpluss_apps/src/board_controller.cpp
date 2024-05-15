@@ -1374,7 +1374,7 @@ private:
         board2ros.wait_shutdown_state = wait_shutdown;
         board2ros.wheel_enable = wsw.is_enabled();
 
-        bool v24, v_peripheral, v_wheel_motor_left, v_wheel_motor_right;
+        bool v24{false}, v_peripheral{false}, v_wheel_motor_left{false}, v_wheel_motor_right{false};
         dcdc.get_failed_state(v24, v_peripheral, v_wheel_motor_left, v_wheel_motor_right);
         board2ros.v24_pgood = v24;
         board2ros.v_peripheral_pgood = v_peripheral;
@@ -1392,7 +1392,7 @@ private:
         board2ros.charge_check_count = ac.get_connect_check_count();
         board2ros.charge_heartbeat_delay = ac.get_heartbeat_delay();
 
-        bool c_fet, d_fet, p_dsg;
+        bool c_fet{false}, d_fet{false}, p_dsg{false};
         bmu.get_fet_state(c_fet, d_fet, p_dsg);
         board2ros.c_fet = c_fet;
         board2ros.d_fet = d_fet;
