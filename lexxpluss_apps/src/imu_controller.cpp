@@ -131,6 +131,15 @@ public:
                     gyro_data[0] = gyro_rad_to_deg_int16_t(&gyro[1]);
                     gyro_data[2] = gyro_rad_to_deg_int16_t(&gyro[2]);
 
+                    if(imu_bias_initial_cnt < IMU_BIAS_INITIAL_CNT_MAX) {
+                        bias_gyro_z = gyro_data[2];
+                        gyro_data[2] = 0;
+                        imu_bias_initial_cnt++;
+                    } else {
+                        gyro_data[2] -= bias_gyro_z;
+                    }
+                    
+
                     //split to upper and lower bytes for CAN message
                     for(int i = 0; i < 3; i++) {
                         message.accel_data_lower[i] = (uint8_t)(accel_data[i] & 0x00FF);
@@ -217,6 +226,9 @@ private:
 
     msg message;
     const device *dev{nullptr};
+    int imu_bias_initial_cnt{0};
+    const int IMU_BIAS_INITIAL_CNT_MAX{255};
+    int16_t bias_gyro_z{0};
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)
