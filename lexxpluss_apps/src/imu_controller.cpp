@@ -55,31 +55,31 @@ public:
 
         struct sensor_value odr_accel;
         odr_accel.val1 = 40; // 40Hz
-        odr_accel.val2 = 0; 
+        odr_accel.val2 = 0;
         if (sensor_attr_set(dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_accel) < 0) {
             LOG_ERR("IMU ODR ACCEL Setting Fail\n");
         }
 
         struct sensor_value odr_gyro;
         odr_gyro.val1 = 40; // 40Hz
-        odr_gyro.val2 = 0; 
+        odr_gyro.val2 = 0;
         if (sensor_attr_set(dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_gyro) < 0) {
             LOG_ERR("IMU ODR GYRO Setting Fail\n");
         }
 
         struct sensor_value fsr_accel;
         fsr_accel.val1 = 3; // 2G Defined in the icm42605_reg.h
-        fsr_accel.val2 = 0; 
+        fsr_accel.val2 = 0;
         if (sensor_attr_set(dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_FULL_SCALE, &fsr_accel) < 0) {
             LOG_ERR("IMU FSR ACC Setting Fail\n");
-        } 
+        }
 
         struct sensor_value fsr_gyro;
-        fsr_gyro.val1 = 7; // 15DPS Defined in the icm42605_reg.h
-        fsr_gyro.val2 = 0; 
+        fsr_gyro.val1 = GYRO_FS_SEL; // 1000DPS Defined in the icm42605_reg.h
+        fsr_gyro.val2 = 0;
         if (sensor_attr_set(dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_FULL_SCALE, &fsr_gyro) < 0) {
             LOG_ERR("IMU FSR GYRO Setting Fail\n");
-        } 
+        }
 
         // initialize the messsage data
         for (int i = 0; i < 3; i++) {
@@ -104,7 +104,7 @@ public:
             .type = SENSOR_TRIG_DATA_READY,
             .chan = SENSOR_CHAN_ALL,
         };
-        
+
         // data to be read from the sensor triggered by the interrupt signal
         if (sensor_trigger_set(dev, &data_trigger, cb_func) < 0) {
             LOG_ERR("Cannot configure data trigger!!!\n");
@@ -124,12 +124,20 @@ public:
                     sensor_channel_get(dev, SENSOR_CHAN_GYRO_XYZ, gyro);
 
                     //sensor -x is system y, sensor -y is systemx, sensor z is system z
-                    accel_data[1] = accel_value_to_int16_t(&accel[0]) * -1;
-                    accel_data[0] = accel_value_to_int16_t(&accel[1]) * -1;
-                    accel_data[2] = accel_value_to_int16_t(&accel[2]);
-                    gyro_data[1] = gyro_rad_to_deg_int16_t(&gyro[0]);
-                    gyro_data[0] = gyro_rad_to_deg_int16_t(&gyro[1]);
-                    gyro_data[2] = gyro_rad_to_deg_int16_t(&gyro[2]);
+                    accel_data[1] = - accel_value_to_int16_t(&accel[0]);
+                    accel_data[0] = - accel_value_to_int16_t(&accel[1]);
+                    accel_data[2] = - accel_value_to_int16_t(&accel[2]);
+                    gyro_data[1] = - gyro_rad_to_iim42652raw_int16_t(&gyro[0], GYRO_FS_SEL);
+                    gyro_data[0] = - gyro_rad_to_iim42652raw_int16_t(&gyro[1], GYRO_FS_SEL);
+                    gyro_data[2] = - gyro_rad_to_iim42652raw_int16_t(&gyro[2], GYRO_FS_SEL);
+
+                    if(imu_bias_initial_cnt < IMU_BIAS_INITIAL_CNT_MAX) {
+                        bias_gyro_z = gyro_data[2];
+                        gyro_data[2] = 0;
+                        imu_bias_initial_cnt++;
+                    } else {
+                        gyro_data[2] -= bias_gyro_z;
+                    }
 
                     //split to upper and lower bytes for CAN message
                     for(int i = 0; i < 3; i++) {
@@ -166,7 +174,7 @@ public:
         double gyro_x = (double)((int16_t)(message.gyro_data_upper[0] << 8 | message.gyro_data_lower[0])) / 1000.0;
         double gyro_y = (double)((int16_t)(message.gyro_data_upper[1] << 8 | message.gyro_data_lower[1])) / 1000.0;
         double gyro_z = (double)((int16_t)(message.gyro_data_upper[2] << 8 | message.gyro_data_lower[2])) / 1000.0;
-        
+
         shell_print(shell,
                     "accel: %f %f %f (m/s/s)\n"
                     "gyro: %f %f %f (deg/s)\n"
@@ -189,7 +197,7 @@ private:
 
     int16_t accel_value_to_int16_t(const struct sensor_value *val) {
         int64_t temp_value{0};
-        
+
         temp_value = (int64_t)(val->val1 * 1e3f + val->val2 * 1e-3f);
 
         if(temp_value > INT16_MAX) {
@@ -203,8 +211,23 @@ private:
 
     int16_t gyro_rad_to_deg_int16_t(const struct sensor_value *val) {
         int64_t temp_value{0};
-        
+
         temp_value = (int64_t)((val->val1 + val->val2 * 1e-6) * (180.0 / M_PI) * 1e3);
+
+        if(temp_value > INT16_MAX) {
+            temp_value = INT16_MAX;
+        } else if(temp_value < INT16_MIN) {
+            temp_value = INT16_MIN;
+        }
+
+        return (int16_t)temp_value;
+    }
+
+    int16_t gyro_rad_to_iim42652raw_int16_t(const struct sensor_value *val_rad, int gyro_fs_sel) {
+        const int gyro_sensitivity_x10[8] = {164, 328, 655, 1310, 2620, 5243, 10486, 20972};
+        int64_t temp_value{0};
+
+        temp_value = (int64_t)((val_rad->val1 + val_rad->val2 * 1e-6f) * (180.0 / M_PI) * (gyro_sensitivity_x10[gyro_fs_sel] / 10.0));
 
         if(temp_value > INT16_MAX) {
             temp_value = INT16_MAX;
@@ -217,6 +240,10 @@ private:
 
     msg message;
     const device *dev{nullptr};
+    int imu_bias_initial_cnt{0};
+    const int IMU_BIAS_INITIAL_CNT_MAX{255};
+    int16_t bias_gyro_z{0};
+    const int GYRO_FS_SEL = 1; // 1000DPS iim42652
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)
