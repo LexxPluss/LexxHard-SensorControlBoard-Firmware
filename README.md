@@ -3,7 +3,7 @@
 [![CI](https://github.com/LexxPluss/LexxHard-SensorControlBoard-Firmware/actions/workflows/main.yml/badge.svg)](https://github.com/LexxPluss/LexxHard-SensorControlBoard-Firmware/actions/workflows/main.yml)
 [![release](https://github.com/LexxPluss/LexxHard-SensorControlBoard-Firmware/actions/workflows/release.yml/badge.svg)](https://github.com/LexxPluss/LexxHard-SensorControlBoard-Firmware/actions/workflows/release.yml)
 
-## For Docker
+## Set up with Docker
 
 ## Install dependencies
 
@@ -29,18 +29,17 @@ $ make bootloader
 ```bash
 $ make firmware
 ```
+#### Create Release ("Initial" / "Update") File
+
+Initial : This file is for initial install with hardware debugger (ST-Link)
+Update : This file is for the update firmware via firmware updater
+
 ```bash
 $ cp ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-?.?.?.bin
 
 $ dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
 $ dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
 $ cat bl_with_ff.bin build/zephyr/zephyr.signed.bin >  LexxHard-SensorControlBoard-Firmware-Initial-?.?.?.bin
-```
-
-### Build firmware ( enable interlock )
-
-```bash
-$ make firmware_interlock
 ```
 
 ---
@@ -78,4 +77,4 @@ $ st-flash --reset --connect-under-reset write LexxHard-SensorControlBoard-Firmw
 
 ## License
 
-Copyright (c) 2022, LexxPluss Inc. Released under the [BSD License](LICENSE).
+Copyright (c) 2024, LexxPluss Inc. Released under the [BSD License](LICENSE).
