@@ -75,7 +75,9 @@ public:
         } 
 
         struct sensor_value fsr_gyro;
-        fsr_gyro.val1 = 7; // 15DPS Defined in the icm42605_reg.h
+
+        
+        fsr_gyro.val1 = GYRO_FS_SEL; // 1000DPS Defined in the icm42605_reg.h
         fsr_gyro.val2 = 0; 
         if (sensor_attr_set(dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_FULL_SCALE, &fsr_gyro) < 0) {
             LOG_ERR("IMU FSR GYRO Setting Fail\n");
@@ -124,12 +126,22 @@ public:
                     sensor_channel_get(dev, SENSOR_CHAN_GYRO_XYZ, gyro);
 
                     //sensor -x is system y, sensor -y is systemx, sensor z is system z
-                    accel_data[1] = accel_value_to_int16_t(&accel[0]) * -1;
-                    accel_data[0] = accel_value_to_int16_t(&accel[1]) * -1;
-                    accel_data[2] = accel_value_to_int16_t(&accel[2]);
-                    gyro_data[1] = gyro_rad_to_deg_int16_t(&gyro[0]);
-                    gyro_data[0] = gyro_rad_to_deg_int16_t(&gyro[1]);
-                    gyro_data[2] = gyro_rad_to_deg_int16_t(&gyro[2]);
+                    accel_data[1] = - accel_value_to_int16_t(&accel[0]);
+                    accel_data[0] = - accel_value_to_int16_t(&accel[1]);
+                    accel_data[2] = - accel_value_to_int16_t(&accel[2]);
+                    gyro_data[1] = - gyro_rad_to_iim42652raw_int16_t(&gyro[0], GYRO_FS_SEL);
+                    gyro_data[0] = - gyro_rad_to_iim42652raw_int16_t(&gyro[1], GYRO_FS_SEL);
+                    gyro_data[2] = - gyro_rad_to_iim42652raw_int16_t(&gyro[2], GYRO_FS_SEL);
+
+                    
+                    if(imu_bias_initial_cnt < IMU_BIAS_INITIAL_CNT_MAX) {
+                        bias_gyro_z = gyro_data[2];
+                        gyro_data[2] = 0;
+                        imu_bias_initial_cnt++;
+                    } else {
+                        gyro_data[2] -= bias_gyro_z;
+                    }
+                    
 
                     //split to upper and lower bytes for CAN message
                     for(int i = 0; i < 3; i++) {
@@ -215,8 +227,29 @@ private:
         return (int16_t)temp_value;
     }
 
+    int16_t gyro_rad_to_iim42652raw_int16_t(const struct sensor_value *val_rad, int gyro_fs_sel) {
+
+        const int gyro_sensitivity_x10[8] = {164, 328, 655, 1310, 2620, 5243, 10486, 20972};
+        int64_t temp_value{0};
+
+        temp_value = (int64_t)((val_rad->val1 + val_rad->val2 * 1e-6f) * (180.0 / M_PI) * (gyro_sensitivity_x10[gyro_fs_sel] / 10.0));
+
+        if(temp_value > INT16_MAX) {
+            temp_value = INT16_MAX;
+        } else if(temp_value < INT16_MIN) {
+            temp_value = INT16_MIN;
+        }
+
+        return (int16_t)temp_value;
+    }
+
+
     msg message;
     const device *dev{nullptr};
+    int imu_bias_initial_cnt{0};
+    const int IMU_BIAS_INITIAL_CNT_MAX{255};
+    int16_t bias_gyro_z{0};
+    const int GYRO_FS_SEL = 1; // 1000DPS iim42652
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)
