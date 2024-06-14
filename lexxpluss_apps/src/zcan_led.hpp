@@ -66,7 +66,14 @@ public:
 
     void poll()
     {
-        while (k_msgq_get(&msgq_can_led, &can_led_frame, K_NO_WAIT) == 0) {
+        struct can_frame can_frame;
+        while (k_msgq_get(&msgq_can_led, &can_frame, K_NO_WAIT) == 0) {
+            can_led_frame.pattern = can_frame.data[0];
+            can_led_frame.count_per_minutes = (can_frame.data[1] << 8) | can_frame.data[2];
+            can_led_frame.rgb[0] = can_frame.data[3];
+            can_led_frame.rgb[1] = can_frame.data[4];
+            can_led_frame.rgb[2] = can_frame.data[5];
+
             can2led = led_controller::msg(can_led_frame);
             while (k_msgq_put(&led_controller::msgq, &can2led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
