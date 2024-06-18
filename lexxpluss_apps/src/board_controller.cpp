@@ -921,13 +921,7 @@ private:
         wheel_poweroff = msg.ros_wheel_power_off;
 
         // heartbeat is not timeout means heartbeat is detected
-        if (ros_heartbeat_timeout == false) {
-            heartbeat_detect = true;
-            //LOG_INF("ROS Heartbeat Detected");
-        } else {
-            heartbeat_detect = false;
-            LOG_ERR("ROS Heartbeat Timeout");
-        }
+        heartbeat_detect |= !ros_heartbeat_timeout;
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
         wheel_poweroff{false};
@@ -1171,6 +1165,9 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
+                set_new_state(POWER_STATE::STANDBY);
+            } else if (mbd.is_dead()) {
+                LOG_INF("mainboard is dead\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mc.is_plugged()) {
                 LOG_DBG("plugged to manual charger\n");
