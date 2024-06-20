@@ -25,23 +25,26 @@
 
 #pragma once
 
-#include <zephyr/kernel.h>
 #include <cstdint>
+
+#include <zephyr/kernel.h>
 
 namespace lexxhard::firmware_updater {
 
-struct packet_array {
-    uint8_t data[256 + 4];
+struct command_packet {
+    uint8_t address[2];
+    uint8_t command, length, data[4];
 } __attribute__((aligned(4)));
 
-struct response_array {
-    uint16_t data[2];
+struct response_packet {
+    uint8_t address[2];
+    uint8_t command, response;
 } __attribute__((aligned(4)));
 
 void init();
 void run(void *p1, void *p2, void *p3);
 extern k_thread thread;
-extern k_msgq msgq_data, msgq_response;
+extern k_msgq msgq_command, msgq_response;
 
 }
 

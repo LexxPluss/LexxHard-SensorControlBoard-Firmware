@@ -31,6 +31,7 @@
 #include "zcan_led.hpp"
 #include "zcan_pgv.hpp"
 #include "zcan_uss.hpp"
+#include "zcan_dfu.hpp"
 #include "zcan_main.hpp"
 
 namespace lexxhard::zcan_main {
@@ -53,6 +54,7 @@ public:
 
         bmu.init();
         board.init();
+        dfu.init();
         act.init();
         imu.init();
         led.init();
@@ -64,6 +66,7 @@ public:
         while (true) {
             bmu.poll();
             board.poll();
+            dfu.poll();
             act.poll();
             imu.poll();
             led.poll();
@@ -76,7 +79,7 @@ private:
     const device *dev{nullptr};
     lexxhard::zcan_bmu::zcan_bmu bmu;
     lexxhard::zcan_board::zcan_board board;
-    // lexxhard::zcan_dfu::zcan_dfu dfu;
+    lexxhard::zcan_dfu::zcan_dfu dfu;
     lexxhard::zcan_actuator::zcan_actuator act;
     lexxhard::zcan_imu::zcan_imu imu;
     lexxhard::zcan_led::zcan_led led;

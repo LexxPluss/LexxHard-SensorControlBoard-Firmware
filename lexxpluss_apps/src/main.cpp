@@ -30,7 +30,7 @@
 #include "board_controller.hpp"
 #include "can_controller.hpp"
 #include "bmu_controller.hpp"
-// #include "firmware_updater.hpp"
+#include "firmware_updater.hpp"
 #include "imu_controller.hpp"
 #include "led_controller.hpp"
 #include "pgv_controller.hpp"
@@ -218,7 +218,7 @@ int main()
     lexxhard::bmu_controller::init();
     lexxhard::board_controller::init();
     lexxhard::can_controller::init();
-    // lexxhard::firmware_updater::init();
+    lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
     lexxhard::led_controller::init();
     lexxhard::pgv_controller::init();
@@ -231,7 +231,7 @@ int main()
     RUN(bmu_controller, 4);
     RUN(can_controller, 4);
     RUN(board_controller, 4); // board_controller must be started after bmu_controller (due to the CAN setting)
-    // RUN(firmware_updater, 7);
+    RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
     RUN(led_controller, 1);
     RUN(pgv_controller, 1);
