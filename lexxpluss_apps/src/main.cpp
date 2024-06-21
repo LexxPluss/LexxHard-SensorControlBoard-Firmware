@@ -45,7 +45,7 @@ K_THREAD_STACK_DEFINE(adc_reader_stack, 2048);
 K_THREAD_STACK_DEFINE(bmu_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
-// K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
+K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);

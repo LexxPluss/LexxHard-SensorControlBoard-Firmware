@@ -38,22 +38,22 @@ namespace lexxhard::zcan_dfu {
 
 LOG_MODULE_REGISTER(zcan_dfu);
 
-char __aligned(4) msgq_dfu_buffer[8 * sizeof (firmware_updater::command_packet)];
+char __aligned(4) msgq_dfu_buffer[8 * (sizeof (struct can_frame))];
 
 CAN_MSGQ_DEFINE(msgq_can_dfu, 16);
 
 class zcan_dfu {
 public:
     int init() {
-        k_msgq_init(&msgq_can_dfu, msgq_dfu_buffer, sizeof (firmware_updater::command_packet), 8);
+        k_msgq_init(&msgq_can_dfu, msgq_dfu_buffer, sizeof (struct can_frame), 8);
 
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)) {
             LOG_ERR("CAN_2 is not ready");
             return -1;
-	}
+	    }
 
-        const can_filter filter{
+        static const can_filter filter{
             .id{CAN_ID_DFU_DATA},
             .mask{0x7ff}
         };
