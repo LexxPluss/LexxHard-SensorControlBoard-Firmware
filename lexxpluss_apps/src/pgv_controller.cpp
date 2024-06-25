@@ -220,7 +220,10 @@ private:
         return check == buf[tail];
     }
     uint32_t rb_count(const ring_buf *rb) const {
-        return rb->get_tail - rb->get_head;
+        // ring_buf_size_get require `non const` pointer to ring_buf
+        // so, use const_cast to remove const qualifier
+        auto non_const_rb = const_cast<ring_buf*>(rb); 
+        return ring_buf_size_get(non_const_rb);
     }
     void send(const uint8_t *buf, uint32_t length) {
         if (device_is_ready(dev_485)) {
