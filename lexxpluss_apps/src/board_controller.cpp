@@ -142,7 +142,7 @@ public:
             LOG_ERR("gpio_is_ready_dt Failed\n");
             return;
         }
-        gpio_pin_set_dt(&gpio_dev, enabled ? 0 : 1);
+        gpio_pin_set_dt(&gpio_dev, enabled ? 1 : 0);
     }
     void toggle_led() {
         set_led(led_en);
@@ -161,6 +161,134 @@ private:
     uint32_t count{0};
     bool led_en{false};
     int prev{-1}, prev_raw{-1};
+    static constexpr uint32_t COUNT{1};
+};
+
+#define RS_PUSHED_MS 3000
+class resume_switch { // Variables Implemented
+public:
+    enum class STATE {
+        RELEASED, PUSHED
+    };
+    void poll() {
+        gpio_dt_spec gpio_dev = GET_GPIO(resume_sw_in);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        int now{gpio_pin_get_dt(&gpio_dev)};
+        if (prev_raw != now) {
+            prev_raw = now;
+            count = 0;
+        } else {
+            ++count;
+        }
+        bool asserted{false};
+        if (count > COUNT) {
+            count = COUNT;
+            asserted = true;
+        }
+        if (asserted) {
+            bool changed{prev != now};
+            if (changed) {
+                prev = now;
+                start_time = k_uptime_get();
+                if(now == 1) {
+                    state = STATE::RELEASED;
+                }
+            } else if (now == 0) {
+                auto elapsed{k_uptime_get() - start_time};
+                if (elapsed > RS_PUSHED_MS) {
+                    if (state == STATE::RELEASED)
+                        state = STATE::PUSHED;
+                }
+            }
+        }
+    }
+    void reset_state() {
+        start_time = k_uptime_get();
+        state = STATE::RELEASED;
+    }
+    STATE get_state() const {return state;}
+    bool get_raw_state() {
+        gpio_dt_spec gpio_dev = GET_GPIO(resume_sw_in);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return false;
+        }
+        return gpio_pin_get_dt(&gpio_dev) == 0;
+    }
+    void set_led(bool enabled) {
+        gpio_dt_spec gpio_dev = GET_GPIO(resume_led_out);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        gpio_pin_set_dt(&gpio_dev, enabled ? 1 : 0);
+    }
+private:
+    int64_t start_time;
+    STATE state{STATE::RELEASED};
+    uint32_t count{0};
+    int prev{-1}, prev_raw{-1};
+    static constexpr uint32_t COUNT{1};
+};
+
+class key_switch { // Variables Implemented
+public:
+    enum class STATE {
+        LEFT, RIGHT, UNKNOWN
+    };
+    void poll() {
+        gpio_dt_spec gpio_left_dev = GET_GPIO(key_switch_left);
+        if (!gpio_is_ready_dt(&gpio_left_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        int now_left{gpio_pin_get_dt(&gpio_left_dev)};
+
+        gpio_dt_spec gpio_right_dev = GET_GPIO(key_switch_right);
+        if (!gpio_is_ready_dt(&gpio_right_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        int now_right{gpio_pin_get_dt(&gpio_right_dev)};
+
+        //LOG_INF("now_left: %d, now_right: %d", now_left, now_right);
+
+        if (prev_left != now_left || prev_right != now_right) {
+            prev_left = now_left;
+            prev_right = now_right;
+            count = 0;
+        } else {
+            ++count;
+        }
+
+        bool asserted{false};
+        if (count > COUNT) {
+            count = COUNT;
+            asserted = true;
+        }
+        if (asserted) {
+            if(now_left == 0 && now_right == 1)
+                state = STATE::LEFT;
+            else if(now_left == 1 && now_right == 0)
+                state = STATE::RIGHT;
+            else
+                state = STATE::UNKNOWN;
+        }
+    }
+    void reset_state() {
+        state = STATE::UNKNOWN;
+    }
+    STATE get_state() const {return state;}
+    bool is_maintenance() const {
+        return state != STATE::RIGHT;
+    }
+private:
+    STATE state{STATE::UNKNOWN};
+    uint32_t count{0};
+    int prev_left{-1}, prev_right{-1};
     static constexpr uint32_t COUNT{1};
 };
 
@@ -1069,6 +1197,8 @@ private:
         };
         
         psw.poll();
+        rsw.poll();
+        ksw.poll();
         bsw.poll();
         esw.poll();
         mc.poll();
@@ -1139,6 +1269,9 @@ private:
                     while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                         k_msgq_purge(&led_controller::msgq);
                 }
+            } else if (ksw.is_maintenance()) {
+                LOG_INF("maintenance mode is selected by key switch\n");
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::EMERGENCY);
@@ -1165,6 +1298,9 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
+            } else if (ksw.is_maintenance()) {
+                LOG_INF("maintenance mode is selected by key switch\n");
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::EMERGENCY);
@@ -1216,14 +1352,50 @@ private:
                     while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                         k_msgq_purge(&led_controller::msgq);
                 }
-            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
-                LOG_DBG("not emergency and heartbeat OK\n");
+            } else if (!ksw.is_maintenance() && !esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
+                LOG_INF("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::RESUME_WAIT);
             }
             break;
         }
         case POWER_STATE::RESUME_WAIT:
-            set_new_state(POWER_STATE::NORMAL);
+            wheel_relay_control();
+            if (psw.get_state() != power_switch::STATE::RELEASED) {
+                LOG_DBG("detect power switch\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (mbd.power_off_from_ros()) {
+                LOG_DBG("receive power off from ROS\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (!bmu.is_ok()) {
+                LOG_DBG("BMU failure\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (!dcdc.is_ok()) {
+                LOG_DBG("DCDC failure\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (ksw.is_maintenance()) {
+                LOG_INF("maintenance mode is selected by key switch\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (esw.is_asserted()) {
+                LOG_DBG("emergency switch asserted\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (mbd.emergency_stop_from_ros()) {
+                LOG_DBG("receive emergency stop from ROS\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (mbd.is_dead()) {
+                LOG_INF("mainboard is dead\n");
+                set_new_state(POWER_STATE::EMERGENCY);
+            } else if (rsw.get_state() == resume_switch::STATE::PUSHED) {
+                LOG_DBG("resume switch pushed\n");
+                if (mbd.is_ready()) {
+                    LOG_DBG("heartbeat OK\n");
+                    set_new_state(POWER_STATE::NORMAL);
+                }
+                else {
+                    LOG_DBG("heartbeat NG\n");
+                    set_new_state(POWER_STATE::STANDBY);
+                }
+            }
+            break;
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
             if (psw.get_state() != power_switch::STATE::RELEASED) {
@@ -1238,6 +1410,9 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
+            } else if (ksw.is_maintenance()) {
+                LOG_INF("maintenance mode is selected by key switch\n");
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::EMERGENCY);
@@ -1475,6 +1650,8 @@ private:
     }
     
     power_switch psw;
+    resume_switch rsw;
+    key_switch ksw;
     bumper_switch bsw;
     emergency_switch esw;
     wheel_switch wsw;
