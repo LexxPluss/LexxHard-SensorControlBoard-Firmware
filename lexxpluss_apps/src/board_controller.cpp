@@ -1054,6 +1054,8 @@ private:
         MANUAL_CHARGE,
         LOCKDOWN,
         TIMEROFF,
+        EMERGENCY,
+        RESUME_WAIT,
     };
     void poll() {
         auto wheel_relay_control = [&](){
@@ -1141,6 +1143,9 @@ private:
                     while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                         k_msgq_purge(&led_controller::msgq);
                 }
+            } else if (esw.is_asserted()) {
+                LOG_DBG("emergency switch asserted\n");
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1166,10 +1171,10 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (mbd.is_dead()) {
                 LOG_INF("mainboard is dead\n");
                 set_new_state(POWER_STATE::STANDBY);
@@ -1183,6 +1188,46 @@ private:
                 }
             }
             break;
+        case POWER_STATE::EMERGENCY: {
+            wheel_relay_control();
+            auto psw_state{psw.get_state()};
+            if (!dcdc.is_ok() || psw_state == power_switch::STATE::LONG_PUSHED) {
+                set_new_state(POWER_STATE::OFF);
+            } else if (mbd.is_dead()) {
+                set_new_state(wait_shutdown ? POWER_STATE::TIMEROFF : POWER_STATE::LOCKDOWN);
+            } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+                if (wait_shutdown) {
+                    if ((k_uptime_get() - timer_shutdown)> 60000) {
+                        set_new_state(POWER_STATE::OFF);
+                        dcdc.set_enable(false);
+                        psw.reset_state();
+                        esw.reset_state();
+                    }
+                } else {
+                    LOG_DBG("wait shutdown\n");
+                    wait_shutdown = true;
+                    timer_shutdown = k_uptime_get();    // timer reset
+                    if (psw_state == power_switch::STATE::PUSHED)
+                        shutdown_reason = SHUTDOWN_REASON::SWITCH;
+                    if (mbd.power_off_from_ros())
+                        shutdown_reason = SHUTDOWN_REASON::ROS;
+                    if (!bmu.is_ok())
+                        shutdown_reason = SHUTDOWN_REASON::BMU;
+                    // Set LED
+                    led_controller::msg msg_led;
+                    msg_led.pattern = led_controller::msg::SHOWTIME;
+                    msg_led.interrupt_ms = 0;
+                    while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                        k_msgq_purge(&led_controller::msgq);
+                }
+            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
+                LOG_DBG("not emergency and heartbeat OK\n");
+                set_new_state(POWER_STATE::RESUME_WAIT);
+            }
+            break;
+        }
+        case POWER_STATE::RESUME_WAIT:
+            set_new_state(POWER_STATE::NORMAL);
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
             if (psw.get_state() != power_switch::STATE::RELEASED) {
@@ -1199,10 +1244,10 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::EMERGENCY);
             } else if (mbd.is_dead()) {
                 LOG_DBG("main board or ROS dead\n");
                 set_new_state(POWER_STATE::STANDBY);
@@ -1321,6 +1366,23 @@ private:
             ac.set_enable(false);
             charge_guard_asserted = true;
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
+            break;
+
+        case POWER_STATE::EMERGENCY:
+            LOG_INF("enter EMERGENCY\n");
+            psw.set_led(true);
+            wsw.set_disable(true);
+            gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
+            gpio_pin_set_dt(&gpio_dev, bat_out_state);
+            ac.set_enable(false);
+            wait_shutdown = false;
+            break;
+        case POWER_STATE::RESUME_WAIT:
+            LOG_INF("enter RESUME_WAIT\n");
             break;
         case POWER_STATE::AUTO_CHARGE:
             LOG_INF("enter AUTO_CHARGE\n");
