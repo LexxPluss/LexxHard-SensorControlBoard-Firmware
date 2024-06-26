@@ -254,8 +254,6 @@ public:
         }
         int now_right{gpio_pin_get_dt(&gpio_right_dev)};
 
-        //LOG_INF("now_left: %d, now_right: %d", now_left, now_right);
-
         if (prev_left != now_left || prev_right != now_right) {
             prev_left = now_left;
             prev_right = now_right;
@@ -1270,7 +1268,7 @@ private:
                         k_msgq_purge(&led_controller::msgq);
                 }
             } else if (ksw.is_maintenance()) {
-                LOG_INF("maintenance mode is selected by key switch\n");
+                LOG_DBG("maintenance mode is selected by key switch\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
@@ -1299,7 +1297,7 @@ private:
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (ksw.is_maintenance()) {
-                LOG_INF("maintenance mode is selected by key switch\n");
+                LOG_DBG("maintenance mode is selected by key switch\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
@@ -1308,7 +1306,7 @@ private:
                 LOG_DBG("receive emergency stop from ROS\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (mbd.is_dead()) {
-                LOG_INF("mainboard is dead\n");
+                LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mc.is_plugged()) {
                 LOG_DBG("plugged to manual charger\n");
@@ -1353,7 +1351,7 @@ private:
                         k_msgq_purge(&led_controller::msgq);
                 }
             } else if (!ksw.is_maintenance() && !esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
-                LOG_INF("not emergency and heartbeat OK\n");
+                LOG_DBG("not emergency\n");
                 set_new_state(POWER_STATE::RESUME_WAIT);
             }
             break;
@@ -1373,7 +1371,7 @@ private:
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (ksw.is_maintenance()) {
-                LOG_INF("maintenance mode is selected by key switch\n");
+                LOG_DBG("maintenance mode is selected by key switch\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
@@ -1382,7 +1380,7 @@ private:
                 LOG_DBG("receive emergency stop from ROS\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (mbd.is_dead()) {
-                LOG_INF("mainboard is dead\n");
+                LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (rsw.get_state() == resume_switch::STATE::PUSHED) {
                 LOG_DBG("resume switch pushed\n");
@@ -1411,7 +1409,7 @@ private:
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (ksw.is_maintenance()) {
-                LOG_INF("maintenance mode is selected by key switch\n");
+                LOG_DBG("maintenance mode is selected by key switch\n");
                 set_new_state(POWER_STATE::EMERGENCY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
