@@ -25,159 +25,152 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/storage/flash_map.h>
-// #include <zephyr/dfu/flash_img.h>
 #include <zephyr/sys/reboot.h>
 #include "firmware_updater.hpp"
 
 namespace lexxhard::firmware_updater {
 
+LOG_MODULE_REGISTER(dfu);
+
 class {
 public:
     void init() {
-        k_msgq_init(&msgq_data, msgq_data_buffer, sizeof (packet_array), 2);
-        k_msgq_init(&msgq_response, msgq_response_buffer, sizeof (response_array), 2);
+        k_msgq_init(&msgq_command, msgq_command_buffer, sizeof (command_packet), 2);
+        k_msgq_init(&msgq_response, msgq_response_buffer, sizeof (response_packet), 2);
     }
     void run() {
         while (true) {
-            cmd();
-            failsafe();
-            reboot();
+            handle_command();
+            check_timeout();
         }
     }
 private:
-    enum class RESP {
-        OK                = 0,
-        COMPLETE          = 1,
-        COMPLETE_RESET    = 2,
-        ERR_PARTITION     = 3,
-        ERR_FLASH_AREA    = 4,
-        ERR_FLASH_ERASE   = 5,
-        ERR_FLASH_PROGRAM = 6,
-        ERR_CHECKSUM      = 7,
-        ERR_TIMEOUT       = 8,
-        ERR_POINTER       = 9,
-    };
     enum class CMD {
-        START           = 0,
-        DATA            = 1,
-        RESET           = 2,
-        RESET_NO_REBOOT = 3,
+        START  = 0,
+        DATA   = 1,
+        END    = 2,
+        REBOOT = 3,
     };
-    void cmd() {
-        if (k_msgq_get(&msgq_data, packet.data, K_MSEC(1000)) == 0) {
-            switch (static_cast<CMD>(packet.data[2])) {
+    enum class RESP {
+        OK    = 0,
+        ERROR = 1,
+        AGAIN = 2,
+    };
+    void handle_command() {
+        if (command_packet command; k_msgq_get(&msgq_command, &command, K_MSEC(1'000)) == 0) {
+            switch (static_cast<CMD>(command.command)) {
             case CMD::START:
-                cmd_start(packet.data);
+                cmd_start(command);
                 break;
             case CMD::DATA:
-                cmd_data(packet.data);
+                cmd_data(command);
                 break;
-            case CMD::RESET:
-                cmd_reset(reboot_option_enabled);
+            case CMD::END:
+                cmd_end(command);
                 break;
-            case CMD::RESET_NO_REBOOT:
-                cmd_reset(!reboot_option_enabled);
+            case CMD::REBOOT:
+                cmd_reboot(command);
                 break;
             }
         }
     }
-    void failsafe() {
-        uint32_t current_cycle{k_cycle_get_32()};
-        if (fa != nullptr && dfu_start_cycle != 0) {
-            uint32_t dfu_ms_elapsed{k_cyc_to_ms_near32(current_cycle - dfu_start_cycle)};
-            if (dfu_ms_elapsed > 90000) {
-                flash_area_reset();
-                respond(RESP::ERR_TIMEOUT);
+    void check_timeout() {
+        if (flash != nullptr && dfu_start_cycle != 0) {
+            if (auto elapsed{k_cyc_to_ms_near32(k_cycle_get_32() - dfu_start_cycle)}; elapsed > 90'000) {
+                flash_close();
+                dfu_start_cycle = 0;
+            }
+        }
+        if (dfu_reboot_cycle != 0) {
+            if (auto elapsed{k_cyc_to_ms_near32(k_cycle_get_32() - dfu_reboot_cycle)}; elapsed > 2'000) {
+                dfu_reboot_cycle = 0;
+                sys_reboot(SYS_REBOOT_COLD);
             }
         }
     }
-    void reboot() {
-        uint32_t current_cycle{k_cycle_get_32()};
-        if (ready_to_reboot && k_cyc_to_ms_near32(current_cycle - dfu_completion_cycle) > 2000) {
-            ready_to_reboot = false;
-            sys_reboot(SYS_REBOOT_COLD);
-        }
-    }
-    void cmd_start(const uint8_t *data) {
-        // TODO need to revice FLASH_AREA_ID(image_1) to different definition
-        // if (fa != nullptr)
-        //     flash_area_reset();
-        // dfu_start_cycle = k_cycle_get_32();
-        // if (!DT_NODE_EXISTS(DT_NODELABEL(image_0_secondary_partition))) {
-        //     respond(RESP::ERR_PARTITION);
-        //     return;
-        // }
-        // if (flash_area_open(FLASH_AREA_ID(image_1), &fa) != 0) {
-        //     respond(RESP::ERR_FLASH_AREA);
-        //     return;
-        // }
-        // static constexpr uint32_t LENGTH{0x00040000};
-        // for (uint32_t current_offset{0}; current_offset < LENGTH; current_offset += 4) {
-        //     uint32_t buf{0};
-        //     flash_area_read(fa, current_offset, &buf, sizeof buf);
-        //     if (buf != 0xffffffff) {
-        //         if (flash_area_erase(fa, 0, LENGTH) != 0) {
-        //             flash_area_reset();
-        //             respond(RESP::ERR_FLASH_ERASE);
-        //             return;
-        //         }
-        //     }
-        // }
-        // cmd_data(data);
-    }
-    void cmd_data(const uint8_t *data) {
-        if (fa == nullptr) {
-            flash_area_reset();
-            respond(RESP::ERR_POINTER);
+    void cmd_start(const command_packet &command) {
+        LOG_INF("firmware update start");
+        if (flash != nullptr)
+            flash_close();
+        dfu_start_cycle = k_cycle_get_32();
+        if (flash_area_open(FIXED_PARTITION_ID(slot1_partition), &flash) != 0) {
+            respond(command, RESP::ERROR);
+            LOG_ERR("cannot open flash area");
             return;
         }
-        uint8_t checksum{0x0};
-        for (int i{3}; i < 259; i++)
-            checksum += data[i];
-        if (checksum != data[259]) {
-            flash_area_reset();
-            respond(RESP::ERR_CHECKSUM);
+        static constexpr uint32_t LENGTH{0x00040000};
+        for (uint32_t current_offset{0}; current_offset < LENGTH; current_offset += 4) {
+            uint32_t data{0};
+            flash_area_read(flash, current_offset, &data, sizeof data);
+            if (data != 0xffffffff) {
+                LOG_INF("need to erase flash area");
+                if (flash_area_erase(flash, 0, LENGTH) != 0) {
+                    flash_close();
+                    respond(command, RESP::ERROR);
+                    LOG_ERR("cannot erase flash area");
+                    return;
+                }
+                LOG_INF("erased flash area");
+            }
+        }
+        respond(command, RESP::OK);
+    }
+    void cmd_data(const command_packet &command) {
+        if (flash == nullptr) {
+            respond(command, RESP::ERROR);
             return;
         }
-        response.data[1] = data[0] + (data[1] << 8);
-        uint32_t current_offset{static_cast<uint32_t>(response.data[1]) * 256U};
-        if (flash_area_write(fa, current_offset, &data[3], 256) != 0) {
-            flash_area_reset();
-            respond(RESP::ERR_FLASH_PROGRAM);
+        uint32_t address{((command.address[0] << 8u) | command.address[1]) * 4u};
+        if (flash_area_write(flash, address, command.data, command.length) != 0) {
+            flash_close();
+            respond(command, RESP::ERROR);
+            LOG_ERR("cannot write to flash");
             return;
         }
-        respond(RESP::OK);
+        respond(command, RESP::OK);
     }
-    void cmd_reset(bool reboot_option_enabled) {
-        if (fa == nullptr) {
-            respond(RESP::ERR_POINTER);
+    void cmd_end(const command_packet &command) {
+        if (flash == nullptr) {
+            respond(command, RESP::ERROR);
+            LOG_WRN("firmware update end without start");
             return;
         }
-        flash_area_reset();
-        dfu_completion_cycle = k_cycle_get_32();
-        ready_to_reboot = reboot_option_enabled;
-        respond(reboot_option_enabled ? RESP::COMPLETE_RESET : RESP::COMPLETE);
+        LOG_INF("firmware update end");
+        flash_close();
+        respond(command, RESP::OK);
     }
-    void flash_area_reset() {
-        if (fa != nullptr) {
-            flash_area_close(fa);
-            fa = nullptr;
+    void cmd_reboot(const command_packet &command) {
+        if (flash != nullptr) {
+            flash_close();
+            respond(command, RESP::ERROR);
+            LOG_ERR("reboot during firmware update");
+            return;
+        }
+        LOG_INF("reboot...");
+        dfu_reboot_cycle = k_cycle_get_32();
+        respond(command, RESP::OK);
+    }
+    void flash_close() {
+        if (flash != nullptr) {
+            flash_area_close(flash);
+            flash = nullptr;
         }
     }
-    void respond(RESP resp) {
-        response.data[0] = static_cast<uint16_t>(resp);
-        k_msgq_put(&msgq_response, response.data, K_MSEC(2000));
+    void respond(const command_packet &command, RESP resp) {
+        response_packet response;
+        response.address[0] = command.address[0];
+        response.address[1] = command.address[1];
+        response.command = command.command;
+        response.response = static_cast<uint8_t>(resp);
+        while (k_msgq_put(&msgq_response, &response, K_MSEC(2'000)) != 0)
+            k_msgq_purge(&msgq_response);
     }
-    char __aligned(4) msgq_data_buffer[2 * sizeof (packet_array)];
-    char __aligned(4) msgq_response_buffer[2 * sizeof (response_array)];
-    response_array response;
-    packet_array packet;
-    const struct flash_area *fa{nullptr};
-    uint32_t dfu_start_cycle{0};
-    uint32_t dfu_completion_cycle{0};
-    bool ready_to_reboot{false};
-    const bool reboot_option_enabled{true};
+    char __aligned(4) msgq_command_buffer[4 * sizeof (command_packet)];
+    char __aligned(4) msgq_response_buffer[4 * sizeof (response_packet)];
+    const struct flash_area *flash{nullptr};
+    uint32_t dfu_start_cycle{0}, dfu_reboot_cycle{0};
 } impl;
 
 void init()
@@ -191,7 +184,7 @@ void run(void *p1, void *p2, void *p3)
 }
 
 k_thread thread;
-k_msgq msgq_data, msgq_response;
+k_msgq msgq_command, msgq_response;
 
 }
 
