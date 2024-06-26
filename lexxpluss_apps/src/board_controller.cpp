@@ -438,7 +438,7 @@ public:
         
         uart_configure(dev, &uart_cfg);
 
-        int ret = uart_irq_callback_user_data_set(dev, static_serial_read_callback, NULL);
+        int ret = uart_irq_callback_user_data_set(dev, static_serial_read_callback, this);
 
         if (ret != 0) {
             LOG_INF("UART IRQ Error");
@@ -588,22 +588,26 @@ private: // Thermistor side starts here.
             return;
         }
 
-        if ((k_uptime_get() - start_time) > CHARGER_HEARTBEAT_TIMEOUT_MS) {
+        if ((k_uptime_get() - last_serial_recv_time) > CHARGER_HEARTBEAT_TIMEOUT_MS) {
             s_msg.reset();
         }
             
         uint8_t data;
-        uart_fifo_read(dev, &data, 1);
-        if (s_msg.decode(data)) {
-            uint8_t param[3];
-            uint8_t command{s_msg.get_command(param)};
-            if (command == serial_message::HEARTBEAT && param[0] == heartbeat_counter)
-                start_time = k_uptime_get();
+        while(0 < uart_fifo_read(dev, &data, 1)){
+            last_serial_recv_time = k_uptime_get();
+            if (s_msg.decode(data)) {
+                uint8_t param[3];
+                uint8_t command{s_msg.get_command(param)};
+                if (command == serial_message::HEARTBEAT && param[0] == heartbeat_counter) {
+                    start_time = k_uptime_get();
+                }
+            }
         }
     }
 
     const device* dev{nullptr}; // UART device
     int64_t start_time{0};      // Heartbeat timer for Charger
+    int64_t last_serial_recv_time{0}; // last IrDA data received time
     uint8_t heartbeat_counter{0}, rsoc{0};
     float connector_v{0.0f}, connector_temp[2]{0.0f, 0.0f};
     uint32_t connect_check_count{0};
@@ -1027,13 +1031,13 @@ private:
             instance->poll_1s();
         }
     }
-    static void static_current_check_timeout_callback(struct k_timer *timer_id) {
+    static void static_charge_guard_timeout_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
         if (instance) {
             instance->charge_guard_asserted = false;
         }
     }
-    static void static_charge_guard_timeout_callback(struct k_timer *timer_id) {
+    static void static_current_check_timeout_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
         if (instance) {
             instance->current_check_enable = true;

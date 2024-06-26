@@ -93,7 +93,7 @@ public:
             packedData[2] = message.shutdown_reason;
             packedData[3] = message.charge_heartbeat_delay;
 
-            uint16_t scaled_voltage = (uint16_t)(message.charge_connector_voltage * 1000);
+            uint16_t scaled_voltage = static_cast<uint16_t>(message.charge_connector_voltage); //unit is mv
 
             packedData[4] = (uint8_t)(scaled_voltage >> 8);   // Upper Byte
             packedData[5] = (uint8_t)(scaled_voltage & 0xFF); // Lower Byte
