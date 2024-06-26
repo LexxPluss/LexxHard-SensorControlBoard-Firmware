@@ -51,7 +51,7 @@ public:
         if (!device_is_ready(dev)) {
             LOG_ERR("CAN_2 is not ready");
             return -1;
-	    }
+	}
 
         static const can_filter filter{
             .id{CAN_ID_DFU_DATA},
