@@ -38,7 +38,7 @@ namespace lexxhard::zcan_led {
 
 LOG_MODULE_REGISTER(zcan_led);
 
-char __aligned(4) msgq_led_buffer[8 * sizeof (led_controller::msg)];
+char __aligned(4) msgq_led_buffer[8 * sizeof (struct can_frame)];
 
 CAN_MSGQ_DEFINE(msgq_can_led, 16);
 
@@ -46,7 +46,7 @@ class zcan_led {
 public:
     void init() {
         //can device bind
-        k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (led_controller::msg), 8);
+        k_msgq_init(&msgq_can_led, msgq_led_buffer, sizeof (struct can_frame), 8);
 
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
