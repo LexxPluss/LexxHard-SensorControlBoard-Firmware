@@ -1210,9 +1210,7 @@ private:
         
         switch (state) {
         case POWER_STATE::OFF:
-            if (psw.get_state() == power_switch::STATE::PUSHED) {
-                set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
-            }
+            set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
             break;
         case POWER_STATE::TIMEROFF:
             if ((k_uptime_get() - timer_poweroff) > 5000)
