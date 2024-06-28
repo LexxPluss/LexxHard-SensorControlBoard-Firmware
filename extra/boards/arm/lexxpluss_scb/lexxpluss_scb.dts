@@ -240,6 +240,16 @@
 			gpios = <&gpioh 5 GPIO_ACTIVE_HIGH>;
 		};
 
+		/* Resume SW */
+		resume_sw_in: resume_sw_in {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 14 GPIO_ACTIVE_HIGH>;
+		};
+		resume_led_out: resume_led_out {
+			compatible = "gpio-pin";
+			gpios = <&gpioi 9 GPIO_ACTIVE_HIGH>;
+		};
+
 		/* Safety */
 		wheel_en: wheel_en {
 			compatible = "gpio-pin";
@@ -349,10 +359,6 @@
 		};
 
 		/* Switch */
-		key_switch_center: key_switch_center {
-			compatible = "gpio-pin";
-			gpios = <&gpioi 9 GPIO_ACTIVE_HIGH>;
-		};
 		key_switch_left: key_switch_left {
 			compatible = "gpio-pin";
 			gpios = <&gpioi 10 GPIO_ACTIVE_HIGH>;
@@ -368,10 +374,6 @@
 		switch_stop: switch_stop {
 			compatible = "gpio-pin";
 			gpios = <&gpioi 13 GPIO_ACTIVE_HIGH>;
-		};
-		switch_resume: switch_resume {
-			compatible = "gpio-pin";
-			gpios = <&gpioi 14 GPIO_ACTIVE_HIGH>;
 		};
 		lift_up_switch: lift_up_switch {
 			compatible = "gpio-pin";
