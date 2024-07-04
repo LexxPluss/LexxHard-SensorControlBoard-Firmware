@@ -25,6 +25,7 @@
 
 #include <zephyr/kernel.h>
 #include <cmath>
+#include <functional>
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 #include <zephyr/drivers/gpio.h>
@@ -294,34 +295,44 @@ private:
 class bumper_switch { // Variables Implemented
 public:
     void poll() {
-        if(asserted_flag) {
-            if ((k_uptime_get() - start_time) > BUMPER_SWITCH_HOLD_TIME_MS) {
-                asserted_flag = false;
+        if(should_reset) {
+            should_reset = false;
+            gpio_dt_spec gpio_dev = GET_GPIO(bp_reset);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
             }
-        } 
-        // Bumper is asserted as long as it's pressed, and for 1 second after it's released
+
+            // reset pulse for the bumper switch
+            gpio_pin_set_dt(&gpio_dev, 1);
+            k_msleep(5);
+            gpio_pin_set_dt(&gpio_dev, 0);
+        }
+
         gpio_dt_spec gpio_dev = GET_GPIO(bp_left);
         if (!gpio_is_ready_dt(&gpio_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
             return;
         }
-        if (gpio_pin_get_dt(&gpio_dev) == 0) {
-            asserted_flag = true;
-            start_time = k_uptime_get();
-        }
+        asserted_flag = (gpio_pin_get_dt(&gpio_dev) == 0);
     }
     void get_raw_state(bool &left, bool &right) const {
         left = right = asserted_flag;
     }
     bool is_asserted() const {return asserted_flag;}
+    void request_reset() {
+        should_reset = true;
+    }
 private:
-    int64_t start_time;
     bool asserted_flag{false};
+    bool should_reset{false};
 };
 
 class emergency_switch { // Variables Implemented
 public:
     void poll() {
+        bool const prev_is_asserted{is_asserted()}; 
+
         gpio_dt_spec gpio_dev = GET_GPIO(es_left);
         if (!gpio_is_ready_dt(&gpio_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
@@ -354,6 +365,13 @@ public:
             right_count = COUNT;
             right_asserted = now == 1;
         }
+
+        // release the emergency switch
+        if (prev_is_asserted && !is_asserted()) {
+            if (callback) {
+                callback();
+            }
+        }
     }
     void reset_state() {
         left_count = right_count = 0;
@@ -365,10 +383,14 @@ public:
         left = left_asserted;
         right = right_asserted;
     }
+    void set_callback(std::function<void ()> cb) {
+        callback = cb;
+    }
 private:
     uint32_t left_count{0}, right_count{0};
     int left_prev{-1}, right_prev{-1};
     bool left_asserted{false}, right_asserted{false};
+    std::function<void ()> callback{nullptr};
     static constexpr uint32_t COUNT{5};
 };
 
@@ -1113,6 +1135,10 @@ public:
             LOG_ERR("WDT setup error: %d\n", err_setup);
             return;
         }
+
+        esw.set_callback([&](){
+            this->bsw.request_reset();
+        });
     }
     void run() {
         while(true) {
