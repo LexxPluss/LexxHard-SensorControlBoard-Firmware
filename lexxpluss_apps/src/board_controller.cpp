@@ -293,6 +293,14 @@ private:
 
 class bumper_switch { // Variables Implemented
 public:
+    void init() {
+        gpio_dt_spec gpio_dev = GET_GPIO(bp_reset);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        gpio_pin_set_dt(&gpio_dev, 0);
+    }
     void poll() {
         if(should_reset) {
             should_reset = false;
@@ -1088,6 +1096,7 @@ public:
         bmu.init();
         fan.init();
         mbd.init();
+        bsw.init();
 
         k_timer_init(&timer_poll_100ms, static_poll_100ms_callback, NULL);
         k_timer_user_data_set(&timer_poll_100ms, this);
