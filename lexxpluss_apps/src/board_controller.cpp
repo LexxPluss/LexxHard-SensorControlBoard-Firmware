@@ -291,7 +291,6 @@ private:
     static constexpr uint32_t COUNT{1};
 };
 
-#define BUMPER_SWITCH_HOLD_TIME_MS 1000
 class bumper_switch { // Variables Implemented
 public:
     void poll() {
