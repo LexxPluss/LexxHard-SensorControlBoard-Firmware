@@ -167,6 +167,10 @@
 			compatible = "gpio-pin";
 			gpios = <&gpioh 9 GPIO_ACTIVE_HIGH>;
 		};
+		d_enc_ena: d_enc_ena {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 14 GPIO_ACTIVE_HIGH>;
+		};
 
 		/* Power */
 		v24: v24 {
@@ -278,6 +282,38 @@
 		es_option_2: es_option_2 {
 			compatible = "gpio-pin";
 			gpios = <&gpioj 15 GPIO_ACTIVE_HIGH>;
+		};
+		eo_option_1: eo_option_1 {
+			compatible = "gpio-pin";
+			gpios = <&gpiog 2 GPIO_ACTIVE_HIGH>;
+		};
+		eo_option_2: eo_option_2 {
+			compatible = "gpio-pin";
+			gpios = <&gpiog 3 GPIO_ACTIVE_HIGH>;
+		};
+		safety_lidar_ossd1: safety_lidar_ossd1 {
+			compatible = "gpio-pin";
+			gpios = <&gpiof 5 GPIO_ACTIVE_HIGH>;
+		};
+		safety_lidar_ossd2: safety_lidar_ossd2 {
+			compatible = "gpio-pin";
+			gpios = <&gpiof 11 GPIO_ACTIVE_HIGH>;
+		};
+		safety_lidar_ossd3: safety_lidar_ossd3 {
+			compatible = "gpio-pin";
+			gpios = <&gpiof 13 GPIO_ACTIVE_HIGH>;
+		};
+		safety_lidar_ossd4: safety_lidar_ossd4 {
+			compatible = "gpio-pin";
+			gpios = <&gpiod 15 GPIO_ACTIVE_HIGH>;
+		};
+		safety_lidar_res_req1: safety_lidar_res_req1 {
+			compatible = "gpio-pin";
+			gpios = <&gpiog 10 GPIO_ACTIVE_HIGH>;
+		};
+		safety_lidar_res_req2: safety_lidar_res_req2 {
+			compatible = "gpio-pin";
+			gpios = <&gpiog 15 GPIO_ACTIVE_HIGH>;
 		};
 
 		/* BMU */
