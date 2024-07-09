@@ -441,6 +441,38 @@
 			compatible = "gpio-pin";
 			gpios = <&gpioj 4 GPIO_ACTIVE_HIGH>;
 		};
+		spare_gpio_6: spare_gpio_6 {
+			compatible = "gpio-pin";
+			gpios = <&gpioa 8 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_7: spare_gpio_7 {
+			compatible = "gpio-pin";
+			gpios = <&gpioa 15 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_8: spare_gpio_8 {
+			compatible = "gpio-pin";
+			gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_9: spare_gpio_9 {
+			compatible = "gpio-pin";
+			gpios = <&gpiob 3 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_10: spare_gpio_10 {
+			compatible = "gpio-pin";
+			gpios = <&gpiob 4 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_11: spare_gpio_11 {
+			compatible = "gpio-pin";
+			gpios = <&gpioc 8 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_12: spare_gpio_12 {
+			compatible = "gpio-pin";
+			gpios = <&gpioc 9 GPIO_ACTIVE_HIGH>;
+		};
+		spare_gpio_13: spare_gpio_13 {
+			compatible = "gpio-pin";
+			gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
+		};
 
 		/* etc */
 		adc_alert: adc_alert {
