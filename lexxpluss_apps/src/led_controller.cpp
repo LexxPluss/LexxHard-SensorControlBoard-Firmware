@@ -31,7 +31,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include "bmu_controller.hpp"
-#include "can_controller.hpp"
+#include "board_controller.hpp"
 #include "led_controller.hpp"
 
 namespace lexxhard::led_controller {
@@ -152,7 +152,7 @@ private:
     void update() {
         std::copy(&pixeldata[LED_LEFT][0],  &pixeldata[LED_LEFT][PIXELS_BACK],  &pixeldata_back[LED_LEFT][0]);
         std::copy(&pixeldata[LED_RIGHT][0], &pixeldata[LED_RIGHT][PIXELS_BACK], &pixeldata_back[LED_RIGHT][0]);
-        if (can_controller::is_emergency()) {
+        if (board_controller::is_emergency()) {
             static uint32_t blink_counter{0};
             ++blink_counter;
             if (blink_counter < 20) {

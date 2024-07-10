@@ -1145,6 +1145,17 @@ public:
     bool is_esw_asserted(){
         return esw.is_asserted();
     }
+    bool is_emergency() const {
+        bool rtn{false};
+        if (auto const state{static_cast<POWER_STATE>(board2ros.state)}; state != POWER_STATE::OFF) {
+            rtn = board2ros.emergency_switch_asserted ||
+               board2ros.bumper_switch_asserted ||
+               state == POWER_STATE::SUSPEND ||
+               state == POWER_STATE::RESUME_WAIT ||
+               mbd.emergency_stop_from_ros();
+        }
+        return rtn;
+    }
 private:
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
@@ -1764,6 +1775,11 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
+}
+
+bool is_emergency()
+{
+    return impl.is_emergency();
 }
 
 k_thread thread;
