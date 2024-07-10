@@ -32,6 +32,7 @@
 #include "can_controller.hpp"
 #include "board_controller.hpp"
 #include "led_controller.hpp"
+#include "power_state.hpp"
 
 namespace lexxhard::can_controller {
 
@@ -73,7 +74,7 @@ public:
             }
 
             // if the board_controller state is 0 (OFF), prev_cycle_ros is reset
-            if (board2ros.state == 0) {
+            if (static_cast<POWER_STATE>(board2ros.state) == POWER_STATE::OFF) {
                 prev_cycle_ros = 0;
                 prev_cycle_send = 0;
                 ros2board.emergency_stop = true;
@@ -102,7 +103,7 @@ public:
     }
     bool is_emergency() const {
         bool rtn{false};
-        if (board2ros.state != 0) {
+        if (static_cast<POWER_STATE>(board2ros.state) != POWER_STATE::OFF) {
             rtn = board2ros.emergency_switch_asserted ||
                board2ros.bumper_switch_asserted ||
                ros2board.emergency_stop;
