@@ -1147,9 +1147,9 @@ public:
     }
     bool is_emergency() const {
         bool rtn{false};
-        if (auto const state{static_cast<POWER_STATE>(board2ros.state)}; state != POWER_STATE::OFF) {
-            rtn = board2ros.emergency_switch_asserted ||
-               board2ros.bumper_switch_asserted ||
+        if (state != POWER_STATE::OFF) {
+            rtn = esw.is_asserted() ||
+               bsw.is_asserted() ||
                state == POWER_STATE::SUSPEND ||
                state == POWER_STATE::RESUME_WAIT ||
                mbd.emergency_stop_from_ros();
@@ -1605,6 +1605,7 @@ private:
         board2ros.auto_charging_status = ac.is_docked();
         board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
         board2ros.wait_shutdown_state = wait_shutdown;
+        board2ros.emergency_stop = is_emergency();
         board2ros.wheel_enable = wsw.is_enabled();
 
         bool v24{false}, v_peripheral{false}, v_wheel_motor_left{false}, v_wheel_motor_right{false};

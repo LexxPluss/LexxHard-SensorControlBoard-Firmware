@@ -60,6 +60,7 @@ struct msg_board {
     bool c_act_pgood, l_act_pgood, r_act_pgood;
     bool wheel_enable;
     bool charge_temperature_good;
+    bool emergency_stop;
 } __attribute__((aligned(4)));
 
 struct msg_control {

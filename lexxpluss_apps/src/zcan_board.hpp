@@ -81,6 +81,9 @@ public:
             if (message.wait_shutdown_state) {
                 packedData[0] |= 0b00001000;
             }
+            if (message.emergency_stop) {
+                packedData[0] |= 0b00000100;
+            }
 
             if (message.auto_charging_status){
                 packedData[1] = 0x01;
