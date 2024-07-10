@@ -103,9 +103,11 @@ public:
     }
     bool is_emergency() const {
         bool rtn{false};
-        if (static_cast<POWER_STATE>(board2ros.state) != POWER_STATE::OFF) {
+        if (auto const state{static_cast<POWER_STATE>(board2ros.state)}; state != POWER_STATE::OFF) {
             rtn = board2ros.emergency_switch_asserted ||
                board2ros.bumper_switch_asserted ||
+               state == POWER_STATE::SUSPEND ||
+               state == POWER_STATE::RESUME_WAIT ||
                ros2board.emergency_stop;
         }
         return rtn;
