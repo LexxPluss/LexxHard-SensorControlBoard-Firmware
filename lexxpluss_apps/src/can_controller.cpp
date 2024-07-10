@@ -101,17 +101,6 @@ public:
     bool get_bumper_switch() const {
 	return board2ros.bumper_switch_asserted;
     }
-    bool is_emergency() const {
-        bool rtn{false};
-        if (auto const state{static_cast<POWER_STATE>(board2ros.state)}; state != POWER_STATE::OFF) {
-            rtn = board2ros.emergency_switch_asserted ||
-               board2ros.bumper_switch_asserted ||
-               state == POWER_STATE::SUSPEND ||
-               state == POWER_STATE::RESUME_WAIT ||
-               ros2board.emergency_stop;
-        }
-        return rtn;
-    }
     void brd_emgoff() {
         ros2board.emergency_stop = false;
         heartbeat_timeout = false;
@@ -212,11 +201,6 @@ bool get_emergency_switch()
 bool get_bumper_switch()
 {
     return impl.get_bumper_switch();
-}
-
-bool is_emergency()
-{
-    return impl.is_emergency();
 }
 
 k_thread thread;
