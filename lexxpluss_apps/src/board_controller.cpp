@@ -38,6 +38,7 @@
 #include "can_controller.hpp"
 #include "common.hpp"
 #include "led_controller.hpp"
+#include "power_state.hpp"
 
 namespace lexxhard::board_controller {
 
@@ -1170,19 +1171,6 @@ private:
         }
     }
 
-    enum class POWER_STATE {
-        OFF,
-        WAIT_SW,
-        POST,
-        STANDBY,
-        NORMAL,
-        AUTO_CHARGE,
-        MANUAL_CHARGE,
-        LOCKDOWN,
-        TIMEROFF,
-        SUSPEND,
-        RESUME_WAIT,
-    };
     void poll() {
         auto wheel_relay_control = [&](){
             bool wheel_poweroff{mbd.is_wheel_poweroff()};

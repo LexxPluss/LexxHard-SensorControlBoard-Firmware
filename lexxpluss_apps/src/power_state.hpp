@@ -1,0 +1,13 @@
+enum class POWER_STATE {
+    OFF,
+    WAIT_SW,
+    POST,
+    STANDBY,
+    NORMAL,
+    AUTO_CHARGE,
+    MANUAL_CHARGE,
+    LOCKDOWN,
+    TIMEROFF,
+    SUSPEND,
+    RESUME_WAIT,
+};
