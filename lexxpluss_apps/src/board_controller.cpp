@@ -1200,7 +1200,7 @@ private:
         MANUAL_CHARGE,
         LOCKDOWN,
         TIMEROFF,
-        EMERGENCY,
+        SUSPEND,
         RESUME_WAIT,
     };
     void poll() {
@@ -1291,10 +1291,10 @@ private:
                 }
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1320,13 +1320,13 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::STANDBY);
@@ -1340,7 +1340,7 @@ private:
                 }
             }
             break;
-        case POWER_STATE::EMERGENCY: {
+        case POWER_STATE::SUSPEND: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
             if (!dcdc.is_ok() || psw_state == power_switch::STATE::LONG_PUSHED) {
@@ -1382,28 +1382,28 @@ private:
             wheel_relay_control();
             if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.power_off_from_ros()) {
                 LOG_DBG("receive power off from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (rsw.get_state() == resume_switch::STATE::PUSHED) {
                 LOG_DBG("resume switch pushed\n");
                 if (mbd.is_ready()) {
@@ -1432,13 +1432,13 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("main board or ROS dead\n");
                 set_new_state(POWER_STATE::STANDBY);
@@ -1559,8 +1559,8 @@ private:
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
             break;
 
-        case POWER_STATE::EMERGENCY:
-            LOG_INF("enter EMERGENCY\n");
+        case POWER_STATE::SUSPEND:
+            LOG_INF("enter SUSPEND\n");
             psw.set_led(true);
             wsw.set_disable(true);
             gpio_dev = GET_GPIO(v_wheel);
