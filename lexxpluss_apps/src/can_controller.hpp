@@ -60,6 +60,7 @@ struct msg_board {
     bool c_act_pgood, l_act_pgood, r_act_pgood;
     bool wheel_enable;
     bool charge_temperature_good;
+    bool emergency_stop;
 } __attribute__((aligned(4)));
 
 struct msg_control {
@@ -70,7 +71,6 @@ void init();
 void run(void *p1, void *p2, void *p3);
 bool get_emergency_switch();
 bool get_bumper_switch();
-bool is_emergency();
 extern k_thread thread;
 extern k_msgq /*msgq_bmu,*/ msgq_board, msgq_control;
 

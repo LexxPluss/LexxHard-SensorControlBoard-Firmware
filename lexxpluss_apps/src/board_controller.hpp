@@ -46,6 +46,7 @@ struct msg_rcv_pb {
 
 void init();
 void run(void *p1, void *p2, void *p3);
+bool is_emergency();
 extern k_thread thread;
 extern k_msgq msgq_can_bmu_pb;
 extern k_msgq msgq_board_pb_rx, msgq_board_pb_tx;
