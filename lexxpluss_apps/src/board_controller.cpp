@@ -25,6 +25,7 @@
 
 #include <zephyr/kernel.h>
 #include <cmath>
+#include <array>
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 #include <zephyr/drivers/gpio.h>
@@ -321,55 +322,74 @@ private:
 
 class emergency_switch { // Variables Implemented
 public:
+    emergency_switch(gpio_dt_spec&& gpio_dev) : gpio_dev(std::move(gpio_dev)) {}
+    emergency_switch(const emergency_switch&) = delete;
+    emergency_switch & operator=(const emergency_switch&) = delete;
+
     void poll() {
-        gpio_dt_spec gpio_dev = GET_GPIO(es_left);
         if (!gpio_is_ready_dt(&gpio_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed\n");
             return;
         }
-        int now{gpio_pin_get_dt(&gpio_dev)};
-        if (left_prev != now) {
-            left_prev = now;
-            left_count = 0;
+
+        int const now_pin_status{gpio_pin_get_dt(&gpio_dev)};
+        if (prev_pin_status != now_pin_status) {
+            hold_count = 0;
         } else {
-            ++left_count;
+            hold_count = std::min(hold_count + 1, HOLD_COUNT_THRESH + 1);
         }
-        if (left_count > COUNT) {
-            left_count = COUNT;
-            left_asserted = now == 1;
+        if (hold_count > HOLD_COUNT_THRESH) {
+            asserted = now_pin_status == 1;
         }
-        gpio_dev = GET_GPIO(es_right);
-        if (!gpio_is_ready_dt(&gpio_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return;
-        }
-        now = gpio_pin_get_dt(&gpio_dev);
-        if (right_prev != now) {
-            right_prev = now;
-            right_count = 0;
-        } else {
-            ++right_count;
-        }
-        if (right_count > COUNT) {
-            right_count = COUNT;
-            right_asserted = now == 1;
+
+        prev_pin_status = now_pin_status;
+    }
+    void reset_state() {
+        hold_count = 0;
+        asserted =  false;
+        prev_pin_status = -1;
+    }
+    bool is_asserted() const {return asserted;}
+private:
+    gpio_dt_spec gpio_dev;
+    uint32_t hold_count{0};
+    int prev_pin_status{-1};
+    bool asserted{false};
+    static constexpr uint32_t HOLD_COUNT_THRESH{5};
+};
+
+
+class emergency_switch_set { // Variables Implemented
+public:
+    emergency_switch_set()
+    : switches{
+        emergency_switch(GET_GPIO(es_left)),
+        emergency_switch(GET_GPIO(es_right)),
+        emergency_switch(GET_GPIO(es_option_1)),
+        emergency_switch(GET_GPIO(es_option_2)),
+    }
+    {
+    }
+    void poll() {
+        for(auto& sw : switches) {
+            sw.poll();
         }
     }
     void reset_state() {
-        left_count = right_count = 0;
-        left_asserted = right_asserted = false;
-        left_prev = right_prev = -1;
+        for(auto& sw : switches) {
+            sw.reset_state();
+        }
     }
-    bool is_asserted() const {return left_asserted || right_asserted;}
-    void get_raw_state(bool &left, bool &right) const {
-        left = left_asserted;
-        right = right_asserted;
+    bool is_asserted() const {
+        for(auto& sw : switches) {
+            if (sw.is_asserted()) {
+                return true;
+            }
+        }
+        return false;
     }
 private:
-    uint32_t left_count{0}, right_count{0};
-    int left_prev{-1}, right_prev{-1};
-    bool left_asserted{false}, right_asserted{false};
-    static constexpr uint32_t COUNT{5};
+    std::array<emergency_switch, 4> switches;
 };
 
 class wheel_switch { // Variables Implemented
@@ -1653,7 +1673,7 @@ private:
     resume_switch rsw;
     key_switch ksw;
     bumper_switch bsw;
-    emergency_switch esw;
+    emergency_switch_set esw;
     wheel_switch wsw;
     manual_charger mc;
     auto_charger ac;
