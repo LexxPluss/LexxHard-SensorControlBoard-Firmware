@@ -37,6 +37,7 @@
 #include "zcan_main.hpp"
 #include "runaway_detector.hpp"
 #include "uss_controller.hpp"
+#include "tug_encoder_controller.hpp"
 
 namespace {
 
@@ -51,6 +52,7 @@ K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 
 #define RUN(name, prio) \
@@ -225,6 +227,7 @@ int main()
     lexxhard::zcan_main::init();
     lexxhard::runaway_detector::init();
     lexxhard::uss_controller::init();
+    lexxhard::tug_encoder_controller::init();
 
     RUN(actuator_controller, 2);
     RUN(adc_reader, 2);
@@ -236,6 +239,7 @@ int main()
     RUN(led_controller, 1);
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
+    RUN(tug_encoder_controller, 2);
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
 

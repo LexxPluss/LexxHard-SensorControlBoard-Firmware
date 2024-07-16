@@ -32,6 +32,7 @@
 #include "zcan_pgv.hpp"
 #include "zcan_uss.hpp"
 #include "zcan_dfu.hpp"
+#include "zcan_tug_encoder.hpp"
 #include "zcan_main.hpp"
 
 namespace lexxhard::zcan_main {
@@ -60,6 +61,7 @@ public:
         led.init();
         pgv.init();
         uss.init();
+        tug_encoder.init();
         return 0;
     }
     void run() {
@@ -72,6 +74,7 @@ public:
             led.poll();
             pgv.poll();
             uss.poll();
+            tug_encoder.poll();
             k_usleep(1);
         }
     }
@@ -85,6 +88,7 @@ private:
     lexxhard::zcan_led::zcan_led led;
     lexxhard::zcan_pgv::zcan_pgv pgv;
     lexxhard::zcan_uss::zcan_uss uss;
+    lexxhard::zcan_tug_encoder::zcan_tug_encoder tug_encoder;
 } impl;
 
 void init()

@@ -1226,7 +1226,7 @@ private:
         ac.poll();
         bmu.poll();
         mbd.poll();
-        
+
         switch (state) {
         case POWER_STATE::OFF:
             set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
