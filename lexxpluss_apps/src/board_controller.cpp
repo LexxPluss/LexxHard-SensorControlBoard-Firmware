@@ -1293,35 +1293,12 @@ private:
         case POWER_STATE::STANDBY: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok() || psw_state == power_switch::STATE::LONG_PUSHED) {
+            if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
-                set_new_state(wait_shutdown ? POWER_STATE::TIMEROFF : POWER_STATE::LOCKDOWN);
+                set_new_state(POWER_STATE::LOCKDOWN);
             } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
-                if (wait_shutdown) {
-                    if ((k_uptime_get() - timer_shutdown)> 60000) {
-                        set_new_state(POWER_STATE::OFF);
-                        dcdc.set_enable(false);
-                        psw.reset_state();
-                        esw.reset_state();
-                    }
-                } else {
-                    LOG_DBG("wait shutdown\n");
-                    wait_shutdown = true;
-                    timer_shutdown = k_uptime_get();    // timer reset
-                    if (psw_state == power_switch::STATE::PUSHED)
-                        shutdown_reason = SHUTDOWN_REASON::SWITCH;
-                    if (mbd.power_off_from_ros())
-                        shutdown_reason = SHUTDOWN_REASON::ROS;
-                    if (!bmu.is_ok())
-                        shutdown_reason = SHUTDOWN_REASON::BMU;
-                    // Set LED
-                    led_controller::msg msg_led;
-                    msg_led.pattern = led_controller::msg::SHOWTIME;
-                    msg_led.interrupt_ms = 0;
-                    while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
-                }
+                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1376,35 +1353,12 @@ private:
         case POWER_STATE::SUSPEND: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok() || psw_state == power_switch::STATE::LONG_PUSHED) {
+            if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
-                set_new_state(wait_shutdown ? POWER_STATE::TIMEROFF : POWER_STATE::LOCKDOWN);
+                set_new_state(POWER_STATE::LOCKDOWN);
             } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
-                if (wait_shutdown) {
-                    if ((k_uptime_get() - timer_shutdown)> 60000) {
-                        set_new_state(POWER_STATE::OFF);
-                        dcdc.set_enable(false);
-                        psw.reset_state();
-                        esw.reset_state();
-                    }
-                } else {
-                    LOG_DBG("wait shutdown\n");
-                    wait_shutdown = true;
-                    timer_shutdown = k_uptime_get();    // timer reset
-                    if (psw_state == power_switch::STATE::PUSHED)
-                        shutdown_reason = SHUTDOWN_REASON::SWITCH;
-                    if (mbd.power_off_from_ros())
-                        shutdown_reason = SHUTDOWN_REASON::ROS;
-                    if (!bmu.is_ok())
-                        shutdown_reason = SHUTDOWN_REASON::BMU;
-                    // Set LED
-                    led_controller::msg msg_led;
-                    msg_led.pattern = led_controller::msg::SHOWTIME;
-                    msg_led.interrupt_ms = 0;
-                    while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
-                }
+                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (!ksw.is_maintenance() && !esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
                 LOG_DBG("not emergency\n");
                 set_new_state(POWER_STATE::RESUME_WAIT);
@@ -1511,6 +1465,19 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             }
             break;
+        case POWER_STATE::OFF_WAIT:
+            if (psw.get_state() == power_switch::STATE::LONG_PUSHED) {
+                set_new_state(POWER_STATE::OFF);
+            }
+            else if (mbd.is_dead()) {
+                set_new_state(POWER_STATE::TIMEROFF);
+            }
+            else if ((k_uptime_get() - timer_shutdown)> 60000) {
+                set_new_state(POWER_STATE::OFF);
+                psw.reset_state();
+                esw.reset_state();
+            }
+            break;
         }
     }
     void set_new_state(POWER_STATE newstate) {
@@ -1552,6 +1519,9 @@ private:
         } break;
         case POWER_STATE::LOCKDOWN: {
             LOG_INF("leave LOCKDOWN");
+        } break;
+        case POWER_STATE::OFF_WAIT: {
+            LOG_INF("leave OFF_WAIT");
         } break;
         default:
             break;
@@ -1607,7 +1577,6 @@ private:
             }
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
-            wait_shutdown = false;
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
@@ -1633,7 +1602,6 @@ private:
             }
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
-            wait_shutdown = false;
         } break;
         case POWER_STATE::RESUME_WAIT: {
             LOG_INF("enter RESUME_WAIT\n");
@@ -1677,6 +1645,21 @@ private:
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
         } break;
+        case POWER_STATE::OFF_WAIT: {
+            LOG_INF("enter OFF_WAIT\n");
+            timer_shutdown = k_uptime_get();    // timer reset
+            if (psw.get_state() == power_switch::STATE::PUSHED)
+                shutdown_reason = SHUTDOWN_REASON::SWITCH;
+            if (mbd.power_off_from_ros())
+                shutdown_reason = SHUTDOWN_REASON::ROS;
+            if (!bmu.is_ok())
+                shutdown_reason = SHUTDOWN_REASON::BMU;
+
+            // Set LED
+            led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 0};
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                k_msgq_purge(&led_controller::msgq);
+        } break;
         }
         state = newstate;
     }
@@ -1687,7 +1670,7 @@ private:
         board2ros.manual_charging_status = mc.is_plugged();
         board2ros.auto_charging_status = ac.is_docked();
         board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
-        board2ros.wait_shutdown_state = wait_shutdown;
+        board2ros.wait_shutdown_state = state == POWER_STATE::OFF_WAIT || state == POWER_STATE::TIMEROFF;
         board2ros.emergency_stop = is_emergency();
         board2ros.wheel_enable = wsw.is_enabled();
 
@@ -1759,7 +1742,7 @@ private:
     k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
-    bool poweron_by_switch{false}, wait_shutdown{false}, current_check_enable{false}, charge_guard_asserted{false},
+    bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
          last_wheel_poweroff{false};
 } impl;
 
