@@ -35,7 +35,7 @@
 #include <tuple>
 #include "actuator_controller.hpp"
 #include "adc_reader.hpp"
-#include "can_controller.hpp"
+#include "board_controller.hpp"
 #include "common.hpp"
 
 // for HW counter
@@ -632,7 +632,7 @@ public:
         while (true) {
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
-            bool is_emergency{can_controller::is_emergency()};  // -> board controller
+            bool is_emergency{board_controller::is_emergency()};  // -> board controller
             msg_control can2actuator;
             if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency)
                 handle_control(can2actuator);
@@ -671,7 +671,7 @@ public:
         pwm_trampoline_all(msg_control::DOWN, 100);
         bool stopped{wait_actuator_stop(30000, 100)};
         pwm_trampoline_all(msg_control::STOP);
-        if (!stopped || can_controller::is_emergency()) {
+        if (!stopped || board_controller::is_emergency()) {
             LOG_WRN("can not initialize location.");
             return -1;
         }
@@ -692,7 +692,7 @@ public:
             act[i].to_location(location[i], power[i]);
         bool stopped{wait_actuator_stop(30000, 100)};
         pwm_trampoline_all(msg_control::STOP);
-        if (!stopped || can_controller::is_emergency()) {
+        if (!stopped || board_controller::is_emergency()) {
             LOG_WRN("unable to move location.");
             return -1;
         }

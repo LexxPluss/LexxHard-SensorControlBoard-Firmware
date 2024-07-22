@@ -26,6 +26,7 @@
 #include <zephyr/kernel.h>
 #include <cmath>
 #include <functional>
+#include <array>
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 #include <zephyr/drivers/gpio.h>
@@ -39,6 +40,7 @@
 #include "can_controller.hpp"
 #include "common.hpp"
 #include "led_controller.hpp"
+#include "power_state.hpp"
 
 namespace lexxhard::board_controller {
 
@@ -337,40 +339,59 @@ private:
 
 class emergency_switch { // Variables Implemented
 public:
+    emergency_switch(gpio_dt_spec&& gpio_dev) : gpio_dev(std::move(gpio_dev)) {}
+    emergency_switch(const emergency_switch&) = delete;
+    emergency_switch & operator=(const emergency_switch&) = delete;
+
+    void poll() {
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+
+        int const now_pin_status{gpio_pin_get_dt(&gpio_dev)};
+        if (prev_pin_status != now_pin_status) {
+            hold_count = 0;
+        } else {
+            hold_count = std::min(hold_count + 1, HOLD_COUNT_THRESH + 1);
+        }
+        if (hold_count > HOLD_COUNT_THRESH) {
+            asserted = now_pin_status == 1;
+        }
+
+        prev_pin_status = now_pin_status;
+    }
+    void reset_state() {
+        hold_count = 0;
+        asserted =  false;
+        prev_pin_status = -1;
+    }
+    bool is_asserted() const {return asserted;}
+private:
+    gpio_dt_spec gpio_dev;
+    uint32_t hold_count{0};
+    int prev_pin_status{-1};
+    bool asserted{false};
+    static constexpr uint32_t HOLD_COUNT_THRESH{5};
+};
+
+
+class emergency_switch_set { // Variables Implemented
+public:
+    emergency_switch_set()
+    : switches{
+        emergency_switch(GET_GPIO(es_left)),
+        emergency_switch(GET_GPIO(es_right)),
+        emergency_switch(GET_GPIO(es_option_1)),
+        emergency_switch(GET_GPIO(es_option_2)),
+    }
+    {
+    }
     void poll() {
         bool const prev_is_asserted{is_asserted()}; 
 
-        gpio_dt_spec gpio_dev = GET_GPIO(es_left);
-        if (!gpio_is_ready_dt(&gpio_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return;
-        }
-        int now{gpio_pin_get_dt(&gpio_dev)};
-        if (left_prev != now) {
-            left_prev = now;
-            left_count = 0;
-        } else {
-            ++left_count;
-        }
-        if (left_count > COUNT) {
-            left_count = COUNT;
-            left_asserted = now == 1;
-        }
-        gpio_dev = GET_GPIO(es_right);
-        if (!gpio_is_ready_dt(&gpio_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return;
-        }
-        now = gpio_pin_get_dt(&gpio_dev);
-        if (right_prev != now) {
-            right_prev = now;
-            right_count = 0;
-        } else {
-            ++right_count;
-        }
-        if (right_count > COUNT) {
-            right_count = COUNT;
-            right_asserted = now == 1;
+        for(auto& sw : switches) {
+            sw.poll();
         }
 
         // release the emergency switch
@@ -381,24 +402,24 @@ public:
         }
     }
     void reset_state() {
-        left_count = right_count = 0;
-        left_asserted = right_asserted = false;
-        left_prev = right_prev = -1;
+        for(auto& sw : switches) {
+            sw.reset_state();
+        }
     }
-    bool is_asserted() const {return left_asserted || right_asserted;}
-    void get_raw_state(bool &left, bool &right) const {
-        left = left_asserted;
-        right = right_asserted;
+    bool is_asserted() const {
+        for(auto& sw : switches) {
+            if (sw.is_asserted()) {
+                return true;
+            }
+        }
+        return false;
     }
     void set_callback(std::function<void ()> cb) {
         callback = cb;
     }
 private:
-    uint32_t left_count{0}, right_count{0};
-    int left_prev{-1}, right_prev{-1};
-    bool left_asserted{false}, right_asserted{false};
     std::function<void ()> callback{nullptr};
-    static constexpr uint32_t COUNT{5};
+    std::array<emergency_switch, 4> switches;
 };
 
 class wheel_switch { // Variables Implemented
@@ -1178,6 +1199,17 @@ public:
     bool is_esw_asserted(){
         return esw.is_asserted();
     }
+    bool is_emergency() const {
+        bool rtn{false};
+        if (state != POWER_STATE::OFF) {
+            rtn = esw.is_asserted() ||
+               bsw.is_asserted() ||
+               state == POWER_STATE::SUSPEND ||
+               state == POWER_STATE::RESUME_WAIT ||
+               mbd.emergency_stop_from_ros();
+        }
+        return rtn;
+    }
 private:
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
@@ -1204,19 +1236,6 @@ private:
         }
     }
 
-    enum class POWER_STATE {
-        OFF,
-        WAIT_SW,
-        POST,
-        STANDBY,
-        NORMAL,
-        AUTO_CHARGE,
-        MANUAL_CHARGE,
-        LOCKDOWN,
-        TIMEROFF,
-        EMERGENCY,
-        RESUME_WAIT,
-    };
     void poll() {
         auto wheel_relay_control = [&](){
             bool wheel_poweroff{mbd.is_wheel_poweroff()};
@@ -1305,10 +1324,10 @@ private:
                 }
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1334,13 +1353,13 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::STANDBY);
@@ -1354,7 +1373,7 @@ private:
                 }
             }
             break;
-        case POWER_STATE::EMERGENCY: {
+        case POWER_STATE::SUSPEND: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
             if (!dcdc.is_ok() || psw_state == power_switch::STATE::LONG_PUSHED) {
@@ -1396,28 +1415,28 @@ private:
             wheel_relay_control();
             if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.power_off_from_ros()) {
                 LOG_DBG("receive power off from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (rsw.get_state() == resume_switch::STATE::PUSHED) {
                 LOG_DBG("resume switch pushed\n");
                 if (mbd.is_ready()) {
@@ -1446,13 +1465,13 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::EMERGENCY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("main board or ROS dead\n");
                 set_new_state(POWER_STATE::STANDBY);
@@ -1573,8 +1592,8 @@ private:
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
             break;
 
-        case POWER_STATE::EMERGENCY:
-            LOG_INF("enter EMERGENCY\n");
+        case POWER_STATE::SUSPEND:
+            LOG_INF("enter SUSPEND\n");
             psw.set_led(true);
             wsw.set_disable(true);
             gpio_dev = GET_GPIO(v_wheel);
@@ -1640,6 +1659,7 @@ private:
         board2ros.auto_charging_status = ac.is_docked();
         board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
         board2ros.wait_shutdown_state = wait_shutdown;
+        board2ros.emergency_stop = is_emergency();
         board2ros.wheel_enable = wsw.is_enabled();
 
         bool v24{false}, v_peripheral{false}, v_wheel_motor_left{false}, v_wheel_motor_right{false};
@@ -1687,7 +1707,7 @@ private:
     resume_switch rsw;
     key_switch ksw;
     bumper_switch bsw;
-    emergency_switch esw;
+    emergency_switch_set esw;
     wheel_switch wsw;
     manual_charger mc;
     auto_charger ac;
@@ -1810,6 +1830,11 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
+}
+
+bool is_emergency()
+{
+    return impl.is_emergency();
 }
 
 k_thread thread;
