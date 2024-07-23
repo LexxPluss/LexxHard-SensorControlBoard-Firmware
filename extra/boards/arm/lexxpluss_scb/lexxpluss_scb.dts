@@ -263,6 +263,10 @@
 			compatible = "gpio-pin";
 			gpios = <&gpioi 7 GPIO_ACTIVE_HIGH>;
 		};
+		bp_reset: bp_reset {
+			compatible = "gpio-pin";
+			gpios = <&gpiof 4 GPIO_ACTIVE_HIGH>;
+		};
 		es_left: es_left {
 			compatible = "gpio-pin";
 			gpios = <&gpioi 4 GPIO_ACTIVE_HIGH>;
