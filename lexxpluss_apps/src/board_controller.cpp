@@ -1522,6 +1522,9 @@ private:
             k_timer_stop(&current_check_timeout);
             ac.force_stop();
             break;
+        case POWER_STATE::RESUME_WAIT:
+            rsw.set_led(false);
+            break;
         default:
             break;
         }
@@ -1533,6 +1536,7 @@ private:
             LOG_INF("enter OFF\n");
             poweron_by_switch = false;
             psw.set_led(false);
+            rsw.set_led(false);
             dcdc.set_enable(false);
 
             // Set LED OFF
@@ -1607,6 +1611,7 @@ private:
             break;
         case POWER_STATE::RESUME_WAIT:
             LOG_INF("enter RESUME_WAIT\n");
+            rsw.set_led(true);
             break;
         case POWER_STATE::AUTO_CHARGE:
             LOG_INF("enter AUTO_CHARGE\n");
