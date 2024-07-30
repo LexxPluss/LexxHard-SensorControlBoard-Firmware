@@ -284,7 +284,7 @@ public:
     }
     STATE get_state() const {return state;}
     bool is_maintenance() const {
-        return state != STATE::RIGHT;
+        return false;
     }
 private:
     STATE state{STATE::UNKNOWN};
