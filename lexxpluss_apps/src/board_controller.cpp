@@ -1515,16 +1515,44 @@ private:
     }
     void set_new_state(POWER_STATE newstate) {
         switch (state) {
-        case POWER_STATE::NORMAL:
+        case POWER_STATE::OFF: {
+            LOG_INF("leave OFF");
+        } break;
+        case POWER_STATE::TIMEROFF: {
+            LOG_INF("leave TIMEROFF");
+        } break;
+        case POWER_STATE::WAIT_SW: {
+            LOG_INF("leave WAIT_SW");
+        } break;
+        case POWER_STATE::NORMAL: {
+            LOG_INF("leave NORMAL");
             k_timer_stop(&charge_guard_timeout);
-            break;
-        case POWER_STATE::AUTO_CHARGE:
+            wsw.set_disable(true);
+        } break;
+        case POWER_STATE::POST: {
+            LOG_INF("leave POST\n");
+        } break;
+        case POWER_STATE::STANDBY: {
+            LOG_INF("leave STANDBY\n");
+        } break;
+        case POWER_STATE::SUSPEND: {
+            LOG_INF("leave SUSPEND\n");
+        } break;
+        case POWER_STATE::RESUME_WAIT: {
+            LOG_INF("leave RESUME_WAIT\n");
+            rsw.set_led(false);
+        } break;
+        case POWER_STATE::AUTO_CHARGE: {
+            LOG_INF("leave AUTO_CHARGE");
             k_timer_stop(&current_check_timeout);
             ac.force_stop();
-            break;
-        case POWER_STATE::RESUME_WAIT:
-            rsw.set_led(false);
-            break;
+        } break;
+        case POWER_STATE::MANUAL_CHARGE: {
+            LOG_INF("leave MANUAL_CHARGE\n");
+        } break;
+        case POWER_STATE::LOCKDOWN: {
+            LOG_INF("leave LOCKDOWN");
+        } break;
         default:
             break;
         }
