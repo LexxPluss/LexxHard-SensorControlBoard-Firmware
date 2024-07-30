@@ -1414,40 +1414,13 @@ private:
         }
         case POWER_STATE::RESUME_WAIT:
             wheel_relay_control();
-            if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG_DBG("detect power switch\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (mbd.power_off_from_ros()) {
-                LOG_DBG("receive power off from ROS\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (!bmu.is_ok()) {
-                LOG_DBG("BMU failure\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (!dcdc.is_ok()) {
-                LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (ksw.is_maintenance()) {
-                LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (esw.is_asserted()) {
-                LOG_DBG("emergency switch asserted\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (mbd.emergency_stop_from_ros()) {
-                LOG_DBG("receive emergency stop from ROS\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (mbd.is_dead()) {
-                LOG_DBG("mainboard is dead\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (rsw.get_state() == resume_switch::STATE::PUSHED) {
-                LOG_DBG("resume switch pushed\n");
-                if (mbd.is_ready()) {
-                    LOG_DBG("heartbeat OK\n");
-                    set_new_state(POWER_STATE::NORMAL);
-                }
-                else {
-                    LOG_DBG("heartbeat NG\n");
-                    set_new_state(POWER_STATE::STANDBY);
-                }
+            if (mbd.is_ready()) {
+                LOG_DBG("heartbeat OK\n");
+                set_new_state(POWER_STATE::NORMAL);
+            }
+            else {
+                LOG_DBG("heartbeat NG\n");
+                set_new_state(POWER_STATE::STANDBY);
             }
             break;
         case POWER_STATE::AUTO_CHARGE:
