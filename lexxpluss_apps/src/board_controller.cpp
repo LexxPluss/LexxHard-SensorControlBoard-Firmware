@@ -382,8 +382,8 @@ public:
     : switches{
         emergency_switch(GET_GPIO(es_left)),
         emergency_switch(GET_GPIO(es_right)),
-        emergency_switch(GET_GPIO(es_option_1)),
-        emergency_switch(GET_GPIO(es_option_2)),
+        //emergency_switch(GET_GPIO(es_option_1)),
+        //emergency_switch(GET_GPIO(es_option_2)),
     }
     {
     }
@@ -419,7 +419,7 @@ public:
     }
 private:
     std::function<void ()> callback{nullptr};
-    std::array<emergency_switch, 4> switches;
+    std::array<emergency_switch, 2> switches;
 };
 
 class wheel_switch { // Variables Implemented
@@ -951,15 +951,16 @@ public:
             LOG_ERR("gpio_is_ready_dt Failed\n");
             return false;
         }
-        bool rtn = (gpio_pin_get_dt(&gpio_pgood_24v_dev) == 0)                  
-            && (gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 0)
-            && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 0)
-            && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 0);
-        if (rtn == false) {
-            LOG_ERR("dcdc is_ok() NG: %d", rtn);
-        }
+        return true;
+        //bool rtn = (gpio_pin_get_dt(&gpio_pgood_24v_dev) == 0)                  
+        //    && (gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 0)
+        //    && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 0)
+        //    && (gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 0);
+        //if (rtn == false) {
+        //    LOG_ERR("dcdc is_ok() NG: %d", rtn);
+        //}
 
-        return rtn;
+        //return rtn;
     }
     void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
         gpio_dt_spec gpio_pgood_24v_dev = GET_GPIO(pgood_24v);

@@ -139,7 +139,8 @@ enum class POS {
 //     TIM_HandleTypeDef timh;
 // };
 
-#define TIMER_PERIOD_MS 2
+#define TIMER_PERIOD_MS 1
+#define TIMER_PERIOD_US 50
 class encoder {
 public:
     int init(POS pos) {
@@ -150,18 +151,18 @@ public:
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch1), gpios);
             // PD12 CH1, PD13 CH2
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH | GPIO_PULL_UP);
             }
 
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch2), gpios);
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH | GPIO_PULL_UP);
             }
         
             // set callback function for center
             k_timer_init(&encoder_count_c, static_center_enc_callback, NULL);
             k_timer_user_data_set(&encoder_count_c, this);
-            k_timer_start(&encoder_count_c, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            k_timer_start(&encoder_count_c, K_USEC(TIMER_PERIOD_US), K_USEC(TIMER_PERIOD_US));
             break;
         case POS::LEFT:
             // init IO dev exists for each instances
@@ -179,7 +180,7 @@ public:
             // set callback function for LEFT
             k_timer_init(&encoder_count_l, static_center_left_callback, NULL);
             k_timer_user_data_set(&encoder_count_l, this);
-            k_timer_start(&encoder_count_l, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            k_timer_start(&encoder_count_l, K_USEC(TIMER_PERIOD_US), K_USEC(TIMER_PERIOD_US));
             break;
         case POS::RIGHT:
         // init IO dev exists for each instances
@@ -197,7 +198,7 @@ public:
             // set callback function for RIGHT
             k_timer_init(&encoder_count_r, static_center_right_callback, NULL);
             k_timer_user_data_set(&encoder_count_r, this);
-            k_timer_start(&encoder_count_r, K_MSEC(TIMER_PERIOD_MS), K_MSEC(TIMER_PERIOD_MS));
+            k_timer_start(&encoder_count_r, K_USEC(TIMER_PERIOD_US), K_USEC(TIMER_PERIOD_US));
             break;
         }
         
