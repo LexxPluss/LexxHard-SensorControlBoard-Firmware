@@ -1556,11 +1556,11 @@ private:
         default:
             break;
         }
+
         int bat_out_state{mbd.is_wheel_poweroff() ? 0 : 1};
-        gpio_dt_spec gpio_dev;
-        led_controller::msg msg_led;
+
         switch (newstate) {
-        case POWER_STATE::OFF:
+        case POWER_STATE::OFF: {
             LOG_INF("enter OFF\n");
             poweron_by_switch = false;
             psw.set_led(false);
@@ -1568,22 +1568,21 @@ private:
             dcdc.set_enable(false);
 
             // Set LED OFF
-            msg_led.pattern = led_controller::msg::NONE;
-            msg_led.interrupt_ms = 0;
+            led_controller::msg const msg_led{led_controller::msg::NONE, 0};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
-            break;
-        case POWER_STATE::TIMEROFF:
+        } break;
+        case POWER_STATE::TIMEROFF: {
             LOG_INF("enter TIMEROFF\n");
             timer_poweroff = k_uptime_get();    // timer reset
-            break;
-        case POWER_STATE::WAIT_SW:
+        } break;
+        case POWER_STATE::WAIT_SW: {
             LOG_INF("enter WAIT_SW\n");
-            break;
-        case POWER_STATE::POST:
+        } break;
+        case POWER_STATE::POST: {
             LOG_INF("enter POST\n");
             psw.set_led(true);
-            gpio_dev = GET_GPIO(v_wheel);
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
@@ -1591,17 +1590,16 @@ private:
             gpio_pin_set_dt(&gpio_dev, 0);
             timer_post = k_uptime_get();    // timer reset
             // Set LED
-            msg_led.pattern = led_controller::msg::SHOWTIME;
-            msg_led.interrupt_ms = 0;
+            led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 0};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
-            break;
-        case POWER_STATE::STANDBY:
+        } break;
+        case POWER_STATE::STANDBY: {
             LOG_INF("enter STANDBY\n");
             psw.set_led(true);
             dcdc.set_enable(true);
             wsw.set_disable(true);
-            gpio_dev = GET_GPIO(v_wheel);
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
@@ -1609,11 +1607,11 @@ private:
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             wait_shutdown = false;
-            break;
-        case POWER_STATE::NORMAL:
+        } break;
+        case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
             wsw.set_disable(false);
-            gpio_dev = GET_GPIO(v_wheel);
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
@@ -1622,13 +1620,12 @@ private:
             ac.set_enable(false);
             charge_guard_asserted = true;
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
-            break;
-
-        case POWER_STATE::SUSPEND:
+        } break;
+        case POWER_STATE::SUSPEND: {
             LOG_INF("enter SUSPEND\n");
             psw.set_led(true);
             wsw.set_disable(true);
-            gpio_dev = GET_GPIO(v_wheel);
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
@@ -1636,38 +1633,37 @@ private:
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             wait_shutdown = false;
-            break;
-        case POWER_STATE::RESUME_WAIT:
+        } break;
+        case POWER_STATE::RESUME_WAIT: {
             LOG_INF("enter RESUME_WAIT\n");
             rsw.set_led(true);
-            break;
-        case POWER_STATE::AUTO_CHARGE:
+        } break;
+        case POWER_STATE::AUTO_CHARGE: {
             LOG_INF("enter AUTO_CHARGE\n");
             ac.set_enable(true);
             current_check_enable = false;
             k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
 
             // Set LED
-            msg_led.pattern = led_controller::msg::CHARGE_LEVEL;
-            msg_led.interrupt_ms = 2000;
+            led_controller::msg const msg_led{led_controller::msg::CHARGE_LEVEL, 2000};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
-            break;
-        case POWER_STATE::MANUAL_CHARGE:
+        } break;
+        case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("enter MANUAL_CHARGE\n");
             wsw.set_disable(true);
-            gpio_dev = GET_GPIO(v_wheel);
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
             }
             gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
-            break;
-        case POWER_STATE::LOCKDOWN:
+        } break;
+        case POWER_STATE::LOCKDOWN: {
             LOG_INF("enter LOCKDOWN\n");
             wsw.set_disable(true);
-            gpio_dev = GET_GPIO(v_wheel);
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
@@ -1676,11 +1672,10 @@ private:
             ac.set_enable(false);
 
             // Set LED
-            msg_led.pattern = led_controller::msg::LOCKDOWN;
-            msg_led.interrupt_ms = 1000000000;
+            led_controller::msg const msg_led{led_controller::msg::LOCKDOWN, 1000000000};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
-            break;
+        } break;
         }
         state = newstate;
     }
