@@ -104,6 +104,19 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ipc_power_sw_fp), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_6), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_7), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_8), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_9), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+
     
     // Input
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_sw_in), gpios);
@@ -145,7 +158,19 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_wheel_motor_right), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
-    
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_10), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_11), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_12), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_13), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
+
     // LED
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
