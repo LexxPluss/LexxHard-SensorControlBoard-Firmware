@@ -90,8 +90,8 @@ public:
         constexpr auto get_status_char = [](bool status) {
             return status ? 'H' : 'L';
         };
-        shell_print(shell, "INPUT 0:%c, 1:%c, 2:%c, 3:%c", get_status_char(gpio_in_status[0]), get_status_char(gpio_in_status[1]), get_status_char(gpio_in_status[2]), get_status_char(gpio_in_status[3]));
-        shell_print(shell, "OUTPUT 0:%c, 1:%c, 2:%c, 3:%c", get_status_char(gpio_out_status[0]), get_status_char(gpio_out_status[1]), get_status_char(gpio_out_status[2]), get_status_char(gpio_out_status[3]));
+        shell_print(shell, "INPUT  0:%c 1:%c 2:%c 3:%c", get_status_char(gpio_in_status[0]), get_status_char(gpio_in_status[1]), get_status_char(gpio_in_status[2]), get_status_char(gpio_in_status[3]));
+        shell_print(shell, "OUTPUT 0:%c 1:%c 2:%c 3:%c", get_status_char(gpio_out_status[0]), get_status_char(gpio_out_status[1]), get_status_char(gpio_out_status[2]), get_status_char(gpio_out_status[3]));
     }
 
     void set_gpio_out(size_t n, bool value) {
