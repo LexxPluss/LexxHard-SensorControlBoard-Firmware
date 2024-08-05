@@ -1565,6 +1565,7 @@ private:
             poweron_by_switch = false;
             psw.set_led(false);
             rsw.set_led(false);
+            bsw.request_reset();
             dcdc.set_enable(false);
 
             // Set LED OFF
