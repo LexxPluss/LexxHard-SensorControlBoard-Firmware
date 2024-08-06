@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: lp-4core-runner
     container:
       image: zephyrprojectrtos/zephyr-build:v0.26.9
       options: --user root
