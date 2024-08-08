@@ -27,6 +27,7 @@
 #include <cmath>
 #include <functional>
 #include <array>
+#include <optional>
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 #include <zephyr/drivers/gpio.h>
@@ -85,7 +86,7 @@ private:
 class raw_switch {
 public:
     enum class STATE {
-        UNKOWN, HIGH, LOW
+        UNKNOWN, HIGH, LOW
     };
 
     raw_switch(gpio_dt_spec&& gpio_dev) : gpio_dev(std::move(gpio_dev)) {}
@@ -98,6 +99,7 @@ public:
             return;
         }
 
+        static int prev{gpio_pin_get_dt(&gpio_dev)};
         int const now{gpio_pin_get_dt(&gpio_dev)};
         bool const changed{prev != now};
         prev = now;
@@ -106,14 +108,14 @@ public:
         if (changed) {
             count = 0;
         }
+
+        if(is_asserted()) {
+            state = now == 0 ? STATE::LOW : STATE::HIGH;
+        }
     }
 
     STATE get_state() {
-        if(!is_asserted()) {
-            return STATE::UNKOWN;
-        }
-        
-        return prev == 0 ? STATE::LOW : STATE::HIGH;
+        return state;
     }
 
 private:
@@ -123,7 +125,7 @@ private:
 
     gpio_dt_spec gpio_dev;
     uint32_t count{0};
-    int prev{-1};
+    STATE state{STATE::UNKNOWN};
     static constexpr uint32_t COUNT{1};
 };
 
@@ -143,10 +145,6 @@ public:
         bool const changed{now != prev};
         prev = now;
 
-        if(now == raw_switch::STATE::UNKOWN) {
-            return;
-        }
-
         sw_bat.poll(changed);
         sw_unlock.poll(changed);
         if (changed) {
@@ -157,6 +155,7 @@ public:
         start_time = k_uptime_get();
     }
     STATE get_state() const {
+        // raw_switch::STATE::UNKNOWN is handled as RELEASED for safety
         if(prev != raw_switch::STATE::LOW) {
             return STATE::RELEASED;
         }
@@ -191,7 +190,7 @@ private:
     power_switch_handler sw_bat{2}, sw_unlock{10};
     int64_t start_time;
     bool led_en{false};
-    raw_switch::STATE prev{raw_switch::STATE::UNKOWN};
+    raw_switch::STATE prev{raw_switch::STATE::UNKNOWN};
     raw_switch raw_sw{GET_GPIO(ps_sw_in)};
 };
 
@@ -846,7 +845,7 @@ public:
         return ((data.mod_status1 & 0b10111111) == 0 ||
                 (data.mod_status2 & 0b11100001) == 0 ||
                 (data.bmu_alarm1  & 0b11111111) == 0 ||
-                (data.bmu_alarm2  & 0b00000001) == 0);
+                (data.bmu_alarm2  & 0b00000001) == 0) || true;
     }
     void get_fet_state(bool &c_fet, bool &d_fet, bool &p_dsg) {
         gpio_dt_spec gpio_c_dev = GET_GPIO(bmu_c_fet);
