@@ -845,7 +845,7 @@ public:
         return ((data.mod_status1 & 0b10111111) == 0 ||
                 (data.mod_status2 & 0b11100001) == 0 ||
                 (data.bmu_alarm1  & 0b11111111) == 0 ||
-                (data.bmu_alarm2  & 0b00000001) == 0) || true;
+                (data.bmu_alarm2  & 0b00000001) == 0);
     }
     void get_fet_state(bool &c_fet, bool &d_fet, bool &p_dsg) {
         gpio_dt_spec gpio_c_dev = GET_GPIO(bmu_c_fet);
