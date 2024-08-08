@@ -1290,7 +1290,9 @@ private:
         
         switch (state) {
         case POWER_STATE::OFF:
-            if(psw.get_state() == power_switch::STATE::RELEASED){
+            if (ksw.is_maintenance()) {
+                // empty here
+            } else if(psw.get_state() == power_switch::STATE::RELEASED){
                 set_new_state(POWER_STATE::WAIT_SW);
             } else if (mc.is_plugged()) {
                 set_new_state(POWER_STATE::POST);
@@ -1301,7 +1303,9 @@ private:
                 set_new_state(POWER_STATE::OFF);
             break;
         case POWER_STATE::WAIT_SW:
-            if (psw.get_state() != power_switch::STATE::RELEASED) {
+            if (ksw.is_maintenance()) {
+                set_new_state(POWER_STATE::OFF);
+            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 poweron_by_switch = true;
                 set_new_state(POWER_STATE::POST);
             } else if (mc.is_plugged()) {
@@ -1309,7 +1313,9 @@ private:
             }
             break;
         case POWER_STATE::POST:
-            if (!poweron_by_switch && !mc.is_plugged()) {
+            if (ksw.is_maintenance()) {
+                set_new_state(POWER_STATE::OFF);
+            } else if (!poweron_by_switch && !mc.is_plugged()) {
                 LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::OFF);
             } else if (bmu.is_ok() && psw.get_state() == power_switch::STATE::RELEASED) {
@@ -1327,11 +1333,8 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+            } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
-            } else if (ksw.is_maintenance()) {
-                LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1346,7 +1349,9 @@ private:
         }
         case POWER_STATE::NORMAL:
             wheel_relay_control();
-            if (psw.get_state() != power_switch::STATE::RELEASED) {
+            if (ksw.is_maintenance()) {
+               set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.power_off_from_ros()) {
@@ -1358,9 +1363,6 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (ksw.is_maintenance()) {
-                LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1387,9 +1389,9 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+            } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
-            } else if (!ksw.is_maintenance() && !esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
+            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
                 LOG_DBG("not emergency\n");
                 set_new_state(POWER_STATE::RESUME_WAIT);
             }
@@ -1397,7 +1399,9 @@ private:
         }
         case POWER_STATE::RESUME_WAIT:
             wheel_relay_control();
-            if (psw.get_state() != power_switch::STATE::RELEASED) {
+            if (ksw.is_maintenance()) {
+               set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.power_off_from_ros()) {
@@ -1408,9 +1412,6 @@ private:
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (ksw.is_maintenance()) {
-                LOG_DBG("maintenance mode is selected by key switch\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
@@ -1435,7 +1436,9 @@ private:
             break;
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
-            if (psw.get_state() != power_switch::STATE::RELEASED) {
+            if (ksw.is_maintenance()) {
+               set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (mbd.power_off_from_ros()) {
@@ -1447,9 +1450,6 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (ksw.is_maintenance()) {
-                LOG_DBG("maintenance mode is selected by key switch\n");
-                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1474,7 +1474,9 @@ private:
             }
             break;
         case POWER_STATE::MANUAL_CHARGE:
-            if (!mc.is_plugged()) {
+            if (ksw.is_maintenance()) {
+               set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (!mc.is_plugged()) {
                 LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::NORMAL);
             }
@@ -1483,7 +1485,7 @@ private:
             if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::OFF);
-            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
+            } else if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::OFF);
             } else if (psw.is_activated_unlock()) {
