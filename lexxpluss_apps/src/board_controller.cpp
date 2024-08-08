@@ -1313,10 +1313,10 @@ private:
             if (!poweron_by_switch && !mc.is_plugged()) {
                 LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::OFF);
-            } else if (bmu.is_ok()) {
+            } else if (bmu.is_ok() && psw.get_state() == power_switch::STATE::RELEASED) {
                 LOG_DBG("BMU and temperature OK\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if ((k_uptime_get() - timer_post) > 3000) {
+            } else if (!bmu.is_ok() && ((k_uptime_get() - timer_post) > 3000)) {
                 LOG_DBG("timer_post > 3000\n");
                 set_new_state(POWER_STATE::OFF);
             }
@@ -1328,7 +1328,7 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+            } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
@@ -1388,7 +1388,7 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+            } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (!ksw.is_maintenance() && !esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
                 LOG_DBG("not emergency\n");
@@ -1484,7 +1484,7 @@ private:
             if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::OFF);
-            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
+            } else if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::OFF);
             } else if (psw.is_activated_unlock()) {
