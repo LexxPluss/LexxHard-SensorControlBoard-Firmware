@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, LexxPltug_encoder Inc.
+ * Copyright (c) 2024, LexxPltug_encoder Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
