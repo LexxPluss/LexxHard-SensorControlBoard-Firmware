@@ -82,6 +82,52 @@ private:
     bool activated{false};
 };
 
+class raw_switch {
+public:
+    enum class STATE {
+        UNKOWN, HIGH, LOW
+    };
+
+    raw_switch(gpio_dt_spec&& gpio_dev) : gpio_dev(std::move(gpio_dev)) {}
+    raw_switch(const raw_switch&) = delete;
+    raw_switch & operator=(const raw_switch&) = delete;
+
+    void poll() {
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed");
+            return;
+        }
+
+        int const now{gpio_pin_get_dt(&gpio_dev)};
+        bool const changed{prev != now};
+        prev = now;
+
+        count++;
+        if (changed) {
+            count = 0;
+        }
+    }
+
+    STATE get_state() {
+        if(!is_asserted()) {
+            return STATE::UNKOWN;
+        }
+        
+        return prev == 0 ? STATE::LOW : STATE::HIGH;
+    }
+
+private:
+    bool is_asserted() const {
+        return  COUNT < count;
+    }
+
+    gpio_dt_spec gpio_dev;
+    uint32_t count{0};
+    int prev{-1};
+    static constexpr uint32_t COUNT{1};
+};
+
+
 #define PWS_LONG_PUSHED_MS 60000
 #define PWS_PUSHED_MS 3000
 class power_switch { // Variables Implemented
@@ -89,55 +135,39 @@ public:
     enum class STATE {
         RELEASED, PUSHED, LONG_PUSHED,
     };
+
     void poll() {
-        gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
-        if (!gpio_is_ready_dt(&gpio_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
+        raw_sw.poll();
+
+        auto const now{raw_sw.get_state()};
+        bool const changed{now != prev};
+        prev = now;
+
+        if(now == raw_switch::STATE::UNKOWN) {
             return;
         }
-        int now{gpio_pin_get_dt(&gpio_dev)};
-        if (prev_raw != now) {
-            prev_raw = now;
-            count = 0;
-        } else {
-            ++count;
-        }
-        bool asserted{false};
-        if (count > COUNT) {
-            count = COUNT;
-            asserted = true;
-        }
-        if (asserted) {
-            bool changed{prev != now};
-            sw_bat.poll(changed);
-            sw_unlock.poll(changed);
-            if (changed) {
-                prev = now;
-                start_time = k_uptime_get();
-            } else if (now == 0) {
-                auto elapsed{k_uptime_get() - start_time};
-                if (elapsed > PWS_LONG_PUSHED_MS) {
-                    if (state != STATE::LONG_PUSHED)
-                        state = STATE::LONG_PUSHED;
-                } else if (elapsed > PWS_PUSHED_MS) {
-                    if (state == STATE::RELEASED)
-                        state = STATE::PUSHED;
-                }
-            }
+
+        sw_bat.poll(changed);
+        sw_unlock.poll(changed);
+        if (changed) {
+            start_time = k_uptime_get();
         }
     }
     void reset_state() {
         start_time = k_uptime_get();
-        state = STATE::RELEASED;
     }
-    STATE get_state() const {return state;}
-    bool get_raw_state() {
-        gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
-        if (!gpio_is_ready_dt(&gpio_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return false;
+    STATE get_state() const {
+        if(prev != raw_switch::STATE::LOW) {
+            return STATE::RELEASED;
         }
-        return gpio_pin_get_dt(&gpio_dev) == 0;
+
+        auto const elapsed{k_uptime_get() - start_time};
+        if (PWS_LONG_PUSHED_MS < elapsed) {
+            return STATE::LONG_PUSHED;
+        } else if (PWS_PUSHED_MS < elapsed) {
+            return STATE::PUSHED;
+        }
+        return STATE::RELEASED;
     }
     void set_led(bool enabled) {
         gpio_dt_spec gpio_dev = GET_GPIO(ps_led_out);
@@ -149,7 +179,7 @@ public:
     }
     void toggle_led() {
         set_led(led_en);
-        led_en = true ? false : true;
+        led_en = !led_en;
     }
     bool is_activated_battery() const {
         return sw_bat.is_activated();
@@ -160,11 +190,9 @@ public:
 private:
     power_switch_handler sw_bat{2}, sw_unlock{10};
     int64_t start_time;
-    STATE state{STATE::RELEASED};
-    uint32_t count{0};
     bool led_en{false};
-    int prev{-1}, prev_raw{-1};
-    static constexpr uint32_t COUNT{1};
+    raw_switch::STATE prev{raw_switch::STATE::UNKOWN};
+    raw_switch raw_sw{GET_GPIO(ps_sw_in)};
 };
 
 #define RS_PUSHED_MS 3000
