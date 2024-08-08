@@ -1291,7 +1291,11 @@ private:
         
         switch (state) {
         case POWER_STATE::OFF:
-            set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
+            if(psw.get_state() == power_switch::STATE::RELEASED){
+                set_new_state(POWER_STATE::WAIT_SW);
+            } else if (mc.is_plugged()) {
+                set_new_state(POWER_STATE::POST);
+            }
             break;
         case POWER_STATE::TIMEROFF:
             if ((k_uptime_get() - timer_poweroff) > 5000)
@@ -1300,7 +1304,6 @@ private:
         case POWER_STATE::WAIT_SW:
             if (psw.get_state() != power_switch::STATE::RELEASED) {
                 poweron_by_switch = true;
-                psw.reset_state();
                 set_new_state(POWER_STATE::POST);
             } else if (mc.is_plugged()) {
                 set_new_state(POWER_STATE::POST);
@@ -1472,10 +1475,6 @@ private:
             }
             break;
         case POWER_STATE::MANUAL_CHARGE:
-            if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG_DBG("detect power switch (ignored)\n");
-                psw.reset_state();
-            }
             if (!mc.is_plugged()) {
                 LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1502,7 +1501,6 @@ private:
             }
             else if ((k_uptime_get() - timer_shutdown)> 60000) {
                 set_new_state(POWER_STATE::OFF);
-                psw.reset_state();
                 esw.reset_state();
             }
             break;
@@ -1544,6 +1542,8 @@ private:
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("leave MANUAL_CHARGE\n");
+            // reset power switch state because power switch was ignored during charging
+            psw.reset_state();
         } break;
         case POWER_STATE::LOCKDOWN: {
             LOG_INF("leave LOCKDOWN");
