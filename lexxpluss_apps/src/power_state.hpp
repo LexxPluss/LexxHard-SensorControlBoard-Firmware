@@ -10,4 +10,5 @@ enum class POWER_STATE {
     TIMEROFF,
     SUSPEND,
     RESUME_WAIT,
+    OFF_WAIT,
 };
