@@ -1287,7 +1287,7 @@ private:
         ac.poll();
         bmu.poll();
         mbd.poll();
-        
+
         switch (state) {
         case POWER_STATE::OFF:
             if (ksw.is_maintenance()) {
