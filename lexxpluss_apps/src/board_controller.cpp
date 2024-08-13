@@ -27,6 +27,7 @@
 #include <cmath>
 #include <functional>
 #include <array>
+#include <optional>
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 #include <zephyr/drivers/gpio.h>
@@ -82,6 +83,53 @@ private:
     bool activated{false};
 };
 
+class raw_switch {
+public:
+    enum class STATE {
+        UNKNOWN, HIGH, LOW
+    };
+
+    raw_switch(gpio_dt_spec&& gpio_dev) : gpio_dev(std::move(gpio_dev)) {}
+    raw_switch(const raw_switch&) = delete;
+    raw_switch & operator=(const raw_switch&) = delete;
+
+    void poll() {
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed");
+            return;
+        }
+
+        static int prev{gpio_pin_get_dt(&gpio_dev)};
+        int const now{gpio_pin_get_dt(&gpio_dev)};
+        bool const changed{prev != now};
+        prev = now;
+
+        count++;
+        if (changed) {
+            count = 0;
+        }
+
+        if(is_asserted()) {
+            state = now == 0 ? STATE::LOW : STATE::HIGH;
+        }
+    }
+
+    STATE get_state() {
+        return state;
+    }
+
+private:
+    bool is_asserted() const {
+        return  COUNT < count;
+    }
+
+    gpio_dt_spec gpio_dev;
+    uint32_t count{0};
+    STATE state{STATE::UNKNOWN};
+    static constexpr uint32_t COUNT{1};
+};
+
+
 #define PWS_LONG_PUSHED_MS 60000
 #define PWS_PUSHED_MS 3000
 class power_switch { // Variables Implemented
@@ -89,55 +137,36 @@ public:
     enum class STATE {
         RELEASED, PUSHED, LONG_PUSHED,
     };
+
     void poll() {
-        gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
-        if (!gpio_is_ready_dt(&gpio_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return;
-        }
-        int now{gpio_pin_get_dt(&gpio_dev)};
-        if (prev_raw != now) {
-            prev_raw = now;
-            count = 0;
-        } else {
-            ++count;
-        }
-        bool asserted{false};
-        if (count > COUNT) {
-            count = COUNT;
-            asserted = true;
-        }
-        if (asserted) {
-            bool changed{prev != now};
-            sw_bat.poll(changed);
-            sw_unlock.poll(changed);
-            if (changed) {
-                prev = now;
-                start_time = k_uptime_get();
-            } else if (now == 0) {
-                auto elapsed{k_uptime_get() - start_time};
-                if (elapsed > PWS_LONG_PUSHED_MS) {
-                    if (state != STATE::LONG_PUSHED)
-                        state = STATE::LONG_PUSHED;
-                } else if (elapsed > PWS_PUSHED_MS) {
-                    if (state == STATE::RELEASED)
-                        state = STATE::PUSHED;
-                }
-            }
+        raw_sw.poll();
+
+        auto const now{raw_sw.get_state()};
+        bool const changed{now != prev};
+        prev = now;
+
+        sw_bat.poll(changed);
+        sw_unlock.poll(changed);
+        if (changed) {
+            start_time = k_uptime_get();
         }
     }
     void reset_state() {
         start_time = k_uptime_get();
-        state = STATE::RELEASED;
     }
-    STATE get_state() const {return state;}
-    bool get_raw_state() {
-        gpio_dt_spec gpio_dev = GET_GPIO(ps_sw_in);
-        if (!gpio_is_ready_dt(&gpio_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return false;
+    STATE get_state() const {
+        // raw_switch::STATE::UNKNOWN is handled as RELEASED for safety
+        if(prev != raw_switch::STATE::LOW) {
+            return STATE::RELEASED;
         }
-        return gpio_pin_get_dt(&gpio_dev) == 0;
+
+        auto const elapsed{k_uptime_get() - start_time};
+        if (PWS_LONG_PUSHED_MS < elapsed) {
+            return STATE::LONG_PUSHED;
+        } else if (PWS_PUSHED_MS < elapsed) {
+            return STATE::PUSHED;
+        }
+        return STATE::RELEASED;
     }
     void set_led(bool enabled) {
         gpio_dt_spec gpio_dev = GET_GPIO(ps_led_out);
@@ -149,7 +178,7 @@ public:
     }
     void toggle_led() {
         set_led(led_en);
-        led_en = true ? false : true;
+        led_en = !led_en;
     }
     bool is_activated_battery() const {
         return sw_bat.is_activated();
@@ -160,11 +189,9 @@ public:
 private:
     power_switch_handler sw_bat{2}, sw_unlock{10};
     int64_t start_time;
-    STATE state{STATE::RELEASED};
-    uint32_t count{0};
     bool led_en{false};
-    int prev{-1}, prev_raw{-1};
-    static constexpr uint32_t COUNT{1};
+    raw_switch::STATE prev{raw_switch::STATE::UNKNOWN};
+    raw_switch raw_sw{GET_GPIO(ps_sw_in)};
 };
 
 #define RS_PUSHED_MS 3000
@@ -1263,7 +1290,11 @@ private:
         
         switch (state) {
         case POWER_STATE::OFF:
-            set_new_state(mc.is_plugged() ? POWER_STATE::POST : POWER_STATE::WAIT_SW);
+            if(psw.get_state() == power_switch::STATE::RELEASED){
+                set_new_state(POWER_STATE::WAIT_SW);
+            } else if (mc.is_plugged()) {
+                set_new_state(POWER_STATE::POST);
+            }
             break;
         case POWER_STATE::TIMEROFF:
             if ((k_uptime_get() - timer_poweroff) > 5000)
@@ -1272,7 +1303,6 @@ private:
         case POWER_STATE::WAIT_SW:
             if (psw.get_state() != power_switch::STATE::RELEASED) {
                 poweron_by_switch = true;
-                psw.reset_state();
                 set_new_state(POWER_STATE::POST);
             } else if (mc.is_plugged()) {
                 set_new_state(POWER_STATE::POST);
@@ -1282,10 +1312,10 @@ private:
             if (!poweron_by_switch && !mc.is_plugged()) {
                 LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::OFF);
-            } else if (bmu.is_ok()) {
+            } else if (bmu.is_ok() && psw.get_state() == power_switch::STATE::RELEASED) {
                 LOG_DBG("BMU and temperature OK\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if ((k_uptime_get() - timer_post) > 3000) {
+            } else if (!bmu.is_ok() && ((k_uptime_get() - timer_post) > 3000)) {
                 LOG_DBG("timer_post > 3000\n");
                 set_new_state(POWER_STATE::OFF);
             }
@@ -1293,35 +1323,12 @@ private:
         case POWER_STATE::STANDBY: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok() || psw_state == power_switch::STATE::LONG_PUSHED) {
+            if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
-                set_new_state(wait_shutdown ? POWER_STATE::TIMEROFF : POWER_STATE::LOCKDOWN);
-            } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
-                if (wait_shutdown) {
-                    if ((k_uptime_get() - timer_shutdown)> 60000) {
-                        set_new_state(POWER_STATE::OFF);
-                        dcdc.set_enable(false);
-                        psw.reset_state();
-                        esw.reset_state();
-                    }
-                } else {
-                    LOG_DBG("wait shutdown\n");
-                    wait_shutdown = true;
-                    timer_shutdown = k_uptime_get();    // timer reset
-                    if (psw_state == power_switch::STATE::PUSHED)
-                        shutdown_reason = SHUTDOWN_REASON::SWITCH;
-                    if (mbd.power_off_from_ros())
-                        shutdown_reason = SHUTDOWN_REASON::ROS;
-                    if (!bmu.is_ok())
-                        shutdown_reason = SHUTDOWN_REASON::BMU;
-                    // Set LED
-                    led_controller::msg msg_led;
-                    msg_led.pattern = led_controller::msg::SHOWTIME;
-                    msg_led.interrupt_ms = 0;
-                    while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
-                }
+                set_new_state(POWER_STATE::LOCKDOWN);
+            } else if (psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (ksw.is_maintenance()) {
                 LOG_DBG("maintenance mode is selected by key switch\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1376,35 +1383,12 @@ private:
         case POWER_STATE::SUSPEND: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok() || psw_state == power_switch::STATE::LONG_PUSHED) {
+            if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (mbd.is_dead()) {
-                set_new_state(wait_shutdown ? POWER_STATE::TIMEROFF : POWER_STATE::LOCKDOWN);
-            } else if (psw_state == power_switch::STATE::PUSHED || mbd.power_off_from_ros() || !bmu.is_ok()) {
-                if (wait_shutdown) {
-                    if ((k_uptime_get() - timer_shutdown)> 60000) {
-                        set_new_state(POWER_STATE::OFF);
-                        dcdc.set_enable(false);
-                        psw.reset_state();
-                        esw.reset_state();
-                    }
-                } else {
-                    LOG_DBG("wait shutdown\n");
-                    wait_shutdown = true;
-                    timer_shutdown = k_uptime_get();    // timer reset
-                    if (psw_state == power_switch::STATE::PUSHED)
-                        shutdown_reason = SHUTDOWN_REASON::SWITCH;
-                    if (mbd.power_off_from_ros())
-                        shutdown_reason = SHUTDOWN_REASON::ROS;
-                    if (!bmu.is_ok())
-                        shutdown_reason = SHUTDOWN_REASON::BMU;
-                    // Set LED
-                    led_controller::msg msg_led;
-                    msg_led.pattern = led_controller::msg::SHOWTIME;
-                    msg_led.interrupt_ms = 0;
-                    while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
-                        k_msgq_purge(&led_controller::msgq);
-                }
+                set_new_state(POWER_STATE::LOCKDOWN);
+            } else if (psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (!ksw.is_maintenance() && !esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
                 LOG_DBG("not emergency\n");
                 set_new_state(POWER_STATE::RESUME_WAIT);
@@ -1490,10 +1474,6 @@ private:
             }
             break;
         case POWER_STATE::MANUAL_CHARGE:
-            if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG_DBG("detect power switch (ignored)\n");
-                psw.reset_state();
-            }
             if (!mc.is_plugged()) {
                 LOG_DBG("unplugged from manual charger\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1509,6 +1489,18 @@ private:
             } else if (psw.is_activated_unlock()) {
                 LOG_DBG("force recover from lockdown\n");
                 set_new_state(POWER_STATE::STANDBY);
+            }
+            break;
+        case POWER_STATE::OFF_WAIT:
+            if (psw.get_state() == power_switch::STATE::LONG_PUSHED) {
+                set_new_state(POWER_STATE::OFF);
+            }
+            else if (mbd.is_dead()) {
+                set_new_state(POWER_STATE::TIMEROFF);
+            }
+            else if ((k_uptime_get() - timer_shutdown)> 60000) {
+                set_new_state(POWER_STATE::OFF);
+                esw.reset_state();
             }
             break;
         }
@@ -1549,9 +1541,14 @@ private:
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("leave MANUAL_CHARGE\n");
+            // reset power switch state because power switch was ignored during charging
+            psw.reset_state();
         } break;
         case POWER_STATE::LOCKDOWN: {
             LOG_INF("leave LOCKDOWN");
+        } break;
+        case POWER_STATE::OFF_WAIT: {
+            LOG_INF("leave OFF_WAIT");
         } break;
         default:
             break;
@@ -1607,7 +1604,6 @@ private:
             }
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
-            wait_shutdown = false;
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
@@ -1633,7 +1629,6 @@ private:
             }
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
-            wait_shutdown = false;
         } break;
         case POWER_STATE::RESUME_WAIT: {
             LOG_INF("enter RESUME_WAIT\n");
@@ -1677,6 +1672,21 @@ private:
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
         } break;
+        case POWER_STATE::OFF_WAIT: {
+            LOG_INF("enter OFF_WAIT\n");
+            timer_shutdown = k_uptime_get();    // timer reset
+            if (psw.get_state() == power_switch::STATE::PUSHED)
+                shutdown_reason = SHUTDOWN_REASON::SWITCH;
+            if (mbd.power_off_from_ros())
+                shutdown_reason = SHUTDOWN_REASON::ROS;
+            if (!bmu.is_ok())
+                shutdown_reason = SHUTDOWN_REASON::BMU;
+
+            // Set LED
+            led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 0};
+            while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
+                k_msgq_purge(&led_controller::msgq);
+        } break;
         }
         state = newstate;
     }
@@ -1687,7 +1697,7 @@ private:
         board2ros.manual_charging_status = mc.is_plugged();
         board2ros.auto_charging_status = ac.is_docked();
         board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
-        board2ros.wait_shutdown_state = wait_shutdown;
+        board2ros.wait_shutdown_state = state == POWER_STATE::OFF_WAIT || state == POWER_STATE::TIMEROFF;
         board2ros.emergency_stop = is_emergency();
         board2ros.wheel_enable = wsw.is_enabled();
 
@@ -1759,7 +1769,7 @@ private:
     k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
-    bool poweron_by_switch{false}, wait_shutdown{false}, current_check_enable{false}, charge_guard_asserted{false},
+    bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
          last_wheel_poweroff{false};
 } impl;
 
