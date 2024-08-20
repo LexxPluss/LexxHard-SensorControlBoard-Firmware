@@ -41,7 +41,7 @@
 namespace lexxhard::zcan_actuator {
 
 LOG_MODULE_REGISTER(zcan_actuator);
-char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof(actuator_controller::can_format_control)];
+char __aligned(4) msgq_can_actuator_control_buffer[8 * sizeof(struct can_frame)];
 
 CAN_MSGQ_DEFINE(msgq_can_actuator_control, 16);
 
@@ -49,7 +49,7 @@ class zcan_actuator {
 public:
     void init() {
         // can device bind
-        k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(actuator_controller::can_format_control), 8);
+        k_msgq_init(&msgq_can_actuator_control, msgq_can_actuator_control_buffer, sizeof(struct can_frame), 8);
         dev = DEVICE_DT_GET(DT_NODELABEL(can2));
         if (!device_is_ready(dev)){
             LOG_ERR("CAN_2 is not ready");
@@ -87,16 +87,17 @@ public:
             can_send(dev, &can_frame_actuator_current, K_MSEC(100), nullptr, nullptr);
         }
 
-        // receive from IPC of motion control
-        while (k_msgq_get(&msgq_can_actuator_control, &frame_cntl, K_NO_WAIT) == 0) {
-            msg_cntl = actuator_controller::msg_control(frame_cntl);
-            while (k_msgq_put(&actuator_controller::msgq_control, &msg_cntl, K_NO_WAIT) != 0)
-                k_msgq_purge(&actuator_controller::msgq_control);
+        {
+            // receive from IPC of motion control
+            struct can_frame can_frame;
+            while (k_msgq_get(&msgq_can_actuator_control, &can_frame, K_NO_WAIT) == 0) {
+                auto const msg_cntl{actuator_controller::msg_control::from(can_frame.data)};
+                while (k_msgq_put(&actuator_controller::msgq_control, &msg_cntl, K_NO_WAIT) != 0)
+                    k_msgq_purge(&actuator_controller::msgq_control);
+            }
         }
     }
 private:
-    actuator_controller::can_format_control frame_cntl;
-    actuator_controller::msg_control msg_cntl;
     const device *dev{nullptr};
 };
 
