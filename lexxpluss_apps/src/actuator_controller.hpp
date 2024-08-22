@@ -49,9 +49,9 @@ struct msg_control {
     static msg_control from(const uint8_t data[8]) {
         return {
             .actuators{
-                {data[0], data[3]}, // Center
-                {data[1], data[4]}, // Left
-                {data[2], data[5]}  // Right
+                {static_cast<int8_t>(data[1]), data[4]}, // Center
+                {static_cast<int8_t>(data[0]), data[3]}, // Left
+                {static_cast<int8_t>(data[2]), data[5]}  // Right
             }
         };
     }
