@@ -1134,6 +1134,47 @@ private:
         wheel_poweroff{false};
 };
 
+class safety_lidar { // Variables Implemented
+public:
+    void init() {
+        ossd1_dev = GET_GPIO(safety_lidar_ossd1);
+        ossd2_dev = GET_GPIO(safety_lidar_ossd2);
+    }
+    void poll() {
+        if(should_reset) {
+            should_reset = false;
+            // Reset the safety lidar here if needed
+            // For now, we cannot reset the safety lidar because reset pin is not connected
+            return;
+        }
+
+        if (!gpio_is_ready_dt(&ossd1_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        ossd1_value = (gpio_pin_get_dt(&ossd1_dev) == 1);
+
+        if (!gpio_is_ready_dt(&ossd2_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+        ossd2_value = (gpio_pin_get_dt(&ossd2_dev) == 1);
+    }
+    bool is_asserted() const {
+        return !ossd1_value && !ossd2_value;
+    }
+    void request_reset() {
+        should_reset = true;
+    }
+private:
+    gpio_dt_spec ossd1_dev;
+    gpio_dt_spec ossd2_dev;
+    bool ossd1_value{false};
+    bool ossd2_value{false};
+    bool should_reset{false};
+};
+
+
 #define WDT_TIMEOUT_MS 10000
 #define FAN_DUTY_DEFAULT 100
 class state_controller { // Variables Implemented
@@ -1145,6 +1186,7 @@ public:
         fan.init();
         mbd.init();
         bsw.init();
+        sl.init();
 
         k_timer_init(&timer_poll_100ms, static_poll_100ms_callback, NULL);
         k_timer_user_data_set(&timer_poll_100ms, this);
@@ -1233,7 +1275,8 @@ public:
                bsw.is_asserted() ||
                state == POWER_STATE::SUSPEND ||
                state == POWER_STATE::RESUME_WAIT ||
-               mbd.emergency_stop_from_ros();
+               mbd.emergency_stop_from_ros() ||
+               sl.is_asserted();
         }
         return rtn;
     }
@@ -1287,6 +1330,7 @@ private:
         ac.poll();
         bmu.poll();
         mbd.poll();
+        sl.poll();
 
         switch (state) {
         case POWER_STATE::OFF:
@@ -1338,6 +1382,9 @@ private:
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
+            } else if (sl.is_asserted()) {
+                LOG_DBG("safety lidar asserted\n");
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1366,6 +1413,9 @@ private:
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
+            } else if (sl.is_asserted()) {
+                LOG_DBG("safety lidar asserted\n");
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1391,7 +1441,7 @@ private:
                 set_new_state(POWER_STATE::LOCKDOWN);
             } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
-            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros()) {
+            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && !sl.is_asserted()) {
                 LOG_DBG("not emergency\n");
                 set_new_state(POWER_STATE::RESUME_WAIT);
             }
@@ -1415,6 +1465,9 @@ private:
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
+                set_new_state(POWER_STATE::SUSPEND);
+            } else if (sl.is_asserted()) {
+                LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
@@ -1452,6 +1505,9 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
+                set_new_state(POWER_STATE::SUSPEND);
+            } else if (sl.is_asserted()) {
+                LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
@@ -1696,6 +1752,7 @@ private:
         board2ros.state = static_cast<uint32_t>(state);
         board2ros.emergency_switch_asserted = esw.is_asserted();
         board2ros.bumper_switch_asserted = bsw.is_asserted();
+        board2ros.safety_lidar_asserted = sl.is_asserted();
         board2ros.manual_charging_status = mc.is_plugged();
         board2ros.auto_charging_status = ac.is_docked();
         board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
@@ -1755,6 +1812,7 @@ private:
     bmu_controller bmu;
     dcdc_converter dcdc;
     fan_driver fan;
+    safety_lidar sl;
     boardstate_controller mbd;
     POWER_STATE state{POWER_STATE::OFF};
     enum class SHUTDOWN_REASON {

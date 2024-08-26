@@ -123,6 +123,12 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(d_enc_ena), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_res_req1), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_res_req2), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
     
     // Input
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_sw_in), gpios);
@@ -182,6 +188,18 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_13), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_ossd1), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_ossd2), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_ossd3), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_ossd4), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
 
     // LED
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
