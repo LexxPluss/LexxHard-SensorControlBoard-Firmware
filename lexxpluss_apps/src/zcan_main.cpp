@@ -25,6 +25,7 @@
 
 #include <zephyr/logging/log.h>
 #include "zcan_actuator.hpp"
+#include "zcan_actuator_service.hpp"
 #include "zcan_bmu.hpp"
 #include "zcan_board.hpp"
 #include "zcan_imu.hpp"
@@ -58,6 +59,7 @@ public:
         board.init();
         dfu.init();
         act.init();
+        act_srv.init();
         imu.init();
         led.init();
         pgv.init();
@@ -72,6 +74,7 @@ public:
             board.poll();
             dfu.poll();
             act.poll();
+            act_srv.poll();
             imu.poll();
             led.poll();
             pgv.poll();
@@ -87,6 +90,7 @@ private:
     lexxhard::zcan_board::zcan_board board;
     lexxhard::zcan_dfu::zcan_dfu dfu;
     lexxhard::zcan_actuator::zcan_actuator act;
+    lexxhard::zcan_actuator_service::zcan_actuator_service act_srv;
     lexxhard::zcan_imu::zcan_imu imu;
     lexxhard::zcan_led::zcan_led led;
     lexxhard::zcan_pgv::zcan_pgv pgv;

@@ -26,6 +26,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include "actuator_controller.hpp"
+#include "actuator_service_controller.hpp"
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "can_controller.hpp"
@@ -43,6 +44,7 @@
 namespace {
 
 K_THREAD_STACK_DEFINE(actuator_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(actuator_service_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(adc_reader_stack, 2048);
 K_THREAD_STACK_DEFINE(bmu_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
@@ -260,6 +262,7 @@ int main()
     fan_on();
 
     lexxhard::actuator_controller::init();
+    lexxhard::actuator_service_controller::init();
     lexxhard::adc_reader::init();
     lexxhard::bmu_controller::init();
     lexxhard::board_controller::init();
@@ -275,6 +278,7 @@ int main()
     lexxhard::tug_encoder_controller::init();
 
     RUN(actuator_controller, 2);
+    RUN(actuator_service_controller, 2);
     RUN(adc_reader, 2);
     RUN(bmu_controller, 4);
     RUN(can_controller, 4);
