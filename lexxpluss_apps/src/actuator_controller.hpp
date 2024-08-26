@@ -29,11 +29,6 @@
 
 namespace lexxhard::actuator_controller {
 
-struct can_format_control {
-    int8_t direction[3]; // Center / Left / Right, -1:down, 0:stop, 1:up
-    uint8_t power_duty[3]; // Center / Left / Right, 0-100 duty[%]
-} __attribute__((aligned(4)));
-
 struct can_format_encoder {
     can_format_encoder(int16_t enc0,int16_t enc1,int16_t enc2) : encoder_count{enc0, enc1, enc2} {} 
     int16_t encoder_count[3]; // Center / Left / Right
@@ -46,30 +41,20 @@ struct can_format_current {
 } __attribute__((aligned(4)));
 
 struct msg_control {
-
-    msg_control(){}
-    msg_control(can_format_control frame)
-    : actuators
-    {
-        {
-            frame.direction[0],
-            frame.power_duty[0]
-        },
-        {
-            frame.direction[1],
-            frame.power_duty[1]
-        },
-        {
-            frame.direction[2],
-            frame.power_duty[2]
-        }
-    } {}
-
     struct {
-        int8_t direction;
-        uint8_t power;
+        int8_t direction; // -1:down, 0:stop, 1:up
+        uint8_t power;    // 0-100 duty[%]
     } actuators[3];
     static constexpr int8_t DOWN{-1}, STOP{0}, UP{1};
+    static msg_control from(const uint8_t data[8]) {
+        return {
+            .actuators{
+                {static_cast<int8_t>(data[1]), data[4]}, // Center
+                {static_cast<int8_t>(data[0]), data[3]}, // Left
+                {static_cast<int8_t>(data[2]), data[5]}  // Right
+            }
+        };
+    }
 } __attribute__((aligned(4)));
 
 struct msg {
