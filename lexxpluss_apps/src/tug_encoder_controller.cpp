@@ -58,6 +58,12 @@ public:
             return;
         }
 
+        is_tug_connected = detect_tug();
+        if (!is_tug_connected) {
+            LOG_INF("TUG Encoder not found");
+            return;
+        }
+
         while (true) {
             fetch_angle();
             while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
@@ -68,10 +74,24 @@ public:
 
     void tug_encoder_info(const shell *shell) const {
         float const angle_deg = message.angle * 360.0f / 4096.0f;
-        shell_print(shell, "Angle: %f[deg]\n", angle_deg);
+        shell_print(shell, "Angle: %f[deg]", angle_deg);
+        shell_print(shell, "Connected: %d", is_tug_connected);
     }
 
 private:
+    bool detect_tug() {
+        for (uint32_t i = 0; i < DETECTION_RETRY_COUNT; ++i) {
+            uint8_t buf;
+            if(i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ANGLE_H, &buf) == 0) {
+                return true;
+            }
+
+            k_msleep(100);
+        }
+
+        return false;
+    }
+
     void fetch_angle() {
         uint8_t angle_h;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ANGLE_H, &angle_h)) {
@@ -88,10 +108,12 @@ private:
     }
     msg message;
     const device *dev{nullptr};
+    bool is_tug_connected{false};
 
     static constexpr uint8_t AS5600_ADDR{0x36};
     static constexpr uint8_t AS5600_REG_ANGLE_H{0x0E};
     static constexpr uint8_t AS5600_REG_ANGLE_L{0x0F};
+    static constexpr uint32_t DETECTION_RETRY_COUNT{10};
 } impl;
 
 int tug_encoder_info(const shell *shell, size_t argc, char **argv)
