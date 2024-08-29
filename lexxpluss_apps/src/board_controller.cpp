@@ -1162,6 +1162,7 @@ public:
         ossd2_value = (gpio_pin_get_dt(&ossd2_dev) == 1);
     }
     bool is_asserted() const {
+        // assert when ossd1 and ossd2 are low level
         return !ossd1_value && !ossd2_value;
     }
     void request_reset() {
