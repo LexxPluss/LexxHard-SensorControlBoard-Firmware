@@ -1145,6 +1145,7 @@ public:
             should_reset = false;
             // Reset the safety lidar here if needed
             // For now, we cannot reset the safety lidar because reset pin is not connected
+            LOG_INF("safety_lidar doesn't support reset for now");
             return;
         }
 
