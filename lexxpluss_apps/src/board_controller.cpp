@@ -1175,7 +1175,6 @@ private:
     bool should_reset{false};
 };
 
-
 #define WDT_TIMEOUT_MS 10000
 #define FAN_DUTY_DEFAULT 100
 class state_controller { // Variables Implemented
