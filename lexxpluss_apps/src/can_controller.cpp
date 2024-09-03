@@ -34,6 +34,16 @@
 #include "led_controller.hpp"
 #include "power_state.hpp"
 
+
+#define QUOTE(name) #name
+#define STR(macro) QUOTE(macro)
+
+#ifndef VERSION
+#  define VERSION v0.0.0-local-build  // This version must not be used for production. Only for local build.
+#endif  // VERSION
+#define VERSION_STR STR(VERSION)
+
+
 namespace lexxhard::can_controller {
 
 LOG_MODULE_REGISTER(can);
@@ -149,7 +159,7 @@ private:
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     bool heartbeat_timeout{false}, enable_lockdown{true};
-    static constexpr char version[]{"3.0.3"};
+    static constexpr char version[]{VERSION_STR};
 } impl;
 
 int brd_emgoff(const shell *shell, size_t argc, char **argv)
