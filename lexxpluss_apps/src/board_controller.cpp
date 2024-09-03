@@ -1081,7 +1081,15 @@ private:
 class boardstate_controller {  // No pins declared
 public:
     void init() {
+        reset();
         k_msgq_init(&msgq_board_pb_rx, msgq_board_pb_rx_buffer, sizeof (msg_rcv_pb), 8);
+    }
+    void reset() {
+        heartbeat_detect = false;
+        ros_heartbeat_timeout = false;
+        emergency_stop = true;
+        power_off = false;
+        wheel_poweroff = false;
     }
     void poll() {
         msg_rcv_pb msg;
@@ -1335,7 +1343,7 @@ private:
 
         switch (state) {
         case POWER_STATE::OFF:
-            if (ksw.is_maintenance()) {
+            if (ksw.is_maintenance() || is_lockdown) {
                 // empty here
             } else if(psw.get_state() == power_switch::STATE::RELEASED){
                 set_new_state(POWER_STATE::WAIT_SW);
@@ -1619,13 +1627,14 @@ private:
         case POWER_STATE::OFF: {
             LOG_INF("enter OFF\n");
             poweron_by_switch = false;
+            mbd.reset();
             psw.set_led(false);
             rsw.set_led(false);
             bsw.request_reset();
             dcdc.set_enable(false);
 
             // Set LED OFF
-            led_controller::msg const msg_led{led_controller::msg::NONE, 0};
+            led_controller::msg const msg_led{led_controller::msg::NONE, 0, 1};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
         } break;
@@ -1721,6 +1730,7 @@ private:
         } break;
         case POWER_STATE::LOCKDOWN: {
             LOG_INF("enter LOCKDOWN\n");
+            is_lockdown = true;
             wsw.set_disable(true);
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
@@ -1731,14 +1741,14 @@ private:
             ac.set_enable(false);
 
             // Set LED
-            led_controller::msg const msg_led{led_controller::msg::LOCKDOWN, 1000000000};
+            led_controller::msg const msg_led{led_controller::msg::LOCKDOWN, 1000000000, 10};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
         } break;
         case POWER_STATE::OFF_WAIT: {
             LOG_INF("enter OFF_WAIT\n");
             timer_shutdown = k_uptime_get();    // timer reset
-            if (psw.get_state() == power_switch::STATE::PUSHED)
+            if (psw.get_state() == power_switch::STATE::PUSHED || ksw.is_maintenance())
                 shutdown_reason = SHUTDOWN_REASON::SWITCH;
             if (mbd.power_off_from_ros())
                 shutdown_reason = SHUTDOWN_REASON::ROS;
@@ -1746,7 +1756,7 @@ private:
                 shutdown_reason = SHUTDOWN_REASON::BMU;
 
             // Set LED
-            led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 0};
+            led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 60000};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
         } break;
@@ -1835,7 +1845,7 @@ private:
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
-         last_wheel_poweroff{false};
+         last_wheel_poweroff{false}, is_lockdown{false};
 } impl;
 
 int cmd_power_on(const shell *shell, size_t argc, char **argv)
