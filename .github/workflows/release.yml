@@ -23,6 +23,8 @@
 
 name: release
 on:
+  release:
+    types: [published]
   push:
     tags:
       - 'v*'
@@ -36,14 +38,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+
       - name: build
         id: build
         run: |
           set -e
-          make IN_HOST=1 setup
-          make IN_HOST=1 bootloader
-          make IN_HOST=1 firmware
-          make IN_HOST=1 initial
+          make IN_HOST=1 WORKDIR=$(pwd) setup
+          make IN_HOST=1 WORKDIR=$(pwd) bootloader
+          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ github.ref_name }} firmware
+          make IN_HOST=1 WORKDIR=$(pwd) initial_image
       - name: release
         id: create_release
         uses: actions/create-release@v1

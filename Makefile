@@ -22,6 +22,7 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 VERSION:=$(shell git describe --tags HEAD)
+WORKDIR:=$(if $(WORKDIR), $(), workdir)
 RUNNER:=$(if $(IN_HOST), $(), docker compose run --rm zephyrbuilder)
 
 .PHONY: all
@@ -51,21 +52,20 @@ update:
 .PHONY: bootloader
 bootloader:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/workdir/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: firmware
 firmware:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/workdir/extra -DZEPHYR_EXTRA_MODULES=/workdir/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
 .PHONY: firmware_interlock
 firmware_interlock:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/workdir/extra -DZEPHYR_EXTRA_MODULES=/workdir/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
-.PHONY: initial
-initial:
+.PHONY: initial_image
+initial_image:
 	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
 	dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
 	cat bl_with_ff.bin build/zephyr/zephyr.signed.bin > firmware.bin
-

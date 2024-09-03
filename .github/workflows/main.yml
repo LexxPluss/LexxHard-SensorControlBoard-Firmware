@@ -42,9 +42,9 @@ jobs:
         id: build
         run: |
           set -e
-          make IN_HOST=1 setup
-          make IN_HOST=1 bootloader
-          make IN_HOST=1 firmware
+          make IN_HOST=1 WORKDIR=$(pwd) setup
+          make IN_HOST=1 WORKDIR=$(pwd) bootloader
+          make IN_HOST=1 WORKDIR=$(pwd) firmware
       - name: Notification
         uses: act10ns/slack@v1
         with:
