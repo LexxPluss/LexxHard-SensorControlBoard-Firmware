@@ -1383,10 +1383,7 @@ private:
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (sl.is_asserted()) {
-                LOG_DBG("safety lidar asserted\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready()) {
+            } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready() && !sl.is_asserted()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
             } else if (mc.is_plugged()) {
