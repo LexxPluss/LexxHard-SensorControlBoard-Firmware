@@ -1606,6 +1606,10 @@ private:
             }
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
+
+            // Wait for dcdc is ready
+            // 500[ms] is NG, 1000[ms] is OK by test
+            k_msleep(1000);
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
