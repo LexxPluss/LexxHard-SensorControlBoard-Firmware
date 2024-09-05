@@ -31,27 +31,45 @@ namespace lexxhard::actuator_controller {
 
 struct can_format_encoder {
     can_format_encoder(int16_t enc0,int16_t enc1,int16_t enc2) : encoder_count{enc0, enc1, enc2} {} 
-    int16_t encoder_count[3]; // Center / Left / Right
+    int16_t encoder_count[3]; // Left / Center / Right
+    void into(uint8_t data[8]) {
+        data[0] = static_cast<uint8_t>((encoder_count[0] >> 8) & 0xff);
+        data[1] = static_cast<uint8_t>(encoder_count[0] & 0xff);
+        data[2] = static_cast<uint8_t>((encoder_count[1] >> 8) & 0xff);
+        data[3] = static_cast<uint8_t>(encoder_count[1] & 0xff);
+        data[4] = static_cast<uint8_t>((encoder_count[2] >> 8) & 0xff);
+        data[5] = static_cast<uint8_t>(encoder_count[2] & 0xff); 
+    }
 } __attribute__((aligned(4)));
 
 struct can_format_current {
     can_format_current(int16_t cur0,int16_t cur1,int16_t cur2, int16_t con) : current_mv{cur0, cur1, cur2}, connection_mv(con) {} 
-    int16_t current_mv[3]; // Center / Left / Right
+    int16_t current_mv[3]; // Left / Center / Right
     int16_t connection_mv;
+    void into(uint8_t data[8]) {
+        data[0] = static_cast<uint8_t>((current_mv[0] >> 8) & 0xff);
+        data[1] = static_cast<uint8_t>(current_mv[0] & 0xff);
+        data[2] = static_cast<uint8_t>((current_mv[1] >> 8) & 0xff);
+        data[3] = static_cast<uint8_t>(current_mv[1] & 0xff);
+        data[4] = static_cast<uint8_t>((current_mv[2] >> 8) & 0xff);
+        data[5] = static_cast<uint8_t>(current_mv[2] & 0xff);
+        data[6] = static_cast<uint8_t>((connection_mv >> 8) & 0xff);
+        data[7] = static_cast<uint8_t>(connection_mv & 0xff);
+    }
 } __attribute__((aligned(4)));
 
 struct msg_control {
     struct {
         int8_t direction; // -1:down, 0:stop, 1:up
         uint8_t power;    // 0-100 duty[%]
-    } actuators[3];
+    } actuators[3]; // Left / Center / Right
     static constexpr int8_t DOWN{-1}, STOP{0}, UP{1};
     static msg_control from(const uint8_t data[8]) {
         return {
             .actuators{
-                {static_cast<int8_t>(data[1]), data[4]}, // Center
-                {static_cast<int8_t>(data[0]), data[3]}, // Left
-                {static_cast<int8_t>(data[2]), data[5]}  // Right
+                {static_cast<int8_t>(data[0]), data[3]},
+                {static_cast<int8_t>(data[1]), data[4]},
+                {static_cast<int8_t>(data[2]), data[5]}
             }
         };
     }

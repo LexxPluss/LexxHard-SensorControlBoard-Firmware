@@ -74,14 +74,14 @@ public:
                 .dlc = CAN_DATALENGTH_ACTUATOR_ENCODER
             };
             actuator_controller::can_format_encoder tmp_enc = actuator_controller::can_format_encoder(message.encoder_count[0], message.encoder_count[1], message.encoder_count[2]);
-            memcpy(can_frame_actuator_encoder.data, &tmp_enc, CAN_DATALENGTH_ACTUATOR_ENCODER);
+            tmp_enc.into(can_frame_actuator_encoder.data);
 
             can_frame can_frame_actuator_current{
                 .id = CAN_ID_ACTUATOR_CURRENT,
                 .dlc = CAN_DATALENGTH_ACTUATOR_CURRENT
             };
             actuator_controller::can_format_current tmp_cur = actuator_controller::can_format_current(message.current[0], message.current[1], message.current[2], message.connect);
-            memcpy(can_frame_actuator_current.data, &tmp_cur, CAN_DATALENGTH_ACTUATOR_CURRENT);
+            tmp_cur.into(can_frame_actuator_current.data);
 
             can_send(dev, &can_frame_actuator_encoder, K_MSEC(100), nullptr, nullptr);
             can_send(dev, &can_frame_actuator_current, K_MSEC(100), nullptr, nullptr);
