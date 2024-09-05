@@ -116,7 +116,7 @@ public:
     }
     void brd_info(const shell *shell) const {
         shell_print(shell,
-                    "Bumper:%d Emergency:%d Power:%d\n"
+                    "Bumper:%d Emergency:%d SafetyLiDAR:%d Power:%d\n"
                     "Shutdown:%d Reason:%d AutoCharge:%d ManualCharge:%d\n"
                     "CFET:%d DFET:%d PDSG:%d\n"
                     "V24_PG:%d VPERIPH_PG:%d VWHEEL_L_PG:%d VWHEEL_R_PG:%d\n"
@@ -126,7 +126,7 @@ public:
                     "Lockdown:%s\n"
                     "Charge Connector Voltage:%f Count:%u Delay:%u ChargeTempGood:%d\n"
                     "Version:%s\n",
-                    board2ros.bumper_switch_asserted, board2ros.emergency_switch_asserted, board2ros.power_switch_state,
+                    board2ros.bumper_switch_asserted, board2ros.emergency_switch_asserted, board2ros.safety_lidar_asserted, board2ros.power_switch_state,
                     board2ros.wait_shutdown_state, board2ros.shutdown_reason, board2ros.auto_charging_status, board2ros.manual_charging_status,
                     board2ros.c_fet, board2ros.d_fet, board2ros.p_dsg,
                     board2ros.v24_pgood, board2ros.v_peripheral_pgood, board2ros.v_wheel_motor_l_pgood, board2ros.v_wheel_motor_r_pgood,

@@ -84,6 +84,9 @@ public:
             if (message.emergency_stop) {
                 packedData[0] |= 0b00000100;
             }
+            if (message.safety_lidar_asserted) {
+                packedData[0] |= 0b00000010;
+            }
 
             if (message.auto_charging_status){
                 packedData[1] = 0x01;
