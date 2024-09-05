@@ -206,6 +206,11 @@ public:
     int16_t get() const {
         return count;
     }
+    void reset() {
+        ch1_prev = ch2_prev = 0;
+        count = 0;
+        is_rise_edge = false;
+    }
 private:
     static void static_center_enc_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<encoder*>(k_timer_user_data_get(timer_id));
@@ -339,6 +344,7 @@ public:
 private:
     void reset_pulse() {
         pulse_value = prev_pulse_value = 0;
+        enc.reset();
     }
     void wait_stabilize() {
         for (int i{0}; i < 10; ++i) {
