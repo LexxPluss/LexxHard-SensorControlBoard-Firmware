@@ -44,6 +44,7 @@ jobs:
         id: build
         run: |
           set -e
+          cp -a /home/user/.cmake $HOME
           make IN_HOST=1 WORKDIR=$(pwd) setup
           make IN_HOST=1 WORKDIR=$(pwd) bootloader
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware
