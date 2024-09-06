@@ -1,11 +1,11 @@
 feat:
-  - head-branch: ['^feat']
+  - head-branch: ['-feat-']
 fix:
-  - head-branch: ['^fix']
+  - head-branch: ['-fix-']
 chore:
-  - head-branch: ['^chore']
-  - head-branch: ['^refactor']
-  - head-branch: ['^style']
-  - head-branch: ['^ci']
+  - head-branch: ['-chore-']
+  - head-branch: ['-refactor-']
+  - head-branch: ['-style-']
+  - head-branch: ['-ci-']
 doc:
-  - head-branch: ['^doc']
+  - head-branch: ['-doc-']
