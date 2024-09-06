@@ -21,9 +21,9 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-VERSION:=$(shell git describe --tags HEAD)
-WORKDIR:=$(if $(WORKDIR), $(), workdir)
-RUNNER:=$(if $(IN_HOST), $(), docker compose run --rm zephyrbuilder)
+VERSION:=$(shell git describe --tags HEAD | cut -c2-)
+WORKDIR:=$(if $(WORKDIR),$(),workdir)
+RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
 .PHONY: all
 all: bootloader firmware
