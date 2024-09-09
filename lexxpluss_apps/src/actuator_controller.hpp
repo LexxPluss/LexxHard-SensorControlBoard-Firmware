@@ -33,10 +33,10 @@ struct can_format_encoder {
     can_format_encoder(int16_t enc0,int16_t enc1,int16_t enc2) : encoder_count{enc0, enc1, enc2} {} 
     int16_t encoder_count[3]; // Left / Center / Right
     void into(uint8_t data[8]) {
-        data[0] = static_cast<uint8_t>((encoder_count[0] >> 8) & 0xff);
-        data[1] = static_cast<uint8_t>(encoder_count[0] & 0xff);
-        data[2] = static_cast<uint8_t>((encoder_count[1] >> 8) & 0xff);
-        data[3] = static_cast<uint8_t>(encoder_count[1] & 0xff);
+        data[0] = static_cast<uint8_t>((encoder_count[1] >> 8) & 0xff);
+        data[1] = static_cast<uint8_t>(encoder_count[1] & 0xff);
+        data[2] = static_cast<uint8_t>((encoder_count[0] >> 8) & 0xff);
+        data[3] = static_cast<uint8_t>(encoder_count[0] & 0xff);
         data[4] = static_cast<uint8_t>((encoder_count[2] >> 8) & 0xff);
         data[5] = static_cast<uint8_t>(encoder_count[2] & 0xff); 
     }
@@ -47,10 +47,10 @@ struct can_format_current {
     int16_t current_mv[3]; // Left / Center / Right
     int16_t connection_mv;
     void into(uint8_t data[8]) {
-        data[0] = static_cast<uint8_t>((current_mv[0] >> 8) & 0xff);
-        data[1] = static_cast<uint8_t>(current_mv[0] & 0xff);
-        data[2] = static_cast<uint8_t>((current_mv[1] >> 8) & 0xff);
-        data[3] = static_cast<uint8_t>(current_mv[1] & 0xff);
+        data[0] = static_cast<uint8_t>((current_mv[1] >> 8) & 0xff);
+        data[1] = static_cast<uint8_t>(current_mv[1] & 0xff);
+        data[2] = static_cast<uint8_t>((current_mv[0] >> 8) & 0xff);
+        data[3] = static_cast<uint8_t>(current_mv[0] & 0xff);
         data[4] = static_cast<uint8_t>((current_mv[2] >> 8) & 0xff);
         data[5] = static_cast<uint8_t>(current_mv[2] & 0xff);
         data[6] = static_cast<uint8_t>((connection_mv >> 8) & 0xff);
@@ -84,8 +84,8 @@ struct msg {
 
 void init();
 void run(void *p1, void *p2, void *p3);
-int init_location();
-int to_location(const uint8_t (&location)[3], const uint8_t (&power)[3], uint8_t (&detail)[3]);
+int init_location(int8_t const directoins[], size_t n);
+int to_location(const int8_t (&location)[3], const uint8_t (&power)[3], uint8_t (&detail)[3]);
 extern k_thread thread;
 extern k_msgq msgq, msgq_control;
 
