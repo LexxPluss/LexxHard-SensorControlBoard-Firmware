@@ -64,7 +64,7 @@ public:
 private:
     std::optional<struct msg_response> handle_request(struct  msg_request const& msg_req)
     {
-        if(msg_req.mode == service_mode::INIT_DOWN || msg_req.mode == service_mode::INIT_UP) {
+        if(msg_req.mode == service_mode::INIT) {
             return do_init_service(msg_req);
         } else if(msg_req.mode == service_mode::LOCATION) {
             return do_location_service(msg_req);
@@ -76,7 +76,12 @@ private:
 
     struct msg_response do_init_service(struct msg_request const& msg_req)
     {
-        bool const ret{actuator_controller::init_location() == 0};
+        int8_t const directions[3]{
+            msg_req.left.location,
+            msg_req.center.location,
+            msg_req.right.location
+        };
+        bool const ret{actuator_controller::init_location(directions, 3) == 0};
         return {
             .mode = msg_req.mode,
             .success = ret,
@@ -89,14 +94,14 @@ private:
 
     struct msg_response do_location_service(struct msg_request const& msg_req)
     {
-        uint8_t const location[3]{
-            msg_req.center.location,
+        int8_t const location[3]{
             msg_req.left.location,
+            msg_req.center.location,
             msg_req.right.location
         };
         uint8_t const power[3]{
-            msg_req.center.power,
             msg_req.left.power,
+            msg_req.center.power,
             msg_req.right.power
         };
         uint8_t detail[3]{0, 0, 0};
