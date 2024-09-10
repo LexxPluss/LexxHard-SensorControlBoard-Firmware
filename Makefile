@@ -21,6 +21,10 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+VERSION:=$(shell git describe --tags HEAD | cut -c2-)
+WORKDIR:=$(if $(WORKDIR),$(),workdir)
+RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
+
 .PHONY: all
 all: bootloader firmware
 
@@ -30,7 +34,7 @@ clean:
 
 .PHONY: distclean
 distclean: clean
-	rm -rf build-mcuboot build bootloader modules ros_msgs tools zephyr
+	rm -rf build-mcuboot build bootloader modules ros_msgs tools zephyr out .west
 
 .PHONY: build
 build: docker-compose.yml Dockerfile
@@ -38,20 +42,30 @@ build: docker-compose.yml Dockerfile
 
 .PHONY: setup
 setup:
-	docker compose run --rm zephyrbuilder west init -l lexxpluss_apps
-
+	$(RUNNER) west init -l lexxpluss_apps
+	$(RUNNER) west update
+	$(RUNNER) west config --global zephyr.base-prefer configfile
 .PHONY: update
 update:
-	docker compose run --rm zephyrbuilder west update
+	$(RUNNER) west update
 
 .PHONY: bootloader
 bootloader:
-	docker compose run --rm zephyrbuilder west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/workdir/extra
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: firmware
 firmware:
-	docker compose run --rm zephyrbuilder west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/workdir/extra -DZEPHYR_EXTRA_MODULES=/workdir/extra
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
 .PHONY: firmware_interlock
 firmware_interlock:
-	docker compose run --rm zephyrbuilder west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/workdir/extra -DZEPHYR_EXTRA_MODULES=/workdir/extra
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
+.PHONY: initial_image
+initial_image:
+	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
+	dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
+	cat bl_with_ff.bin build/zephyr/zephyr.signed.bin > firmware.bin

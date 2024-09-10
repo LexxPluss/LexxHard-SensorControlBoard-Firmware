@@ -34,3 +34,7 @@ target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs)
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)
 endif()
+
+if(VERSION)
+    add_definitions(-DVERSION=${VERSION})
+endif()
