@@ -49,14 +49,20 @@ public:
     bool get_message(msg &output) {
         bool updated{false};
         if (msg message_new; k_msgq_get(&msgq, &message_new, K_MSEC(DELAY_MS)) == 0) {
-            if (message.interrupt_ms > 0) {
+            if (message.priority < message_new.priority) {
+                LOG_INF("interrupted pattern %u %ums %dpri", message_new.pattern, message_new.interrupt_ms, message_new.priority);
+                message_interrupted = message;
+                cycle_interrupted = k_cycle_get_32();
+                message = message_new;
+                updated = true;
+            } else if (message.interrupt_ms > 0) {
                 if (message_new.interrupt_ms == 0) {
                     message_interrupted = message_new;
                 }
             } else {
                 if (is_new_message(message_new)) {
                     if (message_new.interrupt_ms > 0) {
-                        LOG_INF("interrupted pattern %u %ums", message_new.pattern, message_new.interrupt_ms);
+                        LOG_INF("interrupted pattern %u %ums %dpri", message_new.pattern, message_new.interrupt_ms, message_new.priority);
                         message_interrupted = message;
                         cycle_interrupted = k_cycle_get_32();
                     }
