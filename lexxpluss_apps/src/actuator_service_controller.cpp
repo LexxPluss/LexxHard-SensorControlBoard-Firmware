@@ -77,16 +77,16 @@ private:
     struct msg_response do_init_service(struct msg_request const& msg_req)
     {
         int8_t const directions[3]{
-            msg_req.left.location,
             msg_req.center.location,
+            msg_req.left.location,
             msg_req.right.location
         };
         bool const ret{actuator_controller::init_location(directions, 3) == 0};
         return {
             .mode = msg_req.mode,
             .success = ret,
-            .left = {.detail = 0},
             .center = {.detail = 0},
+            .left = {.detail = 0},
             .right = {.detail = 0},
             .counter = msg_req.counter
         };
@@ -95,13 +95,13 @@ private:
     struct msg_response do_location_service(struct msg_request const& msg_req)
     {
         int8_t const location[3]{
-            msg_req.left.location,
             msg_req.center.location,
+            msg_req.left.location,
             msg_req.right.location
         };
         uint8_t const power[3]{
-            msg_req.left.power,
             msg_req.center.power,
+            msg_req.left.power,
             msg_req.right.power
         };
         uint8_t detail[3]{0, 0, 0};
@@ -110,8 +110,8 @@ private:
         return {
             .mode = msg_req.mode,
             .success = ret,
-            .left = {.detail = detail[1]},
             .center = {.detail = detail[0]},
+            .left = {.detail = detail[1]},
             .right = {.detail = detail[2]},
             .counter = msg_req.counter
         };
