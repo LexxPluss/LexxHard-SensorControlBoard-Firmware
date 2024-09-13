@@ -81,7 +81,7 @@ private:
             msg_req.left.location,
             msg_req.right.location
         };
-        bool const ret{actuator_controller::init_location(directions, 3) == 0};
+        bool const ret{actuator_controller::init_location(directions) == 0};
         return {
             .mode = msg_req.mode,
             .success = ret,
