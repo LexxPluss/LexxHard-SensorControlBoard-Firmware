@@ -90,6 +90,14 @@ public:
         shell_print(shell, "TUG connected: %d", is_tug_connected);
         shell_print(shell, "Magnet detected: %d", is_magnet_detected());
         shell_print(shell, "Burn count: %d", burn_count);
+
+	if (burn_count == 0) {
+            shell_print(shell, "");
+            shell_print(shell, "***********************************************");
+            shell_print(shell, " CAUTION!! This tug encoder is not caliblated. ");
+            shell_print(shell, "***********************************************");
+            shell_print(shell, "");
+	}
     }
 
     bool burn_angle()  {
@@ -313,6 +321,7 @@ int tug_encoder_burn(const shell *shell, size_t argc, char **argv)
         return 0;
     }
     active_token.reset();
+    shell_print(shell, "Accept valid token and invalidate it.");
 
     auto const ret{impl.burn_angle()};
     if (!ret) {
@@ -320,6 +329,7 @@ int tug_encoder_burn(const shell *shell, size_t argc, char **argv)
         return 0;
     }
 
+    shell_print(shell, "Completed to burn angle");
     return 0;
 }
 
@@ -327,6 +337,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tug_encoder,
     SHELL_CMD(info, NULL, "TUG Encoder information", tug_encoder_info),
     SHELL_CMD(token, NULL, "Generate new token for burning angle", tug_encoder_token),
     SHELL_CMD(burn, NULL, "Burn angle", tug_encoder_burn),
+    SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(tug_encoder, &sub_tug_encoder, "TUG Encoder commands", NULL);
 
