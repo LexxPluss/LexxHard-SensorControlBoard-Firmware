@@ -837,7 +837,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 
 int cmd_init(const shell *shell, size_t argc, char **argv)
 {
-    if (argc != 1 && argc != 4) {
+    if (argc != 1 && argc != (ACTUATOR_NUM+1)) {
         shell_error(shell, "Usage: %s %s <direction> ...\n", argv[-1], argv[0]);
         return 1;
     }
