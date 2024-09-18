@@ -115,7 +115,7 @@ public:
             return false;
         }
 
-	    auto const raw_angle{get_raw_angle()};
+        auto const raw_angle{get_raw_angle()};
         if (!raw_angle.has_value()) {
             LOG_ERR("Failed to read raw angle");
             return false;
