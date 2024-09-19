@@ -23,6 +23,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <optional>
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
@@ -227,16 +229,9 @@ private:
                 ch2 = gpio_pin_get_dt(&dev_ch2);
             }
 
-            // catch rise edge
-            if (instance->ch1_prev == 0 && ch1 == 1) {
-                if (ch2 == 0) {
-                    instance->count++;
-                } else {
-                    instance->count--;
-                }
-            }
-
+            instance->count += instance->calc_delta_count(instance->ch1_prev, instance->ch2_prev, ch1, ch2);
             instance->ch1_prev = ch1;
+            instance->ch2_prev = ch2;
         }
     }
     static void static_center_left_callback(struct k_timer *timer_id) {
@@ -254,16 +249,9 @@ private:
                 ch2 = gpio_pin_get_dt(&dev_ch2);
             }
 
-            // catch rise edge
-            if (instance->ch1_prev == 0 && ch1 == 1) {
-                if (ch2 == 0) {
-                    instance->count++;
-                } else {
-                    instance->count--;
-                }
-            }
-
+            instance->count += instance->calc_delta_count(instance->ch1_prev, instance->ch2_prev, ch1, ch2);
             instance->ch1_prev = ch1;
+            instance->ch2_prev = ch2;
         }
     }
     static void static_center_right_callback(struct k_timer *timer_id) {
@@ -281,18 +269,41 @@ private:
                 ch2 = gpio_pin_get_dt(&dev_ch2);
             }
 
-            // catch rise edge
-            if (instance->ch1_prev == 0 && ch1 == 1) {
-                if (ch2 == 0) {
-                    instance->count++;
-                } else {
-                    instance->count--;
-                }
-            }
-
+            instance->count += instance->calc_delta_count(instance->ch1_prev, instance->ch2_prev, ch1, ch2);
             instance->ch1_prev = ch1;
+            instance->ch2_prev = ch2;
         }
     }
+    inline int16_t calc_delta_count(const int prev_ch1, const int prev_ch2, const int ch1, const int ch2) const {
+        // index is prev_ch1,prev_ch2,ch1,ch2
+        static constexpr std::optional<int16_t> delta_table[16]{
+          0,            // 00 -> 00 no change
+          -1,           // 00 -> 01
+          1,            // 00 -> 10
+          std::nullopt, // 00 -> 11 error(ignore)
+          1,            // 01 -> 00
+          0,            // 01 -> 01 no change
+          std::nullopt, // 01 -> 10 error(ignore)
+          -1,           // 01 -> 11
+          -1,           // 10 -> 00
+          std::nullopt, // 10 -> 01 error(ignore)
+          0,            // 10 -> 10 no change
+          1,            // 10 -> 11
+          std::nullopt, // 11 -> 00 error(ignore)
+          1,            // 11 -> 01
+          -1,           // 11 -> 10
+          0             // 11 -> 11 no change
+        };
+
+        const int index = (prev_ch1 << 3) | (prev_ch2 << 2) | (ch1 << 1) | (ch2 << 0);
+        const auto ret{delta_table[index]};
+        if (!ret.has_value()) {
+            LOG_WRN("Wrong encoder state: %d%d -> %d%d", prev_ch1, prev_ch2, ch1, ch2);
+        }
+
+        return ret.value_or(0);  // return 0 if error
+    }
+
     k_timer encoder_count_c, encoder_count_l, encoder_count_r;
     int ch1_prev{0}, ch2_prev{0};
     int16_t count{0};
