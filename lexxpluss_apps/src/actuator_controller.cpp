@@ -318,16 +318,15 @@ public:
         case POS::CENTER:
             // result = enc.init(TIM4); // for HW counter
             result = enc.init(pos);
-            // mm_per_pulse = 50.0f / 1054.0f; // for HW counter
-            mm_per_pulse = 50.0f / 144.0f;
+            mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::LEFT:
             result = enc.init(pos);
-            mm_per_pulse = 50.0f / 144.0f;
+            mm_per_pulse = 50.0f / 1054.0f;
             break;
         case POS::RIGHT:
             result = enc.init(pos);
-            mm_per_pulse = 50.0f / 144.0f;
+            mm_per_pulse = 50.0f / 1054.0f;
             break;
         }
         reset_pulse();
