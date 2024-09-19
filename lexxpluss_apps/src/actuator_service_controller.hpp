@@ -29,26 +29,25 @@
 
 namespace lexxhard::actuator_service_controller {
 
-enum class service_mode: int8_t {
-    INIT_DOWN = -1,
+enum class service_mode: uint8_t {
     LOCATION = 0,
-    INIT_UP = 1,
+    INIT = 1,
 };
 
 struct msg_request {
     service_mode mode;
     struct {
-        uint8_t location;
+        int8_t location;
         uint8_t power;
-    } left, center, right;
+    } center, left, right;
     uint8_t counter;
 
     static msg_request from(uint8_t data[8]) {
         return {
             .mode = static_cast<service_mode>(data[0]),
-            .left = {data[1], data[4]},
-            .center = {data[2], data[5]},
-            .right = {data[3], data[6]},
+            .center = {static_cast<int8_t>(data[1]), data[4]},
+            .left = {static_cast<int8_t>(data[2]), data[5]},
+            .right = {static_cast<int8_t>(data[3]), data[6]},
             .counter = data[7]
         };
     }
@@ -59,14 +58,14 @@ struct msg_response {
     bool success;
     struct {
         uint8_t detail;
-    } left, center, right;
+    } center, left, right;
     uint8_t counter;
 
     void into(uint8_t data[8]) {
         data[0] = static_cast<int8_t>(mode);
         data[1] = static_cast<uint8_t>(success);
-        data[2] = left.detail;
-        data[3] = center.detail;
+        data[2] = center.detail;
+        data[3] = left.detail;
         data[4] = right.detail;
         data[5] = 0;
         data[6] = 0;

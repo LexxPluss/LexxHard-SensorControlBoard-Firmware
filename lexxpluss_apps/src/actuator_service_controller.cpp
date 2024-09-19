@@ -64,7 +64,7 @@ public:
 private:
     std::optional<struct msg_response> handle_request(struct  msg_request const& msg_req)
     {
-        if(msg_req.mode == service_mode::INIT_DOWN || msg_req.mode == service_mode::INIT_UP) {
+        if(msg_req.mode == service_mode::INIT) {
             return do_init_service(msg_req);
         } else if(msg_req.mode == service_mode::LOCATION) {
             return do_location_service(msg_req);
@@ -76,12 +76,17 @@ private:
 
     struct msg_response do_init_service(struct msg_request const& msg_req)
     {
-        bool const ret{actuator_controller::init_location() == 0};
+        int8_t const directions[3]{
+            msg_req.center.location,
+            msg_req.left.location,
+            msg_req.right.location
+        };
+        bool const ret{actuator_controller::init_location(directions) == 0};
         return {
             .mode = msg_req.mode,
             .success = ret,
-            .left = {.detail = 0},
             .center = {.detail = 0},
+            .left = {.detail = 0},
             .right = {.detail = 0},
             .counter = msg_req.counter
         };
@@ -89,7 +94,7 @@ private:
 
     struct msg_response do_location_service(struct msg_request const& msg_req)
     {
-        uint8_t const location[3]{
+        int8_t const location[3]{
             msg_req.center.location,
             msg_req.left.location,
             msg_req.right.location
@@ -105,8 +110,8 @@ private:
         return {
             .mode = msg_req.mode,
             .success = ret,
-            .left = {.detail = detail[1]},
             .center = {.detail = detail[0]},
+            .left = {.detail = detail[1]},
             .right = {.detail = detail[2]},
             .counter = msg_req.counter
         };

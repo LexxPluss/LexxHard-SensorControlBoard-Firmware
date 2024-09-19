@@ -671,10 +671,24 @@ public:
             k_msleep(10);
         }
     }
-    int init_location() {
+    int init_location(const int8_t (&directions)[ACTUATOR_NUM]) {
         LOG_INF("initialize location.");
+
+        if (board_controller::is_emergency()) {
+            LOG_WRN("can not initialize location in emergency.");
+            return -1;
+        }
+
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+            if (directions[i] != msg_control::UP && directions[i] != msg_control::DOWN) {
+                LOG_WRN("invalid direction.");
+                return -1;
+            }
+        }
+
         location_initialized = false;
-        pwm_trampoline_all(msg_control::DOWN, 100);
+        constexpr uint8_t powers[ACTUATOR_NUM]{100, 100, 100};
+        control_trampoline(directions, powers);
         bool stopped{wait_actuator_stop(30000, 100)};
         pwm_trampoline_all(msg_control::STOP);
         if (!stopped || board_controller::is_emergency()) {
@@ -686,7 +700,7 @@ public:
         location_initialized = true;
         return 0;
     }
-    int to_location(const uint8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[ACTUATOR_NUM], uint8_t (&detail)[ACTUATOR_NUM]) {
+    int to_location(const int8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[ACTUATOR_NUM], uint8_t (&detail)[ACTUATOR_NUM]) {
         LOG_INF("move location.");
         if (!location_initialized) {
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
@@ -723,6 +737,15 @@ public:
         message.duty = pwm_duty;
         while (k_msgq_put(&msgq_pwmtrampoline, &message, K_NO_WAIT) != 0)
             k_msgq_purge(&msgq_pwmtrampoline);
+    }
+    void control_trampoline(const int8_t (&directions)[ACTUATOR_NUM], const uint8_t (&powers)[ACTUATOR_NUM]) {
+        msg_control message;
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+            message.actuators[i].direction = directions[i];
+            message.actuators[i].power = powers[i];
+        }
+        while (k_msgq_put(&msgq_control, &message, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq_control);
     }
 private:
     void handle_control(const msg_control &msg) {
@@ -814,8 +837,24 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 
 int cmd_init(const shell *shell, size_t argc, char **argv)
 {
+    if (argc != 1 && argc != (ACTUATOR_NUM+1)) {
+        shell_error(shell, "Usage: %s %s <direction> ...\n", argv[-1], argv[0]);
+        return 1;
+    }
+
+    int8_t directions[ACTUATOR_NUM]{msg_control::DOWN, msg_control::DOWN, msg_control::DOWN};
+    for (size_t i{1}; i < argc; ++i) {
+        int8_t cur_dir = atoi(argv[i]);
+        if (cur_dir != msg_control::UP && cur_dir != msg_control::DOWN) {
+            shell_print(shell, "Invalid direction.");
+            return 1;
+        }
+
+        directions[i-1] = cur_dir;
+    }
+
     shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
-    if (impl.init_location() != 0)
+    if (impl.init_location(directions) != 0)
         shell_print(shell, "init error.");
     return 0;
 }
@@ -823,7 +862,9 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
 int locate(const shell *shell, size_t argc, char **argv)
 {
     shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
-    uint8_t location[ACTUATOR_NUM]{0, 0, 0}, power[ACTUATOR_NUM]{0, 0, 0}, detail[ACTUATOR_NUM]{0, 0, 0};
+    int8_t location[ACTUATOR_NUM]{0, 0, 0};
+    uint8_t power[ACTUATOR_NUM]{0, 0, 0};
+    uint8_t detail[ACTUATOR_NUM]{0, 0, 0};
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <location> <power> ...\n", argv[-1], argv[0]);
         return 1;
@@ -871,12 +912,12 @@ void run(void *p1, void *p2, void *p3)
     impl.run();
 }
 
-int init_location()
+int init_location(const int8_t (&directions)[ACTUATOR_NUM])
 {
-    return impl.init_location();
+    return impl.init_location(directions);
 }
 
-int to_location(const uint8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[ACTUATOR_NUM], uint8_t (&detail)[ACTUATOR_NUM])
+int to_location(const int8_t (&location)[ACTUATOR_NUM], const uint8_t (&power)[ACTUATOR_NUM], uint8_t (&detail)[ACTUATOR_NUM])
 {
     return impl.to_location(location, power, detail);
 }
