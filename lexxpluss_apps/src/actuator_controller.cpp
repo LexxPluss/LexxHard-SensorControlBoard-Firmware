@@ -152,12 +152,12 @@ public:
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch1), gpios);
             // PD12 CH1, PD13 CH2
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
             }
 
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_center_actuator_ch2), gpios);
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
             }
         
             // set callback function for center
@@ -170,12 +170,12 @@ public:
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch1), gpios);
             // PD12 CH1, PD13 CH2
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
             }
 
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_left_actuator_ch2), gpios);
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
             }
 
             // set callback function for LEFT
@@ -188,12 +188,12 @@ public:
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch1), gpios);
             // PD12 CH1, PD13 CH2
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
             }
 
             dev = GPIO_DT_SPEC_GET(DT_NODELABEL(encoder_right_actuator_ch2), gpios);
             if (gpio_is_ready_dt(&dev)) {
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
             }
 
             // set callback function for RIGHT
