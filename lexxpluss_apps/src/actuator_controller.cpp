@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <tuple>
 #include "actuator_controller.hpp"
+#include "tug_encoder_controller.hpp"
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "common.hpp"
@@ -322,11 +323,19 @@ public:
             break;
         case POS::LEFT:
             result = enc.init(pos);
-            mm_per_pulse = 50.0f / 1054.0f;
+            if (tug_encoder_controller::is_tug_connected()) {
+                mm_per_pulse = 0.0033f;
+            } else {
+                mm_per_pulse = 50.0f / 1054.0f;
+            }
             break;
         case POS::RIGHT:
             result = enc.init(pos);
-            mm_per_pulse = 50.0f / 1054.0f;
+            if (tug_encoder_controller::is_tug_connected()) {
+                mm_per_pulse = 0.0033f;
+            } else {
+                mm_per_pulse = 50.0f / 1054.0f;
+            }
             break;
         }
         reset_pulse();

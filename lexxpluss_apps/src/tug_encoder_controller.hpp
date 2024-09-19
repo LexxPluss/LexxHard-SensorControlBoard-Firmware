@@ -36,6 +36,7 @@ struct msg {
 
 void init();
 void run(void *p1, void *p2, void *p3);
+bool is_tug_connected();
 extern k_thread thread;
 extern k_msgq msgq;
 }

@@ -64,8 +64,7 @@ public:
             return;
         }
 
-        is_tug_connected = detect_tug();
-        if (!is_tug_connected) {
+        if (!is_tug_connected()) {
             LOG_INF("TUG Encoder not found");
             return;
         }
@@ -81,14 +80,14 @@ public:
         }
     }
 
-    void tug_encoder_info(const shell *shell) const {
+    void tug_encoder_info(const shell *shell) {
         float const angle_deg{message.angle * 360.0f / 4096.0f};
         int const burn_count{get_burn_count().value_or(-1)};
         int const raw_angle{get_raw_angle().value_or(-1)};
         int const zpos{get_zero_angle().value_or(-1)};
         int const mpos{get_max_angle().value_or(-1)};
-        shell_print(shell, "Angle: %f[deg]", angle_deg);
-        shell_print(shell, "TUG connected: %d", is_tug_connected);
+        shell_print(shell, "Angle: %f[deg]", static_cast<double>(angle_deg));
+        shell_print(shell, "TUG connected: %d", is_tug_connected());
         shell_print(shell, "Magnet detected: %d", is_magnet_detected());
         shell_print(shell, "Raw Angle: %d", raw_angle);
         shell_print(shell, "Burn count: %d", burn_count);
@@ -105,7 +104,7 @@ public:
     }
 
     bool burn_angle()  {
-        if (!is_tug_connected) {
+        if (!is_tug_connected()) {
             LOG_ERR("TUG Encoder not found");
             return false;
         }
@@ -141,8 +140,16 @@ public:
         return true;
     }
 
+    bool is_tug_connected() {
+        if (!is_tug_connected_cache.has_value()) {
+            is_tug_connected_cache = detect_tug();
+        }
+
+        return is_tug_connected_cache.value();
+    }
+
 private:
-    bool detect_tug() {
+    bool detect_tug() const {
         for (uint32_t i = 0; i < DETECTION_RETRY_COUNT; ++i) {
             uint8_t buf;
             if(i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ANGLE_H, &buf) == 0) {
@@ -296,7 +303,7 @@ private:
 
     msg message;
     const device *dev{nullptr};
-    bool is_tug_connected{false};
+    std::optional<bool> is_tug_connected_cache{false};
 
     static constexpr uint8_t AS5600_ADDR{0x36};
     static constexpr uint8_t AS5600_REG_ZMCO{0x00};
@@ -380,6 +387,10 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
+}
+
+bool is_tug_connected() {
+    return impl.is_tug_connected();
 }
 
 k_thread thread;
