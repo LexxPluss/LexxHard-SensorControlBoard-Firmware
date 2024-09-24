@@ -36,6 +36,10 @@
 
 namespace {
     std::optional<std::string> active_token{std::nullopt};
+    template<typename T>
+    int value_or_minus_one(std::optional<T> value) {
+        return value.has_value() ? static_cast<int>(value.value()) : -1;
+    }
 }
 
 namespace lexxhard::tug_encoder_controller { 
@@ -82,10 +86,10 @@ public:
 
     void tug_encoder_info(const shell *shell) {
         float const angle_deg{message.angle * 360.0f / 4096.0f};
-        int const burn_count{get_burn_count().value_or(-1)};
-        int const raw_angle{get_raw_angle().value_or(-1)};
-        int const zpos{get_zero_angle().value_or(-1)};
-        int const mpos{get_max_angle().value_or(-1)};
+        int const burn_count{value_or_minus_one(get_burn_count())};
+        int const raw_angle{value_or_minus_one(get_raw_angle())};
+        int const zpos{value_or_minus_one(get_zero_angle())};
+        int const mpos{value_or_minus_one(get_max_angle())};
         shell_print(shell, "Angle: %f[deg]", static_cast<double>(angle_deg));
         shell_print(shell, "TUG connected: %d", is_tug_connected());
         shell_print(shell, "Magnet detected: %d", is_magnet_detected());
