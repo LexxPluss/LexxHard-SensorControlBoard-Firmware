@@ -36,10 +36,10 @@
 #include <cstdlib>
 #include <tuple>
 #include "actuator_controller.hpp"
-#include "tug_encoder_controller.hpp"
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "common.hpp"
+#include "tug_encoder_controller.hpp"
 
 // for HW counter
 // extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
