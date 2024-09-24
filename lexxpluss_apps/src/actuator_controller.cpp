@@ -613,14 +613,18 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        if (act[0].init(POS::CENTER) != 0 ||
-            act[1].init(POS::LEFT) != 0 ||
-            act[2].init(POS::RIGHT) != 0)
-            return -1;
         return 0;
     }
 
     void run() {
+        if (act[0].init(POS::CENTER) != 0 ||
+            act[1].init(POS::LEFT) != 0 ||
+            act[2].init(POS::RIGHT) != 0)
+        {
+            LOG_ERR("actuator init failed.");
+            return;
+        }
+
         // Enable Pin, Reset Functions
         gpio_dt_spec dev_enable = GET_GPIO(ps_lift_actuator);
         if (gpio_is_ready_dt(&dev_enable))

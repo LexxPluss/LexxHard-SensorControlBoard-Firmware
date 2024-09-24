@@ -23,6 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <atomic>
 #include <optional>
 #include <string>
 
@@ -68,6 +69,7 @@ public:
             return;
         }
 
+        detect_tug();
         if (!is_tug_connected()) {
             LOG_INF("TUG Encoder not found");
             return;
@@ -145,25 +147,29 @@ public:
     }
 
     bool is_tug_connected() {
-        if (!is_tug_connected_cache.has_value()) {
-            is_tug_connected_cache = detect_tug();
-        }
+        while (true) {
+            auto status = is_tug_connected_status.load();
+            if (status.has_value()) {
+                return status.value();
+            }
 
-        return is_tug_connected_cache.value();
+            k_msleep(10);
+        }
     }
 
 private:
-    bool detect_tug() const {
+    void detect_tug() {
         for (uint32_t i = 0; i < DETECTION_RETRY_COUNT; ++i) {
             uint8_t buf;
             if(i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ANGLE_H, &buf) == 0) {
-                return true;
+                is_tug_connected_status.store(true);
+                return;
             }
 
             k_msleep(100);
         }
 
-        return false;
+        is_tug_connected_status.store(false);
     }
 
     bool fetch_encoder_value() {
@@ -307,7 +313,7 @@ private:
 
     msg message;
     const device *dev{nullptr};
-    std::optional<bool> is_tug_connected_cache{std::nullopt};
+    std::atomic<std::optional<bool>> is_tug_connected_status{std::nullopt};
 
     static constexpr uint8_t AS5600_ADDR{0x36};
     static constexpr uint8_t AS5600_REG_ZMCO{0x00};
