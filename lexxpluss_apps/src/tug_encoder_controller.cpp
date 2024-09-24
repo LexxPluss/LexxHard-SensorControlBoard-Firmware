@@ -307,7 +307,7 @@ private:
 
     msg message;
     const device *dev{nullptr};
-    std::optional<bool> is_tug_connected_cache{false};
+    std::optional<bool> is_tug_connected_cache{std::nullopt};
 
     static constexpr uint8_t AS5600_ADDR{0x36};
     static constexpr uint8_t AS5600_REG_ZMCO{0x00};
