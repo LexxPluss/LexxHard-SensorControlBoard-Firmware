@@ -212,13 +212,13 @@ private:
         uint8_t angle_h;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ZPOS_H, &angle_h)) {
             LOG_WRN("Failed to read AS5600_REG_ZPOS_H");
-            return 0;
+            return std::nullopt;
         }
 
         uint8_t angle_l;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ZPOS_L, &angle_l)) {
             LOG_WRN("Failed to read AS5600_REG_ZPOS_L");
-            return 0;
+            return std::nullopt;
         }
 
         return (angle_h <<8) | angle_l;
@@ -228,13 +228,13 @@ private:
         uint8_t angle_h;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_MPOS_H, &angle_h)) {
             LOG_WRN("Failed to read AS5600_REG_MPOS_H");
-            return 0;
+            return std::nullopt;
         }
 
         uint8_t angle_l;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_MPOS_L, &angle_l)) {
             LOG_WRN("Failed to read AS5600_REG_MPOS_L");
-            return 0;
+            return std::nullopt;
         }
 
         return (angle_h <<8) | angle_l;
@@ -244,13 +244,13 @@ private:
         uint8_t angle_h;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_RAW_ANGLE_H, &angle_h)) {
             LOG_WRN("Failed to read AS5600_REG_RAW_ANGLE_H");
-            return 0;
+            return std::nullopt;
         }
 
         uint8_t angle_l;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_RAW_ANGLE_L, &angle_l)) {
             LOG_WRN("Failed to read AS5600_REG_RAW_ANGLE_L");
-            return 0;
+            return std::nullopt;
         }
 
         return (angle_h <<8) | angle_l;
