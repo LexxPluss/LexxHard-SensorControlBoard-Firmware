@@ -23,6 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <atomic>
 #include <optional>
 #include <string>
 
@@ -36,6 +37,10 @@
 
 namespace {
     std::optional<std::string> active_token{std::nullopt};
+    template<typename T>
+    int value_or_minus_one(std::optional<T> value) {
+        return value.has_value() ? static_cast<int>(value.value()) : -1;
+    }
 }
 
 namespace lexxhard::tug_encoder_controller { 
@@ -64,8 +69,8 @@ public:
             return;
         }
 
-        is_tug_connected = detect_tug();
-        if (!is_tug_connected) {
+        detect_tug();
+        if (!is_tug_connected()) {
             LOG_INF("TUG Encoder not found");
             return;
         }
@@ -81,14 +86,14 @@ public:
         }
     }
 
-    void tug_encoder_info(const shell *shell) const {
+    void tug_encoder_info(const shell *shell) {
         float const angle_deg{message.angle * 360.0f / 4096.0f};
-        int const burn_count{get_burn_count().value_or(-1)};
-        int const raw_angle{get_raw_angle().value_or(-1)};
-        int const zpos{get_zero_angle().value_or(-1)};
-        int const mpos{get_max_angle().value_or(-1)};
-        shell_print(shell, "Angle: %f[deg]", angle_deg);
-        shell_print(shell, "TUG connected: %d", is_tug_connected);
+        int const burn_count{value_or_minus_one(get_burn_count())};
+        int const raw_angle{value_or_minus_one(get_raw_angle())};
+        int const zpos{value_or_minus_one(get_zero_angle())};
+        int const mpos{value_or_minus_one(get_max_angle())};
+        shell_print(shell, "Angle: %f[deg]", static_cast<double>(angle_deg));
+        shell_print(shell, "TUG connected: %d", is_tug_connected());
         shell_print(shell, "Magnet detected: %d", is_magnet_detected());
         shell_print(shell, "Raw Angle: %d", raw_angle);
         shell_print(shell, "Burn count: %d", burn_count);
@@ -105,7 +110,7 @@ public:
     }
 
     bool burn_angle()  {
-        if (!is_tug_connected) {
+        if (!is_tug_connected()) {
             LOG_ERR("TUG Encoder not found");
             return false;
         }
@@ -141,18 +146,30 @@ public:
         return true;
     }
 
+    bool is_tug_connected() {
+        while (true) {
+            auto status = is_tug_connected_status.load();
+            if (status.has_value()) {
+                return status.value();
+            }
+
+            k_msleep(10);
+        }
+    }
+
 private:
-    bool detect_tug() {
+    void detect_tug() {
         for (uint32_t i = 0; i < DETECTION_RETRY_COUNT; ++i) {
             uint8_t buf;
             if(i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ANGLE_H, &buf) == 0) {
-                return true;
+                is_tug_connected_status.store(true);
+                return;
             }
 
             k_msleep(100);
         }
 
-        return false;
+        is_tug_connected_status.store(false);
     }
 
     bool fetch_encoder_value() {
@@ -195,13 +212,13 @@ private:
         uint8_t angle_h;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ZPOS_H, &angle_h)) {
             LOG_WRN("Failed to read AS5600_REG_ZPOS_H");
-            return 0;
+            return std::nullopt;
         }
 
         uint8_t angle_l;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_ZPOS_L, &angle_l)) {
             LOG_WRN("Failed to read AS5600_REG_ZPOS_L");
-            return 0;
+            return std::nullopt;
         }
 
         return (angle_h <<8) | angle_l;
@@ -211,13 +228,13 @@ private:
         uint8_t angle_h;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_MPOS_H, &angle_h)) {
             LOG_WRN("Failed to read AS5600_REG_MPOS_H");
-            return 0;
+            return std::nullopt;
         }
 
         uint8_t angle_l;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_MPOS_L, &angle_l)) {
             LOG_WRN("Failed to read AS5600_REG_MPOS_L");
-            return 0;
+            return std::nullopt;
         }
 
         return (angle_h <<8) | angle_l;
@@ -227,13 +244,13 @@ private:
         uint8_t angle_h;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_RAW_ANGLE_H, &angle_h)) {
             LOG_WRN("Failed to read AS5600_REG_RAW_ANGLE_H");
-            return 0;
+            return std::nullopt;
         }
 
         uint8_t angle_l;
         if (i2c_reg_read_byte(dev, AS5600_ADDR, AS5600_REG_RAW_ANGLE_L, &angle_l)) {
             LOG_WRN("Failed to read AS5600_REG_RAW_ANGLE_L");
-            return 0;
+            return std::nullopt;
         }
 
         return (angle_h <<8) | angle_l;
@@ -296,7 +313,7 @@ private:
 
     msg message;
     const device *dev{nullptr};
-    bool is_tug_connected{false};
+    std::atomic<std::optional<bool>> is_tug_connected_status{std::nullopt};
 
     static constexpr uint8_t AS5600_ADDR{0x36};
     static constexpr uint8_t AS5600_REG_ZMCO{0x00};
@@ -380,6 +397,10 @@ void init()
 void run(void *p1, void *p2, void *p3)
 {
     impl.run();
+}
+
+bool is_tug_connected() {
+    return impl.is_tug_connected();
 }
 
 k_thread thread;

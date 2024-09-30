@@ -39,6 +39,7 @@
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "common.hpp"
+#include "tug_encoder_controller.hpp"
 
 // for HW counter
 // extern "C" void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef *htim_encoder)
@@ -313,22 +314,8 @@ private:
 class counter {
 public:
     int init(POS pos) {
-        int result{0};
-        switch (pos) {
-        case POS::CENTER:
-            // result = enc.init(TIM4); // for HW counter
-            result = enc.init(pos);
-            mm_per_pulse = 50.0f / 1054.0f;
-            break;
-        case POS::LEFT:
-            result = enc.init(pos);
-            mm_per_pulse = 50.0f / 1054.0f;
-            break;
-        case POS::RIGHT:
-            result = enc.init(pos);
-            mm_per_pulse = 50.0f / 1054.0f;
-            break;
-        }
+        const int result{enc.init(pos)};
+        mm_per_pulse = get_mm_per_pulse(pos);
         reset_pulse();
         return result;
     }
@@ -351,6 +338,28 @@ public:
         prev_pulse_value = pulse_value;
         return value;
     }
+    static float get_mm_per_pulse(POS pos) {
+        switch (pos) {
+        case POS::CENTER:
+            return 50.0f / 1054.0f;
+        case POS::LEFT:
+            if (tug_encoder_controller::is_tug_connected()) {
+                return 0.0033f;
+            } else {
+                return 50.0f / 1054.0f;
+            }
+        case POS::RIGHT:
+            if (tug_encoder_controller::is_tug_connected()) {
+                return 0.0033f;
+            } else {
+                return 50.0f / 1054.0f;
+            }
+        }
+
+        // Not reach here
+        return 0.0f;
+    }
+
 private:
     void reset_pulse() {
         pulse_value = prev_pulse_value = 0;
@@ -604,14 +613,18 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         k_msgq_init(&msgq_control, msgq_control_buffer, sizeof (msg_control), 8);
-        if (act[0].init(POS::CENTER) != 0 ||
-            act[1].init(POS::LEFT) != 0 ||
-            act[2].init(POS::RIGHT) != 0)
-            return -1;
         return 0;
     }
 
     void run() {
+        if (act[0].init(POS::CENTER) != 0 ||
+            act[1].init(POS::LEFT) != 0 ||
+            act[2].init(POS::RIGHT) != 0)
+        {
+            LOG_ERR("actuator init failed.");
+            return;
+        }
+
         // Enable Pin, Reset Functions
         gpio_dt_spec dev_enable = GET_GPIO(ps_lift_actuator);
         if (gpio_is_ready_dt(&dev_enable))
@@ -734,9 +747,10 @@ public:
         shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             auto [pulse, current, fail, direction, duty]{act[i].get_info()};
+            const double mm_per_pulse{counter::get_mm_per_pulse(static_cast<POS>(i))};
             shell_print(shell,
-                        "actuator: %d encoder: %d pulse current: %d mV fail: %d dir: %d duty: %u",
-                        i, pulse, current, fail, direction, duty);
+                        "actuator: %d encoder: %d pulse current: %d mV fail: %d dir: %d duty: %u mm/pulse: %f",
+                        i, pulse, current, fail, direction, duty, mm_per_pulse);
         }
     }
     void pwm_trampoline(int index, int direction, uint8_t pwm_duty = 0) const {
