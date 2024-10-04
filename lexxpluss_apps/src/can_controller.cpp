@@ -92,7 +92,6 @@ public:
                 ros2board.power_off = false;
                 ros2board.wheel_power_off = false;
                 heartbeat_timeout = false;
-                enable_lockdown = true;
             }
 
             uint32_t now_cycle{k_cycle_get_32()};
@@ -121,9 +120,6 @@ public:
             k_msgq_purge(&msgq_board);
         }
     }
-    void brd_lockdown(bool enable) {
-        enable_lockdown = enable;
-    }
     void brd_info(const shell *shell) const {
         shell_print(shell,
                     "Bumper:%d Emergency:%d SafetyLiDAR:%d Power:%d\n"
@@ -133,7 +129,6 @@ public:
                     "STATE:%u WHEEL:%d\n"
                     "FAN:%u\n"
                     "ConnTemp:P %d N %d\n"
-                    "Lockdown:%s\n"
                     "Charge Connector Voltage:%f Count:%u Delay:%u ChargeTempGood:%d\n"
                     "Version:%s\n",
                     board2ros.bumper_switch_asserted, board2ros.emergency_switch_asserted, board2ros.safety_lidar_asserted, board2ros.power_switch_state,
@@ -143,7 +138,6 @@ public:
                     board2ros.state, board2ros.wheel_enable,
                     board2ros.fan_duty,
                     board2ros.charge_connector_p_temp, board2ros.charge_connector_n_temp,
-                    enable_lockdown ? "enable" : "disable",
                     (double)board2ros.charge_connector_voltage, board2ros.charge_check_count, board2ros.charge_heartbeat_delay, board2ros.charge_temperature_good,
                     version);
     }
@@ -151,31 +145,20 @@ private:
     void handler_to_pb() {
         msg_board_to_pb.ros_emergency_stop = ros2board.emergency_stop;
         msg_board_to_pb.ros_power_off = ros2board.power_off;
-        msg_board_to_pb.ros_heartbeat_timeout = enable_lockdown && heartbeat_timeout;
+        msg_board_to_pb.ros_heartbeat_timeout = heartbeat_timeout;
         msg_board_to_pb.ros_wheel_power_off = ros2board.wheel_power_off;
     }
     msg_board board2ros{0};
     msg_control ros2board{true, false, false, false};
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
-    bool heartbeat_timeout{false}, enable_lockdown{true};
+    bool heartbeat_timeout{false};
     static constexpr char version[]{VERSION_STR};
 } impl;
 
 int brd_emgoff(const shell *shell, size_t argc, char **argv)
 {
     impl.brd_emgoff();
-    return 0;
-}
-
-int brd_lockdown(const shell *shell, size_t argc, char **argv)
-{
-    if (argc != 2) {
-        shell_error(shell, "Usage: %s %s <disable | enable>\n", argv[-1], argv[0]);
-        return 1;
-    }
-    bool enable{strcmp(argv[1], "disable") != 0};
-    impl.brd_lockdown(enable);
     return 0;
 }
 
@@ -187,7 +170,6 @@ int brd_info(const shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_brd,
     SHELL_CMD(emgoff, NULL, "ROS emergency stop off", brd_emgoff),
-    SHELL_CMD(lockdown, NULL, "Lockdown control feature", brd_lockdown),
     SHELL_CMD(info, NULL, "Board information", brd_info),
     SHELL_SUBCMD_SET_END
 );

@@ -1380,7 +1380,7 @@ private:
             auto psw_state{psw.get_state()};
             if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
-            } else if (mbd.is_dead()) {
+            } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
             } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
@@ -1423,7 +1423,7 @@ private:
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mc.is_plugged()) {
                 LOG_DBG("plugged to manual charger\n");
                 set_new_state(POWER_STATE::MANUAL_CHARGE);
@@ -1439,7 +1439,7 @@ private:
             auto psw_state{psw.get_state()};
             if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
-            } else if (mbd.is_dead()) {
+            } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
             } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
@@ -1516,7 +1516,7 @@ private:
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("main board or ROS dead\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (bmu.is_full_charge()) {
                 LOG_DBG("full charge\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1801,6 +1801,9 @@ private:
             return;
         }
         wdt_feed(dev_wdi, 0);   // Feed the watchdog, Second value will not be used for STM32
+    }
+    bool should_lockdown() const {
+        return mbd.is_dead() && !esw.is_asserted();
     }
     
     power_switch psw;
