@@ -1544,10 +1544,7 @@ private:
             }
             break;
         case POWER_STATE::LOCKDOWN:
-            if (!dcdc.is_ok()) {
-                LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::OFF);
-            } else if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
+            if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::OFF);
             } else if (psw.is_activated_unlock()) {
