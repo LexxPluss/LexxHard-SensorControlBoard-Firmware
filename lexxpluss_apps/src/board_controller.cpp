@@ -146,7 +146,6 @@ public:
         prev = now;
 
         sw_bat.poll(changed);
-        sw_unlock.poll(changed);
         if (changed) {
             start_time = k_uptime_get();
         }
@@ -183,11 +182,8 @@ public:
     bool is_activated_battery() const {
         return sw_bat.is_activated();
     }
-    bool is_activated_unlock() const {
-        return sw_unlock.is_activated();
-    }
 private:
-    power_switch_handler sw_bat{2}, sw_unlock{10};
+    power_switch_handler sw_bat{2};
     int64_t start_time;
     bool led_en{false};
     raw_switch::STATE prev{raw_switch::STATE::UNKNOWN};
@@ -1384,7 +1380,7 @@ private:
             auto psw_state{psw.get_state()};
             if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
-            } else if (mbd.is_dead()) {
+            } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
             } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
@@ -1427,7 +1423,7 @@ private:
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mc.is_plugged()) {
                 LOG_DBG("plugged to manual charger\n");
                 set_new_state(POWER_STATE::MANUAL_CHARGE);
@@ -1443,7 +1439,7 @@ private:
             auto psw_state{psw.get_state()};
             if (!dcdc.is_ok()) {
                 set_new_state(POWER_STATE::OFF);
-            } else if (mbd.is_dead()) {
+            } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
             } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
@@ -1520,7 +1516,7 @@ private:
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("main board or ROS dead\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (bmu.is_full_charge()) {
                 LOG_DBG("full charge\n");
                 set_new_state(POWER_STATE::NORMAL);
@@ -1544,15 +1540,9 @@ private:
             }
             break;
         case POWER_STATE::LOCKDOWN:
-            if (!dcdc.is_ok()) {
-                LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::OFF);
-            } else if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
+            if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::OFF);
-            } else if (psw.is_activated_unlock()) {
-                LOG_DBG("force recover from lockdown\n");
-                set_new_state(POWER_STATE::STANDBY);
             }
             break;
         case POWER_STATE::OFF_WAIT:
@@ -1811,6 +1801,9 @@ private:
             return;
         }
         wdt_feed(dev_wdi, 0);   // Feed the watchdog, Second value will not be used for STM32
+    }
+    bool should_lockdown() const {
+        return mbd.is_dead() && !esw.is_asserted();
     }
     
     power_switch psw;
