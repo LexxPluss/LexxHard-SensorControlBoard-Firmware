@@ -146,7 +146,6 @@ public:
         prev = now;
 
         sw_bat.poll(changed);
-        sw_unlock.poll(changed);
         if (changed) {
             start_time = k_uptime_get();
         }
@@ -183,11 +182,8 @@ public:
     bool is_activated_battery() const {
         return sw_bat.is_activated();
     }
-    bool is_activated_unlock() const {
-        return sw_unlock.is_activated();
-    }
 private:
-    power_switch_handler sw_bat{2}, sw_unlock{10};
+    power_switch_handler sw_bat{2};
     int64_t start_time;
     bool led_en{false};
     raw_switch::STATE prev{raw_switch::STATE::UNKNOWN};
@@ -1547,9 +1543,6 @@ private:
             if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::OFF);
-            } else if (psw.is_activated_unlock()) {
-                LOG_DBG("force recover from lockdown\n");
-                set_new_state(POWER_STATE::STANDBY);
             }
             break;
         case POWER_STATE::OFF_WAIT:
