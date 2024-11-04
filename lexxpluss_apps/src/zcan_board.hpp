@@ -81,7 +81,7 @@ public:
             if (message.wait_shutdown_state) {
                 packedData[0] |= 0b00001000;
             }
-            if (message.emergency_stop) {
+            if (message.emergency_state) {
                 packedData[0] |= 0b00000100;
             }
             if (message.safety_lidar_asserted) {
