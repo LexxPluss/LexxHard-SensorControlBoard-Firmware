@@ -1278,13 +1278,13 @@ public:
         if (state != POWER_STATE::OFF) {
             rtn = esw.is_asserted() ||
                bsw.is_asserted() ||
-               state == POWER_STATE::SUSPEND ||
-               state == POWER_STATE::RESUME_WAIT ||
                mbd.emergency_stop_from_ros() ||
-               sl.is_asserted();
+               sl.is_asserted() ||
+               is_emergency_state();
         }
         return rtn;
     }
+
 private:
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
@@ -1759,7 +1759,7 @@ private:
         board2ros.auto_charging_status = ac.is_docked();
         board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
         board2ros.wait_shutdown_state = state == POWER_STATE::OFF_WAIT || state == POWER_STATE::TIMEROFF;
-        board2ros.emergency_stop = is_emergency();
+        board2ros.emergency_state = is_emergency_state();
         board2ros.wheel_enable = wsw.is_enabled();
 
         bool v24{false}, v_peripheral{false}, v_wheel_motor_left{false}, v_wheel_motor_right{false};
@@ -1804,6 +1804,9 @@ private:
     }
     bool should_lockdown() const {
         return mbd.is_dead() && !esw.is_asserted();
+    }
+    bool is_emergency_state() const {
+        return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;
     }
     
     power_switch psw;
