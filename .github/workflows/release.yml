@@ -49,36 +49,16 @@ jobs:
           make IN_HOST=1 WORKDIR=$(pwd) bootloader
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware
           make IN_HOST=1 WORKDIR=$(pwd) initial_image
-      - name: release
-        id: create_release
-        uses: actions/create-release@v1
+          mv ./firmware.bin LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
+          mv ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
+      - name: Upload release binaries
+        uses: alexellis/upload-assets@0.4.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
+          UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-      - name: upload initial firmware
-        id: upload-release-asset-firmware
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./firmware.bin
-          asset_name: LexxHard-MainBoard-Firmware-Initial-${{ github.ref_name }}.bin
-          asset_content_type: application/octet-stream
-      - name: upload update firmware
-        id: upload-release-asset-updator
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./build/zephyr/zephyr.signed.confirmed.bin
-          asset_name: LexxHard-MainBoard-Firmware-Update-${{ github.ref_name }}.bin
-          asset_content_type: application/octet-stream
+          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ UPDATE_FIRMWARE_PATH }}"]'
       - name: Notification
         uses: act10ns/slack@v1
         with:
