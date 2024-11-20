@@ -58,7 +58,7 @@ jobs:
           INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
           UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
         with:
-          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ UPDATE_FIRMWARE_PATH }}"]'
+          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}"]'
       - name: Notification
         uses: act10ns/slack@v1
         with:
