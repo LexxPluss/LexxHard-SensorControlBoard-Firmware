@@ -313,10 +313,18 @@ public:
         return state == STATE::RIGHT;
     }
     bool is_manual_charge() const {
+#ifndef USE_TWO_STATE_KEY_SWITCH
         return state == STATE::CENTER;
+#else
+        return !is_running();
+#endif
     }
     bool is_maintenance() const {
+#ifndef USE_TWO_STATE_KEY_SWITCH
         return !is_running() && !is_manual_charge();
+#else
+        return false;
+#endif
     }
 private:
     STATE state{STATE::UNKNOWN};
