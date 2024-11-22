@@ -34,7 +34,7 @@ clean:
 
 .PHONY: distclean
 distclean: clean
-	rm -rf build-mcuboot build bootloader modules ros_msgs tools zephyr out .west
+	rm -rf build-mcuboot build bootloader modules tools zephyr out .west
 
 .PHONY: build
 build: docker-compose.yml Dockerfile
@@ -45,6 +45,8 @@ setup:
 	$(RUNNER) west init -l lexxpluss_apps
 	$(RUNNER) west update
 	$(RUNNER) west config --global zephyr.base-prefer configfile
+	mkdir -p out
+
 .PHONY: update
 update:
 	$(RUNNER) west update
@@ -53,19 +55,50 @@ update:
 bootloader:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/${WORKDIR}/extra
+	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
 .PHONY: firmware
 firmware:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build/zephyr/zephyr.signed.bin out/zephyr.signed.bin
+	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr.signed.confirmed.bin
+
+.PHONY: firmware_two_state_ksw
+firmware_two_state_ksw:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build/zephyr/zephyr.signed.bin out/zephyr_two_state_ksw.signed.bin
+	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_two_state_ksw.signed.confirmed.bin
 
 .PHONY: firmware_interlock
 firmware_interlock:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
+	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_interlock.signed.confirmed.bin
 
-.PHONY: initial_image
-initial_image:
-	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > bl_with_ff.bin
-	dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
-	cat bl_with_ff.bin build/zephyr/zephyr.signed.bin > firmware.bin
+.PHONY: firmware_initial
+firmware_initial:
+	$(MAKE) bootloader
+	$(MAKE) firmware
+	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
+	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
+	cat out/bl_with_ff.bin out/zephyr.signed.bin > out/firmware.bin
+
+.PHONY: firmware_two_state_ksw_initial
+firmware_two_state_ksw_initial:
+	$(MAKE) bootloader
+	$(MAKE) firmware_two_state_ksw
+	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
+	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
+	cat out/bl_with_ff.bin out/zephyr_two_state_ksw.signed.bin > out/firmware_two_state_ksw.bin
+
+.PHONY: firmware_interlock_initial
+firmware_interlock_initial:
+	$(MAKE) bootloader
+	$(MAKE) firmware_interlock
+	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
+	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
+	cat out/bl_with_ff.bin out/zephyr_interlock.signed.bin > out/firmware_interlock.bin
+
