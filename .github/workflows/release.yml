@@ -47,18 +47,23 @@ jobs:
           cp -a /home/user/.cmake $HOME
           make IN_HOST=1 WORKDIR=$(pwd) setup
           make IN_HOST=1 WORKDIR=$(pwd) bootloader
-          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware
-          make IN_HOST=1 WORKDIR=$(pwd) initial_image
-          mv ./firmware.bin LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
-          mv ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
+          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_initial
+          make IN_HOST=1 WORKDIR=$(pwd) clean
+          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_two_state_ksw_initial
+          mv ./out/firmware.bin LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
+          mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
+          mv ./out/firmware_two_state_ksw.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
+          mv ./out/zephyr_two_state_ksw.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
       - name: Upload release binaries
         uses: alexellis/upload-assets@0.4.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
           UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
+          INITIAL_FIRMWARE_TWO_STATE_KSW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
+          UPDATE_FIRMWARE_TWO_STATE_SKW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
         with:
-          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}"]'
+          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}", "${{ env.INITIAL_FIRMWARE_TWO_STATE_KSW_PATH }}", "${{ env.UPDATE_FIRMWARE_TWO_STATE_SKW_PATH }}"]'
       - name: Notification
         uses: act10ns/slack@v1
         with:

@@ -263,7 +263,7 @@ private:
 class key_switch { // Variables Implemented
 public:
     enum class STATE {
-        LEFT, RIGHT, UNKNOWN
+        LEFT, RIGHT, CENTER, UNKNOWN
     };
     void poll() {
         gpio_dt_spec gpio_left_dev = GET_GPIO(key_switch_left);
@@ -293,11 +293,14 @@ public:
             count = COUNT;
             asserted = true;
         }
+
         if (asserted) {
             if(now_left == 0 && now_right == 1)
                 state = STATE::LEFT;
             else if(now_left == 1 && now_right == 0)
                 state = STATE::RIGHT;
+            else if(now_left == 1 && now_right == 1)
+                state = STATE::CENTER;
             else
                 state = STATE::UNKNOWN;
         }
@@ -306,8 +309,22 @@ public:
         state = STATE::UNKNOWN;
     }
     STATE get_state() const {return state;}
+    bool is_running() const {
+        return state == STATE::RIGHT;
+    }
+    bool is_manual_charge() const {
+#ifndef USE_TWO_STATE_KEY_SWITCH
+        return state == STATE::CENTER;
+#else
+        return !is_running();
+#endif
+    }
     bool is_maintenance() const {
-        return state != STATE::RIGHT;
+#ifndef USE_TWO_STATE_KEY_SWITCH
+        return !is_running() && !is_manual_charge();
+#else
+        return false;
+#endif
     }
 private:
     STATE state{STATE::UNKNOWN};
@@ -1339,12 +1356,12 @@ private:
 
         switch (state) {
         case POWER_STATE::OFF:
-            if (ksw.is_maintenance() || is_lockdown) {
+            if (should_turn_off() || is_lockdown) {
                 // empty here
-            } else if(psw.get_state() == power_switch::STATE::RELEASED){
-                set_new_state(POWER_STATE::WAIT_SW);
-            } else if (mc.is_plugged()) {
+            } else if (should_manual_charge()) {
                 set_new_state(POWER_STATE::POST);
+            } else if (psw.get_state() == power_switch::STATE::RELEASED){
+                set_new_state(POWER_STATE::WAIT_SW);
             }
             break;
         case POWER_STATE::TIMEROFF:
@@ -1352,20 +1369,15 @@ private:
                 set_new_state(POWER_STATE::OFF);
             break;
         case POWER_STATE::WAIT_SW:
-            if (ksw.is_maintenance()) {
+            if (should_turn_off() || should_manual_charge()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 poweron_by_switch = true;
                 set_new_state(POWER_STATE::POST);
-            } else if (mc.is_plugged()) {
-                set_new_state(POWER_STATE::POST);
             }
             break;
         case POWER_STATE::POST:
-            if (ksw.is_maintenance()) {
-                set_new_state(POWER_STATE::OFF);
-            } else if (!poweron_by_switch && !mc.is_plugged()) {
-                LOG_DBG("unplugged from manual charger\n");
+            if (should_turn_off()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (bmu.is_ok() && psw.get_state() == power_switch::STATE::RELEASED) {
                 LOG_DBG("BMU and temperature OK\n");
@@ -1382,23 +1394,23 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (should_manual_charge()) {
+                LOG_DBG("plugged to manual charger\n");
+                set_new_state(POWER_STATE::MANUAL_CHARGE);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && mbd.is_ready() && !sl.is_asserted()) {
                 LOG_DBG("not emergency and heartbeat OK\n");
                 set_new_state(POWER_STATE::NORMAL);
-            } else if (mc.is_plugged()) {
-                LOG_DBG("plugged to manual charger\n");
-                set_new_state(POWER_STATE::MANUAL_CHARGE);
             }
             break;
         }
         case POWER_STATE::NORMAL:
             wheel_relay_control();
-            if (ksw.is_maintenance()) {
+            if (should_lockdown() || should_turn_off() || should_manual_charge()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
@@ -1424,9 +1436,6 @@ private:
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (mc.is_plugged()) {
-                LOG_DBG("plugged to manual charger\n");
-                set_new_state(POWER_STATE::MANUAL_CHARGE);
             } else if (!charge_guard_asserted && ac.is_docked() && bmu.is_chargable()) {
                 if(ac.is_charger_ready() == true){
                     LOG_DBG("docked to auto charger\n");
@@ -1441,7 +1450,7 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (ksw.is_maintenance() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+            } else if (should_turn_off() || should_manual_charge() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && !sl.is_asserted()) {
                 LOG_DBG("not emergency\n");
@@ -1451,7 +1460,7 @@ private:
         }
         case POWER_STATE::RESUME_WAIT:
             wheel_relay_control();
-            if (ksw.is_maintenance()) {
+            if (should_turn_off() || should_manual_charge()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
@@ -1491,7 +1500,7 @@ private:
             break;
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
-            if (ksw.is_maintenance()) {
+            if (should_turn_off() || should_manual_charge()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
@@ -1532,11 +1541,9 @@ private:
             }
             break;
         case POWER_STATE::MANUAL_CHARGE:
-            if (ksw.is_maintenance()) {
+            if (!should_manual_charge()) {
+               LOG_DBG("unplugged from manual charger\n");
                set_new_state(POWER_STATE::OFF_WAIT);
-            } else if (!mc.is_plugged()) {
-                LOG_DBG("unplugged from manual charger\n");
-                set_new_state(POWER_STATE::NORMAL);
             }
             break;
         case POWER_STATE::LOCKDOWN:
@@ -1735,7 +1742,7 @@ private:
         case POWER_STATE::OFF_WAIT: {
             LOG_INF("enter OFF_WAIT\n");
             timer_shutdown = k_uptime_get();    // timer reset
-            if (psw.get_state() == power_switch::STATE::PUSHED || ksw.is_maintenance())
+            if (psw.get_state() == power_switch::STATE::PUSHED || should_turn_off() || should_manual_charge())
                 shutdown_reason = SHUTDOWN_REASON::SWITCH;
             if (mbd.power_off_from_ros())
                 shutdown_reason = SHUTDOWN_REASON::ROS;
@@ -1807,6 +1814,12 @@ private:
     }
     bool is_emergency_state() const {
         return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;
+    }
+    bool should_turn_off() {
+        return  ksw.is_maintenance() || (ksw.is_manual_charge() && !mc.is_plugged()) || (!ksw.is_manual_charge() && mc.is_plugged());
+    }
+    bool should_manual_charge() {
+        return ksw.is_manual_charge() && mc.is_plugged();
     }
     
     power_switch psw;
