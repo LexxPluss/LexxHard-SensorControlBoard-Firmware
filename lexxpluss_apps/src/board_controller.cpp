@@ -342,6 +342,8 @@ public:
             return;
         }
         gpio_pin_set_dt(&gpio_dev, 0);
+
+        request_reset();  // reset bumper switch in the first polling
     }
     void poll() {
         if(should_reset) {
