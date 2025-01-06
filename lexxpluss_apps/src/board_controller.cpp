@@ -342,6 +342,8 @@ public:
             return;
         }
         gpio_pin_set_dt(&gpio_dev, 0);
+
+        request_reset();  // reset bumper switch in the first polling
     }
     void poll() {
         if(should_reset) {
@@ -1764,8 +1766,8 @@ private:
         board2ros.emergency_switch_asserted = esw.is_asserted();
         board2ros.bumper_switch_asserted = bsw.is_asserted();
         board2ros.safety_lidar_asserted = sl.is_asserted();
-        board2ros.manual_charging_status = mc.is_plugged();
-        board2ros.auto_charging_status = ac.is_docked();
+        board2ros.manual_charging_status = state == POWER_STATE::MANUAL_CHARGE;
+        board2ros.auto_charging_status = state == POWER_STATE::AUTO_CHARGE;
         board2ros.shutdown_reason = static_cast<uint32_t>(shutdown_reason);
         board2ros.wait_shutdown_state = state == POWER_STATE::OFF_WAIT || state == POWER_STATE::TIMEROFF;
         board2ros.emergency_state = is_emergency_state();
