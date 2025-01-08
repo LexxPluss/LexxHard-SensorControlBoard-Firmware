@@ -33,6 +33,7 @@ jobs:
     runs-on: lp-4core-runner
     container:
       image: zephyrprojectrtos/zephyr-build:v0.26.9
+      options: --user root
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
