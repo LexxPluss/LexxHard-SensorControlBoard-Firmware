@@ -91,6 +91,7 @@ public:
                 ros2board.heart_beat = false;
                 ros2board.power_off = false;
                 ros2board.wheel_power_off = false;
+                ros2board.lockdown = false;
                 heartbeat_timeout = false;
             }
 
@@ -112,6 +113,7 @@ public:
     }
     void brd_emgoff() {
         ros2board.emergency_stop = false;
+        ros2board.lockdown = false;
         heartbeat_timeout = false;
 
         // if changed send to board_controller
@@ -147,9 +149,10 @@ private:
         msg_board_to_pb.ros_power_off = ros2board.power_off;
         msg_board_to_pb.ros_heartbeat_timeout = heartbeat_timeout;
         msg_board_to_pb.ros_wheel_power_off = ros2board.wheel_power_off;
+        msg_board_to_pb.ros_lockdown = ros2board.lockdown;
     }
     msg_board board2ros{0};
-    msg_control ros2board{true, false, false, false};
+    msg_control ros2board{true, false, false, false, false};
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     bool heartbeat_timeout{false};
