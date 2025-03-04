@@ -116,7 +116,7 @@ public:
             msg.power_off = frame.data[1] & 0x01;
             msg.wheel_power_off = frame.data[2] & 0x01;
             msg.heart_beat = frame.data[3] & 0x01;
-            msg.lockdown = frame.data[4] & 0x01;
+            msg.lockdown = (4 < frame.dlc) ? frame.data[4] & 0x01 : 0;
 
             if(prev_msg.emergency_stop != msg.emergency_stop) {
                 LOG_INF("Emergency Stop: %d", msg.emergency_stop);
