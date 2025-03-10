@@ -113,7 +113,6 @@ public:
     }
     void brd_emgoff() {
         ros2board.emergency_stop = false;
-        ros2board.lockdown = false;
         heartbeat_timeout = false;
 
         // if changed send to board_controller
