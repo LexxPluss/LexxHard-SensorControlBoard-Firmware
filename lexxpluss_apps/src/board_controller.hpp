@@ -41,6 +41,7 @@ struct msg_rcv_pb {
     bool ros_power_off;
     bool ros_heartbeat_timeout;
     bool ros_wheel_power_off;
+    bool ros_lockdown;
 } __attribute__((aligned(4)));
 
 

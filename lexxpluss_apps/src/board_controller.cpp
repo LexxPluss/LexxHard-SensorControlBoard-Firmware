@@ -1100,11 +1100,17 @@ public:
         k_msgq_init(&msgq_board_pb_rx, msgq_board_pb_rx_buffer, sizeof (msg_rcv_pb), 8);
     }
     void reset() {
-        heartbeat_detect = false;
-        ros_heartbeat_timeout = false;
         emergency_stop = true;
         power_off = false;
         wheel_poweroff = false;
+        lockdown = false;
+
+        reset_heartbeat();
+        reset_queue();
+    }
+    void reset_heartbeat() {
+        heartbeat_detect = false;
+        ros_heartbeat_timeout = false;
     }
     void poll() {
         msg_rcv_pb msg;
@@ -1117,6 +1123,9 @@ public:
     }
     bool power_off_from_ros() const {
         return power_off;
+    }
+    bool lockdown_from_ros() const {
+        return lockdown;
     }
     bool is_dead() const {
         if (heartbeat_detect)
@@ -1131,6 +1140,10 @@ public:
         return wheel_poweroff;
     }
 private:
+    void reset_queue() {
+        msg_rcv_pb msg;
+        while (k_msgq_get(&msgq_board_pb_rx, &msg, K_NO_WAIT) == 0) {}
+    }
     void handle_board(const msg_rcv_pb &msg) {
         if (emergency_stop != msg.ros_emergency_stop) {
             LOG_INF("ROS Emergency Stop: %d", msg.ros_emergency_stop);
@@ -1144,17 +1157,21 @@ private:
         if (wheel_poweroff != msg.ros_wheel_power_off) {
             LOG_INF("ROS Wheel Power Off: %d", msg.ros_wheel_power_off);
         }
+        if (lockdown != msg.ros_lockdown ) {
+            LOG_INF("ROS Lockdown: %d", msg.ros_lockdown);
+        }
 
         emergency_stop = msg.ros_emergency_stop;
         power_off = msg.ros_power_off;
         ros_heartbeat_timeout = msg.ros_heartbeat_timeout;
         wheel_poweroff = msg.ros_wheel_power_off;
+        lockdown = msg.ros_lockdown;
 
         // heartbeat is not timeout means heartbeat is detected
         heartbeat_detect |= !ros_heartbeat_timeout;
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
-        wheel_poweroff{false};
+        wheel_poweroff{false}, lockdown{false};
 };
 
 class safety_lidar { // Variables Implemented
@@ -1412,8 +1429,10 @@ private:
         }
         case POWER_STATE::NORMAL:
             wheel_relay_control();
-            if (should_lockdown() || should_turn_off() || should_manual_charge()) {
+            if (should_turn_off() || should_manual_charge()) {
                set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (should_lockdown()) {
+               set_new_state(POWER_STATE::LOCKDOWN);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::STANDBY);
@@ -1659,6 +1678,7 @@ private:
         } break;
         case POWER_STATE::STANDBY: {
             LOG_INF("enter STANDBY\n");
+            mbd.reset_heartbeat();
             psw.set_led(true);
             dcdc.set_enable(true);
             wsw.set_disable(true);
@@ -1814,7 +1834,7 @@ private:
         wdt_feed(dev_wdi, 0);   // Feed the watchdog, Second value will not be used for STM32
     }
     bool should_lockdown() const {
-        return mbd.is_dead() && !esw.is_asserted();
+        return (mbd.is_dead() || mbd.lockdown_from_ros()) && !esw.is_asserted();
     }
     bool is_emergency_state() const {
         return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;
