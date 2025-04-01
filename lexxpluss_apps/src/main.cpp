@@ -125,6 +125,12 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(d_enc_ena), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(eo_option_1), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(eo_option_2), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
     
     // Input
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_sw_in), gpios);
