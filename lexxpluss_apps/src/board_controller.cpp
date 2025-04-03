@@ -1377,8 +1377,6 @@ private:
         case POWER_STATE::OFF:
             if (should_turn_off() || is_lockdown) {
                 // empty here
-            } else if (should_manual_charge()) {
-                set_new_state(POWER_STATE::POST);
             } else if (psw.get_state() == power_switch::STATE::RELEASED){
                 set_new_state(POWER_STATE::WAIT_SW);
             }
@@ -1388,7 +1386,7 @@ private:
                 set_new_state(POWER_STATE::OFF);
             break;
         case POWER_STATE::WAIT_SW:
-            if (should_turn_off() || should_manual_charge()) {
+            if (should_turn_off()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 poweron_by_switch = true;
@@ -1840,7 +1838,7 @@ private:
         return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;
     }
     bool should_turn_off() {
-        return  ksw.is_maintenance() || (ksw.is_manual_charge() && !mc.is_plugged()) || (!ksw.is_manual_charge() && mc.is_plugged());
+        return !ksw.is_manual_charge() && mc.is_plugged();
     }
     bool should_manual_charge() {
         return ksw.is_manual_charge() && mc.is_plugged();
