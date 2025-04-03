@@ -312,7 +312,7 @@ public:
     bool is_running() const {
         return state == STATE::RIGHT;
     }
-    bool is_manual_charge() const {
+    bool is_maintenance() const {
 #ifndef USE_TWO_STATE_KEY_SWITCH
         return state == STATE::CENTER;
 #else
@@ -1831,10 +1831,10 @@ private:
         return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;
     }
     bool should_turn_off() {
-        return !ksw.is_manual_charge() && mc.is_plugged();
+        return !ksw.is_maintenance() && mc.is_plugged();
     }
     bool should_manual_charge() {
-        return ksw.is_manual_charge() && mc.is_plugged();
+        return ksw.is_maintenance() && mc.is_plugged();
     }
     
     power_switch psw;
