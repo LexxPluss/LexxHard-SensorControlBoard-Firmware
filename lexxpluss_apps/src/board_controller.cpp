@@ -1294,6 +1294,11 @@ public:
         return bmu.is_ok();
     }
     void set_wheel_enable(){
+        if (ksw.is_maintenance()) {
+            LOG_INF("Enabling wheel is forbedden in maintenance mode");
+            return;
+        }
+
         wsw.set_disable(false);
     }
     void set_wheel_disable(){
@@ -1353,6 +1358,9 @@ private:
                 gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
+        };
+        auto wheel_switch_control = [&](){
+            wsw.set_disable(!ksw.is_maintenance());
         };
         
         psw.poll();
@@ -1420,6 +1428,7 @@ private:
         }
         case POWER_STATE::NORMAL:
             wheel_relay_control();
+            wheel_switch_control();
             if (should_turn_off() || should_manual_charge()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_lockdown()) {
@@ -1511,6 +1520,7 @@ private:
             }
             break;
         case POWER_STATE::AUTO_CHARGE:
+            wheel_switch_control();
             ac.update_rsoc(bmu.get_rsoc());
             if (should_turn_off() || should_manual_charge()) {
                set_new_state(POWER_STATE::OFF_WAIT);
@@ -1687,7 +1697,6 @@ private:
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
-            wsw.set_disable(false);
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
@@ -1716,7 +1725,6 @@ private:
         } break;
         case POWER_STATE::AUTO_CHARGE: {
             LOG_INF("enter AUTO_CHARGE\n");
-            wsw.set_disable(false);
             ac.set_enable(true);
             current_check_enable = false;
             k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
