@@ -319,13 +319,6 @@ public:
         return !is_running();
 #endif
     }
-    bool is_maintenance() const {
-#ifndef USE_TWO_STATE_KEY_SWITCH
-        return !is_running() && !is_manual_charge();
-#else
-        return false;
-#endif
-    }
 private:
     STATE state{STATE::UNKNOWN};
     uint32_t count{0};
@@ -1566,7 +1559,7 @@ private:
             }
             break;
         case POWER_STATE::LOCKDOWN:
-            if (ksw.is_maintenance() || psw.get_state() != power_switch::STATE::RELEASED) {
+            if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::OFF);
             }
