@@ -1361,6 +1361,9 @@ private:
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
         };
+        auto wheel_switch_control = [&](){
+            wsw.set_disable(ksw.is_maintenance());
+        };
         
         psw.poll();
         rsw.poll();
@@ -1430,7 +1433,7 @@ private:
             wheel_relay_control();
             wheel_switch_control();
             if (should_turn_off() || is_working_mode_changed()) {
-r              set_new_state(POWER_STATE::OFF_WAIT);
+               set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_lockdown()) {
                set_new_state(POWER_STATE::LOCKDOWN);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
@@ -1523,6 +1526,7 @@ r              set_new_state(POWER_STATE::OFF_WAIT);
             }
             break;
         case POWER_STATE::AUTO_CHARGE:
+            wheel_switch_control();
             ac.update_rsoc(bmu.get_rsoc());
             if (should_turn_off() || is_working_mode_changed()) {
                set_new_state(POWER_STATE::OFF_WAIT);
@@ -1604,7 +1608,6 @@ r              set_new_state(POWER_STATE::OFF_WAIT);
         case POWER_STATE::NORMAL: {
             LOG_INF("leave NORMAL");
             k_timer_stop(&charge_guard_timeout);
-            wsw.set_disable(true);
         } break;
         case POWER_STATE::POST: {
             LOG_INF("leave POST\n");
@@ -1623,7 +1626,6 @@ r              set_new_state(POWER_STATE::OFF_WAIT);
             LOG_INF("leave AUTO_CHARGE");
             k_timer_stop(&current_check_timeout);
             ac.force_stop();
-            wsw.set_disable(true);
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("leave MANUAL_CHARGE\n");
