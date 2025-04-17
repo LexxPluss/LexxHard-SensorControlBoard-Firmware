@@ -1775,6 +1775,15 @@ private:
             if (!bmu.is_ok())
                 shutdown_reason = SHUTDOWN_REASON::BMU;
 
+            // dump reasons about power off for debugging
+            LOG_INF("Dump power off reasons\n"
+                    "  state: %d, psw.get_state(): %d, shouwl_turn_off(): %d, should_manual_charge():%d\n"
+                    "  is_working_mode_changed(): %d, mbd.power_off_from_ros(): %d, bmu.is_ok(): %d\n"
+                    "  ksw.is_off():%d, ksw.is_maintenance(): %d, mc.is_plugged(): %d",
+                    static_cast<int>(state), static_cast<int>(psw.get_state()), should_turn_off(), should_manual_charge(),
+                    is_working_mode_changed(), mbd.power_off_from_ros(), bmu.is_ok(),
+                    ksw.is_off(), ksw.is_maintenance(), mc.is_plugged());
+
             // Set LED
             led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 60000};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
