@@ -44,7 +44,7 @@
 #include "power_state.hpp"
 
 namespace {
-    constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{2000};
+    constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{5000};
 }
 
 namespace lexxhard::board_controller {
