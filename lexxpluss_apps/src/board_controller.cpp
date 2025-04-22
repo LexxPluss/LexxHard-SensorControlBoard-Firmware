@@ -1275,6 +1275,16 @@ public:
             return;
         }
 
+        // eo_option_1 is used as power source for third inductive sensor
+        {
+            gpio_dt_spec gpio_dev = GET_GPIO(eo_option_1);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt for eo_option_1 Failed\n");
+                return;
+            }
+            gpio_pin_set_dt(&gpio_dev, true);
+        }
+
         esw.set_callback([&](){
             this->bsw.request_reset();
         });

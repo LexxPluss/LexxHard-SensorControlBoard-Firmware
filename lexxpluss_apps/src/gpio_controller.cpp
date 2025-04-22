@@ -44,7 +44,7 @@ char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
 class gpio_controller_impl {
 public:
-    static constexpr int32_t POLL_INTERVAL_MS = 100;
+    static constexpr int32_t POLL_INTERVAL_MS = 20;
 
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
