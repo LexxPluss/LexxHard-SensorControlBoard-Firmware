@@ -43,6 +43,10 @@
 #include "led_controller.hpp"
 #include "power_state.hpp"
 
+namespace {
+    constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{5000};
+}
+
 namespace lexxhard::board_controller {
 
 LOG_MODULE_REGISTER(board);
@@ -426,7 +430,8 @@ public:
         emergency_switch(GET_GPIO(es_right)),
         emergency_switch(GET_GPIO(es_option_1)),
         emergency_switch(GET_GPIO(es_option_2)),
-    }
+    },
+    last_asserted_at{0}
     {
     }
     void poll() {
@@ -434,6 +439,11 @@ public:
 
         for(auto& sw : switches) {
             sw.poll();
+        }
+
+        // press the emergency switch
+        if (!prev_is_asserted && is_asserted()) {
+            last_asserted_at = k_uptime_get();
         }
 
         // release the emergency switch
@@ -449,12 +459,10 @@ public:
         }
     }
     bool is_asserted() const {
-        for(auto& sw : switches) {
-            if (sw.is_asserted()) {
-                return true;
-            }
-        }
-        return false;
+        return is_asserted_impl(0);
+    }
+    bool is_asserted_with_delay() const {
+        return is_asserted_impl(SOFTWARE_BRAKE_DELAY_MS);
     }
     void set_callback(std::function<void ()> cb) {
         callback = cb;
@@ -462,6 +470,19 @@ public:
 private:
     std::function<void ()> callback{nullptr};
     std::array<emergency_switch, 4> switches;
+    int64_t last_asserted_at;
+
+    bool is_asserted_impl(int64_t delay_ms) const {
+        int64_t const elapsed_since_asserted{k_uptime_get() - last_asserted_at};
+        bool const mask{delay_ms <= elapsed_since_asserted};
+
+        for(auto& sw : switches) {
+            if (sw.is_asserted() && mask) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 class wheel_switch { // Variables Implemented
@@ -1104,6 +1125,7 @@ public:
         power_off = false;
         wheel_poweroff = false;
         lockdown = false;
+        last_estop_asserted_at = 0;
 
         reset_heartbeat();
         reset_queue();
@@ -1119,7 +1141,10 @@ public:
         }
     }
     bool emergency_stop_from_ros() const {
-        return emergency_stop;
+        int64_t const elapsed_since_estop_asserted{k_uptime_get() - last_estop_asserted_at};
+        bool const mask{SOFTWARE_BRAKE_DELAY_MS <= elapsed_since_estop_asserted};
+
+        return emergency_stop && mask;
     }
     bool power_off_from_ros() const {
         return power_off;
@@ -1147,6 +1172,11 @@ private:
     void handle_board(const msg_rcv_pb &msg) {
         if (emergency_stop != msg.ros_emergency_stop) {
             LOG_INF("ROS Emergency Stop: %d", msg.ros_emergency_stop);
+
+            // emergency stop asserted from ROS
+            if (msg.ros_emergency_stop) {
+                last_estop_asserted_at = k_uptime_get();
+            }
         }
         if (power_off != msg.ros_power_off) {
             LOG_INF("ROS Power Off: %d", msg.ros_power_off);
@@ -1172,6 +1202,7 @@ private:
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
         wheel_poweroff{false}, lockdown{false};
+    int64_t last_estop_asserted_at;
 };
 
 class safety_lidar { // Variables Implemented
@@ -1455,7 +1486,7 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (esw.is_asserted()) {
+            } else if (esw.is_asserted_with_delay()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
@@ -1545,7 +1576,7 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (esw.is_asserted()) {
+            } else if (esw.is_asserted_with_delay()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
