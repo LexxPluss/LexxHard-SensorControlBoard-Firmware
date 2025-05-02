@@ -487,32 +487,45 @@ private:
 
 class wheel_switch { // Variables Implemented
 public:
-    void set_disable(bool disable) {
-        if (disable) {
-            gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
-            if (!gpio_is_ready_dt(&gpio_dev)) {
-                LOG_ERR("gpio_is_ready_dt Failed\n");
-                return;
+    void poll() {
+        // update  
+        if (pending_left_right_disable.has_value()) {
+            auto elapsed{k_uptime_get() - last_asserted_at};
+            if (elapsed > SOFTWARE_BRAKE_DELAY_MS) {
+                left_right_disable = pending_left_right_disable.value();
+                pending_left_right_disable = std::nullopt;
             }
-            gpio_pin_set_dt(&gpio_dev, 0);
-            left_right_disable = true; 
-        } else {
-            gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
-            if (!gpio_is_ready_dt(&gpio_dev)) {
-                LOG_ERR("gpio_is_ready_dt Failed\n");
-                return;
-            }
-            gpio_pin_set_dt(&gpio_dev, 1);
-            left_right_disable = false;
         }
+
+        set_disable_impl(!is_enabled());
+    }
+    void set_disable(bool disable) {
+        left_right_disable = disable;
+        pending_left_right_disable = std::nullopt;
+    }
+    void set_disable_with_delay(bool disable) {
+        pending_left_right_disable = disable;
+        last_asserted_at = k_uptime_get();
     }
     void get_raw_state(bool &left, bool &right) {
-        left = left_right_disable;
-        right = left_right_disable;
+        left = !is_enabled();
+        right = !is_enabled();
     }
     bool is_enabled() const {return !left_right_disable;}
 private:
     bool left_right_disable{false};   //false is enable
+    std::optional<bool> pending_left_right_disable{std::nullopt};
+    int64_t last_asserted_at;
+
+    void set_disable_impl(bool disable) {
+        gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+
+        gpio_pin_set_dt(&gpio_dev, static_cast<int>(!disable));
+    }
 };
 
 class manual_charger { // Variables Implemented
@@ -1398,6 +1411,7 @@ private:
         ksw.poll();
         bsw.poll();
         esw.poll();
+        wsw.poll();
         mc.poll();
         ac.poll();
         bmu.poll();
@@ -1476,7 +1490,7 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (esw.is_asserted_with_delay()) {
+            } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
@@ -1566,7 +1580,7 @@ private:
             } else if (!dcdc.is_ok()) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (esw.is_asserted_with_delay()) {
+            } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
@@ -1632,7 +1646,7 @@ private:
         case POWER_STATE::NORMAL: {
             LOG_INF("leave NORMAL");
             k_timer_stop(&charge_guard_timeout);
-            wsw.set_disable(true);
+            wsw.set_disable_with_delay(true);
         } break;
         case POWER_STATE::POST: {
             LOG_INF("leave POST\n");
@@ -1651,7 +1665,7 @@ private:
             LOG_INF("leave AUTO_CHARGE");
             k_timer_stop(&current_check_timeout);
             ac.force_stop();
-            wsw.set_disable(true);
+            wsw.set_disable_with_delay(true);
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("leave MANUAL_CHARGE\n");
@@ -1741,7 +1755,6 @@ private:
         case POWER_STATE::SUSPEND: {
             LOG_INF("enter SUSPEND\n");
             psw.set_led(true);
-            wsw.set_disable(true);
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
