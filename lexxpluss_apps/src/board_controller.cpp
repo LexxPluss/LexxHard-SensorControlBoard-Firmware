@@ -430,8 +430,7 @@ public:
         emergency_switch(GET_GPIO(es_right)),
         emergency_switch(GET_GPIO(es_option_1)),
         emergency_switch(GET_GPIO(es_option_2)),
-    },
-    last_asserted_at{0}
+    }
     {
     }
     void poll() {
@@ -439,11 +438,6 @@ public:
 
         for(auto& sw : switches) {
             sw.poll();
-        }
-
-        // press the emergency switch
-        if (!prev_is_asserted && is_asserted()) {
-            last_asserted_at = k_uptime_get();
         }
 
         // release the emergency switch
@@ -459,10 +453,13 @@ public:
         }
     }
     bool is_asserted() const {
-        return is_asserted_impl(0);
-    }
-    bool is_asserted_with_delay() const {
-        return is_asserted_impl(SOFTWARE_BRAKE_DELAY_MS);
+        for(auto& sw : switches) {
+            if (sw.is_asserted()) {
+                return true;
+            }
+        }
+
+        return false;
     }
     void set_callback(std::function<void ()> cb) {
         callback = cb;
@@ -470,19 +467,6 @@ public:
 private:
     std::function<void ()> callback{nullptr};
     std::array<emergency_switch, 4> switches;
-    int64_t last_asserted_at;
-
-    bool is_asserted_impl(int64_t delay_ms) const {
-        int64_t const elapsed_since_asserted{k_uptime_get() - last_asserted_at};
-        bool const mask{delay_ms <= elapsed_since_asserted};
-
-        for(auto& sw : switches) {
-            if (sw.is_asserted() && mask) {
-                return true;
-            }
-        }
-        return false;
-    }
 };
 
 class wheel_switch { // Variables Implemented
