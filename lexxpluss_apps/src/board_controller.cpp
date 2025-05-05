@@ -483,13 +483,14 @@ public:
 
         set_disable_impl(!is_enabled());
     }
-    void set_disable(bool disable) {
-        left_right_disable = disable;
-        pending_left_right_disable = std::nullopt;
-    }
-    void set_disable_with_delay(bool disable) {
-        pending_left_right_disable = disable;
-        last_asserted_at = k_uptime_get();
+    void set_disable(bool disable, bool with_delay = false) {
+        if (!with_delay) {
+            left_right_disable = disable;
+            pending_left_right_disable = std::nullopt;
+        } else {
+            pending_left_right_disable = disable;
+            last_asserted_at = k_uptime_get();
+        }
     }
     void get_raw_state(bool &left, bool &right) {
         left = !is_enabled();
@@ -1122,7 +1123,6 @@ public:
         power_off = false;
         wheel_poweroff = false;
         lockdown = false;
-        last_estop_asserted_at = 0;
 
         reset_heartbeat();
         reset_queue();
@@ -1138,10 +1138,7 @@ public:
         }
     }
     bool emergency_stop_from_ros() const {
-        int64_t const elapsed_since_estop_asserted{k_uptime_get() - last_estop_asserted_at};
-        bool const mask{SOFTWARE_BRAKE_DELAY_MS <= elapsed_since_estop_asserted};
-
-        return emergency_stop && mask;
+        return emergency_stop;
     }
     bool power_off_from_ros() const {
         return power_off;
@@ -1169,11 +1166,6 @@ private:
     void handle_board(const msg_rcv_pb &msg) {
         if (emergency_stop != msg.ros_emergency_stop) {
             LOG_INF("ROS Emergency Stop: %d", msg.ros_emergency_stop);
-
-            // emergency stop asserted from ROS
-            if (msg.ros_emergency_stop) {
-                last_estop_asserted_at = k_uptime_get();
-            }
         }
         if (power_off != msg.ros_power_off) {
             LOG_INF("ROS Power Off: %d", msg.ros_power_off);
@@ -1199,7 +1191,6 @@ private:
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
         wheel_poweroff{false}, lockdown{false};
-    int64_t last_estop_asserted_at;
 };
 
 class safety_lidar { // Variables Implemented
@@ -1485,12 +1476,14 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
                 LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
@@ -1578,12 +1571,14 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
                 LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("main board or ROS dead\n");
@@ -1642,7 +1637,7 @@ private:
         case POWER_STATE::NORMAL: {
             LOG_INF("leave NORMAL");
             k_timer_stop(&charge_guard_timeout);
-            wsw.set_disable_with_delay(true);
+            wsw.set_disable(true, use_software_brake);
         } break;
         case POWER_STATE::POST: {
             LOG_INF("leave POST\n");
@@ -1661,7 +1656,7 @@ private:
             LOG_INF("leave AUTO_CHARGE");
             k_timer_stop(&current_check_timeout);
             ac.force_stop();
-            wsw.set_disable_with_delay(true);
+            wsw.set_disable(true, use_software_brake);
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("leave MANUAL_CHARGE\n");
@@ -1746,6 +1741,7 @@ private:
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             charge_guard_asserted = true;
+            use_software_brake = false;
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
         } break;
         case POWER_STATE::SUSPEND: {
@@ -1768,6 +1764,7 @@ private:
             wsw.set_disable(false);
             ac.set_enable(true);
             current_check_enable = false;
+            use_software_brake = false;
             k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
 
             // Set LED
@@ -1930,7 +1927,8 @@ private:
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
-         last_wheel_poweroff{false}, is_lockdown{false}, is_in_maintenance_mode{false};
+         last_wheel_poweroff{false}, is_lockdown{false}, is_in_maintenance_mode{false},
+         use_software_brake{false};
 } impl;
 
 int cmd_power_on(const shell *shell, size_t argc, char **argv)
