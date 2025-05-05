@@ -1275,6 +1275,16 @@ public:
             return;
         }
 
+        // eo_option_1 is used as power source for third inductive sensor
+        {
+            gpio_dt_spec gpio_dev = GET_GPIO(eo_option_1);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt for eo_option_1 Failed\n");
+                return;
+            }
+            gpio_pin_set_dt(&gpio_dev, true);
+        }
+
         esw.set_callback([&](){
             this->bsw.request_reset();
         });
@@ -1394,7 +1404,7 @@ private:
             }
             break;
         case POWER_STATE::POST:
-            set_working_mode();
+            configure_maintenance_mode();
             if (should_turn_off()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (bmu.is_ok() && psw.get_state() == power_switch::STATE::RELEASED) {
@@ -1412,7 +1422,7 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok() || is_working_mode_changed()) {
+            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok() || is_mode_transition_detected()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_manual_charge()) {
                 LOG_DBG("plugged to manual charger\n");
@@ -1428,7 +1438,7 @@ private:
         }
         case POWER_STATE::NORMAL:
             wheel_relay_control();
-            if (should_turn_off() || is_working_mode_changed()) {
+            if (should_turn_off() || is_mode_transition_detected()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_lockdown()) {
                set_new_state(POWER_STATE::LOCKDOWN);
@@ -1473,7 +1483,7 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok() || is_working_mode_changed()) {
+            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok() || is_mode_transition_detected()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && !sl.is_asserted()) {
                 LOG_DBG("not emergency\n");
@@ -1483,7 +1493,7 @@ private:
         }
         case POWER_STATE::RESUME_WAIT:
             wheel_relay_control();
-            if (should_turn_off() || is_working_mode_changed()) {
+            if (should_turn_off() || is_mode_transition_detected()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
@@ -1523,7 +1533,7 @@ private:
             break;
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
-            if (should_turn_off() || is_working_mode_changed()) {
+            if (should_turn_off() || is_mode_transition_detected()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
@@ -1768,7 +1778,7 @@ private:
         case POWER_STATE::OFF_WAIT: {
             LOG_INF("enter OFF_WAIT\n");
             timer_shutdown = k_uptime_get();    // timer reset
-            if (psw.get_state() == power_switch::STATE::PUSHED || should_turn_off() || should_manual_charge() || is_working_mode_changed())
+            if (psw.get_state() == power_switch::STATE::PUSHED || should_turn_off() || should_manual_charge() || is_mode_transition_detected())
                 shutdown_reason = SHUTDOWN_REASON::SWITCH;
             if (mbd.power_off_from_ros())
                 shutdown_reason = SHUTDOWN_REASON::ROS;
@@ -1778,10 +1788,10 @@ private:
             // dump reasons about power off for debugging
             LOG_INF("Dump power off reasons\n"
                     "  state: %d, psw.get_state(): %d, shouwl_turn_off(): %d, should_manual_charge():%d\n"
-                    "  is_working_mode_changed(): %d, mbd.power_off_from_ros(): %d, bmu.is_ok(): %d\n"
+                    "  is_mode_transition_detected(): %d, mbd.power_off_from_ros(): %d, bmu.is_ok(): %d\n"
                     "  ksw.is_off():%d, ksw.is_maintenance(): %d, mc.is_plugged(): %d",
                     static_cast<int>(state), static_cast<int>(psw.get_state()), should_turn_off(), should_manual_charge(),
-                    is_working_mode_changed(), mbd.power_off_from_ros(), bmu.is_ok(),
+                    is_mode_transition_detected(), mbd.power_off_from_ros(), bmu.is_ok(),
                     ksw.is_off(), ksw.is_maintenance(), mc.is_plugged());
 
             // Set LED
@@ -1856,11 +1866,11 @@ private:
     bool should_manual_charge() {
         return ksw.is_maintenance() && mc.is_plugged();
     }
-    void set_working_mode() {
-        is_working_as_maintenance_mode = ksw.is_maintenance();
+    void configure_maintenance_mode() {
+        is_in_maintenance_mode = ksw.is_maintenance();
     }
-    bool is_working_mode_changed() const {
-        return is_working_as_maintenance_mode != ksw.is_maintenance();
+    bool is_mode_transition_detected() const {
+        return is_in_maintenance_mode != ksw.is_maintenance();
     }
     
     power_switch psw;
@@ -1892,7 +1902,7 @@ private:
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
-         last_wheel_poweroff{false}, is_lockdown{false}, is_working_as_maintenance_mode{false};
+         last_wheel_poweroff{false}, is_lockdown{false}, is_in_maintenance_mode{false};
 } impl;
 
 int cmd_power_on(const shell *shell, size_t argc, char **argv)
