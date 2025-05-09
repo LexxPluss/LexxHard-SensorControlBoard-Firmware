@@ -173,7 +173,7 @@ jobs:
                       let user = NAMELIST.users.find(el => el.user === remind.login);
                       if (user)
                       {
-                          reminders = reminders +  "\nHello <@" + user.slack_id + ">, please consider reviewing the following PR: <https://github.com/LexxPluss/LexxAuto/pull/" + pr.number + "|" + pr.number + ">"
+                          reminders = reminders +  "\nHello <@" + user.slack_id + ">, please consider reviewing the following PR: <https://github.com/LexxPluss/LexxHard-SensorControlBoard-Firmware/pull/" + pr.number + "|" + pr.number + ">"
                       }
                   }
                 }
