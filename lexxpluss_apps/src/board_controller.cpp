@@ -43,6 +43,10 @@
 #include "led_controller.hpp"
 #include "power_state.hpp"
 
+namespace {
+    constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{5000};
+}
+
 namespace lexxhard::board_controller {
 
 LOG_MODULE_REGISTER(board);
@@ -454,6 +458,7 @@ public:
                 return true;
             }
         }
+
         return false;
     }
     void set_callback(std::function<void ()> cb) {
@@ -466,32 +471,46 @@ private:
 
 class wheel_switch { // Variables Implemented
 public:
-    void set_disable(bool disable) {
-        if (disable) {
-            gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
-            if (!gpio_is_ready_dt(&gpio_dev)) {
-                LOG_ERR("gpio_is_ready_dt Failed\n");
-                return;
+    void poll() {
+        // update  
+        if (pending_left_right_disable.has_value()) {
+            auto elapsed{k_uptime_get() - last_asserted_at};
+            if (elapsed > SOFTWARE_BRAKE_DELAY_MS) {
+                left_right_disable = pending_left_right_disable.value();
+                pending_left_right_disable = std::nullopt;
             }
-            gpio_pin_set_dt(&gpio_dev, 0);
-            left_right_disable = true; 
+        }
+
+        set_disable_impl(!is_enabled());
+    }
+    void set_disable(bool disable, bool with_delay = false) {
+        if (!with_delay) {
+            left_right_disable = disable;
+            pending_left_right_disable = std::nullopt;
         } else {
-            gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
-            if (!gpio_is_ready_dt(&gpio_dev)) {
-                LOG_ERR("gpio_is_ready_dt Failed\n");
-                return;
-            }
-            gpio_pin_set_dt(&gpio_dev, 1);
-            left_right_disable = false;
+            pending_left_right_disable = disable;
+            last_asserted_at = k_uptime_get();
         }
     }
     void get_raw_state(bool &left, bool &right) {
-        left = left_right_disable;
-        right = left_right_disable;
+        left = !is_enabled();
+        right = !is_enabled();
     }
     bool is_enabled() const {return !left_right_disable;}
 private:
     bool left_right_disable{false};   //false is enable
+    std::optional<bool> pending_left_right_disable{std::nullopt};
+    int64_t last_asserted_at;
+
+    void set_disable_impl(bool disable) {
+        gpio_dt_spec gpio_dev = GET_GPIO(wheel_en);
+        if (!gpio_is_ready_dt(&gpio_dev)) {
+            LOG_ERR("gpio_is_ready_dt Failed\n");
+            return;
+        }
+
+        gpio_pin_set_dt(&gpio_dev, static_cast<int>(!disable));
+    }
 };
 
 class manual_charger { // Variables Implemented
@@ -1377,6 +1396,7 @@ private:
         ksw.poll();
         bsw.poll();
         esw.poll();
+        wsw.poll();
         mc.poll();
         ac.poll();
         bmu.poll();
@@ -1456,12 +1476,14 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
                 LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
@@ -1549,12 +1571,14 @@ private:
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (sl.is_asserted()) {
                 LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.emergency_stop_from_ros()) {
                 LOG_DBG("receive emergency stop from ROS\n");
+                use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.is_dead()) {
                 LOG_DBG("main board or ROS dead\n");
@@ -1613,7 +1637,7 @@ private:
         case POWER_STATE::NORMAL: {
             LOG_INF("leave NORMAL");
             k_timer_stop(&charge_guard_timeout);
-            wsw.set_disable(true);
+            wsw.set_disable(true, use_software_brake);
         } break;
         case POWER_STATE::POST: {
             LOG_INF("leave POST\n");
@@ -1632,7 +1656,7 @@ private:
             LOG_INF("leave AUTO_CHARGE");
             k_timer_stop(&current_check_timeout);
             ac.force_stop();
-            wsw.set_disable(true);
+            wsw.set_disable(true, use_software_brake);
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("leave MANUAL_CHARGE\n");
@@ -1717,12 +1741,12 @@ private:
             gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             charge_guard_asserted = true;
+            use_software_brake = false;
             k_timer_start(&charge_guard_timeout, K_MSEC(10000), K_NO_WAIT); // charge_guard_asserted = false after 10sec
         } break;
         case POWER_STATE::SUSPEND: {
             LOG_INF("enter SUSPEND\n");
             psw.set_led(true);
-            wsw.set_disable(true);
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
@@ -1740,6 +1764,7 @@ private:
             wsw.set_disable(false);
             ac.set_enable(true);
             current_check_enable = false;
+            use_software_brake = false;
             k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
 
             // Set LED
@@ -1902,7 +1927,8 @@ private:
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
-         last_wheel_poweroff{false}, is_lockdown{false}, is_in_maintenance_mode{false};
+         last_wheel_poweroff{false}, is_lockdown{false}, is_in_maintenance_mode{false},
+         use_software_brake{false};
 } impl;
 
 int cmd_power_on(const shell *shell, size_t argc, char **argv)
