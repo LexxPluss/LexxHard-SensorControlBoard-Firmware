@@ -1,0 +1,195 @@
+name: Remind PR reviewers
+on:
+  schedule:
+    - cron: "0 1 * * 1-5" #UTC, timezones seems not to be supported in actions. What time would we like to run?
+  workflow_dispatch: #For debugging workflow.
+
+env:
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+  SLACK_CHANNEL: <#C05A6DMC9UM>
+  NAMELIST_GCS_PATH: ${{ secrets.NAMELIST_GCS_PATH }}
+
+jobs:
+  pr_reminder:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Checkout # No good workflow to checkout only 1 file...
+        uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.SUBMODULE_PAT_TOKEN }}
+          ref: ${{ github.event.inputs.sha || github.sha }}
+
+      - name: Auth Gcloud
+        uses: google-github-actions/auth@v2.1.7
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2.1.2
+        with:
+          version: ">= 363.0.0"
+
+      - name: Download Namelist
+        continue-on-error: true
+        run: |
+          gsutil cp $NAMELIST_GCS_PATH namelist.json
+
+      - name: Get json content
+        run: |
+          echo 'NAMELIST<<EOF' >> $GITHUB_ENV
+          cat ./namelist.json >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
+
+      - name: Get reminders
+        uses: actions/github-script@v7.0.1
+        id: needs_review
+        env:
+          NAMELIST: ${{ env.NAMELIST }}
+        with:
+          result-encoding: string
+          github-token: ${{ secrets.PROJECT_PAT_TOKEN }}
+          script: |
+            const NO_REVIEW_THRESHOLD = 3
+            let retval = []
+            const today = new Date()
+            const oneDay = 24 * 60 * 60 * 1000;
+            const allprs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+            });
+
+            let reminders = "";
+
+            if(allprs.length > 0)
+            {
+              for (const pr of allprs) {
+                if (pr.draft)
+                {
+                  continue;
+                }
+                if (!(pr.requested_reviewers.length))
+                {
+                  continue;
+                }
+                const pr_created_date = new Date(pr.created_at)
+                if (Math.ceil((today - pr_created_date) / oneDay) < NO_REVIEW_THRESHOLD)
+                {
+                   continue;
+                }
+                const commits = await github.rest.pulls.listCommits({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number
+                });
+                const commit = await github.rest.repos.getCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: commits.data[commits.data.length - 1].sha
+                });
+                const last_commit_date = new Date(commit.data.commit.committer.date)
+                if (Math.ceil((today - last_commit_date) / oneDay) < NO_REVIEW_THRESHOLD)
+                {
+                   continue;
+                }
+                const requested_reviewers = await github.paginate(github.rest.pulls.listRequestedReviewers, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                });
+                reviewers = requested_reviewers[0].users;
+                const all_reviews = await github.paginate(github.rest.pulls.listReviews, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                });
+
+                const approvals = all_reviews.filter(review => review.state == 'APPROVED'); // Do we want to send reminder if 2 approvals?
+                if(approvals.length >= 2)
+                {
+                  continue;
+                }
+                const missing_reviewers = reviewers.filter(review => !approvals.includes(review.login))
+                const non_approvals = all_reviews.filter(review =>  review.state != 'APPROVED' );
+                const latest_reviews = non_approvals.reduce((unique_reviewers, reviewer) => {
+                  const existing_reviewer = unique_reviewers.find(r => r.login === reviewer.login);
+                  const not_approved = !approvals.includes(reviewer.user.login);
+                  const requested_reviewer = reviewers.includes(reviewer.user.login);
+                  if (requested_reviewer && not_approved && (!existing_reviewer ||
+                                             new Date(existing_reviewer.submitted_at) < new Date(reviewer.submitted_at)
+                                            ))
+                  {
+                    unique_reviewers.push(reviewer);
+                  }
+                  return unique_reviewers;
+                }, []);
+
+                // Since PRs and Issue objects share same attributes,
+                // if a user comments without review it will become an "issue comment".
+                const all_non_review_comments = await github.paginate(github.rest.issues.listComments, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  per_page: 100,
+                });
+                const targets = missing_reviewers.reduce((reminders, reviewer) => {
+                  const non_review_comments = all_non_review_comments.find(r => r.login === reviewer.login);
+                  if(non_review_comments)
+                  {
+                     const last_comment = non_review_comments[non_review_comments.length - 1];
+                     const reviewed_date = new Date(last_comment.updated_at);
+                     // Add reminder if new commit has come after "normal" comment and NO_REVIEW_THRESHOLD contidion is reached.
+                     if (Math.ceil((today - reviewed_date) / oneDay) < NO_REVIEW_THRESHOLD &&
+                        (last_commit_date > reviewed_date))
+                     {
+                       reminders.push(reviewer);
+                       return reminders;
+                     }
+                  }
+
+                  const last_review = latest_reviews.find(r => r.login === reviewer.login);
+
+                  if(!last_review)
+                  {
+                    reminders.push(reviewer);
+                    return reminders;
+                  }
+
+                  const reviewed_date = new Date(last_review.submitted_at)
+                  if (Math.ceil((today - reviewed_date) / oneDay) < NO_REVIEW_THRESHOLD)
+                  {
+                    reminders.push(reviewer);
+                  }
+                  return reminders;
+                }, []);
+
+                if(targets.length > 0)
+                {
+                  const NAMELIST = JSON.parse(process.env.NAMELIST)
+                  for (const remind of targets)
+                  {
+                      let user = NAMELIST.users.find(el => el.user === remind.login);
+                      if (user)
+                      {
+                          reminders = reminders +  "\nHello <@" + user.slack_id + ">, please consider reviewing the following PR: <https://github.com/LexxPluss/LexxAuto/pull/" + pr.number + "|" + pr.number + ">"
+                      }
+                  }
+                }
+              }
+            }
+            return reminders
+
+      #TODO: How do we retrieve name from github user ID?
+      #In order for the reminder to tag Slack users, we need a name.
+      #API can retrieve information but,
+      #it requires that github info and slack info is the same.
+      - name: Slack Notification Reminders
+        if: ${{ steps.needs_review.outputs.result != '' }}
+        uses: rtCamp/action-slack-notify@v2.3.2
+        env:
+          SLACK_TITLE: "PR reminders!"
+          SLACK_COLOR: "bad"
+          SLACK_MESSAGE: "${{ steps.needs_review.outputs.result }}"
+          SLACK_FOOTER: ""
