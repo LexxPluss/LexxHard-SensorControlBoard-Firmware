@@ -23,6 +23,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <algorithm>
+#include <cmath>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/device.h>
@@ -127,17 +129,9 @@ public:
                     accel_data[1] = - accel_value_to_int16_t(&accel[0]);
                     accel_data[0] = - accel_value_to_int16_t(&accel[1]);
                     accel_data[2] = - accel_value_to_int16_t(&accel[2]);
-                    gyro_data[1] = - gyro_rad_to_iim42652raw_int16_t(&gyro[0], GYRO_FS_SEL);
-                    gyro_data[0] = - gyro_rad_to_iim42652raw_int16_t(&gyro[1], GYRO_FS_SEL);
-                    gyro_data[2] = - gyro_rad_to_iim42652raw_int16_t(&gyro[2], GYRO_FS_SEL);
-
-                    if(imu_bias_initial_cnt < IMU_BIAS_INITIAL_CNT_MAX) {
-                        bias_gyro_z = gyro_data[2];
-                        gyro_data[2] = 0;
-                        imu_bias_initial_cnt++;
-                    } else {
-                        gyro_data[2] -= bias_gyro_z;
-                    }
+                    gyro_data[1] = - gyro_rad_to_iim42652raw_int16_t(&gyro[0]);
+                    gyro_data[0] = - gyro_rad_to_iim42652raw_int16_t(&gyro[1]);
+                    gyro_data[2] = - gyro_rad_to_iim42652raw_int16_t(&gyro[2]);
 
                     //split to upper and lower bytes for CAN message
                     for(int i = 0; i < 3; i++) {
@@ -168,12 +162,12 @@ public:
         }
     }
     void info(const shell *shell) const {
-        double accel_x = (double)((int16_t)(message.accel_data_upper[0] << 8 | message.accel_data_lower[0])) / 1000.0;
-        double accel_y = (double)((int16_t)(message.accel_data_upper[1] << 8 | message.accel_data_lower[1])) / 1000.0;
-        double accel_z = (double)((int16_t)(message.accel_data_upper[2] << 8 | message.accel_data_lower[2])) / 1000.0;
-        double gyro_x = (double)((int16_t)(message.gyro_data_upper[0] << 8 | message.gyro_data_lower[0])) / 1000.0;
-        double gyro_y = (double)((int16_t)(message.gyro_data_upper[1] << 8 | message.gyro_data_lower[1])) / 1000.0;
-        double gyro_z = (double)((int16_t)(message.gyro_data_upper[2] << 8 | message.gyro_data_lower[2])) / 1000.0;
+        double accel_x = from_fixed<ACCEL_SCALING>(pack_i16t(message.accel_data_upper[0], message.accel_data_lower[0]));
+        double accel_y = from_fixed<ACCEL_SCALING>(pack_i16t(message.accel_data_upper[1], message.accel_data_lower[1]));
+        double accel_z = from_fixed<ACCEL_SCALING>(pack_i16t(message.accel_data_upper[2], message.accel_data_lower[2]));
+        double gyro_x = from_fixed<GYRO_SCALING>(pack_i16t(message.gyro_data_upper[0], message.gyro_data_lower[0]));
+        double gyro_y = from_fixed<GYRO_SCALING>(pack_i16t(message.gyro_data_upper[1], message.gyro_data_lower[1]));
+        double gyro_z = from_fixed<GYRO_SCALING>(pack_i16t(message.gyro_data_upper[2], message.gyro_data_lower[2]));
 
         shell_print(shell,
                     "accel: %f %f %f (m/s/s)\n"
@@ -196,54 +190,41 @@ private:
     }
 
     int16_t accel_value_to_int16_t(const struct sensor_value *val) {
-        int64_t temp_value{0};
-
-        temp_value = (int64_t)(val->val1 * 1e3f + val->val2 * 1e-3f);
-
-        if(temp_value > INT16_MAX) {
-            temp_value = INT16_MAX;
-        } else if(temp_value < INT16_MIN) {
-            temp_value = INT16_MIN;
-        }
-
-        return (int16_t)temp_value;
+        return to_fixed<ACCEL_SCALING>(sensor_value_to_float(val));
     }
 
-    int16_t gyro_rad_to_deg_int16_t(const struct sensor_value *val) {
-        int64_t temp_value{0};
-
-        temp_value = (int64_t)((val->val1 + val->val2 * 1e-6) * (180.0 / M_PI) * 1e3);
-
-        if(temp_value > INT16_MAX) {
-            temp_value = INT16_MAX;
-        } else if(temp_value < INT16_MIN) {
-            temp_value = INT16_MIN;
-        }
-
-        return (int16_t)temp_value;
+    int16_t gyro_rad_to_iim42652raw_int16_t(const struct sensor_value *val_rad) {
+        return to_fixed<GYRO_SCALING>(RAD_TO_DEG * sensor_value_to_float(val_rad));
     }
 
-    int16_t gyro_rad_to_iim42652raw_int16_t(const struct sensor_value *val_rad, int gyro_fs_sel) {
-        const int gyro_sensitivity_x10[8] = {164, 328, 655, 1310, 2620, 5243, 10486, 20972};
-        int64_t temp_value{0};
+    template<float SCALING>
+    int16_t to_fixed(float float_value) const
+    {
+        const int32_t scaled_value = static_cast<int32_t>(std::round(float_value * SCALING));
+        const int32_t clamped_value = std::clamp(scaled_value, INT16_MIN, INT16_MAX);
+        return static_cast<int16_t>(clamped_value);
+    }
 
-        temp_value = (int64_t)((val_rad->val1 + val_rad->val2 * 1e-6f) * (180.0 / M_PI) * (gyro_sensitivity_x10[gyro_fs_sel] / 10.0));
+    template<float SCALING>
+    float from_fixed(int16_t fixed_value) const
+    {
+        static constexpr float inv_scaling{1.0f / SCALING};
 
-        if(temp_value > INT16_MAX) {
-            temp_value = INT16_MAX;
-        } else if(temp_value < INT16_MIN) {
-            temp_value = INT16_MIN;
-        }
+        return fixed_value * inv_scaling;
+    }
 
-        return (int16_t)temp_value;
+    int16_t pack_i16t(uint8_t upper, uint8_t lower) const
+    {
+        return static_cast<int16_t>((static_cast<uint16_t>(upper) << 8) | lower);
     }
 
     msg message;
     const device *dev{nullptr};
-    int imu_bias_initial_cnt{0};
-    const int IMU_BIAS_INITIAL_CNT_MAX{255};
-    int16_t bias_gyro_z{0};
-    const int GYRO_FS_SEL = 1; // 1000DPS iim42652
+    static constexpr int GYRO_FS_SEL = 1; // 1000DPS iim42652
+    static constexpr float RAD_TO_DEG{180.0f / static_cast<float>(M_PI)};
+    static constexpr float GYRO_SENSITIVITY[]{16.4f, 32.8f, 65.5f, 131.0f, 262.0f, 524.3f, 1048.6f, 2097.2f};
+    static constexpr float GYRO_SCALING{GYRO_SENSITIVITY[GYRO_FS_SEL]};
+    static constexpr float ACCEL_SCALING{1000.0f};
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)
