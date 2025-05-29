@@ -1464,16 +1464,16 @@ private:
                set_new_state(POWER_STATE::LOCKDOWN);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (mbd.power_off_from_ros()) {
                 LOG_DBG("receive power off from ROS\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (!dcdc.is_ok(ksw.is_maintenance())) {
                 LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::STANDBY);
+                set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
                 LOG_DBG("emergency switch asserted\n");
                 use_software_brake = true;
@@ -1601,6 +1601,9 @@ private:
             if (!should_manual_charge()) {
                LOG_DBG("unplugged from manual charger\n");
                set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
+                LOG_DBG("detect power switch\n");
+                set_new_state(POWER_STATE::OFF_WAIT);
             }
             break;
         case POWER_STATE::LOCKDOWN:
