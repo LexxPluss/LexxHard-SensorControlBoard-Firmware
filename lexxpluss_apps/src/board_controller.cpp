@@ -299,6 +299,7 @@ public:
         }
 
         if (asserted) {
+            prev_state = state;
             if(now_left == 0 && now_right == 1)
                 state = STATE::LEFT;
             else if(now_left == 1 && now_right == 0)
@@ -330,7 +331,11 @@ public:
         return false;
 #endif
     }
+    bool is_transition_to_running() const {
+        return is_running() && prev_state != STATE::RIGHT;
+    }
 private:
+    STATE prev_state{STATE::UNKNOWN};
     STATE state{STATE::UNKNOWN};
     uint32_t count{0};
     int prev_left{-1}, prev_right{-1};
@@ -1418,13 +1423,12 @@ private:
         case POWER_STATE::WAIT_SW:
             if (should_turn_off()) {
                 set_new_state(POWER_STATE::OFF);
-            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
+            } else if (psw.get_state() != power_switch::STATE::RELEASED || can_skip_wait_sw) {
                 poweron_by_switch = true;
                 set_new_state(POWER_STATE::POST);
             }
             break;
         case POWER_STATE::POST:
-            configure_maintenance_mode();
             if (should_turn_off()) {
                 set_new_state(POWER_STATE::OFF);
             } else if (bmu.is_ok() && psw.get_state() == power_switch::STATE::RELEASED) {
@@ -1442,7 +1446,10 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok() || is_mode_transition_detected()) {
+            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+                set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (is_mode_transition_detected()) {
+                can_skip_wait_sw = true;
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_manual_charge()) {
                 LOG_DBG("plugged to manual charger\n");
@@ -1458,8 +1465,11 @@ private:
         }
         case POWER_STATE::NORMAL:
             wheel_relay_control();
-            if (should_turn_off() || is_mode_transition_detected()) {
+            if (should_turn_off()) {
                set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (is_mode_transition_detected()) {
+                can_skip_wait_sw = true;
+                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_lockdown()) {
                set_new_state(POWER_STATE::LOCKDOWN);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
@@ -1505,7 +1515,10 @@ private:
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok() || is_mode_transition_detected()) {
+            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
+                set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (is_mode_transition_detected()) {
+                can_skip_wait_sw = true;
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && !sl.is_asserted()) {
                 LOG_DBG("not emergency\n");
@@ -1515,8 +1528,11 @@ private:
         }
         case POWER_STATE::RESUME_WAIT:
             wheel_relay_control();
-            if (should_turn_off() || is_mode_transition_detected()) {
+            if (should_turn_off()) {
                set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (is_mode_transition_detected()) {
+                can_skip_wait_sw = true;
+                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1555,7 +1571,10 @@ private:
             break;
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
-            if (should_turn_off() || is_mode_transition_detected()) {
+            if (should_turn_off()) {
+               set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (is_mode_transition_detected()) {
+                can_skip_wait_sw = true;
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
@@ -1636,6 +1655,7 @@ private:
         } break;
         case POWER_STATE::WAIT_SW: {
             LOG_INF("leave WAIT_SW");
+            can_skip_wait_sw = false;
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("leave NORMAL");
@@ -1894,11 +1914,8 @@ private:
     bool should_manual_charge() {
         return ksw.is_maintenance() && mc.is_plugged();
     }
-    void configure_maintenance_mode() {
-        is_in_maintenance_mode = ksw.is_maintenance();
-    }
     bool is_mode_transition_detected() const {
-        return is_in_maintenance_mode != ksw.is_maintenance();
+        return ksw.is_transition_to_running();
     }
     
     power_switch psw;
@@ -1931,7 +1948,7 @@ private:
     const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
          last_wheel_poweroff{false}, is_lockdown{false}, is_in_maintenance_mode{false},
-         use_software_brake{false};
+         use_software_brake{false}, can_skip_wait_sw{false};
 } impl;
 
 int cmd_power_on(const shell *shell, size_t argc, char **argv)
