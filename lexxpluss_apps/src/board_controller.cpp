@@ -1384,15 +1384,18 @@ private:
     void poll() {
         auto wheel_relay_control = [&](){
             bool wheel_poweroff{mbd.is_wheel_poweroff()};
-            if (last_wheel_poweroff != wheel_poweroff) {
+            if ((last_wheel_poweroff != wheel_poweroff) || !ksw.is_running()) {
                 last_wheel_poweroff = wheel_poweroff;
+
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
                 if (!gpio_is_ready_dt(&gpio_dev)) {
                     LOG_ERR("gpio_is_ready_dt Failed\n");
                     return;
                 }
-                gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
-                LOG_DBG("wheel power control %d!\n", wheel_poweroff);
+
+                int v_wheel_value{(wheel_poweroff || !ksw.is_running()) ? 0 : 1};
+                gpio_pin_set_dt(&gpio_dev, v_wheel_value);
+                LOG_DBG("wheel power control %d!\n", v_wheel_value);
             }
         };
         
@@ -1442,7 +1445,7 @@ private:
         case POWER_STATE::STANDBY: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok(ksw.is_maintenance())) {
+            if (!dcdc.is_ok(ksw.is_maintenance() || is_mode_transition_detected())) {
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
@@ -1481,7 +1484,7 @@ private:
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (!dcdc.is_ok(ksw.is_maintenance())) {
+            } else if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
@@ -1511,18 +1514,21 @@ private:
         case POWER_STATE::SUSPEND: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok(ksw.is_maintenance())) {
+            if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
-            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
-                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (is_mode_transition_detected()) {
                 can_skip_wait_sw = true;
+                set_new_state(POWER_STATE::OFF_WAIT);
+            } else if (should_turn_off() || psw_state != power_switch::STATE::RELEASED || mbd.power_off_from_ros() || !bmu.is_ok()) {
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (!esw.is_asserted() && !mbd.emergency_stop_from_ros() && !sl.is_asserted()) {
                 LOG_DBG("not emergency\n");
                 set_new_state(POWER_STATE::RESUME_WAIT);
+            } else if (should_manual_charge()) {
+                LOG_DBG("plugged to manual charger\n");
+                set_new_state(POWER_STATE::MANUAL_CHARGE);
             }
             break;
         }
@@ -1542,7 +1548,7 @@ private:
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (!dcdc.is_ok(ksw.is_maintenance())) {
+            } else if (!dcdc.is_ok(ksw.is_maintenance() || is_mode_transition_detected())) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
@@ -1567,6 +1573,9 @@ private:
                     LOG_DBG("heartbeat NG\n");
                     set_new_state(POWER_STATE::STANDBY);
                 }
+            } else if (should_manual_charge()) {
+                LOG_DBG("plugged to manual charger\n");
+                set_new_state(POWER_STATE::MANUAL_CHARGE);
             }
             break;
         case POWER_STATE::AUTO_CHARGE:
@@ -1585,7 +1594,7 @@ private:
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (!dcdc.is_ok(ksw.is_maintenance())) {
+            } else if (!dcdc.is_ok(ksw.is_maintenance() || is_mode_transition_detected())) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {
@@ -1696,7 +1705,7 @@ private:
             break;
         }
 
-        int bat_out_state{mbd.is_wheel_poweroff() || !ksw.is_running() ? 0 : 1};
+        int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running())};
 
         switch (newstate) {
         case POWER_STATE::OFF: {
@@ -1755,7 +1764,7 @@ private:
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
-            wsw.set_disable(false);
+            wsw.set_disable(ksw.is_maintenance());
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
@@ -1784,7 +1793,7 @@ private:
         } break;
         case POWER_STATE::AUTO_CHARGE: {
             LOG_INF("enter AUTO_CHARGE\n");
-            wsw.set_disable(false);
+            wsw.set_disable(ksw.is_maintenance());
             ac.set_enable(true);
             current_check_enable = false;
             use_software_brake = false;
@@ -1909,10 +1918,10 @@ private:
         return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;
     }
     bool should_turn_off() {
-        return ksw.is_off() || (!ksw.is_maintenance() && mc.is_plugged());
+        return ksw.is_off();
     }
     bool should_manual_charge() {
-        return ksw.is_maintenance() && mc.is_plugged();
+        return mc.is_plugged();
     }
     bool is_mode_transition_detected() const {
         return ksw.is_transition_to_running();
