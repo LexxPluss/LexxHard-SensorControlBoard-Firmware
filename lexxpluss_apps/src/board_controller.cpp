@@ -1384,18 +1384,26 @@ private:
     void poll() {
         auto wheel_relay_control = [&](){
             bool wheel_poweroff{mbd.is_wheel_poweroff()};
-            if ((last_wheel_poweroff != wheel_poweroff) || !ksw.is_running()) {
+            if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
-
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
                 if (!gpio_is_ready_dt(&gpio_dev)) {
                     LOG_ERR("gpio_is_ready_dt Failed\n");
                     return;
                 }
 
-                int v_wheel_value{(wheel_poweroff || !ksw.is_running()) ? 0 : 1};
-                gpio_pin_set_dt(&gpio_dev, v_wheel_value);
-                LOG_DBG("wheel power control %d!\n", v_wheel_value);
+                gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
+                LOG_DBG("wheel power control %d!\n", wheel_poweroff);
+            }
+            if (!ksw.is_running()) {
+                gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                if (!gpio_is_ready_dt(&gpio_dev)) {
+                    LOG_ERR("gpio_is_ready_dt Failed\n");
+                    return;
+                }
+
+                gpio_pin_set_dt(&gpio_dev, 0);
+                LOG_DBG("wheel power was cut off\n");
             }
         };
         
