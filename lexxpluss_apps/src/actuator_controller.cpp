@@ -703,7 +703,7 @@ public:
         }
 
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
-            if (directions[i] != msg_control::UP && directions[i] != msg_control::DOWN) {
+            if (directions[i] != msg_control::UP && directions[i] != msg_control::STOP && directions[i] != msg_control::DOWN) {
                 LOG_WRN("invalid direction.");
                 return -1;
             }
@@ -718,8 +718,11 @@ public:
             LOG_WRN("can not initialize location.");
             return -1;
         }
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
-            act[i].reset();
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+            if (directions[i] == msg_control::UP || directions[i] == msg_control::DOWN) {
+                act[i].reset();
+            }
+        }
         location_initialized = true;
         return 0;
     }
@@ -869,7 +872,7 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
     int8_t directions[ACTUATOR_NUM]{msg_control::DOWN, msg_control::DOWN, msg_control::DOWN};
     for (size_t i{1}; i < argc; ++i) {
         int8_t cur_dir = atoi(argv[i]);
-        if (cur_dir != msg_control::UP && cur_dir != msg_control::DOWN) {
+        if (cur_dir != msg_control::UP && cur_dir != msg_control::STOP && cur_dir != msg_control::DOWN) {
             shell_print(shell, "Invalid direction.");
             return 1;
         }
