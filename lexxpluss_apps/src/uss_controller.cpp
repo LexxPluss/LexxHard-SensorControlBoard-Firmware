@@ -84,51 +84,58 @@ public:
             if (!device_is_ready(dev[1]))
                 return -1;
         }
+
+        k_mutex_init(&lock);
         return 0;
     }
     void get_distance(uint32_t (&distance)[2]) const {
+        k_mutex_lock(&this->lock, K_FOREVER);
         distance[0] = this->distance[0];
         distance[1] = this->distance[1];
+        k_mutex_unlock(&this->lock);
     }
-    static void runner(void *p1, void *p2, void *p3) {
-        uss_fetcher *self{static_cast<uss_fetcher*>(p1)};
-        self->run();
-    }
-    k_thread thread;
-private:
-    void run() {
+    void update_once() {
         if (!device_is_ready(dev[0]))
             return;
-        while (true) {
-            if (sensor_sample_fetch_chan(dev[0], SENSOR_CHAN_ALL) == 0) {
+
+        if (sensor_sample_fetch_chan(dev[0], SENSOR_CHAN_ALL) == 0) {
+            sensor_value v;
+            sensor_channel_get(dev[0], SENSOR_CHAN_DISTANCE, &v);
+            int32_t value{v.val1 * 1000 + v.val2 / 1000};
+
+            k_mutex_lock(&this->lock, K_FOREVER);
+            distance[0] = distance[0] / 4 + value * 3 / 4;
+            k_mutex_unlock(&this->lock);
+        }
+        if (device_is_ready(dev[1])) {
+            if (sensor_sample_fetch_chan(dev[1], SENSOR_CHAN_ALL) == 0) {
                 sensor_value v;
-                sensor_channel_get(dev[0], SENSOR_CHAN_DISTANCE, &v);
+                sensor_channel_get(dev[1], SENSOR_CHAN_DISTANCE, &v);
                 int32_t value{v.val1 * 1000 + v.val2 / 1000};
-                distance[0] = distance[0] / 4 + value * 3 / 4;
+
+                k_mutex_lock(&this->lock, K_FOREVER);
+                distance[1] = distance[1] / 4 + value * 3 / 4;
+                k_mutex_unlock(&this->lock);
             }
-            if (device_is_ready(dev[1])) {
-                if (sensor_sample_fetch_chan(dev[1], SENSOR_CHAN_ALL) == 0) {
-                    sensor_value v;
-                    sensor_channel_get(dev[1], SENSOR_CHAN_DISTANCE, &v);
-                    int32_t value{v.val1 * 1000 + v.val2 / 1000};
-                    distance[1] = distance[1] / 4 + value * 3 / 4;
-                }
-            }
+        }
+    }
+private:
+    const device *dev[2]{nullptr, nullptr};
+    uint32_t distance[2]{0, 0};
+    mutable struct k_mutex lock;
+} fetcher[4];
+
+void fetch_thread(void *, void *, void *)
+{
+    while (true) {
+        for (auto &f : fetcher) {
+            f.update_once();
             k_msleep(1);
         }
     }
-    const device *dev[2]{nullptr, nullptr};
-    uint32_t distance[2]{0, 0};
-} fetcher[4];
-
-K_THREAD_STACK_DEFINE(fetcher_stack_0, 2048);
-K_THREAD_STACK_DEFINE(fetcher_stack_1, 2048);
-K_THREAD_STACK_DEFINE(fetcher_stack_2, 2048);
-K_THREAD_STACK_DEFINE(fetcher_stack_3, 2048);
-
-#define RUN(x) \
-    k_thread_create(&fetcher[x].thread, fetcher_stack_##x, K_THREAD_STACK_SIZEOF(fetcher_stack_##x), \
-                    &uss_fetcher::runner, &fetcher[x], nullptr, nullptr, 3, K_FP_REGS, K_NO_WAIT);
+}
+K_THREAD_STACK_DEFINE(fetch_stack, 2048);
+static k_thread fetch_thr;
 
 int info(const shell *shell, size_t argc, char **argv)
 {
@@ -158,12 +165,19 @@ void init()
     fetcher[3].init(4, -1);
 }
 
+void run_fetch()
+{
+    k_thread_create(&fetch_thr,
+                    fetch_stack, K_THREAD_STACK_SIZEOF(fetch_stack),
+                    fetch_thread,
+                    nullptr, nullptr, nullptr,
+                    3, K_FP_REGS, K_NO_WAIT);
+}
+
 void run(void *p1, void *p2, void *p3)
 {
-    RUN(0);
-    RUN(1);
-    RUN(2);
-    RUN(3);
+
+    run_fetch();
     while (true) {
         msg message;
         uint32_t distance[2];
