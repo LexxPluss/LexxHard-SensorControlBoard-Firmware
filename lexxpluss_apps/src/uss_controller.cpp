@@ -89,10 +89,14 @@ public:
         return 0;
     }
     void get_distance(uint32_t (&distance)[2]) const {
-        k_mutex_lock(&this->lock, K_FOREVER);
-        distance[0] = this->distance[0];
-        distance[1] = this->distance[1];
-        k_mutex_unlock(&this->lock);
+        if (k_mutex_lock(&this->lock, K_MSEC(100)) == 0) {
+            distance[0] = this->distance[0];
+            distance[1] = this->distance[1];
+            k_mutex_unlock(&this->lock);
+        } else {
+            LOG_WRN("Failed to acquire mutex in get_distance");
+           return;
+        }
     }
     void update_once() {
         if (!device_is_ready(dev[0]))
@@ -103,9 +107,12 @@ public:
             sensor_channel_get(dev[0], SENSOR_CHAN_DISTANCE, &v);
             int32_t value{v.val1 * 1000 + v.val2 / 1000};
 
-            k_mutex_lock(&this->lock, K_FOREVER);
-            distance[0] = distance[0] / 4 + value * 3 / 4;
-            k_mutex_unlock(&this->lock);
+            if (k_mutex_lock(&this->lock, K_MSEC(100)) == 0) {
+                distance[0] = distance[0] / 4 + value * 3 / 4;
+                k_mutex_unlock(&this->lock);
+            } else {
+                LOG_WRN("Failed to acquire mutex for store distance[0]");
+            }
         }
         if (device_is_ready(dev[1])) {
             if (sensor_sample_fetch_chan(dev[1], SENSOR_CHAN_ALL) == 0) {
@@ -113,9 +120,13 @@ public:
                 sensor_channel_get(dev[1], SENSOR_CHAN_DISTANCE, &v);
                 int32_t value{v.val1 * 1000 + v.val2 / 1000};
 
-                k_mutex_lock(&this->lock, K_FOREVER);
-                distance[1] = distance[1] / 4 + value * 3 / 4;
-                k_mutex_unlock(&this->lock);
+                if (k_mutex_lock(&this->lock, K_MSEC(100)) == 0) {
+                    distance[1] = distance[1] / 4 + value * 3 / 4;
+                    k_mutex_unlock(&this->lock);
+                } else {
+                    LOG_WRN("Failed to acquire mutex for store distance[1]");
+                }
+
             }
         }
     }
