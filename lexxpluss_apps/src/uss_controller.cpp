@@ -136,12 +136,14 @@ private:
     mutable struct k_mutex lock;
 } fetcher[4];
 
+static uint32_t fetch_delay_ms = 1; // Default delay of 1ms
+
 void fetch_thread(void *, void *, void *)
 {
     while (true) {
         for (auto &f : fetcher) {
             f.update_once();
-            k_msleep(1);
+            k_msleep(fetch_delay_ms);
         }
     }
 }
