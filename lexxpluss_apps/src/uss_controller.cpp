@@ -95,7 +95,7 @@ public:
             k_mutex_unlock(&this->lock);
         } else {
             LOG_WRN("Failed to acquire mutex in get_distance");
-           return;
+            return;
         }
     }
     void update_once() {
