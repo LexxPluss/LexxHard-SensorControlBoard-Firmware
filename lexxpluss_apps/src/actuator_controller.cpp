@@ -687,7 +687,7 @@ public:
                         failed = true;
                 }
                 fail_check(failed);
-                actuator2can.connect = adc_reader::get(adc_reader::TROLLEY);
+                actuator2can.connect = 0;
                 while (k_msgq_put(&msgq, &actuator2can, K_NO_WAIT) != 0)
                     k_msgq_purge(&msgq);
             }

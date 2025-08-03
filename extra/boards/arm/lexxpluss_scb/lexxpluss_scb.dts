@@ -92,8 +92,8 @@
 
 	uss4: mb1604-4 {
 		compatible = "maxbotix,maxbotix";
-		trig_gpios = <&gpioh 8 GPIO_ACTIVE_HIGH>;
-		echo_gpios = <&gpioh 7 GPIO_ACTIVE_HIGH>;
+		trig_gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>;
+		echo_gpios = <&gpioc 0 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	};
 
@@ -566,21 +566,6 @@
 	};
 };
 
-&spi1 {
-	pinctrl-0 = <&spi1_sck_pg11 &spi1_miso_pb4 &spi1_mosi_pb5>;
-	pinctrl-names = "default";
-	status = "okay";
-	led_strip1: ws2812@1 {
-		compatible = "worldsemi,ws2812-spi";
-		reg = <1>;
-		spi-max-frequency = <8000000>;
-		chain-length = <36>;
-		spi-one-frame = <0x7c>;
-		spi-zero-frame = <0x60>;
-		color-mapping = <LED_COLOR_ID_GREEN LED_COLOR_ID_RED LED_COLOR_ID_BLUE>;
-	};
-};
-
 &spi6 {
 	pinctrl-0 = <&spi6_sck_pa5 &spi6_miso_pa6 &spi6_mosi_pa7>;
 	pinctrl-names = "default";
@@ -612,7 +597,7 @@
 };
 
 &adc1 {
-	pinctrl-0 = <&adc1_in8_pb0 &adc1_in9_pb1 &adc1_in10_pc0 &adc1_in11_pc1 &adc1_in12_pc2 &adc1_in13_pc3 &adc1_in14_pc4 &adc1_in15_pc5>;
+	pinctrl-0 = <&adc1_in8_pb0 &adc1_in9_pb1 &adc1_in11_pc1 &adc1_in12_pc2 &adc1_in13_pc3 &adc1_in14_pc4 &adc1_in15_pc5>;
 	pinctrl-names = "default";
 	st,adc-prescaler = <2>;
 	status = "okay";

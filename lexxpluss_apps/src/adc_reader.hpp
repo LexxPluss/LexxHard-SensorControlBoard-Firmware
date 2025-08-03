@@ -38,7 +38,6 @@ extern k_thread thread;
 enum {
     DOWNWARD_L = 0,
     DOWNWARD_R,
-    TROLLEY,
     ACTUATOR_L,
     ACTUATOR_C,
     ACTUATOR_R,

@@ -107,10 +107,10 @@ public:
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         dev[LED_LEFT] = DEVICE_DT_GET(DT_NODELABEL(led_strip0));
-        dev[LED_RIGHT] = DEVICE_DT_GET(DT_NODELABEL(led_strip1));
+        //dev[LED_RIGHT] = DEVICE_DT_GET(DT_NODELABEL(led_strip1));
         dev[2] = DEVICE_DT_GET(DT_NODELABEL(led_strip3));
         dev[3] = DEVICE_DT_GET(DT_NODELABEL(led_strip2));
-        if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]) ||
+        if (!device_is_ready(dev[LED_LEFT]) || //!device_is_ready(dev[LED_RIGHT]) ||
             !device_is_ready(dev[2]) || !device_is_ready(dev[3]))
             return -1;
         fill(black);
@@ -118,7 +118,7 @@ public:
         return 0;
     }
     void run() {
-        if (!device_is_ready(dev[LED_LEFT]) || !device_is_ready(dev[LED_RIGHT]) ||
+        if (!device_is_ready(dev[LED_LEFT]) || //!device_is_ready(dev[LED_RIGHT]) ||
             !device_is_ready(dev[2]) || !device_is_ready(dev[3]))
             return;
         while (true) {
@@ -170,7 +170,7 @@ private:
             }
         }
         led_strip_update_rgb(dev[LED_LEFT], pixeldata[LED_LEFT], PIXELS);
-        led_strip_update_rgb(dev[LED_RIGHT], pixeldata[LED_RIGHT], PIXELS);
+        //led_strip_update_rgb(dev[LED_RIGHT], pixeldata[LED_RIGHT], PIXELS);
         led_strip_update_rgb(dev[2], pixeldata_back[LED_LEFT], PIXELS_BACK);
         led_strip_update_rgb(dev[3], pixeldata_back[LED_RIGHT], PIXELS_BACK);
     }
