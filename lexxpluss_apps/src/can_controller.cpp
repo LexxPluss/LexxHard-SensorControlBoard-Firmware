@@ -75,10 +75,7 @@ public:
             }
             // ros2board ROS->can_controller->board_controller
             if ((k_msgq_get(&msgq_control, &ros2board, K_NO_WAIT) == 0) | heartbeat_timeout) {
-                handler_to_pb();
-                if (k_msgq_put(&board_controller::msgq_board_pb_rx, &msg_board_to_pb, K_NO_WAIT) != 0){
-                    k_msgq_purge(&msgq_board);
-                }
+                publish_to_pb();
                 prev_cycle_ros = k_cycle_get_32();
                 handled = true;
             }
@@ -92,6 +89,7 @@ public:
                 ros2board.power_off = false;
                 ros2board.wheel_power_off = false;
                 ros2board.lockdown = false;
+                ros2board.auto_charge_request_enable = true;
                 heartbeat_timeout = false;
             }
 
@@ -115,11 +113,19 @@ public:
         ros2board.emergency_stop = false;
         heartbeat_timeout = false;
 
-        // if changed send to board_controller
-        handler_to_pb();
-        if (k_msgq_put(&board_controller::msgq_board_pb_rx, &msg_board_to_pb, K_NO_WAIT) != 0){
-            k_msgq_purge(&msgq_board);
-        }
+        publish_to_pb();
+    }
+    void brd_acreqon() {
+        ros2board.auto_charge_request_enable = true;
+        heartbeat_timeout = false;
+
+        publish_to_pb();
+    }
+    void brd_acreqoff() {
+        ros2board.auto_charge_request_enable = false;
+        heartbeat_timeout = false;
+
+        publish_to_pb();
     }
     void brd_info(const shell *shell) const {
         shell_print(shell,
@@ -149,9 +155,16 @@ private:
         msg_board_to_pb.ros_heartbeat_timeout = heartbeat_timeout;
         msg_board_to_pb.ros_wheel_power_off = ros2board.wheel_power_off;
         msg_board_to_pb.ros_lockdown = ros2board.lockdown;
+        msg_board_to_pb.ros_auto_charge_request_enable = ros2board.auto_charge_request_enable;
+    }
+    void publish_to_pb() {
+        handler_to_pb();
+        if (k_msgq_put(&board_controller::msgq_board_pb_rx, &msg_board_to_pb, K_NO_WAIT) != 0){
+            k_msgq_purge(&board_controller::msgq_board_pb_rx);
+        }
     }
     msg_board board2ros{0};
-    msg_control ros2board{true, false, false, false, false};
+    msg_control ros2board{true, false, false, false, false, false};
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     bool heartbeat_timeout{false};
@@ -164,6 +177,18 @@ int brd_emgoff(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int brd_acreqon(const shell *shell, size_t argc, char **argv)
+{
+    impl.brd_acreqon();
+    return 0;
+}
+
+int brd_acreqoff(const shell *shell, size_t argc, char **argv)
+{
+    impl.brd_acreqoff();
+    return 0;
+}
+
 int brd_info(const shell *shell, size_t argc, char **argv)
 {
     impl.brd_info(shell);
@@ -172,6 +197,8 @@ int brd_info(const shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_brd,
     SHELL_CMD(emgoff, NULL, "ROS emergency stop off", brd_emgoff),
+    SHELL_CMD(acreqon, NULL, "ROS auto charge request enable on", brd_acreqon),
+    SHELL_CMD(acreqoff, NULL, "ROS auto charge request enable off", brd_acreqoff),
     SHELL_CMD(info, NULL, "Board information", brd_info),
     SHELL_SUBCMD_SET_END
 );

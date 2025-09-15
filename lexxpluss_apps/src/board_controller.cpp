@@ -706,12 +706,18 @@ public:
         send_heartbeat();
         return;
     }
+    void stop_if_needed() {
+        if (!request_enabled) {
+            force_stop();
+        }
+        return;
+    }
     bool is_charger_ready() const {
-        if(connector_v > (CHARGING_VOLTAGE * 0.9f)){
+        if(connector_v > CHARGE_READY_THRES_VOLTAGE){
             LOG_DBG("charger ready voltage:%f.\n", static_cast<double>(connector_v));
             return true;
         }else {
-            LOG_DBG("connector_v:%f THRESH:%f\n", static_cast<double>(connector_v), static_cast<double>(CHARGING_VOLTAGE * 0.9f));
+            LOG_DBG("connector_v:%f THRESH:%f\n", static_cast<double>(connector_v), static_cast<double>(CHARGE_READY_THRES_VOLTAGE));
             return false;
         }
     }
@@ -730,7 +736,9 @@ public:
         return CLAMP(static_cast<uint32_t>(seconds), 0UL, 255UL);
     }
     
-    void poll() {
+    void poll(bool request_enable) {
+        request_enabled = request_enable;
+
         uint32_t prev_connect_check_count{connect_check_count};
         connector_v = (float)(adc_reader::get_adc3(adc_reader::CHARGING_VOLTAGE) / 1000.0f);
         if (connector_v > CONNECT_THRES_VOLTAGE) {
@@ -751,6 +759,9 @@ public:
     void update_rsoc(uint8_t rsoc) {
         this->rsoc = rsoc;
         return;
+    }
+    bool is_charging_voltage_ok() {
+        return is_charger_ready() || request_enabled;
     }
 private: // Thermistor side starts here.
     static void static_poll_1s_callback(struct k_timer *timer_id) {
@@ -796,16 +807,21 @@ private: // Thermistor side starts here.
         if (is_connected() && !is_overheat())
             send_heartbeat();
     }
-    void send_heartbeat() {  /* Creates the message to send to the robot using the "compose" function below */
+    void make_heartbeat_payload(uint8_t param[]) {
         uint8_t sw_state{0};
-
-        if (is_connected()) {
+        if (is_connected() && request_enabled) {
             sw_state = 1;
         } else {
             sw_state = 0;
         }
 
-        uint8_t buf[IRDA_DATA_LEN], param[3]{++heartbeat_counter, sw_state, rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
+        param[0] = ++heartbeat_counter;
+        param[1] = sw_state;
+        param[2] = rsoc;
+    }
+    void send_heartbeat() {  /* Creates the message to send to the robot using the "compose" function below */
+        uint8_t buf[IRDA_DATA_LEN], param[3]; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
+        make_heartbeat_payload(param);
         s_msg.compose(buf, s_msg.HEARTBEAT, param);
 
         if (!device_is_ready(dev)) {
@@ -858,7 +874,9 @@ private: // Thermistor side starts here.
     static constexpr int ADDR{0b10010010}; // I2C adress for temp sensor
     static constexpr uint32_t CONNECT_THRES_COUNT{100}; // Number of times that ...
     static constexpr float CHARGING_VOLTAGE{30.0f * 1000.0f / (9100.0f + 1000.0f)},
-                           CONNECT_THRES_VOLTAGE{3.3f * 0.5f * 1000.0f / (9100.0f + 1000.0f)};
+                           CONNECT_THRES_VOLTAGE{3.3f * 0.5f * 1000.0f / (9100.0f + 1000.0f)},
+                           CHARGE_READY_THRES_VOLTAGE{CHARGING_VOLTAGE * 0.8f};
+    bool request_enabled{false};
 };
 
 char __aligned(4) msgq_can_bmu_pb_buffer[8 * sizeof (can_frame)];
@@ -1151,6 +1169,9 @@ public:
     bool lockdown_from_ros() const {
         return lockdown;
     }
+    bool auto_charge_request_enable_from_ros() const {
+        return auto_charge_request_enable;
+    }
     bool is_dead() const {
         if (heartbeat_detect)
             return ros_heartbeat_timeout;
@@ -1184,18 +1205,22 @@ private:
         if (lockdown != msg.ros_lockdown ) {
             LOG_INF("ROS Lockdown: %d", msg.ros_lockdown);
         }
+        if (auto_charge_request_enable != msg.ros_auto_charge_request_enable) {
+            LOG_INF("ROS Auto Charge Request Enable: %d", msg.ros_auto_charge_request_enable);
+        }
 
         emergency_stop = msg.ros_emergency_stop;
         power_off = msg.ros_power_off;
         ros_heartbeat_timeout = msg.ros_heartbeat_timeout;
         wheel_poweroff = msg.ros_wheel_power_off;
         lockdown = msg.ros_lockdown;
+        auto_charge_request_enable = msg.ros_auto_charge_request_enable;
 
         // heartbeat is not timeout means heartbeat is detected
         heartbeat_detect |= !ros_heartbeat_timeout;
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
-        wheel_poweroff{false}, lockdown{false};
+        wheel_poweroff{false}, lockdown{false}, auto_charge_request_enable{false};
 };
 
 class safety_lidar { // Variables Implemented
@@ -1414,7 +1439,7 @@ private:
         esw.poll();
         wsw.poll();
         mc.poll();
-        ac.poll();
+        ac.poll(mbd.auto_charge_request_enable_from_ros());
         bmu.poll();
         mbd.poll();
         sl.poll();
@@ -1588,6 +1613,8 @@ private:
             break;
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
+            ac.stop_if_needed();
+
             if (should_turn_off()) {
                set_new_state(POWER_STATE::OFF_WAIT);
             } else if (ksw.is_transition_to_running()) {
@@ -1621,6 +1648,9 @@ private:
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (bmu.is_full_charge()) {
                 LOG_DBG("full charge\n");
+                set_new_state(POWER_STATE::NORMAL);
+            } else if (!ac.is_charging_voltage_ok()) {
+                LOG_DBG("auto charging stopped");
                 set_new_state(POWER_STATE::NORMAL);
             } else if (!ac.is_docked()) {
                 LOG_DBG("undocked from auto charger\n");

@@ -32,7 +32,7 @@
 #define CAN_ID_BOARD_TX 0x20C
 #define CAN_ID_BOARD_RX 0x20F
 #define CAN_TX_DATA_LENGTH_BOARD 6
-#define CAN_RX_DATA_LENGTH_BOARD 4
+#define CAN_RX_DATA_LENGTH_BOARD 5
 
 namespace lexxhard::zcan_board {
 
@@ -117,6 +117,7 @@ public:
             msg.wheel_power_off = frame.data[2] & 0x01;
             msg.heart_beat = frame.data[3] & 0x01;
             msg.lockdown = (4 < frame.dlc) ? frame.data[4] & 0x01 : 0;  // this condition is for backward compatibility
+            msg.auto_charge_request_enable = (5 < frame.dlc) ? frame.data[5] & 0x01 : 1;  // this condition is for backward compatibility
 
             if(prev_msg.emergency_stop != msg.emergency_stop) {
                 LOG_INF("Emergency Stop: %d", msg.emergency_stop);
@@ -137,6 +138,10 @@ public:
             if (prev_msg.lockdown != msg.lockdown) {
                 LOG_INF("Lockdown: %d", msg.lockdown);
                 prev_msg.lockdown = msg.lockdown;
+            }
+            if (prev_msg.auto_charge_request_enable != msg.auto_charge_request_enable) {
+                LOG_INF("Auto Charge Request Enable: %d", msg.auto_charge_request_enable);
+                prev_msg.auto_charge_request_enable = msg.auto_charge_request_enable;
             }
 
             while (k_msgq_put(&can_controller::msgq_control, &msg, K_NO_WAIT) != 0)
