@@ -873,9 +873,9 @@ private: // Thermistor side starts here.
     serial_message s_msg;
     static constexpr int ADDR{0b10010010}; // I2C adress for temp sensor
     static constexpr uint32_t CONNECT_THRES_COUNT{100}; // Number of times that ...
-    static constexpr float CHARGING_VOLTAGE{30.0f * 1000.0f / (9100.0f + 1000.0f)},
-                           CONNECT_THRES_VOLTAGE{3.3f * 0.5f * 1000.0f / (9100.0f + 1000.0f)},
-                           CHARGE_READY_THRES_VOLTAGE{CHARGING_VOLTAGE * 0.9f};
+    static constexpr float CHARGING_VOLTAGE{30.0f * 1000.0f / (9100.0f + 1000.0f)};
+    static constexpr float CONNECT_THRES_VOLTAGE{3.3f * 0.5f * 1000.0f / (9100.0f + 1000.0f)};
+    static constexpr float CHARGE_READY_THRES_VOLTAGE{CHARGING_VOLTAGE * 0.9f};
     bool request_enabled{false};
 };
 
