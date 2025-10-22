@@ -31,7 +31,7 @@
 
 #define CAN_ID_BOARD_TX 0x20C
 #define CAN_ID_BOARD_RX 0x20F
-#define CAN_TX_DATA_LENGTH_BOARD 6
+#define CAN_TX_DATA_LENGTH_BOARD 8
 #define CAN_RX_DATA_LENGTH_BOARD 5
 
 namespace lexxhard::zcan_board {
@@ -103,6 +103,9 @@ public:
 
             packedData[4] = (uint8_t)(scaled_voltage >> 8);   // Upper Byte
             packedData[5] = (uint8_t)(scaled_voltage & 0xFF); // Lower Byte
+
+            packedData[6] = static_cast<uint8_t>(message.charge_connector_p_temp); // charge_connector_p_temp is in [0:255]
+            packedData[7] = static_cast<uint8_t>(message.charge_connector_n_temp); // charge_connector_n_temp is in [0:255]
 
             memcpy(frame.data, packedData, CAN_TX_DATA_LENGTH_BOARD);
             can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
