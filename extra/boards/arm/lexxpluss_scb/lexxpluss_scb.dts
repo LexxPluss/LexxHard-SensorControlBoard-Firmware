@@ -205,6 +205,10 @@
 			compatible = "gpio-pin";
 			gpios = <&gpioh 12 GPIO_ACTIVE_HIGH>;
 		};
+		comm_mode: comm_mode {
+			compatible = "gpio-pin";
+			gpios = <&gpioj 4 GPIO_ACTIVE_HIGH>;
+		};
 
 		/* Fan */
 		fan1: fan1 {
@@ -440,10 +444,6 @@
 		spare_gpio_4: spare_gpio_4 {
 			compatible = "gpio-pin";
 			gpios = <&gpioj 3 GPIO_ACTIVE_HIGH>;
-		};
-		spare_gpio_5: spare_gpio_5 {
-			compatible = "gpio-pin";
-			gpios = <&gpioj 4 GPIO_ACTIVE_HIGH>;
 		};
 		spare_gpio_6: spare_gpio_6 {
 			compatible = "gpio-pin";
