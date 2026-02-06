@@ -862,7 +862,10 @@ private: // Thermistor side starts here.
         }
 
         gpio_pin_set_dt(&gpio_comm_mode_dev, 1);
-        k_usleep(20);
+        // Followig sleep is expected to wait for PLC driver mode changing completed.
+        // But following sleep make scb clash when connected to charger.
+        // So commented out. Or you can use k_msleep(1) as this waiting.
+        //k_usleep(20);
         for (size_t i{0}; i < len; ++i) {
             uart_poll_out(dev, buf[i]);
         }
