@@ -1033,8 +1033,7 @@ public:
                     " (PGOOD_SHUTDOWN_IN_MAINTENANCE=0)");
         }
         if (should_shutdown) {
-            LOG_ERR("PGOOD NG confirmed after %d consecutive samples - shutdown",
-                    PgoodDebouncerT<kShutdownInMaint>::NG_CONFIRM_COUNT);
+            LOG_ERR("PGOOD NG confirmed - shutdown triggered");
         }
 
         return !should_shutdown;

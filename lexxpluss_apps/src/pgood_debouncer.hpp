@@ -35,11 +35,11 @@ namespace lexxhard::board_controller {
  * @brief Per-signal PGOOD debouncer state machine.
  *
  * Tracks 4 independent power-good signals (PG_24V, PG_Peripheral,
- * PG_MTR_L, PG_MTR_R). A signal must read NG for NG_CONFIRM_COUNT
+ * PG_MTR_L, PG_MTR_R). A signal must read NG for NgConfirmCount
  * consecutive polls before a shutdown is triggered. Once confirmed NG,
  * no further transitions occur until reset() is called.
  *
- * Polling period is 20ms (board_controller main loop). With NG_CONFIRM_COUNT=3
+ * Polling period is 20ms (board_controller main loop). With NgConfirmCount=3
  * the confirmation window is 60ms, longer than typical load transients.
  *
  * @tparam ShutdownInMaintenance
@@ -47,13 +47,13 @@ namespace lexxhard::board_controller {
  *   false           : confirmed NG during maintenance mode is suppressed
  *                     (update() returns false). The caller is responsible
  *                     for logging the suppressed fault.
+ * @tparam NgConfirmCount
+ *   Number of consecutive NG samples required to confirm a fault and trigger
+ *   shutdown. Default: 3 (= 60ms at 20ms polling period).
  */
-template<bool ShutdownInMaintenance = true>
+template<bool ShutdownInMaintenance = true, uint8_t NgConfirmCount = 3>
 class PgoodDebouncerT {
 public:
-    static constexpr uint8_t NG_CONFIRM_COUNT{3};
-    static constexpr uint8_t SIGNAL_COUNT{4};
-
     enum class SignalIndex : uint8_t {
         V24        = 0,
         PERIPHERAL = 1,
@@ -96,7 +96,7 @@ public:
         };
 
         for (uint8_t i{0}; i < SIGNAL_COUNT; ++i) {
-            update_signal(signals_[i], inputs[i]);
+            update_signal(signals_[i], inputs[i], NgConfirmCount);
         }
 
         if (!is_ng_confirmed()) {
@@ -138,12 +138,14 @@ public:
     }
 
 private:
-    static void update_signal(SignalState& sig, bool is_ng) noexcept {
+    static constexpr uint8_t SIGNAL_COUNT{4};
+
+    static void update_signal(SignalState& sig, bool is_ng, uint8_t confirm_count) noexcept {
         switch (sig.state) {
         case State::OK:
             if (is_ng) {
                 sig.ng_count++;
-                sig.state = (sig.ng_count >= NG_CONFIRM_COUNT)
+                sig.state = (sig.ng_count >= confirm_count)
                                 ? State::NG_CONFIRMED
                                 : State::PENDING_NG;
             } else {
@@ -155,7 +157,7 @@ private:
         case State::PENDING_NG:
             if (is_ng) {
                 sig.ng_count++;
-                if (sig.ng_count >= NG_CONFIRM_COUNT) {
+                if (sig.ng_count >= confirm_count) {
                     sig.state = State::NG_CONFIRMED;
                 }
             } else {

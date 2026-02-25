@@ -227,8 +227,7 @@ TEST(PgoodDebouncerTest, InitialStateIsOk)
     PgoodDebouncer d;
 
     EXPECT_FALSE(d.is_ng_confirmed());
-    for (uint8_t i{0}; i < PgoodDebouncer::SIGNAL_COUNT; ++i) {
-        auto idx = static_cast<Idx>(i);
+    for (auto idx : {Idx::V24, Idx::PERIPHERAL, Idx::MTR_L, Idx::MTR_R}) {
         EXPECT_EQ(d.get_signal(idx).state,    State::OK);
         EXPECT_EQ(d.get_signal(idx).ng_count, 0u);
     }
