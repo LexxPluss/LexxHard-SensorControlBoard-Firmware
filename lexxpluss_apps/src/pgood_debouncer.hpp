@@ -53,6 +53,7 @@ namespace lexxhard::board_controller {
  */
 template<bool ShutdownInMaintenance = true, uint8_t NgConfirmCount = 3>
 class PgoodDebouncerT {
+    static_assert(NgConfirmCount > 0, "NgConfirmCount must be at least 1");
 public:
     enum class SignalIndex : uint8_t {
         V24        = 0,
@@ -88,16 +89,16 @@ public:
                 bool ng_mtr_l, bool ng_mtr_r,
                 bool is_maintenance) noexcept {
         // Existing maintenance bypass: treat MTR_L/MTR_R as OK during maintenance.
-        bool const inputs[SIGNAL_COUNT] = {
+        std::array<bool, SIGNAL_COUNT> const inputs = {{
             ng_24v,
             ng_peripheral,
             (is_maintenance ? false : ng_mtr_l),
             (is_maintenance ? false : ng_mtr_r),
-        };
+        }};
 
         bool any_confirmed{false};
         for (uint8_t i{0}; i < SIGNAL_COUNT; ++i) {
-            update_signal(signals_[i], inputs[i], NgConfirmCount);
+            update_signal(signals_[i], inputs[i]);
             if (signals_[i].state == State::NG_CONFIRMED) {
                 any_confirmed = true;
             }
@@ -144,12 +145,12 @@ public:
 private:
     static constexpr uint8_t SIGNAL_COUNT{4};
 
-    static void update_signal(SignalState& sig, bool is_ng, uint8_t confirm_count) noexcept {
+    static void update_signal(SignalState& sig, bool is_ng) noexcept {
         switch (sig.state) {
         case State::OK:
             if (is_ng) {
                 sig.ng_count++;
-                sig.state = (sig.ng_count >= confirm_count)
+                sig.state = (sig.ng_count >= NgConfirmCount)
                                 ? State::NG_CONFIRMED
                                 : State::PENDING_NG;
             } else {
@@ -161,7 +162,7 @@ private:
         case State::PENDING_NG:
             if (is_ng) {
                 sig.ng_count++;
-                if (sig.ng_count >= confirm_count) {
+                if (sig.ng_count >= NgConfirmCount) {
                     sig.state = State::NG_CONFIRMED;
                 }
             } else {

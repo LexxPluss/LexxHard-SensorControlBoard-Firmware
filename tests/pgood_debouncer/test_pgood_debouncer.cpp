@@ -251,3 +251,39 @@ TEST(PgoodDebouncerTest, RecoveryFromPendingNgThenReaccumulates)
 
     EXPECT_TRUE(update_24v(d, true));  // ng_count -> 3, NG_CONFIRMED
 }
+
+// ---------------------------------------------------------------------------
+// Custom NgConfirmCount=2: shutdown fires on the 2nd consecutive NG sample
+// ---------------------------------------------------------------------------
+TEST(PgoodDebouncerTest, CustomNgConfirmCount2_ShutdownOnSecondSample)
+{
+    using D2    = PgoodDebouncerT<true, 2>;
+    using Idx2  = D2::SignalIndex;
+    using St2   = D2::State;
+    D2 d;
+
+    // 1st NG: PENDING_NG, no shutdown
+    EXPECT_FALSE(d.update(true, false, false, false, false));
+    EXPECT_EQ(d.get_signal(Idx2::V24).state,    St2::PENDING_NG);
+    EXPECT_EQ(d.get_signal(Idx2::V24).ng_count, 1u);
+
+    // 2nd NG: NG_CONFIRMED -> shutdown
+    EXPECT_TRUE(d.update(true, false, false, false, false));
+    EXPECT_EQ(d.get_signal(Idx2::V24).state,    St2::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Idx2::V24).ng_count, 2u);
+    EXPECT_TRUE(d.is_ng_confirmed());
+}
+
+TEST(PgoodDebouncerTest, CustomNgConfirmCount2_SingleNgThenOkNoShutdown)
+{
+    using D2   = PgoodDebouncerT<true, 2>;
+    using Idx2 = D2::SignalIndex;
+    using St2  = D2::State;
+    D2 d;
+
+    EXPECT_FALSE(d.update(true, false, false, false, false));   // ng_count -> 1, PENDING_NG
+    EXPECT_FALSE(d.update(false, false, false, false, false));  // ng_count -> 0, OK
+    EXPECT_EQ(d.get_signal(Idx2::V24).state,    St2::OK);
+    EXPECT_EQ(d.get_signal(Idx2::V24).ng_count, 0u);
+    EXPECT_FALSE(d.is_ng_confirmed());
+}
