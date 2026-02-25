@@ -41,6 +41,7 @@
 #include "can_controller.hpp"
 #include "common.hpp"
 #include "led_controller.hpp"
+#include "pgood_debouncer.hpp"
 #include "power_state.hpp"
 
 namespace {
@@ -949,7 +950,8 @@ private:
 class dcdc_converter { // Variables Implemented
 public:
     void set_enable(bool enable) {
-        gpio_dt_spec gpio_dev; 
+        debouncer_.reset();
+        gpio_dt_spec gpio_dev;
         // 0=OFF, 1=ON
         if (enable) {
             gpio_dev = GET_GPIO(v_wheel);
@@ -1017,15 +1019,25 @@ public:
             LOG_ERR("gpio_is_ready_dt Failed\n");
             return false;
         }
-        bool rtn = (gpio_pin_get_dt(&gpio_pgood_24v_dev) == 0)                  
-            && (gpio_pin_get_dt(&gpio_pgood_peripheral_dev) == 0)
-            && ((gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev) == 0) || is_maintenance)
-            && ((gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 0) || is_maintenance);
-        if (rtn == false) {
-            LOG_ERR("dcdc is_ok() NG: %d", rtn);
+        bool const ng_24v    = (gpio_pin_get_dt(&gpio_pgood_24v_dev)               == 1);
+        bool const ng_periph = (gpio_pin_get_dt(&gpio_pgood_peripheral_dev)        == 1);
+        bool const ng_mtr_l  = (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev)  == 1);
+        bool const ng_mtr_r  = (gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 1);
+
+        bool const should_shutdown = debouncer_.update(ng_24v, ng_periph,
+                                                       ng_mtr_l, ng_mtr_r,
+                                                       is_maintenance);
+
+        if (!should_shutdown && debouncer_.is_ng_confirmed() && is_maintenance) {
+            LOG_WRN("PGOOD NG confirmed in maintenance mode - shutdown suppressed"
+                    " (PGOOD_SHUTDOWN_IN_MAINTENANCE=0)");
+        }
+        if (should_shutdown) {
+            LOG_ERR("PGOOD NG confirmed after %d consecutive samples - shutdown",
+                    PgoodDebouncerT<kShutdownInMaint>::NG_CONFIRM_COUNT);
         }
 
-        return rtn;
+        return !should_shutdown;
     }
     void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
         gpio_dt_spec gpio_pgood_24v_dev = GET_GPIO(pgood_24v);
@@ -1055,6 +1067,12 @@ public:
         v_wheel_motor_right = gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 1;
     }
 private:
+#if defined(PGOOD_SHUTDOWN_IN_MAINTENANCE) && (PGOOD_SHUTDOWN_IN_MAINTENANCE == 0)
+    static constexpr bool kShutdownInMaint{false};
+#else
+    static constexpr bool kShutdownInMaint{true};
+#endif
+    PgoodDebouncerT<kShutdownInMaint> debouncer_;
 };
 
 class fan_driver { // Variables Implemented

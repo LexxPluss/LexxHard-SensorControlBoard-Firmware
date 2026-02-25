@@ -42,3 +42,7 @@ endif()
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
+
+if(PGOOD_SHUTDOWN_IN_MAINTENANCE EQUAL 0)
+    add_definitions(-DPGOOD_SHUTDOWN_IN_MAINTENANCE=0)
+endif()
