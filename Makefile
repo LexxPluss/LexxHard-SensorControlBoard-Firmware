@@ -31,6 +31,7 @@ all: bootloader firmware
 .PHONY: clean
 clean:
 	rm -rf build-mcuboot build
+	$(RUNNER) west build -t pristine
 
 .PHONY: distclean
 distclean: clean
@@ -101,4 +102,20 @@ firmware_interlock_initial:
 	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
 	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
 	cat out/bl_with_ff.bin out/zephyr_interlock.signed.bin > out/firmware_interlock.bin
+
+TEST_BUILD_DIR := build-test
+
+.PHONY: test
+test:
+	cmake \
+		-S tests/pgood_debouncer \
+		-B $(TEST_BUILD_DIR)/pgood_debouncer \
+		-DCMAKE_BUILD_TYPE=Debug
+	cmake --build $(TEST_BUILD_DIR)/pgood_debouncer --parallel
+	$(TEST_BUILD_DIR)/pgood_debouncer/pgood_debouncer_tests \
+		--gtest_output=xml:$(TEST_BUILD_DIR)/pgood_debouncer/test_results.xml
+
+.PHONY: test_clean
+test_clean:
+	rm -rf $(TEST_BUILD_DIR)
 
