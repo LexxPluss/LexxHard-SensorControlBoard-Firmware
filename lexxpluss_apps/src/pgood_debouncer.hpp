@@ -95,11 +95,15 @@ public:
             (is_maintenance ? false : ng_mtr_r),
         };
 
+        bool any_confirmed{false};
         for (uint8_t i{0}; i < SIGNAL_COUNT; ++i) {
             update_signal(signals_[i], inputs[i], NgConfirmCount);
+            if (signals_[i].state == State::NG_CONFIRMED) {
+                any_confirmed = true;
+            }
         }
 
-        if (!is_ng_confirmed()) {
+        if (!any_confirmed) {
             return false;
         }
 
