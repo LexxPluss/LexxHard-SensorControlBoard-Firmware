@@ -31,7 +31,6 @@ all: bootloader firmware
 .PHONY: clean
 clean:
 	rm -rf build-mcuboot build
-	$(RUNNER) west build -t pristine
 
 .PHONY: distclean
 distclean: clean
