@@ -27,6 +27,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 
 namespace lexxhard::board_controller {
@@ -178,6 +179,10 @@ public:
             }
         }
 
+        // Publish confirmed state atomically so is_ng_confirmed() is safe
+        // to call from any interrupt context without a lock.
+        ng_confirmed_.store(any_confirmed, std::memory_order_release);
+
         if (!any_confirmed) {
             return false;
         }
@@ -197,16 +202,17 @@ public:
             s.ng_observed = 0;
             s.prescaler   = 0;
         }
+        ng_confirmed_.store(false, std::memory_order_release);
     }
 
-    /** @brief True if any signal is NG_CONFIRMED, regardless of maintenance mode. */
+    /**
+     * @brief True if any signal is NG_CONFIRMED, regardless of maintenance mode.
+     *
+     * Safe to call from any interrupt context concurrently with tick().
+     * The flag is updated atomically at the end of each tick() call.
+     */
     bool is_ng_confirmed() const noexcept {
-        for (const auto& s : signals_) {
-            if (s.state == State::NG_CONFIRMED) {
-                return true;
-            }
-        }
-        return false;
+        return ng_confirmed_.load(std::memory_order_acquire);
     }
 
     /** @brief Inspect per-signal state (for logging and test assertions). */
@@ -265,6 +271,7 @@ private:
     }
 
     std::array<SignalState, SIGNAL_COUNT> signals_{};
+    std::atomic<bool> ng_confirmed_{false};
 };
 
 /** Default alias: default PgoodConfig (production settings). */

@@ -25,6 +25,8 @@
  */
 
 #include <gtest/gtest.h>
+#include <atomic>
+#include <thread>
 #include "pgood_debouncer.hpp"
 
 using namespace lexxhard::board_controller;
@@ -435,4 +437,188 @@ TEST(MaintenanceTest, MT002_NgConfirmedPersistsOnMaintenanceEntry)
     d.tick(false, false, true, false, /*is_maintenance=*/true);
     EXPECT_EQ(d.get_signal(Ix::MTR_L).state, St::NG_CONFIRMED);
     EXPECT_TRUE(d.is_ng_confirmed());
+}
+
+// ---------------------------------------------------------------------------
+// AtomicFlagTest
+//
+// is_ng_confirmed() reads an std::atomic<bool> that tick() writes with
+// memory_order_release/acquire. These tests use std::thread to run tick()
+// (simulating the ISR writer) and is_ng_confirmed() (simulating a reader in
+// another interrupt context) concurrently, verifying that:
+//   - No data race occurs (detectable with ThreadSanitizer).
+//   - The reader eventually observes NG_CONFIRMED once it is established.
+//   - The reader never observes true before confirmation is reached.
+// ---------------------------------------------------------------------------
+
+// AT-001: Concurrent writer drives signals to NG_CONFIRMED while a reader
+//         polls is_ng_confirmed(). After the writer completes all ticks and
+//         signals done, the reader must have observed true at least once.
+//
+//         The release/acquire ordering between writer_done.store(release) and
+//         writer_done.load(acquire) in the reader guarantees that the reader's
+//         final check sees the NG_CONFIRMED state established by tick().
+//         TSan verifies there is no data race on ng_confirmed_ during concurrent
+//         access.
+TEST(AtomicFlagTest, AT001_ConcurrentReaderSeesConfirmationEventually)
+{
+    D d;
+    std::atomic<bool> writer_done{false};
+    std::atomic<bool> reader_saw_true{false};
+
+    std::thread reader([&]() {
+        while (!writer_done.load(std::memory_order_acquire)) {
+            if (d.is_ng_confirmed()) {
+                reader_saw_true.store(true, std::memory_order_relaxed);
+            }
+        }
+        // Final check: writer_done(release) -> load(acquire) guarantees
+        // ng_confirmed_ written by tick() is visible here.
+        if (d.is_ng_confirmed()) {
+            reader_saw_true.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    // Writer: advance to NG_CONFIRMED (ng_count=3 ticks with period=1)
+    for (int i{0}; i < 3; ++i) {
+        d.tick(true, false, false, false, false);
+    }
+    writer_done.store(true, std::memory_order_release);
+    reader.join();
+
+    EXPECT_TRUE(d.is_ng_confirmed());
+    EXPECT_TRUE(reader_saw_true.load(std::memory_order_relaxed));
+}
+
+// AT-002: Concurrent reader observes is_ng_confirmed()=true even when tick()
+//         returns false due to maintenance suppression.
+//         Verifies: suppression policy does not corrupt the atomic flag.
+TEST(AtomicFlagTest, AT002_ConcurrentReaderSeesTrueWhenShutdownSuppressed)
+{
+    DNoMaint d;  // shutdown_in_maintenance = false
+
+    std::atomic<bool> writer_done{false};
+    std::atomic<bool> reader_observed_true{false};
+
+    std::thread reader([&]() {
+        // Spin until writer signals completion, then check the flag.
+        while (!writer_done.load(std::memory_order_acquire)) {}
+        if (d.is_ng_confirmed()) {
+            reader_observed_true.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    // Writer: reach NG_CONFIRMED under maintenance (tick() returns false each time)
+    for (int i{0}; i < 3; ++i) {
+        bool result = d.tick(true, false, false, false, /*is_maintenance=*/true);
+        EXPECT_FALSE(result);
+    }
+    writer_done.store(true, std::memory_order_release);
+
+    reader.join();
+
+    EXPECT_TRUE(reader_observed_true.load(std::memory_order_relaxed));
+    EXPECT_TRUE(d.is_ng_confirmed());
+}
+
+// AT-003: Concurrent reader never observes is_ng_confirmed()=true while
+//         signals are still accumulating (PENDING_NG, not yet confirmed).
+//         Writer stops before confirmation; reader must see false throughout.
+TEST(AtomicFlagTest, AT003_ConcurrentReaderNeverSesTrueBeforeConfirmation)
+{
+    D d;
+
+    std::atomic<bool> writer_done{false};
+    std::atomic<bool> reader_saw_true{false};
+
+    std::thread reader([&]() {
+        while (!writer_done.load(std::memory_order_acquire)) {
+            if (d.is_ng_confirmed()) {
+                reader_saw_true.store(true, std::memory_order_relaxed);
+            }
+        }
+        // One final check after writer finishes
+        if (d.is_ng_confirmed()) {
+            reader_saw_true.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    // Writer: only 2 ticks (ng_count=3), never reaches NG_CONFIRMED
+    d.tick(true, false, false, false, false);
+    d.tick(true, false, false, false, false);
+    writer_done.store(true, std::memory_order_release);
+
+    reader.join();
+
+    EXPECT_EQ(d.get_signal(Ix::V24).state, St::PENDING_NG);
+    EXPECT_FALSE(reader_saw_true.load(std::memory_order_relaxed));
+}
+
+// AT-004: reset() clears the atomic flag such that a concurrently running
+//         reader immediately sees false after reset() completes.
+TEST(AtomicFlagTest, AT004_ConcurrentReaderSeesFalseAfterReset)
+{
+    D d;
+
+    // Establish NG_CONFIRMED first
+    d.tick(true, false, false, false, false);
+    d.tick(true, false, false, false, false);
+    d.tick(true, false, false, false, false);
+    ASSERT_TRUE(d.is_ng_confirmed());
+
+    std::atomic<bool> reset_done{false};
+    std::atomic<bool> reader_saw_true_after_reset{false};
+
+    std::thread reader([&]() {
+        // Wait for reset to complete, then verify flag is false.
+        while (!reset_done.load(std::memory_order_acquire)) {}
+        if (d.is_ng_confirmed()) {
+            reader_saw_true_after_reset.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    d.reset();
+    reset_done.store(true, std::memory_order_release);
+
+    reader.join();
+
+    EXPECT_FALSE(reader_saw_true_after_reset.load(std::memory_order_relaxed));
+    EXPECT_FALSE(d.is_ng_confirmed());
+}
+
+// AT-005: Concurrent reader sees true as soon as any one signal is NG_CONFIRMED,
+//         even while others are still PENDING_NG.
+TEST(AtomicFlagTest, AT005_ConcurrentReaderSeesTrueOnPartialConfirmation)
+{
+    // MTR_L: ng_count=2 (confirms at tick 2); V24: ng_count=5
+    constexpr PgoodConfig kCfg {
+        .v24        = {.sampling_period_ms = 1, .ng_count = 5},
+        .peripheral = {.sampling_period_ms = 1, .ng_count = 5},
+        .mtr_l      = {.sampling_period_ms = 1, .ng_count = 2},
+        .mtr_r      = {.sampling_period_ms = 1, .ng_count = 5},
+    };
+    PgoodDebouncerT<kCfg> d;
+    using Ix2 = PgoodDebouncerT<kCfg>::SignalIndex;
+    using St2 = PgoodDebouncerT<kCfg>::State;
+
+    std::atomic<bool> writer_done{false};
+    std::atomic<bool> reader_observed_true{false};
+
+    std::thread reader([&]() {
+        while (!writer_done.load(std::memory_order_acquire)) {}
+        if (d.is_ng_confirmed()) {
+            reader_observed_true.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    // tick 1 and 2: MTR_L reaches NG_CONFIRMED; V24 is still PENDING_NG
+    d.tick(true, false, true, false, false);
+    d.tick(true, false, true, false, false);
+    writer_done.store(true, std::memory_order_release);
+
+    reader.join();
+
+    EXPECT_EQ(d.get_signal(Ix2::MTR_L).state, St2::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Ix2::V24).state,   St2::PENDING_NG);
+    EXPECT_TRUE(reader_observed_true.load(std::memory_order_relaxed));
 }

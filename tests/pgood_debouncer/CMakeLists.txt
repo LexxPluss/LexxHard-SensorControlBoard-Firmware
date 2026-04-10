@@ -26,5 +26,20 @@ target_link_libraries(pgood_debouncer_tests
     GTest::gtest_main
 )
 
+# ThreadSanitizer: detects data races in concurrent tests at runtime.
+# Enable with: cmake -DENABLE_TSAN=ON ...
+option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
+if(ENABLE_TSAN)
+    target_compile_options(pgood_debouncer_tests PRIVATE -fsanitize=thread -g)
+    target_link_options(pgood_debouncer_tests PRIVATE -fsanitize=thread -no-pie)
+endif()
+
 include(GoogleTest)
-gtest_discover_tests(pgood_debouncer_tests)
+# With TSan, gtest_discover_tests runs the binary at build time (POST_BUILD),
+# which fails on Linux kernels with high ASLR entropy (mmap_rnd_bits > 28).
+# PRE_TEST defers discovery to ctest execution time, avoiding the issue.
+if(ENABLE_TSAN)
+    gtest_discover_tests(pgood_debouncer_tests DISCOVERY_MODE PRE_TEST)
+else()
+    gtest_discover_tests(pgood_debouncer_tests)
+endif()

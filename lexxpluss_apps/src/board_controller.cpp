@@ -1000,8 +1000,7 @@ public:
     /**
      * @brief Feed one 1ms base tick into the PGOOD debouncer.
      *
-     * Must be called every 1 ms from a single execution context
-     * (e.g. a k_work item submitted by the 1 ms system timer).
+     * Must be called every 1 ms from the 1 ms system timer ISR.
      * GPIO values are read here; the debouncer receives only bool inputs.
      *
      * @param is_maintenance true while the robot is in maintenance or
@@ -1286,8 +1285,6 @@ public:
         bsw.init();
         sl.init();
 
-        k_work_init(&pgood_tick_work_, pgood_tick_work_handler);
-
         k_timer_init(&timer_poll_1ms, static_poll_1ms_callback, NULL);
         k_timer_user_data_set(&timer_poll_1ms, this);
         k_timer_start(&timer_poll_1ms, K_MSEC(1), K_MSEC(1));
@@ -1395,16 +1392,12 @@ public:
     }
 
 private:
-    static void pgood_tick_work_handler(struct k_work *work) {
-        auto* instance = CONTAINER_OF(work, state_controller, pgood_tick_work_);
-        bool const is_maint = instance->ksw.is_maintenance() ||
-                              instance->ksw.is_transition_to_running();
-        instance->dcdc.tick_pgood(is_maint);
-    }
     static void static_poll_1ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
         if (instance) {
-            k_work_submit(&instance->pgood_tick_work_);
+            bool const is_maint = instance->ksw.is_maintenance() ||
+                                  instance->ksw.is_transition_to_running();
+            instance->dcdc.tick_pgood(is_maint);
         }
     }
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
@@ -2008,7 +2001,6 @@ private:
 
     lexxhard::can_controller::msg_board board2ros;
     int64_t timer_post{0}, timer_shutdown{0}, timer_poweroff{0};
-    k_work  pgood_tick_work_;
     k_timer timer_poll_1ms, timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
