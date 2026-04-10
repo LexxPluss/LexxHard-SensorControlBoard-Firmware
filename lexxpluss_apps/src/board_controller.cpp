@@ -35,6 +35,7 @@
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
@@ -668,6 +669,10 @@ public:
 
         start_time = k_uptime_get();
 
+        // Phase 1.7: 初始化诊断计数器
+        atomic_set(&rx_byte_count, 0);
+        atomic_set(&rx_decode_count, 0);
+
         dev = GET_DEV(usart6);
 
         uart_config uart_cfg = {
@@ -752,12 +757,36 @@ public:
                 LOG_DBG("disconnected from the charger.\n");
         }
 
+        // DEBUG: 在计数更新之后，按进度打日志
+        if (connect_check_count != prev_connect_check_count &&
+            (connect_check_count == 0 || connect_check_count % 10 == 0 || connect_check_count == CONNECT_THRES_COUNT)) {
+            LOG_WRN("AC poll: v=%.3f cnt=%u/%u",
+                    (double)connector_v, connect_check_count, CONNECT_THRES_COUNT);
+        }
+
         adc_read();
         return;
     }
     void update_rsoc(uint8_t rsoc) {
         this->rsoc = rsoc;
         return;
+    }
+    // Phase 1.8A: DE 链路测试 — 持续拉高 DE，暂停 heartbeat
+    void de_test_on() {
+        gpio_dt_spec gpio_cm = GET_GPIO(comm_mode);
+        if (!gpio_is_ready_dt(&gpio_cm)) return;
+        link_test_mode = 1;
+        link_test_start = k_uptime_get();
+        gpio_pin_set_dt(&gpio_cm, 1);
+        LOG_WRN("AC DE_TEST: ON — DE held HIGH, heartbeat suspended, auto-off in 30s");
+    }
+    // Phase 1.8: 退出任何链路测试模式
+    void link_test_off() {
+        gpio_dt_spec gpio_cm = GET_GPIO(comm_mode);
+        if (gpio_is_ready_dt(&gpio_cm))
+            gpio_pin_set_dt(&gpio_cm, 0);
+        link_test_mode = 0;
+        LOG_WRN("AC LINK_TEST: OFF — DE released, heartbeat resumed");
     }
 private: // Thermistor side starts here.
     static void static_poll_1s_callback(struct k_timer *timer_id) {
@@ -800,7 +829,40 @@ private: // Thermistor side starts here.
         return connector_temp[0] > 80.0f || connector_temp[1] > 80.0f;
     }
     void poll_1s() {          /* Function that checks the conditions of charging while the IrDA is connected */
-        if (is_connected() && !is_overheat())
+        bool connected = is_connected();
+        bool overheat = is_overheat();
+
+        // Phase 1.7: 读回 v_autocharge (PD0) 状态（纯读，不写）
+        int v_ac_state = -1;
+        {
+            gpio_dt_spec gpio_v_ac = GET_GPIO(v_autocharge);
+            if (gpio_is_ready_dt(&gpio_v_ac))
+                v_ac_state = gpio_pin_get_dt(&gpio_v_ac);
+        }
+
+        // Phase 1.7: 读取并重置 RX 计数器
+        atomic_val_t rx_bytes = atomic_set(&rx_byte_count, 0);
+        atomic_val_t rx_decodes = atomic_set(&rx_decode_count, 0);
+
+        LOG_WRN("AC poll_1s: connected=%d overheat=%d cnt=%u v=%.3f "
+                "v_ac=%d rx_b=%ld rx_d=%ld",
+                connected, overheat, connect_check_count, (double)connector_v,
+                v_ac_state, (long)rx_bytes, (long)rx_decodes);
+
+        // Phase 1.8: 链路测试模式 — 暂停 heartbeat，防止 serial_write() 干扰测试状态
+        if (link_test_mode != 0) {
+            int64_t elapsed = k_uptime_get() - link_test_start;
+            if (elapsed > LINK_TEST_TIMEOUT_MS) {
+                link_test_off();
+            } else {
+                LOG_WRN("AC LINK_TEST: mode=%u, %llds remaining",
+                         link_test_mode,
+                         (long long)((LINK_TEST_TIMEOUT_MS - elapsed) / 1000));
+                return;  // 跳过 send_heartbeat()，serial_write() 不会被调用
+            }
+        }
+
+        if (connected && !overheat)
             send_heartbeat();
     }
     void send_heartbeat() {  /* Creates the message to send to the robot using the "compose" function below */
@@ -815,6 +877,10 @@ private: // Thermistor side starts here.
         uint8_t buf[IRDA_DATA_LEN], param[3]{++heartbeat_counter, sw_state, rsoc}; // Message composed of 8 bytes, 3 bytes parameters -- Declaration
         s_msg.compose(buf, s_msg.HEARTBEAT, param);
 
+        LOG_WRN("AC HB TX: [%02x %02x %02x %02x %02x %02x %02x %02x] cnt=%u sw=%u rsoc=%u",
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                heartbeat_counter, sw_state, rsoc);
+
         if (!device_is_ready(dev)) {
             LOG_ERR("UART device is not ready\n");
             return;
@@ -824,8 +890,8 @@ private: // Thermistor side starts here.
             LOG_ERR("Failed to send heartbeat");
             return;
         }
-       
-        LOG_DBG("Hearbeat Send\n");
+
+        LOG_WRN("AC HB TX OK");
     } // Declaration of variables
     void serial_read() {
         if (!uart_irq_update(dev)) {
@@ -845,7 +911,9 @@ private: // Thermistor side starts here.
         uint8_t data;
         while(0 < uart_fifo_read(dev, &data, 1)){
             last_serial_recv_time = k_uptime_get();
+            atomic_inc(&rx_byte_count);                    // Phase 1.7: 字节计数
             if (s_msg.decode(data)) {
+                atomic_inc(&rx_decode_count);              // Phase 1.7: decode 计数
                 uint8_t param[3];
                 uint8_t command{s_msg.get_command(param)};
                 if (command == serial_message::HEARTBEAT && param[0] == heartbeat_counter) {
@@ -862,15 +930,15 @@ private: // Thermistor side starts here.
         }
 
         gpio_pin_set_dt(&gpio_comm_mode_dev, 1);
-        // Followig sleep is expected to wait for PLC driver mode changing completed.
-        // But following sleep make scb clash when connected to charger.
-        // So commented out. Or you can use k_msleep(1) as this waiting.
-        //k_usleep(20);
+        int de_high = gpio_pin_get_dt(&gpio_comm_mode_dev);   // Phase 1.7: 拉高后立即读回
+        k_busy_wait(100);
         for (size_t i{0}; i < len; ++i) {
             uart_poll_out(dev, buf[i]);
         }
-        k_usleep(20);
+        k_busy_wait(4500);
         gpio_pin_set_dt(&gpio_comm_mode_dev, 0);
+        int de_low = gpio_pin_get_dt(&gpio_comm_mode_dev);    // Phase 1.7: 拉低后立即读回
+        LOG_WRN("AC serial_write: len=%u DE_H=%d DE_L=%d", (unsigned)len, de_high, de_low);
 
         return true;
     }
@@ -881,6 +949,13 @@ private: // Thermistor side starts here.
     uint8_t heartbeat_counter{0}, rsoc{0};
     float connector_v{0.0f}, connector_temp[2]{0.0f, 0.0f};
     uint32_t connect_check_count{0};
+    // Phase 1.7: 安全诊断计数器（ISR 中 atomic_inc，poll_1s 中读取归零）
+    atomic_t rx_byte_count;
+    atomic_t rx_decode_count;
+    // Phase 1.8: 链路测试模式（0=off, 1=DE test, 2=TX test）
+    uint8_t link_test_mode{0};
+    int64_t link_test_start{0};
+    static constexpr int64_t LINK_TEST_TIMEOUT_MS{30000};
     k_timer timer_poll_1s;
     serial_message s_msg;
     static constexpr int ADDR{0b10010010}; // I2C adress for temp sensor
@@ -1371,6 +1446,9 @@ public:
     bool is_esw_asserted(){
         return esw.is_asserted();
     }
+    // Phase 1.8: 链路测试转发
+    void de_test_on() { ac.de_test_on(); }
+    void link_test_off() { ac.link_test_off(); }
     bool is_emergency() const {
         bool rtn{false};
         if (state != POWER_STATE::OFF) {
@@ -2068,6 +2146,18 @@ int cmd_is_esw_asserted(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int cmd_de_test_on(const shell *shell, size_t argc, char **argv)
+{
+    impl.de_test_on();
+    return 0;
+}
+
+int cmd_link_test_off(const shell *shell, size_t argc, char **argv)
+{
+    impl.link_test_off();
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(power_on, NULL, "Force Power ON command", cmd_power_on),
     SHELL_CMD(power_off, NULL, "Force Power OFF command", cmd_power_off),
@@ -2077,6 +2167,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(set_wheel_enable, NULL, "Wheel Enable command", cmd_set_wheel_enable),
     SHELL_CMD(set_wheel_disable, NULL, "Wheel Disable command", cmd_set_wheel_disable),
     SHELL_CMD(is_esw_asserted, NULL, "ESW status check command", cmd_is_esw_asserted),
+    SHELL_CMD(de_test_on, NULL, "Hold DE HIGH for link tracing (auto-off 30s)", cmd_de_test_on),
+    SHELL_CMD(link_test_off, NULL, "Exit link test mode, resume heartbeat", cmd_link_test_off),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(pbrd, &sub, "PowerBoard commands", NULL);
