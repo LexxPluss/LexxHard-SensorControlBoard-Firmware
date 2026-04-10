@@ -780,6 +780,12 @@ public:
         gpio_pin_set_dt(&gpio_cm, 1);
         LOG_WRN("AC DE_TEST: ON — DE held HIGH, heartbeat suspended, auto-off in 30s");
     }
+    // Phase 1.8B: TX 链路测试 — 发送 0x55，不操作 DE
+    void tx_test_on() {
+        link_test_mode = 2;
+        link_test_start = k_uptime_get();
+        LOG_WRN("AC TX_TEST: ON — sending 0x55 burst each 1s, auto-off in 30s");
+    }
     // Phase 1.8: 退出任何链路测试模式
     void link_test_off() {
         gpio_dt_spec gpio_cm = GET_GPIO(comm_mode);
@@ -858,6 +864,11 @@ private: // Thermistor side starts here.
                 LOG_WRN("AC LINK_TEST: mode=%u, %llds remaining",
                          link_test_mode,
                          (long long)((LINK_TEST_TIMEOUT_MS - elapsed) / 1000));
+                // Phase 1.8B: TX test — 发送 0x55 burst（不操作 DE）
+                if (link_test_mode == 2 && device_is_ready(dev)) {
+                    for (int i = 0; i < 8; ++i)
+                        uart_poll_out(dev, 0x55);
+                }
                 return;  // 跳过 send_heartbeat()，serial_write() 不会被调用
             }
         }
@@ -1448,6 +1459,7 @@ public:
     }
     // Phase 1.8: 链路测试转发
     void de_test_on() { ac.de_test_on(); }
+    void tx_test_on() { ac.tx_test_on(); }
     void link_test_off() { ac.link_test_off(); }
     bool is_emergency() const {
         bool rtn{false};
@@ -2152,6 +2164,12 @@ int cmd_de_test_on(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int cmd_tx_test_on(const shell *shell, size_t argc, char **argv)
+{
+    impl.tx_test_on();
+    return 0;
+}
+
 int cmd_link_test_off(const shell *shell, size_t argc, char **argv)
 {
     impl.link_test_off();
@@ -2168,6 +2186,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(set_wheel_disable, NULL, "Wheel Disable command", cmd_set_wheel_disable),
     SHELL_CMD(is_esw_asserted, NULL, "ESW status check command", cmd_is_esw_asserted),
     SHELL_CMD(de_test_on, NULL, "Hold DE HIGH for link tracing (auto-off 30s)", cmd_de_test_on),
+    SHELL_CMD(tx_test_on, NULL, "Send 0x55 burst for TX link tracing (auto-off 30s)", cmd_tx_test_on),
     SHELL_CMD(link_test_off, NULL, "Exit link test mode, resume heartbeat", cmd_link_test_off),
     SHELL_SUBCMD_SET_END
 );
