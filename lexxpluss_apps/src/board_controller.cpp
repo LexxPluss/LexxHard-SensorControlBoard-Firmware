@@ -1029,6 +1029,9 @@ public:
                                                      ng_mtr_l, ng_mtr_r,
                                                      is_maintenance);
 
+        if (!should_shutdown && debouncer_.is_ng_confirmed() && is_maintenance) {
+            LOG_WRN("PGOOD NG confirmed in maintenance mode - shutdown suppressed");
+        }
         if (should_shutdown) {
             LOG_ERR("PGOOD NG confirmed - shutdown triggered");
         }
@@ -1037,15 +1040,24 @@ public:
     /**
      * @brief Returns false when the debouncer has confirmed a PGOOD fault.
      *
+     * Passes is_maintenance so that shutdown can be suppressed during
+     * maintenance mode when shutdown_in_maintenance == false.
+     *
      * When PGOOD_DEBUG_DISABLE_SHUTDOWN is defined, always returns true so
      * that PGOOD faults do not trigger power-off during development.
      * Must not be defined in release builds.
      */
-    bool is_ok() const {
+    bool is_ok(bool is_maintenance) const {
 #if defined(PGOOD_DEBUG_DISABLE_SHUTDOWN)
         return true;
 #else
-        return !debouncer_.is_ng_confirmed();
+        if (debouncer_.is_ng_confirmed()) {
+            if (!kPgoodConfig.shutdown_in_maintenance && is_maintenance) {
+                return true;  // shutdown suppressed in maintenance
+            }
+            return false;
+        }
+        return true;
 #endif
     }
     void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
@@ -1081,6 +1093,9 @@ private:
         .peripheral = {.sampling_period_ms = 20, .ng_count =  3},
         .mtr_l      = {.sampling_period_ms =  1, .ng_count = 50},
         .mtr_r      = {.sampling_period_ms =  1, .ng_count = 50},
+#if defined(PGOOD_SHUTDOWN_IN_MAINTENANCE)
+        .shutdown_in_maintenance = true,
+#endif
     };
     PgoodDebouncerT<kPgoodConfig> debouncer_;
 };
@@ -1493,7 +1508,7 @@ private:
         case POWER_STATE::STANDBY: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok()) {
+            if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
@@ -1532,7 +1547,7 @@ private:
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (!dcdc.is_ok()) {
+            } else if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
@@ -1562,7 +1577,7 @@ private:
         case POWER_STATE::SUSPEND: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
-            if (!dcdc.is_ok()) {
+            if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
                 set_new_state(POWER_STATE::OFF);
             } else if (should_lockdown()) {
                 set_new_state(POWER_STATE::LOCKDOWN);
@@ -1596,7 +1611,7 @@ private:
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (!dcdc.is_ok()) {
+            } else if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::SUSPEND);
             } else if (esw.is_asserted()) {
@@ -1642,7 +1657,7 @@ private:
             } else if (!bmu.is_ok()) {
                 LOG_DBG("BMU failure\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (!dcdc.is_ok()) {
+            } else if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
                 LOG_DBG("DCDC failure\n");
                 set_new_state(POWER_STATE::STANDBY);
             } else if (esw.is_asserted()) {

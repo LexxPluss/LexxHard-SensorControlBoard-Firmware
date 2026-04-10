@@ -43,6 +43,10 @@ if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
 
+if(PGOOD_SHUTDOWN_IN_MAINTENANCE)
+    add_definitions(-DPGOOD_SHUTDOWN_IN_MAINTENANCE)
+endif()
+
 if(PGOOD_DEBUG_DISABLE_SHUTDOWN)
     add_definitions(-DPGOOD_DEBUG_DISABLE_SHUTDOWN)
     message(WARNING "PGOOD_DEBUG_DISABLE_SHUTDOWN is set: PGOOD faults will NOT trigger shutdown. Do not use in release builds.")
