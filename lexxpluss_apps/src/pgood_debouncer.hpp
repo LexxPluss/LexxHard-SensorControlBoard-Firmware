@@ -32,28 +32,90 @@
 namespace lexxhard::board_controller {
 
 /**
- * @brief Per-signal PGOOD debouncer state machine.
+ * @brief Per-signal sampling configuration.
+ *
+ * @param sampling_period_ms
+ *   Interval between samples in milliseconds. tick() must be called at this
+ *   rate or faster (ideally at the GCD of all signals' periods).
+ *   The prescaler uses >= comparison so skipped ticks do not break sampling.
+ * @param ng_count
+ *   Number of consecutive NG samples required to confirm a fault.
+ *   Must be >= 2 (enforced by static_assert). ng_count=1 would bypass
+ *   debouncing entirely, which contradicts the purpose of this class.
+ *   Confirmation window = sampling_period_ms * ng_count (ms).
+ */
+struct SignalConfig {
+    uint32_t sampling_period_ms{20};
+    uint8_t  ng_count{3};
+};
+
+/**
+ * @brief Full PGOOD debouncer configuration (C++20 NTTP struct).
+ *
+ * Defines per-signal sampling period and confirmation count for each of the
+ * four PGOOD signals, plus the maintenance-mode shutdown policy.
+ *
+ * Example — motor lines sampled at 1 ms, 50-sample confirmation (50 ms window);
+ * control lines sampled at 20 ms, 3-sample confirmation (60 ms window):
+ *
+ * @code
+ * constexpr PgoodConfig kCfg {
+ *     .v24        = {.sampling_period_ms = 20, .ng_count =  3},
+ *     .peripheral = {.sampling_period_ms = 20, .ng_count =  3},
+ *     .mtr_l      = {.sampling_period_ms =  1, .ng_count = 50},
+ *     .mtr_r      = {.sampling_period_ms =  1, .ng_count = 50},
+ *     .shutdown_in_maintenance = true,
+ * };
+ * @endcode
+ *
+ * @param shutdown_in_maintenance
+ *   true  (default): confirmed NG triggers shutdown even in maintenance mode.
+ *   false           : confirmed NG in maintenance mode is suppressed
+ *                     (tick() returns false). The caller is responsible
+ *                     for logging the suppressed fault.
+ */
+struct PgoodConfig {
+    SignalConfig v24        {.sampling_period_ms = 20, .ng_count =  3};
+    SignalConfig peripheral {.sampling_period_ms = 20, .ng_count =  3};
+    SignalConfig mtr_l      {.sampling_period_ms =  1, .ng_count = 50};
+    SignalConfig mtr_r      {.sampling_period_ms =  1, .ng_count = 50};
+    bool shutdown_in_maintenance{true};
+};
+
+/**
+ * @brief Per-signal PGOOD debouncer with independent sampling periods.
  *
  * Tracks 4 independent power-good signals (PG_24V, PG_Peripheral,
- * PG_MTR_L, PG_MTR_R). A signal must read NG for NgConfirmCount
- * consecutive polls before a shutdown is triggered. Once confirmed NG,
- * no further transitions occur until reset() is called.
+ * PG_MTR_L, PG_MTR_R). Each signal has its own sampling period and
+ * consecutive-NG confirmation count, configured via PgoodConfig.
  *
- * Polling period is 20ms (board_controller main loop). With NgConfirmCount=3
- * the confirmation window is 60ms, longer than typical load transients.
+ * tick() must be called from a single execution context (e.g. a Zephyr
+ * k_work item) at the GCD of all configured sampling periods. Do NOT
+ * call tick() and get_signal()/is_ng_confirmed() from different contexts
+ * simultaneously — this class contains no synchronisation primitives.
  *
- * @tparam ShutdownInMaintenance
- *   true  (default): confirmed NG triggers shutdown even in maintenance mode.
- *   false           : confirmed NG during maintenance mode is suppressed
- *                     (update() returns false). The caller is responsible
- *                     for logging the suppressed fault.
- * @tparam NgConfirmCount
- *   Number of consecutive NG samples required to confirm a fault and trigger
- *   shutdown. Default: 3 (= 60ms at 20ms polling period).
+ * State machine per signal:
+ *
+ *   [reset()] --> OK
+ *   OK         --[NG, ++ng_observed < ng_count]--> PENDING_NG
+ *   OK         --[NG, ++ng_observed >= ng_count]--> NG_CONFIRMED
+ *   PENDING_NG --[OK]--> OK  (ng_observed = 0)
+ *   PENDING_NG --[NG, ++ng_observed < ng_count]--> PENDING_NG
+ *   PENDING_NG --[NG, ++ng_observed >= ng_count]--> NG_CONFIRMED
+ *   NG_CONFIRMED --[any]--> NG_CONFIRMED  (sticky until reset())
+ *   NG_CONFIRMED --[reset()]--> OK
+ *
+ * Transitions occur only when the per-signal prescaler reaches
+ * sampling_period_ms (>= comparison; resets to 0 after each sample).
+ *
+ * @tparam Config  Compile-time PgoodConfig value (C++20 NTTP).
  */
-template<bool ShutdownInMaintenance = true, uint8_t NgConfirmCount = 3>
+template<PgoodConfig Config = PgoodConfig{}>
 class PgoodDebouncerT {
-    static_assert(NgConfirmCount > 0, "NgConfirmCount must be at least 1");
+    static_assert(Config.v24.ng_count        >= 2, "ng_count must be >= 2");
+    static_assert(Config.peripheral.ng_count >= 2, "ng_count must be >= 2");
+    static_assert(Config.mtr_l.ng_count      >= 2, "ng_count must be >= 2");
+    static_assert(Config.mtr_r.ng_count      >= 2, "ng_count must be >= 2");
 public:
     enum class SignalIndex : uint8_t {
         V24        = 0,
@@ -69,26 +131,38 @@ public:
     };
 
     struct SignalState {
-        State   state{State::OK};
-        uint8_t ng_count{0};
+        State    state{State::OK};
+        uint8_t  ng_observed{0};  ///< consecutive NG sample count (cf. SignalConfig::ng_count)
+        uint32_t prescaler{0};    ///< counts up each tick(); samples when >= sampling_period_ms
     };
 
     /**
-     * @brief Feed one sample into the debouncer and return shutdown intent.
+     * @brief Advance the debouncer by one base tick and return shutdown intent.
      *
-     * @param ng_24v        true = PG_24V GPIO reads NG (HIGH = fault, active-low signal).
-     * @param ng_peripheral true = PG_Peripheral GPIO reads NG.
-     * @param ng_mtr_l      true = PG_MTR_L GPIO reads NG.
-     * @param ng_mtr_r      true = PG_MTR_R GPIO reads NG.
+     * Call this function every base-timer period (e.g. every 1 ms).
+     * Each signal samples its GPIO input only when its prescaler reaches
+     * sampling_period_ms; otherwise the call is a no-op for that signal.
+     *
+     * GPIO values must be read by the caller before invoking tick():
+     * @code
+     *   bool ng_24v = gpio_pin_get_dt(&gpio_pgood_24v) == 1;  // 1 = NG
+     *   bool shutdown = debouncer_.tick(ng_24v, ng_periph, ng_mtr_l, ng_mtr_r,
+     *                                   is_maintenance);
+     * @endcode
+     *
+     * @param ng_24v        true = PG_24V reads NG (HIGH = fault, active-low signal).
+     * @param ng_peripheral true = PG_Peripheral reads NG.
+     * @param ng_mtr_l      true = PG_MTR_L reads NG.
+     * @param ng_mtr_r      true = PG_MTR_R reads NG.
      * @param is_maintenance true = robot is in maintenance or transition-to-running mode.
-     *                       When true, ng_mtr_l and ng_mtr_r are masked (treated as OK),
-     *                       preserving the existing maintenance bypass behaviour.
+     *                       MTR_L and MTR_R inputs are masked (treated as OK).
      * @return true if shutdown should be triggered this cycle.
+     *         Remains true on every subsequent call until reset() is called.
      */
-    bool update(bool ng_24v, bool ng_peripheral,
-                bool ng_mtr_l, bool ng_mtr_r,
-                bool is_maintenance) noexcept {
-        // Existing maintenance bypass: treat MTR_L/MTR_R as OK during maintenance.
+    bool tick(bool ng_24v, bool ng_peripheral,
+              bool ng_mtr_l, bool ng_mtr_r,
+              bool is_maintenance) noexcept {
+        // Maintenance bypass: mask MTR signals.
         std::array<bool, SIGNAL_COUNT> const inputs = {{
             ng_24v,
             ng_peripheral,
@@ -98,7 +172,7 @@ public:
 
         bool any_confirmed{false};
         for (uint8_t i{0}; i < SIGNAL_COUNT; ++i) {
-            update_signal(signals_[i], inputs[i]);
+            tick_signal(signals_[i], kConfigs[i], inputs[i]);
             if (signals_[i].state == State::NG_CONFIRMED) {
                 any_confirmed = true;
             }
@@ -108,26 +182,24 @@ public:
             return false;
         }
 
-        // When ShutdownInMaintenance == false and the robot is in maintenance,
-        // suppress the shutdown. The caller logs this condition.
-        if constexpr (!ShutdownInMaintenance) {
-            if (is_maintenance) {
-                return false;
-            }
+        // When shutdown_in_maintenance == false and in maintenance, suppress.
+        if (!Config.shutdown_in_maintenance && is_maintenance) {
+            return false;
         }
 
         return true;
     }
 
-    /** @brief Reset all signals to OK state. Call on power-on and power-off. */
+    /** @brief Reset all signals to OK. Call on power-on and power-off. */
     void reset() noexcept {
         for (auto& s : signals_) {
-            s.state    = State::OK;
-            s.ng_count = 0;
+            s.state       = State::OK;
+            s.ng_observed = 0;
+            s.prescaler   = 0;
         }
     }
 
-    /** @brief True if any signal has reached NG_CONFIRMED, regardless of maintenance mode. */
+    /** @brief True if any signal is NG_CONFIRMED, regardless of maintenance mode. */
     bool is_ng_confirmed() const noexcept {
         for (const auto& s : signals_) {
             if (s.state == State::NG_CONFIRMED) {
@@ -137,7 +209,7 @@ public:
         return false;
     }
 
-    /** @brief Inspect per-signal state (used for logging and test assertions). */
+    /** @brief Inspect per-signal state (for logging and test assertions). */
     const SignalState& get_signal(SignalIndex idx) const noexcept {
         return signals_[static_cast<uint8_t>(idx)];
     }
@@ -145,34 +217,49 @@ public:
 private:
     static constexpr uint8_t SIGNAL_COUNT{4};
 
-    static void update_signal(SignalState& sig, bool is_ng) noexcept {
+    // Flatten config fields into arrays for uniform iteration.
+    static constexpr std::array<SignalConfig, SIGNAL_COUNT> kConfigs = {{
+        Config.v24,
+        Config.peripheral,
+        Config.mtr_l,
+        Config.mtr_r,
+    }};
+
+    static void tick_signal(SignalState& sig,
+                            const SignalConfig& cfg,
+                            bool is_ng) noexcept {
+        // Advance prescaler; sample only when period is reached.
+        if (++sig.prescaler < cfg.sampling_period_ms) {
+            return;
+        }
+        sig.prescaler = 0;
+
         switch (sig.state) {
         case State::OK:
             if (is_ng) {
-                sig.ng_count++;
-                sig.state = (sig.ng_count >= NgConfirmCount)
+                ++sig.ng_observed;
+                sig.state = (sig.ng_observed >= cfg.ng_count)
                                 ? State::NG_CONFIRMED
                                 : State::PENDING_NG;
             } else {
-                sig.ng_count = 0;
-                // stay OK
+                sig.ng_observed = 0;
             }
             break;
 
         case State::PENDING_NG:
             if (is_ng) {
-                sig.ng_count++;
-                if (sig.ng_count >= NgConfirmCount) {
+                ++sig.ng_observed;
+                if (sig.ng_observed >= cfg.ng_count) {
                     sig.state = State::NG_CONFIRMED;
                 }
             } else {
-                sig.ng_count = 0;
-                sig.state    = State::OK;
+                sig.ng_observed = 0;
+                sig.state       = State::OK;
             }
             break;
 
         case State::NG_CONFIRMED:
-            // Sticky: no transitions until reset() is called.
+            // Sticky: no transitions until reset().
             break;
         }
     }
@@ -180,7 +267,7 @@ private:
     std::array<SignalState, SIGNAL_COUNT> signals_{};
 };
 
-/** Default alias: shutdown is active in maintenance mode (production default). */
-using PgoodDebouncer = PgoodDebouncerT<true>;
+/** Default alias: default PgoodConfig (production settings). */
+using PgoodDebouncer = PgoodDebouncerT<>;
 
 }  // namespace lexxhard::board_controller

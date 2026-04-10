@@ -28,81 +28,101 @@
 #include "pgood_debouncer.hpp"
 
 using namespace lexxhard::board_controller;
-using State = PgoodDebouncer::State;
-using Idx   = PgoodDebouncer::SignalIndex;
-
-// Convenience: update only the 24V signal, all others OK, not in maintenance.
-static bool update_24v(PgoodDebouncer& d, bool ng)
-{
-    return d.update(ng, false, false, false, false);
-}
 
 // ---------------------------------------------------------------------------
-// UT-001: 1x NG + OK -> no shutdown, counter resets to 0
+// Test fixture helpers
+//
+// Use a minimal config with sampling_period_ms=1 and ng_count=3 so that
+// each tick() call advances the prescaler to 1 (== period), triggering a
+// sample immediately. This keeps tests simple while still exercising the
+// prescaler path.
+// ---------------------------------------------------------------------------
+static constexpr PgoodConfig kTestConfig {
+    .v24        = {.sampling_period_ms = 1, .ng_count = 3},
+    .peripheral = {.sampling_period_ms = 1, .ng_count = 3},
+    .mtr_l      = {.sampling_period_ms = 1, .ng_count = 3},
+    .mtr_r      = {.sampling_period_ms = 1, .ng_count = 3},
+    .shutdown_in_maintenance = true,
+};
+using D  = PgoodDebouncerT<kTestConfig>;
+using St = D::State;
+using Ix = D::SignalIndex;
+
+// Convenience: tick only the 24V signal NG/OK, all others OK, no maintenance.
+static bool tick_24v(D& d, bool ng)
+{
+    return d.tick(ng, false, false, false, false);
+}
+
+// Advance prescaler to the sampling point and apply the given input.
+// With sampling_period_ms=1 this is just one tick().
+static bool sample_24v(D& d, bool ng) { return tick_24v(d, ng); }
+
+// ---------------------------------------------------------------------------
+// UT-001: 1x NG then OK -> no shutdown, ng_observed resets to 0
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, UT001_SingleNgThenOkNoShutdown)
 {
-    PgoodDebouncer d;
+    D d;
 
-    EXPECT_FALSE(update_24v(d, true));  // ng_count -> 1, PENDING_NG
-    EXPECT_EQ(d.get_signal(Idx::V24).state,    State::PENDING_NG);
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count, 1u);
+    EXPECT_FALSE(sample_24v(d, true));   // ng_observed -> 1, PENDING_NG
+    EXPECT_EQ(d.get_signal(Ix::V24).state,       St::PENDING_NG);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed, 1u);
 
-    EXPECT_FALSE(update_24v(d, false));  // ng_count -> 0, OK
-    EXPECT_EQ(d.get_signal(Idx::V24).state,    State::OK);
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count, 0u);
+    EXPECT_FALSE(sample_24v(d, false));  // ng_observed -> 0, OK
+    EXPECT_EQ(d.get_signal(Ix::V24).state,       St::OK);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed, 0u);
 
     EXPECT_FALSE(d.is_ng_confirmed());
 }
 
 // ---------------------------------------------------------------------------
-// UT-002: 2x consecutive NG, then OK -> no shutdown, counter resets to 0
+// UT-002: 2x consecutive NG then OK -> no shutdown, ng_observed resets to 0
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, UT002_TwoNgThenOkNoShutdown)
 {
-    PgoodDebouncer d;
+    D d;
 
-    EXPECT_FALSE(update_24v(d, true));  // ng_count -> 1
-    EXPECT_FALSE(update_24v(d, true));  // ng_count -> 2
-    EXPECT_EQ(d.get_signal(Idx::V24).state,    State::PENDING_NG);
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count, 2u);
+    EXPECT_FALSE(sample_24v(d, true));   // ng_observed -> 1
+    EXPECT_FALSE(sample_24v(d, true));   // ng_observed -> 2
+    EXPECT_EQ(d.get_signal(Ix::V24).state,       St::PENDING_NG);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed, 2u);
 
-    EXPECT_FALSE(update_24v(d, false));  // ng_count -> 0, OK
-    EXPECT_EQ(d.get_signal(Idx::V24).state,    State::OK);
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count, 0u);
+    EXPECT_FALSE(sample_24v(d, false));  // ng_observed -> 0, OK
+    EXPECT_EQ(d.get_signal(Ix::V24).state,       St::OK);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed, 0u);
 
     EXPECT_FALSE(d.is_ng_confirmed());
 }
 
 // ---------------------------------------------------------------------------
-// UT-003: 3x consecutive NG -> shutdown triggered on the third sample
+// UT-003: 3x consecutive NG -> shutdown on third sample
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, UT003_ThreeConsecutiveNgTriggersShutdown)
 {
-    PgoodDebouncer d;
+    D d;
 
-    EXPECT_FALSE(update_24v(d, true));  // ng_count -> 1, PENDING_NG
-    EXPECT_FALSE(update_24v(d, true));  // ng_count -> 2, PENDING_NG
-    EXPECT_TRUE(update_24v(d, true));   // ng_count -> 3, NG_CONFIRMED -> shutdown
+    EXPECT_FALSE(sample_24v(d, true));   // ng_observed -> 1, PENDING_NG
+    EXPECT_FALSE(sample_24v(d, true));   // ng_observed -> 2, PENDING_NG
+    EXPECT_TRUE(sample_24v(d, true));    // ng_observed -> 3, NG_CONFIRMED
 
-    EXPECT_EQ(d.get_signal(Idx::V24).state,    State::NG_CONFIRMED);
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count, 3u);
+    EXPECT_EQ(d.get_signal(Ix::V24).state,       St::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed, 3u);
     EXPECT_TRUE(d.is_ng_confirmed());
 }
 
 // ---------------------------------------------------------------------------
-// UT-003b: NG_CONFIRMED is sticky - further calls still return true
+// UT-003b: NG_CONFIRMED is sticky - true is returned even after OK input
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, UT003b_NgConfirmedIsSticky)
 {
-    PgoodDebouncer d;
-    update_24v(d, true);
-    update_24v(d, true);
-    update_24v(d, true);  // confirmed
+    D d;
+    sample_24v(d, true);
+    sample_24v(d, true);
+    sample_24v(d, true);  // NG_CONFIRMED
 
-    // Even if GPIO returns OK on subsequent polls, stays confirmed
-    EXPECT_TRUE(update_24v(d, false));
-    EXPECT_EQ(d.get_signal(Idx::V24).state, State::NG_CONFIRMED);
+    EXPECT_TRUE(sample_24v(d, false));   // sticky -> still true
+    EXPECT_EQ(d.get_signal(Ix::V24).state, St::NG_CONFIRMED);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,180 +130,309 @@ TEST(PgoodDebouncerTest, UT003b_NgConfirmedIsSticky)
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, UT003c_ResetClearsNgConfirmed)
 {
-    PgoodDebouncer d;
-    update_24v(d, true);
-    update_24v(d, true);
-    update_24v(d, true);  // confirmed
+    D d;
+    sample_24v(d, true);
+    sample_24v(d, true);
+    sample_24v(d, true);
     EXPECT_TRUE(d.is_ng_confirmed());
 
     d.reset();
 
     EXPECT_FALSE(d.is_ng_confirmed());
-    EXPECT_EQ(d.get_signal(Idx::V24).state,    State::OK);
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count, 0u);
-    EXPECT_FALSE(update_24v(d, false));  // normal operation resumes
+    EXPECT_EQ(d.get_signal(Ix::V24).state,       St::OK);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed, 0u);
+    EXPECT_EQ(d.get_signal(Ix::V24).prescaler,   0u);
+    EXPECT_FALSE(sample_24v(d, false));
 }
 
 // ---------------------------------------------------------------------------
-// UT-004: NG on PG_MTR_L only -> only MTR_L counter increments, others stay 0
+// UT-004: NG on MTR_L only -> only MTR_L counter increments
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, UT004_MtrLNgOnlyMtrLCounterIncrements)
 {
-    PgoodDebouncer d;
+    D d;
 
-    // One sample: MTR_L NG, rest OK, not in maintenance
-    bool shutdown = d.update(false, false, true, false, false);
+    bool shutdown = d.tick(false, false, true, false, false);
     EXPECT_FALSE(shutdown);
 
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count,        0u);
-    EXPECT_EQ(d.get_signal(Idx::PERIPHERAL).ng_count, 0u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_L).ng_count,      1u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_R).ng_count,      0u);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed,        0u);
+    EXPECT_EQ(d.get_signal(Ix::PERIPHERAL).ng_observed, 0u);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).ng_observed,      1u);
+    EXPECT_EQ(d.get_signal(Ix::MTR_R).ng_observed,      0u);
 
-    EXPECT_EQ(d.get_signal(Idx::V24).state,        State::OK);
-    EXPECT_EQ(d.get_signal(Idx::PERIPHERAL).state, State::OK);
-    EXPECT_EQ(d.get_signal(Idx::MTR_L).state,      State::PENDING_NG);
-    EXPECT_EQ(d.get_signal(Idx::MTR_R).state,      State::OK);
+    EXPECT_EQ(d.get_signal(Ix::V24).state,        St::OK);
+    EXPECT_EQ(d.get_signal(Ix::PERIPHERAL).state, St::OK);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).state,      St::PENDING_NG);
+    EXPECT_EQ(d.get_signal(Ix::MTR_R).state,      St::OK);
 }
 
 // ---------------------------------------------------------------------------
-// UT-005: Simultaneous NG on all 4 signals -> all counters increment
-//         independently, shutdown fires at the 3rd sample
+// UT-005: Simultaneous NG on all 4 signals -> all counters independent
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, UT005_AllSignalsNgSimultaneously)
 {
-    PgoodDebouncer d;
+    D d;
 
-    EXPECT_FALSE(d.update(true, true, true, true, false));  // all ng_count -> 1
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count,        1u);
-    EXPECT_EQ(d.get_signal(Idx::PERIPHERAL).ng_count, 1u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_L).ng_count,      1u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_R).ng_count,      1u);
+    EXPECT_FALSE(d.tick(true, true, true, true, false));  // all -> 1
+    EXPECT_FALSE(d.tick(true, true, true, true, false));  // all -> 2
+    EXPECT_TRUE(d.tick(true, true, true, true, false));   // all -> 3, shutdown
 
-    EXPECT_FALSE(d.update(true, true, true, true, false));  // all ng_count -> 2
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count,        2u);
-    EXPECT_EQ(d.get_signal(Idx::PERIPHERAL).ng_count, 2u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_L).ng_count,      2u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_R).ng_count,      2u);
-
-    EXPECT_TRUE(d.update(true, true, true, true, false));   // all ng_count -> 3, shutdown
-
-    EXPECT_EQ(d.get_signal(Idx::V24).state,        State::NG_CONFIRMED);
-    EXPECT_EQ(d.get_signal(Idx::PERIPHERAL).state, State::NG_CONFIRMED);
-    EXPECT_EQ(d.get_signal(Idx::MTR_L).state,      State::NG_CONFIRMED);
-    EXPECT_EQ(d.get_signal(Idx::MTR_R).state,      State::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Ix::V24).state,        St::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Ix::PERIPHERAL).state, St::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).state,      St::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Ix::MTR_R).state,      St::NG_CONFIRMED);
 }
 
 // ---------------------------------------------------------------------------
-// Maintenance mode: MTR_L/MTR_R NG is masked (treated as OK)
+// Maintenance: MTR_L/R NG is masked (treated as OK)
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, MaintenanceMasksMtrSignals)
 {
-    PgoodDebouncer d;
+    D d;
 
-    // 3x MTR_L and MTR_R NG while in maintenance -> NOT confirmed, no shutdown
     for (int i{0}; i < 3; ++i) {
-        EXPECT_FALSE(d.update(false, false, true, true, /*is_maintenance=*/true));
+        EXPECT_FALSE(d.tick(false, false, true, true, /*is_maintenance=*/true));
     }
-    EXPECT_EQ(d.get_signal(Idx::MTR_L).ng_count, 0u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_R).ng_count, 0u);
-    EXPECT_EQ(d.get_signal(Idx::MTR_L).state,    State::OK);
-    EXPECT_EQ(d.get_signal(Idx::MTR_R).state,    State::OK);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).ng_observed, 0u);
+    EXPECT_EQ(d.get_signal(Ix::MTR_R).ng_observed, 0u);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).state,       St::OK);
+    EXPECT_EQ(d.get_signal(Ix::MTR_R).state,       St::OK);
     EXPECT_FALSE(d.is_ng_confirmed());
 }
 
 // ---------------------------------------------------------------------------
-// ShutdownInMaintenance = false: confirmed NG during maintenance is suppressed
+// shutdown_in_maintenance=false: NG_CONFIRMED in maintenance suppresses shutdown
 // ---------------------------------------------------------------------------
+static constexpr PgoodConfig kNoShutdownMaintConfig {
+    .v24        = {.sampling_period_ms = 1, .ng_count = 3},
+    .peripheral = {.sampling_period_ms = 1, .ng_count = 3},
+    .mtr_l      = {.sampling_period_ms = 1, .ng_count = 3},
+    .mtr_r      = {.sampling_period_ms = 1, .ng_count = 3},
+    .shutdown_in_maintenance = false,
+};
+using DNoMaint = PgoodDebouncerT<kNoShutdownMaintConfig>;
+
 TEST(PgoodDebouncerNoShutdownTest, ShutdownSuppressedInMaintenanceMode)
 {
-    PgoodDebouncerT<false> d;
+    DNoMaint d;
 
-    // 3x 24V NG in maintenance -> NG confirmed internally but shutdown suppressed
     for (int i{0}; i < 3; ++i) {
-        bool result = d.update(true, false, false, false, /*is_maintenance=*/true);
-        EXPECT_FALSE(result) << "Shutdown must be suppressed in maintenance mode "
-                                "when ShutdownInMaintenance=false (sample " << i + 1 << ")";
+        bool result = d.tick(true, false, false, false, /*is_maintenance=*/true);
+        EXPECT_FALSE(result) << "Shutdown must be suppressed in maintenance "
+                                "(sample " << i + 1 << ")";
     }
-    EXPECT_TRUE(d.is_ng_confirmed());  // state machine still ran to completion
+    EXPECT_TRUE(d.is_ng_confirmed());  // state machine still reached NG_CONFIRMED
 }
 
 TEST(PgoodDebouncerNoShutdownTest, ShutdownOccursOutsideMaintenanceMode)
 {
-    PgoodDebouncerT<false> d;
+    DNoMaint d;
 
-    // Same 3x NG but NOT in maintenance -> shutdown fires normally
-    EXPECT_FALSE(d.update(true, false, false, false, false));
-    EXPECT_FALSE(d.update(true, false, false, false, false));
-    EXPECT_TRUE(d.update(true, false, false, false, false));
+    EXPECT_FALSE(d.tick(true, false, false, false, false));
+    EXPECT_FALSE(d.tick(true, false, false, false, false));
+    EXPECT_TRUE(d.tick(true, false, false, false, false));
     EXPECT_TRUE(d.is_ng_confirmed());
 }
 
 // ---------------------------------------------------------------------------
-// Boundary: initial state is OK with all counters at 0
+// Initial state: all OK with counters at 0
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, InitialStateIsOk)
 {
-    PgoodDebouncer d;
+    D d;
 
     EXPECT_FALSE(d.is_ng_confirmed());
-    for (auto idx : {Idx::V24, Idx::PERIPHERAL, Idx::MTR_L, Idx::MTR_R}) {
-        EXPECT_EQ(d.get_signal(idx).state,    State::OK);
-        EXPECT_EQ(d.get_signal(idx).ng_count, 0u);
+    for (auto idx : {Ix::V24, Ix::PERIPHERAL, Ix::MTR_L, Ix::MTR_R}) {
+        EXPECT_EQ(d.get_signal(idx).state,       St::OK);
+        EXPECT_EQ(d.get_signal(idx).ng_observed, 0u);
+        EXPECT_EQ(d.get_signal(idx).prescaler,   0u);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Recovery from PENDING_NG re-accumulates correctly after reset by OK sample
+// Recovery: PENDING_NG -> OK -> re-accumulates from zero
 // ---------------------------------------------------------------------------
 TEST(PgoodDebouncerTest, RecoveryFromPendingNgThenReaccumulates)
 {
-    PgoodDebouncer d;
+    D d;
 
-    update_24v(d, true);   // ng_count -> 1, PENDING_NG
-    update_24v(d, false);  // ng_count -> 0, OK (recovered)
-    update_24v(d, true);   // ng_count -> 1, PENDING_NG again
-    update_24v(d, true);   // ng_count -> 2
+    sample_24v(d, true);   // ng_observed -> 1, PENDING_NG
+    sample_24v(d, false);  // ng_observed -> 0, OK
+    sample_24v(d, true);   // ng_observed -> 1, PENDING_NG
+    sample_24v(d, true);   // ng_observed -> 2
 
-    EXPECT_EQ(d.get_signal(Idx::V24).ng_count, 2u);
-    EXPECT_EQ(d.get_signal(Idx::V24).state,    State::PENDING_NG);
+    EXPECT_EQ(d.get_signal(Ix::V24).ng_observed, 2u);
+    EXPECT_EQ(d.get_signal(Ix::V24).state,       St::PENDING_NG);
     EXPECT_FALSE(d.is_ng_confirmed());
 
-    EXPECT_TRUE(update_24v(d, true));  // ng_count -> 3, NG_CONFIRMED
+    EXPECT_TRUE(sample_24v(d, true));   // ng_observed -> 3, NG_CONFIRMED
 }
 
 // ---------------------------------------------------------------------------
-// Custom NgConfirmCount=2: shutdown fires on the 2nd consecutive NG sample
+// ID-001: tick() remains true after NG_CONFIRMED (idempotency)
 // ---------------------------------------------------------------------------
-TEST(PgoodDebouncerTest, CustomNgConfirmCount2_ShutdownOnSecondSample)
+TEST(PgoodDebouncerTest, ID001_TickReturnsTrueUntilReset)
 {
-    using D2    = PgoodDebouncerT<true, 2>;
-    using Idx2  = D2::SignalIndex;
-    using St2   = D2::State;
-    D2 d;
+    D d;
+    sample_24v(d, true);
+    sample_24v(d, true);
+    sample_24v(d, true);  // NG_CONFIRMED
 
-    // 1st NG: PENDING_NG, no shutdown
-    EXPECT_FALSE(d.update(true, false, false, false, false));
-    EXPECT_EQ(d.get_signal(Idx2::V24).state,    St2::PENDING_NG);
-    EXPECT_EQ(d.get_signal(Idx2::V24).ng_count, 1u);
+    for (int i{0}; i < 5; ++i) {
+        EXPECT_TRUE(tick_24v(d, false)) << "tick " << i << " after NG_CONFIRMED must return true";
+    }
 
-    // 2nd NG: NG_CONFIRMED -> shutdown
-    EXPECT_TRUE(d.update(true, false, false, false, false));
-    EXPECT_EQ(d.get_signal(Idx2::V24).state,    St2::NG_CONFIRMED);
-    EXPECT_EQ(d.get_signal(Idx2::V24).ng_count, 2u);
+    d.reset();
+    EXPECT_FALSE(tick_24v(d, false));
+}
+
+// ---------------------------------------------------------------------------
+// PS-001: First sample occurs after sampling_period_ms ticks (not immediately)
+// ---------------------------------------------------------------------------
+TEST(PrescalerTest, PS001_FirstSampleAfterPeriod)
+{
+    // period=3, ng_count=2
+    constexpr PgoodConfig cfg {
+        .v24        = {.sampling_period_ms = 3, .ng_count = 2},
+        .peripheral = {.sampling_period_ms = 3, .ng_count = 2},
+        .mtr_l      = {.sampling_period_ms = 3, .ng_count = 2},
+        .mtr_r      = {.sampling_period_ms = 3, .ng_count = 2},
+    };
+    PgoodDebouncerT<cfg> d;
+
+    // tick 1, 2: prescaler < period, no sample
+    EXPECT_FALSE(d.tick(true, false, false, false, false));
+    EXPECT_EQ(d.get_signal(PgoodDebouncerT<cfg>::SignalIndex::V24).ng_observed, 0u);
+
+    EXPECT_FALSE(d.tick(true, false, false, false, false));
+    EXPECT_EQ(d.get_signal(PgoodDebouncerT<cfg>::SignalIndex::V24).ng_observed, 0u);
+
+    // tick 3: prescaler reaches period -> first sample
+    EXPECT_FALSE(d.tick(true, false, false, false, false));
+    EXPECT_EQ(d.get_signal(PgoodDebouncerT<cfg>::SignalIndex::V24).ng_observed, 1u);
+    EXPECT_EQ(d.get_signal(PgoodDebouncerT<cfg>::SignalIndex::V24).state,
+              PgoodDebouncerT<cfg>::State::PENDING_NG);
+}
+
+// ---------------------------------------------------------------------------
+// PS-002: Ticks before period do not change state
+// ---------------------------------------------------------------------------
+TEST(PrescalerTest, PS002_TicksBeforePeriodNoTransition)
+{
+    constexpr PgoodConfig cfg {
+        .v24        = {.sampling_period_ms = 5, .ng_count = 2},
+        .peripheral = {.sampling_period_ms = 5, .ng_count = 2},
+        .mtr_l      = {.sampling_period_ms = 5, .ng_count = 2},
+        .mtr_r      = {.sampling_period_ms = 5, .ng_count = 2},
+    };
+    PgoodDebouncerT<cfg> d;
+    using Ix2 = PgoodDebouncerT<cfg>::SignalIndex;
+    using St2 = PgoodDebouncerT<cfg>::State;
+
+    for (int i{0}; i < 4; ++i) {
+        EXPECT_FALSE(d.tick(true, false, false, false, false));
+        EXPECT_EQ(d.get_signal(Ix2::V24).state,       St2::OK);
+        EXPECT_EQ(d.get_signal(Ix2::V24).ng_observed, 0u);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PS-003: >= comparison handles a skipped tick gracefully
+// ---------------------------------------------------------------------------
+TEST(PrescalerTest, PS003_GeComparisonHandlesSkippedTick)
+{
+    constexpr PgoodConfig cfg {
+        .v24        = {.sampling_period_ms = 2, .ng_count = 2},
+        .peripheral = {.sampling_period_ms = 2, .ng_count = 2},
+        .mtr_l      = {.sampling_period_ms = 2, .ng_count = 2},
+        .mtr_r      = {.sampling_period_ms = 2, .ng_count = 2},
+    };
+    // Manually advance prescaler past the period by calling tick() twice in
+    // the same "real ms" — the second tick still samples correctly.
+    PgoodDebouncerT<cfg> d;
+    using Ix2 = PgoodDebouncerT<cfg>::SignalIndex;
+
+    // tick 1: prescaler=1 < 2, no sample
+    EXPECT_FALSE(d.tick(true, false, false, false, false));
+    EXPECT_EQ(d.get_signal(Ix2::V24).ng_observed, 0u);
+
+    // tick 2: prescaler=2 >= 2, sample taken, prescaler resets to 0
+    EXPECT_FALSE(d.tick(true, false, false, false, false));
+    EXPECT_EQ(d.get_signal(Ix2::V24).ng_observed, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// PS-004: Signals with different periods confirm independently
+// ---------------------------------------------------------------------------
+TEST(PrescalerTest, PS004_DifferentPeriodsConfirmIndependently)
+{
+    // V24: period=3, ng_count=2 -> confirms at tick 6  (3*2)
+    // MTR_L: period=1, ng_count=2 -> confirms at tick 2  (1*2)
+    constexpr PgoodConfig cfg {
+        .v24        = {.sampling_period_ms = 3, .ng_count = 2},
+        .peripheral = {.sampling_period_ms = 3, .ng_count = 2},
+        .mtr_l      = {.sampling_period_ms = 1, .ng_count = 2},
+        .mtr_r      = {.sampling_period_ms = 1, .ng_count = 2},
+    };
+    PgoodDebouncerT<cfg> d;
+    using Ix2 = PgoodDebouncerT<cfg>::SignalIndex;
+    using St2 = PgoodDebouncerT<cfg>::State;
+
+    // tick 1: MTR_L ng_observed=1 PENDING; V24 prescaler=1 no sample
+    EXPECT_FALSE(d.tick(true, false, true, false, false));
+    EXPECT_EQ(d.get_signal(Ix2::MTR_L).ng_observed, 1u);
+    EXPECT_EQ(d.get_signal(Ix2::V24).ng_observed,   0u);
+
+    // tick 2: MTR_L ng_observed=2 NG_CONFIRMED -> shutdown; V24 still no sample
+    EXPECT_TRUE(d.tick(true, false, true, false, false));
+    EXPECT_EQ(d.get_signal(Ix2::MTR_L).state, St2::NG_CONFIRMED);
+    EXPECT_EQ(d.get_signal(Ix2::V24).state,   St2::OK);
+
+    d.reset();
+
+    // After reset, V24 confirms at tick 6
+    for (int i{0}; i < 5; ++i) {
+        EXPECT_FALSE(d.tick(true, false, false, false, false)) << "tick " << i + 1;
+    }
+    EXPECT_TRUE(d.tick(true, false, false, false, false));  // tick 6
+    EXPECT_EQ(d.get_signal(Ix2::V24).state, St2::NG_CONFIRMED);
+}
+
+// ---------------------------------------------------------------------------
+// MT-001: PENDING_NG in MTR_L when maintenance starts -> counter resets via mask
+// ---------------------------------------------------------------------------
+TEST(MaintenanceTest, MT001_PendingNgClearedOnMaintenanceEntry)
+{
+    D d;
+
+    sample_24v(d, false);  // V24 OK
+    // MTR_L: 2x NG without maintenance -> PENDING_NG
+    d.tick(false, false, true, false, false);
+    d.tick(false, false, true, false, false);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).state,       St::PENDING_NG);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).ng_observed, 2u);
+
+    // Maintenance starts: MTR_L input masked to OK -> ng_observed resets
+    d.tick(false, false, true, false, /*is_maintenance=*/true);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).state,       St::OK);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).ng_observed, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// MT-002: NG_CONFIRMED in MTR_L persists when maintenance starts
+// ---------------------------------------------------------------------------
+TEST(MaintenanceTest, MT002_NgConfirmedPersistsOnMaintenanceEntry)
+{
+    D d;
+
+    // Confirm MTR_L NG
+    d.tick(false, false, true, false, false);
+    d.tick(false, false, true, false, false);
+    d.tick(false, false, true, false, false);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).state, St::NG_CONFIRMED);
+
+    // Enter maintenance: NG_CONFIRMED stays (shutdown suppression is separate)
+    d.tick(false, false, true, false, /*is_maintenance=*/true);
+    EXPECT_EQ(d.get_signal(Ix::MTR_L).state, St::NG_CONFIRMED);
     EXPECT_TRUE(d.is_ng_confirmed());
-}
-
-TEST(PgoodDebouncerTest, CustomNgConfirmCount2_SingleNgThenOkNoShutdown)
-{
-    using D2   = PgoodDebouncerT<true, 2>;
-    using Idx2 = D2::SignalIndex;
-    using St2  = D2::State;
-    D2 d;
-
-    EXPECT_FALSE(d.update(true, false, false, false, false));   // ng_count -> 1, PENDING_NG
-    EXPECT_FALSE(d.update(false, false, false, false, false));  // ng_count -> 0, OK
-    EXPECT_EQ(d.get_signal(Idx2::V24).state,    St2::OK);
-    EXPECT_EQ(d.get_signal(Idx2::V24).ng_count, 0u);
-    EXPECT_FALSE(d.is_ng_confirmed());
 }

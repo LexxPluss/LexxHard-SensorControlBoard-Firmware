@@ -997,46 +997,56 @@ public:
             gpio_pin_set_dt(&gpio_dev, 1);
         }
     }
-    bool is_ok(bool is_maintenance) {
+    /**
+     * @brief Feed one 1ms base tick into the PGOOD debouncer.
+     *
+     * Must be called every 1 ms from a single execution context
+     * (e.g. a k_work item submitted by the 1 ms system timer).
+     * GPIO values are read here; the debouncer receives only bool inputs.
+     *
+     * @param is_maintenance true while the robot is in maintenance or
+     *                       transition-to-running mode (masks MTR signals).
+     */
+    void tick_pgood(bool is_maintenance) {
         // 0:OK, 1:NG
-        gpio_dt_spec gpio_pgood_24v_dev = GET_GPIO(pgood_24v);
-        gpio_dt_spec gpio_pgood_peripheral_dev = GET_GPIO(pgood_peripheral);
-        gpio_dt_spec gpio_pgood_wheel_motor_left_dev = GET_GPIO(pgood_wheel_motor_left);
+        gpio_dt_spec gpio_pgood_24v_dev               = GET_GPIO(pgood_24v);
+        gpio_dt_spec gpio_pgood_peripheral_dev        = GET_GPIO(pgood_peripheral);
+        gpio_dt_spec gpio_pgood_wheel_motor_left_dev  = GET_GPIO(pgood_wheel_motor_left);
         gpio_dt_spec gpio_pgood_wheel_motor_right_dev = GET_GPIO(pgood_wheel_motor_right);
-        if (!gpio_is_ready_dt(&gpio_pgood_24v_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return false;
+        if (!gpio_is_ready_dt(&gpio_pgood_24v_dev) ||
+            !gpio_is_ready_dt(&gpio_pgood_peripheral_dev) ||
+            !gpio_is_ready_dt(&gpio_pgood_wheel_motor_left_dev) ||
+            !gpio_is_ready_dt(&gpio_pgood_wheel_motor_right_dev)) {
+            LOG_ERR("PGOOD gpio_is_ready_dt Failed\n");
+            return;
         }
-        if (!gpio_is_ready_dt(&gpio_pgood_peripheral_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return false;
-        }
-        if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_left_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return false;
-        }
-        if (!gpio_is_ready_dt(&gpio_pgood_wheel_motor_right_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed\n");
-            return false;
-        }
+
         bool const ng_24v    = (gpio_pin_get_dt(&gpio_pgood_24v_dev)               == 1);
         bool const ng_periph = (gpio_pin_get_dt(&gpio_pgood_peripheral_dev)        == 1);
         bool const ng_mtr_l  = (gpio_pin_get_dt(&gpio_pgood_wheel_motor_left_dev)  == 1);
         bool const ng_mtr_r  = (gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 1);
 
-        bool const should_shutdown = debouncer_.update(ng_24v, ng_periph,
-                                                       ng_mtr_l, ng_mtr_r,
-                                                       is_maintenance);
+        bool const should_shutdown = debouncer_.tick(ng_24v, ng_periph,
+                                                     ng_mtr_l, ng_mtr_r,
+                                                     is_maintenance);
 
         if (!should_shutdown && debouncer_.is_ng_confirmed() && is_maintenance) {
-            LOG_WRN("PGOOD NG confirmed in maintenance mode - shutdown suppressed"
-                    " (PGOOD_SHUTDOWN_IN_MAINTENANCE=0)");
+            LOG_WRN("PGOOD NG confirmed in maintenance mode - shutdown suppressed");
         }
         if (should_shutdown) {
             LOG_ERR("PGOOD NG confirmed - shutdown triggered");
         }
+    }
 
-        return !should_shutdown;
+    /** @brief Returns false when the debouncer has confirmed a PGOOD fault. */
+    bool is_ok(bool is_maintenance) const {
+        if (debouncer_.is_ng_confirmed()) {
+            if (!kPgoodConfig.shutdown_in_maintenance && is_maintenance) {
+                return true;  // shutdown suppressed in maintenance
+            }
+            return false;
+        }
+        return true;
     }
     void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
         gpio_dt_spec gpio_pgood_24v_dev = GET_GPIO(pgood_24v);
@@ -1066,12 +1076,18 @@ public:
         v_wheel_motor_right = gpio_pin_get_dt(&gpio_pgood_wheel_motor_right_dev) == 1;
     }
 private:
+    static constexpr PgoodConfig kPgoodConfig {
+        .v24        = {.sampling_period_ms = 20, .ng_count =  3},
+        .peripheral = {.sampling_period_ms = 20, .ng_count =  3},
+        .mtr_l      = {.sampling_period_ms =  1, .ng_count = 50},
+        .mtr_r      = {.sampling_period_ms =  1, .ng_count = 50},
 #if defined(PGOOD_SHUTDOWN_IN_MAINTENANCE) && (PGOOD_SHUTDOWN_IN_MAINTENANCE == 0)
-    static constexpr bool kShutdownInMaint{false};
+        .shutdown_in_maintenance = false,
 #else
-    static constexpr bool kShutdownInMaint{true};
+        .shutdown_in_maintenance = true,
 #endif
-    PgoodDebouncerT<kShutdownInMaint> debouncer_;
+    };
+    PgoodDebouncerT<kPgoodConfig> debouncer_;
 };
 
 class fan_driver { // Variables Implemented
@@ -1270,6 +1286,12 @@ public:
         bsw.init();
         sl.init();
 
+        k_work_init(&pgood_tick_work_, pgood_tick_work_handler);
+
+        k_timer_init(&timer_poll_1ms, static_poll_1ms_callback, NULL);
+        k_timer_user_data_set(&timer_poll_1ms, this);
+        k_timer_start(&timer_poll_1ms, K_MSEC(1), K_MSEC(1));
+
         k_timer_init(&timer_poll_100ms, static_poll_100ms_callback, NULL);
         k_timer_user_data_set(&timer_poll_100ms, this);
         k_timer_start(&timer_poll_100ms, K_MSEC(100), K_MSEC(100));
@@ -1373,6 +1395,18 @@ public:
     }
 
 private:
+    static void pgood_tick_work_handler(struct k_work *work) {
+        auto* instance = CONTAINER_OF(work, state_controller, pgood_tick_work_);
+        bool const is_maint = instance->ksw.is_maintenance() ||
+                              instance->ksw.is_transition_to_running();
+        instance->dcdc.tick_pgood(is_maint);
+    }
+    static void static_poll_1ms_callback(struct k_timer *timer_id) {
+        auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
+        if (instance) {
+            k_work_submit(&instance->pgood_tick_work_);
+        }
+    }
     static void static_poll_100ms_callback(struct k_timer *timer_id) {
         auto* instance = static_cast<state_controller*>(k_timer_user_data_get(timer_id));
         if (instance) {
@@ -1974,7 +2008,8 @@ private:
 
     lexxhard::can_controller::msg_board board2ros;
     int64_t timer_post{0}, timer_shutdown{0}, timer_poweroff{0};
-    k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
+    k_work  pgood_tick_work_;
+    k_timer timer_poll_1ms, timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
