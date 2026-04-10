@@ -54,7 +54,7 @@ struct SignalConfig {
  * @brief Full PGOOD debouncer configuration (C++20 NTTP struct).
  *
  * Defines per-signal sampling period and confirmation count for each of the
- * four PGOOD signals, plus the maintenance-mode shutdown policy.
+ * four PGOOD signals.
  *
  * Example — motor lines sampled at 1 ms, 50-sample confirmation (50 ms window);
  * control lines sampled at 20 ms, 3-sample confirmation (60 ms window):
@@ -65,22 +65,14 @@ struct SignalConfig {
  *     .peripheral = {.sampling_period_ms = 20, .ng_count =  3},
  *     .mtr_l      = {.sampling_period_ms =  1, .ng_count = 50},
  *     .mtr_r      = {.sampling_period_ms =  1, .ng_count = 50},
- *     .shutdown_in_maintenance = true,
  * };
  * @endcode
- *
- * @param shutdown_in_maintenance
- *   true  (default): confirmed NG triggers shutdown even in maintenance mode.
- *   false           : confirmed NG in maintenance mode is suppressed
- *                     (tick() returns false). The caller is responsible
- *                     for logging the suppressed fault.
  */
 struct PgoodConfig {
     SignalConfig v24        {.sampling_period_ms = 20, .ng_count =  3};
     SignalConfig peripheral {.sampling_period_ms = 20, .ng_count =  3};
     SignalConfig mtr_l      {.sampling_period_ms =  1, .ng_count = 50};
     SignalConfig mtr_r      {.sampling_period_ms =  1, .ng_count = 50};
-    bool shutdown_in_maintenance{true};
 };
 
 /**
@@ -183,16 +175,7 @@ public:
         // to call from any interrupt context without a lock.
         ng_confirmed_.store(any_confirmed, std::memory_order_release);
 
-        if (!any_confirmed) {
-            return false;
-        }
-
-        // When shutdown_in_maintenance == false and in maintenance, suppress.
-        if (!Config.shutdown_in_maintenance && is_maintenance) {
-            return false;
-        }
-
-        return true;
+        return any_confirmed;
     }
 
     /** @brief Reset all signals to OK. Call on power-on and power-off. */

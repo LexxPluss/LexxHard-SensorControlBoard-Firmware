@@ -44,7 +44,6 @@ static constexpr PgoodConfig kTestConfig {
     .peripheral = {.sampling_period_ms = 1, .ng_count = 3},
     .mtr_l      = {.sampling_period_ms = 1, .ng_count = 3},
     .mtr_r      = {.sampling_period_ms = 1, .ng_count = 3},
-    .shutdown_in_maintenance = true,
 };
 using D  = PgoodDebouncerT<kTestConfig>;
 using St = D::State;
@@ -200,40 +199,6 @@ TEST(PgoodDebouncerTest, MaintenanceMasksMtrSignals)
     EXPECT_EQ(d.get_signal(Ix::MTR_L).state,       St::OK);
     EXPECT_EQ(d.get_signal(Ix::MTR_R).state,       St::OK);
     EXPECT_FALSE(d.is_ng_confirmed());
-}
-
-// ---------------------------------------------------------------------------
-// shutdown_in_maintenance=false: NG_CONFIRMED in maintenance suppresses shutdown
-// ---------------------------------------------------------------------------
-static constexpr PgoodConfig kNoShutdownMaintConfig {
-    .v24        = {.sampling_period_ms = 1, .ng_count = 3},
-    .peripheral = {.sampling_period_ms = 1, .ng_count = 3},
-    .mtr_l      = {.sampling_period_ms = 1, .ng_count = 3},
-    .mtr_r      = {.sampling_period_ms = 1, .ng_count = 3},
-    .shutdown_in_maintenance = false,
-};
-using DNoMaint = PgoodDebouncerT<kNoShutdownMaintConfig>;
-
-TEST(PgoodDebouncerNoShutdownTest, ShutdownSuppressedInMaintenanceMode)
-{
-    DNoMaint d;
-
-    for (int i{0}; i < 3; ++i) {
-        bool result = d.tick(true, false, false, false, /*is_maintenance=*/true);
-        EXPECT_FALSE(result) << "Shutdown must be suppressed in maintenance "
-                                "(sample " << i + 1 << ")";
-    }
-    EXPECT_TRUE(d.is_ng_confirmed());  // state machine still reached NG_CONFIRMED
-}
-
-TEST(PgoodDebouncerNoShutdownTest, ShutdownOccursOutsideMaintenanceMode)
-{
-    DNoMaint d;
-
-    EXPECT_FALSE(d.tick(true, false, false, false, false));
-    EXPECT_FALSE(d.tick(true, false, false, false, false));
-    EXPECT_TRUE(d.tick(true, false, false, false, false));
-    EXPECT_TRUE(d.is_ng_confirmed());
 }
 
 // ---------------------------------------------------------------------------
@@ -488,37 +453,6 @@ TEST(AtomicFlagTest, AT001_ConcurrentReaderSeesConfirmationEventually)
 
     EXPECT_TRUE(d.is_ng_confirmed());
     EXPECT_TRUE(reader_saw_true.load(std::memory_order_relaxed));
-}
-
-// AT-002: Concurrent reader observes is_ng_confirmed()=true even when tick()
-//         returns false due to maintenance suppression.
-//         Verifies: suppression policy does not corrupt the atomic flag.
-TEST(AtomicFlagTest, AT002_ConcurrentReaderSeesTrueWhenShutdownSuppressed)
-{
-    DNoMaint d;  // shutdown_in_maintenance = false
-
-    std::atomic<bool> writer_done{false};
-    std::atomic<bool> reader_observed_true{false};
-
-    std::thread reader([&]() {
-        // Spin until writer signals completion, then check the flag.
-        while (!writer_done.load(std::memory_order_acquire)) {}
-        if (d.is_ng_confirmed()) {
-            reader_observed_true.store(true, std::memory_order_relaxed);
-        }
-    });
-
-    // Writer: reach NG_CONFIRMED under maintenance (tick() returns false each time)
-    for (int i{0}; i < 3; ++i) {
-        bool result = d.tick(true, false, false, false, /*is_maintenance=*/true);
-        EXPECT_FALSE(result);
-    }
-    writer_done.store(true, std::memory_order_release);
-
-    reader.join();
-
-    EXPECT_TRUE(reader_observed_true.load(std::memory_order_relaxed));
-    EXPECT_TRUE(d.is_ng_confirmed());
 }
 
 // AT-003: Concurrent reader never observes is_ng_confirmed()=true while
