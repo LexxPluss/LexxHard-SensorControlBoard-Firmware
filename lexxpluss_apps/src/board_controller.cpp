@@ -951,6 +951,7 @@ class dcdc_converter { // Variables Implemented
 public:
     void set_enable(bool enable) {
         debouncer_.reset();
+        prev_states_.fill(PgoodDebouncerT<kPgoodConfig>::State::OK);
         gpio_dt_spec gpio_dev;
         // 0=OFF, 1=ON
         if (enable) {
@@ -1029,8 +1030,40 @@ public:
                                                      ng_mtr_l, ng_mtr_r,
                                                      is_maintenance);
 
+        static const char* const kSigNames[] = {"V24", "PERIPH", "MTR_L", "MTR_R"};
+        static constexpr uint8_t kNgCounts[] = {
+            kPgoodConfig.v24.ng_count,
+            kPgoodConfig.peripheral.ng_count,
+            kPgoodConfig.mtr_l.ng_count,
+            kPgoodConfig.mtr_r.ng_count,
+        };
+        using Idx = PgoodDebouncerT<kPgoodConfig>::SignalIndex;
+
+        // Per-signal state transition logging.
+        for (uint8_t i = 0; i < 4; ++i) {
+            const auto& sig = debouncer_.get_signal(static_cast<Idx>(i));
+            if (sig.state == prev_states_[i]) {
+                continue;
+            }
+            const bool confirmed = (sig.state == PgoodDebouncerT<kPgoodConfig>::State::NG_CONFIRMED);
+            if (confirmed) {
+                // LOG_ERR so the faulty signal is always visible in syslog.
+                LOG_ERR("PGOOD[%s] NG confirmed ng_obs:%u/%u",
+                        kSigNames[i], sig.ng_observed, kNgCounts[i]);
+            } else {
+                // LOG_DBG for OK / PENDING_NG transitions (debug builds only).
+                LOG_DBG("PGOOD[%s] state:%u->%u ng_obs:%u/%u",
+                        kSigNames[i],
+                        static_cast<uint8_t>(prev_states_[i]),
+                        static_cast<uint8_t>(sig.state),
+                        sig.ng_observed,
+                        kNgCounts[i]);
+            }
+            prev_states_[i] = sig.state;
+        }
+
         if (!should_shutdown && debouncer_.is_ng_confirmed() && is_maintenance) {
-            LOG_WRN("PGOOD NG confirmed in maintenance mode - shutdown suppressed");
+            LOG_WRN("PGOOD shutdown suppressed in maintenance mode");
         }
         if (should_shutdown) {
             LOG_ERR("PGOOD NG confirmed - shutdown triggered");
@@ -1059,6 +1092,37 @@ public:
         }
         return true;
 #endif
+    }
+    /**
+     * @brief Snapshot debouncer state for diagnostics (brd info / LOG_DBG).
+     *
+     * Safe to call from any context that does not race with tick_pgood().
+     */
+    void get_debounce_info(PgoodSignalState out[4], bool &ng_confirmed) const {
+        using Idx = PgoodDebouncerT<kPgoodConfig>::SignalIndex;
+        static constexpr uint8_t  kNgCounts[] = {
+            kPgoodConfig.v24.ng_count,
+            kPgoodConfig.peripheral.ng_count,
+            kPgoodConfig.mtr_l.ng_count,
+            kPgoodConfig.mtr_r.ng_count,
+        };
+        static constexpr uint32_t kPeriods[] = {
+            kPgoodConfig.v24.sampling_period_ms,
+            kPgoodConfig.peripheral.sampling_period_ms,
+            kPgoodConfig.mtr_l.sampling_period_ms,
+            kPgoodConfig.mtr_r.sampling_period_ms,
+        };
+        for (uint8_t i = 0; i < 4; ++i) {
+            const auto& s = debouncer_.get_signal(static_cast<Idx>(i));
+            out[i] = {
+                static_cast<uint8_t>(s.state),
+                s.ng_observed,
+                kNgCounts[i],
+                s.prescaler,
+                kPeriods[i],
+            };
+        }
+        ng_confirmed = debouncer_.is_ng_confirmed();
     }
     void get_failed_state(bool &v24, bool &v_peripheral, bool &v_wheel_motor_left, bool &v_wheel_motor_right) {
         gpio_dt_spec gpio_pgood_24v_dev = GET_GPIO(pgood_24v);
@@ -1098,6 +1162,8 @@ private:
 #endif
     };
     PgoodDebouncerT<kPgoodConfig> debouncer_;
+    /// Previous per-signal state, tracked to emit LOG_DBG on transitions.
+    std::array<PgoodDebouncerT<kPgoodConfig>::State, 4> prev_states_{};
 };
 
 class fan_driver { // Variables Implemented
@@ -1371,6 +1437,9 @@ public:
     }
     void power_off() {
         dcdc.set_enable(false);
+    }
+    void get_pgood_debounce_info(PgoodSignalState out[4], bool &ng_confirmed) const {
+        dcdc.get_debounce_info(out, ng_confirmed);
     }
     void auto_charge_on() {
         ac.set_enable(true);
@@ -2121,6 +2190,11 @@ void run(void *p1, void *p2, void *p3)
 bool is_emergency()
 {
     return impl.is_emergency();
+}
+
+void get_pgood_debounce_info(PgoodSignalState out[4], bool &ng_confirmed)
+{
+    impl.get_pgood_debounce_info(out, ng_confirmed);
 }
 
 k_thread thread;

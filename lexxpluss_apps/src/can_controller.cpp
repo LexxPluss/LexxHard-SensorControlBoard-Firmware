@@ -141,6 +141,24 @@ public:
                     board2ros.charge_connector_p_temp, board2ros.charge_connector_n_temp,
                     (double)board2ros.charge_connector_voltage, board2ros.charge_check_count, board2ros.charge_heartbeat_delay, board2ros.charge_temperature_good,
                     version);
+
+        // PGOOD debouncer snapshot (state/count/duration)
+        board_controller::PgoodSignalState pg[4];
+        bool pg_confirmed{false};
+        board_controller::get_pgood_debounce_info(pg, pg_confirmed);
+        static const char* const kStateStr[] = {"OK  ", "PEND", "NG!!"};
+        static const char* const kSigNames[] = {"V24   ", "PERIPH", "MTR_L ", "MTR_R "};
+        shell_print(shell, "PGOOD Debounce (state / ng_obs/ng_cnt / duration_ms / prescaler):");
+        for (uint8_t i = 0; i < 4; ++i) {
+            const auto& s = pg[i];
+            const char* st = (s.state <= 2) ? kStateStr[s.state] : "????";
+            uint32_t duration_ms = static_cast<uint32_t>(s.ng_observed) * s.sampling_period_ms;
+            shell_print(shell, "  %s: %s  %u/%u  %ums  prescaler=%u",
+                        kSigNames[i], st,
+                        s.ng_observed, s.ng_count,
+                        duration_ms, s.prescaler);
+        }
+        shell_print(shell, "  confirmed:%d", pg_confirmed);
     }
 private:
     void handler_to_pb() {

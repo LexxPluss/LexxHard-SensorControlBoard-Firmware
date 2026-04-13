@@ -45,9 +45,32 @@ struct msg_rcv_pb {
 } __attribute__((aligned(4)));
 
 
+/**
+ * @brief Per-signal PGOOD debouncer snapshot for diagnostics.
+ *
+ * Populated by get_pgood_debounce_info(). All fields are read-only snapshots;
+ * they must not be written back to the debouncer.
+ */
+struct PgoodSignalState {
+    uint8_t  state;              ///< 0=OK, 1=PENDING_NG, 2=NG_CONFIRMED
+    uint8_t  ng_observed;        ///< consecutive NG sample count
+    uint8_t  ng_count;           ///< confirmation threshold (from config)
+    uint32_t prescaler;          ///< ticks elapsed since last sample
+    uint32_t sampling_period_ms; ///< sample interval in ms (from config)
+};
+
 void init();
 void run(void *p1, void *p2, void *p3);
 bool is_emergency();
+
+/**
+ * @brief Snapshot debouncer state for all four PGOOD signals.
+ *
+ * @param out[4]      Filled with per-signal state (order: V24, PERIPH, MTR_L, MTR_R).
+ * @param ng_confirmed Set to true if any signal is NG_CONFIRMED.
+ */
+void get_pgood_debounce_info(PgoodSignalState out[4], bool &ng_confirmed);
+
 extern k_thread thread;
 extern k_msgq msgq_can_bmu_pb;
 extern k_msgq msgq_board_pb_rx, msgq_board_pb_tx;
