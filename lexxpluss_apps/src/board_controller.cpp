@@ -459,6 +459,10 @@ public:
         }
     }
     bool is_asserted() const {
+#ifdef BYPASS_ESTOP_FOR_AUTOCHARGE_TEST
+        // Diagnostic build only — must not be enabled on a robot allowed to drive.
+        return false;
+#else
         for(auto& sw : switches) {
             if (sw.is_asserted()) {
                 return true;
@@ -466,6 +470,7 @@ public:
         }
 
         return false;
+#endif
     }
     void set_callback(std::function<void ()> cb) {
         callback = cb;
@@ -1340,8 +1345,13 @@ public:
         ossd2_value = (gpio_pin_get_dt(&ossd2_dev) == 1);
     }
     bool is_asserted() const {
+#ifdef BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST
+        // Diagnostic build only — must not be enabled on a robot allowed to drive.
+        return false;
+#else
         // assert when ossd1 and ossd2 are low level
         return !ossd1_value && !ossd2_value;
+#endif
     }
     void request_reset() {
         should_reset = true;
@@ -2194,6 +2204,16 @@ SHELL_CMD_REGISTER(pbrd, &sub, "PowerBoard commands", NULL);
 
 void init()
 {
+#if defined(BYPASS_ESTOP_FOR_AUTOCHARGE_TEST) || defined(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
+    LOG_ERR("UNSAFE BUILD: AUTO_CHARGE safety bypass active "
+#ifdef BYPASS_ESTOP_FOR_AUTOCHARGE_TEST
+            "[estop=bypassed] "
+#endif
+#ifdef BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST
+            "[safety_lidar=bypassed] "
+#endif
+            "- DO NOT DRIVE THIS ROBOT");
+#endif
     impl.init();
 }
 

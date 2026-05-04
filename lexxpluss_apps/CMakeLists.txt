@@ -39,6 +39,24 @@ if(USE_TWO_STATE_KEY_SWITCH)
     add_definitions(-DUSE_TWO_STATE_KEY_SWITCH)
 endif()
 
+# Diagnostic-only: bypass E-stop assertion for stationary AUTO_CHARGE testing.
+# Must NEVER be enabled on a robot that is allowed to drive.
+if(BYPASS_ESTOP_FOR_AUTOCHARGE_TEST)
+    add_definitions(-DBYPASS_ESTOP_FOR_AUTOCHARGE_TEST)
+    message(WARNING "UNSAFE BUILD: BYPASS_ESTOP_FOR_AUTOCHARGE_TEST is enabled. "
+                    "E-stop assertion is forced to false. "
+                    "DO NOT flash to a robot allowed to drive.")
+endif()
+
+# Diagnostic-only: bypass safety-lidar assertion for stationary AUTO_CHARGE testing.
+# Must NEVER be enabled on a robot that is allowed to drive.
+if(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
+    add_definitions(-DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
+    message(WARNING "UNSAFE BUILD: BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST is enabled. "
+                    "Safety lidar assertion is forced to false. "
+                    "DO NOT flash to a robot allowed to drive.")
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
