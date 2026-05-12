@@ -26,15 +26,26 @@ int iim42652_set_fs(const struct device *dev, uint16_t a_sf, uint16_t g_sf)
 	uint8_t databuf;
 	int result;
 
+	/* Validate FS_SEL indices: accel uses bit[7:5] over 4 codes (0..3),
+	 * gyro uses bit[7:5] over 8 codes (0..7). */
+	if (a_sf > 3 || g_sf > 7) {
+		LOG_ERR("Invalid FS_SEL a=%u g=%u", a_sf, g_sf);
+		return -EINVAL;
+	}
+	__ASSERT_NO_MSG(a_sf <= 3 && g_sf <= 7);
+
 	result = inv_spi_read(&cfg->spi, REG_ACCEL_CONFIG0, &databuf, 1);
 	if (result) {
 		return result;
 	}
 	databuf &= ~BIT_ACCEL_FSR;
-
-	databuf |= a_sf;
+	databuf |= ((uint8_t)a_sf << SHIFT_ACCEL_FS_SEL) & BIT_ACCEL_FSR;
 
 	result = inv_spi_single_write(&cfg->spi, REG_ACCEL_CONFIG0, &databuf);
+	if (result) {
+		return result;
+	}
+	LOG_INF("ACCEL_CONFIG0 written = 0x%02X (FS_SEL=%u)", databuf, a_sf);
 
 	result = inv_spi_read(&cfg->spi, REG_GYRO_CONFIG0, &databuf, 1);
 
@@ -43,13 +54,14 @@ int iim42652_set_fs(const struct device *dev, uint16_t a_sf, uint16_t g_sf)
 	}
 
 	databuf &= ~BIT_GYRO_FSR;
-	databuf |= g_sf;
+	databuf |= ((uint8_t)g_sf << SHIFT_GYRO_FS_SEL) & BIT_GYRO_FSR;
 
 	result = inv_spi_single_write(&cfg->spi, REG_GYRO_CONFIG0, &databuf);
 
 	if (result) {
 		return result;
 	}
+	LOG_INF("GYRO_CONFIG0 written = 0x%02X (FS_SEL=%u)", databuf, g_sf);
 
 	return 0;
 }

@@ -24,9 +24,34 @@
 
 LOG_MODULE_REGISTER(IIM42652, CONFIG_SENSOR_LOG_LEVEL);
 
-static const uint16_t iim42652_gyro_sensitivity_x10[] = {
-	1310, 655, 328, 164
+/* Gyro sensitivity (LSB per deg/s, x10) indexed by GYRO_FS_SEL register code:
+ *   FS_SEL=0 -> +/-2000 DPS,   16.4 LSB/(deg/s)
+ *   FS_SEL=1 -> +/-1000 DPS,   32.8
+ *   FS_SEL=2 -> +/-500  DPS,   65.5
+ *   FS_SEL=3 -> +/-250  DPS,  131.0
+ *   FS_SEL=4 -> +/-125  DPS,  262.0
+ *   FS_SEL=5 -> +/-62.5 DPS,  524.3
+ *   FS_SEL=6 -> +/-31.25 DPS, 1048.6
+ *   FS_SEL=7 -> +/-15.625 DPS,2097.2
+ */
+static const uint16_t iim42652_gyro_sensitivity_x10[8] = {
+	164, 328, 655, 1310, 2620, 5243, 10486, 20972
 };
+
+/* Update cached SI conversion factors to match a target FS_SEL.
+ * Accel sensitivity_shift formula: 2 ^ shift = LSB / g.
+ *   FS_SEL=0 (+/-16G):  2048 LSB/g -> shift = 11
+ *   FS_SEL=3 (+/-2G):  16384 LSB/g -> shift = 14
+ */
+static void update_accel_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
+{
+	data->accel_sensitivity_shift = 11 + sf_idx;
+}
+
+static void update_gyro_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
+{
+	data->gyro_sensitivity_x10 = iim42652_gyro_sensitivity_x10[sf_idx];
+}
 
 /* see "Accelerometer Measurements" section from register map description */
 static void iim42652_convert_accel(struct sensor_value *val,
@@ -264,6 +289,16 @@ static int iim42652_attr_set(const struct device *dev,
 
 	__ASSERT_NO_MSG(val != NULL);
 
+	/* ODR and FS are written to the chip only during turn_on_sensor().
+	 * Reject runtime changes; caller must turn_off_sensor() first so
+	 * the cached config matches what was last written to hardware. */
+	if ((attr == SENSOR_ATTR_SAMPLING_FREQUENCY ||
+	     attr == SENSOR_ATTR_FULL_SCALE) &&
+	    drv_data->sensor_started) {
+		LOG_WRN("Config change requires turn_off_sensor first");
+		return -EBUSY;
+	}
+
 	switch (chan) {
 	case SENSOR_CHAN_ACCEL_X:
 	case SENSOR_CHAN_ACCEL_Y:
@@ -283,6 +318,8 @@ static int iim42652_attr_set(const struct device *dev,
 				return -EINVAL;
 			} else {
 				drv_data->accel_sf = val->val1;
+				update_accel_sensitivity(drv_data,
+							 drv_data->accel_sf);
 			}
 		} else {
 			LOG_ERR("Not supported ATTR");
@@ -308,6 +345,8 @@ static int iim42652_attr_set(const struct device *dev,
 				return -EINVAL;
 			} else {
 				drv_data->gyro_sf = val->val1;
+				update_gyro_sensitivity(drv_data,
+							drv_data->gyro_sf);
 			}
 		} else {
 			LOG_ERR("Not supported ATTR");
@@ -405,8 +444,8 @@ static int iim42652_init(const struct device *dev)
 	iim42652_data_init(drv_data, cfg);
 	iim42652_sensor_init(dev);
 
-	drv_data->accel_sensitivity_shift = 14 - 3;
-	drv_data->gyro_sensitivity_x10 = iim42652_gyro_sensitivity_x10[3];
+	update_accel_sensitivity(drv_data, drv_data->accel_sf);
+	update_gyro_sensitivity(drv_data, drv_data->gyro_sf);
 
 #ifdef CONFIG_IIM42652_TRIGGER
 	if (iim42652_init_interrupt(dev) < 0) {
