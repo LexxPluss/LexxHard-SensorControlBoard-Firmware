@@ -26,13 +26,15 @@ int iim42652_set_fs(const struct device *dev, uint16_t a_sf, uint16_t g_sf)
 	uint8_t databuf;
 	int result;
 
-	/* Validate FS_SEL indices: accel uses bit[7:5] over 4 codes (0..3),
-	 * gyro uses bit[7:5] over 8 codes (0..7). */
-	if (a_sf > 3 || g_sf > 7) {
+	/* Validate FS_SEL indices against the datasheet code counts
+	 * (4 codes for accel, 8 for gyro; see iim42652_reg.h). */
+	if (a_sf >= IIM42652_ACCEL_FS_COUNT ||
+	    g_sf >= IIM42652_GYRO_FS_COUNT) {
 		LOG_ERR("Invalid FS_SEL a=%u g=%u", a_sf, g_sf);
 		return -EINVAL;
 	}
-	__ASSERT_NO_MSG(a_sf <= 3 && g_sf <= 7);
+	__ASSERT_NO_MSG(a_sf < IIM42652_ACCEL_FS_COUNT &&
+			g_sf < IIM42652_GYRO_FS_COUNT);
 
 	result = inv_spi_read(&cfg->spi, REG_ACCEL_CONFIG0, &databuf, 1);
 	if (result) {

@@ -24,32 +24,43 @@
 
 LOG_MODULE_REGISTER(IIM42652, CONFIG_SENSOR_LOG_LEVEL);
 
-/* Gyro sensitivity (LSB per deg/s, x10) indexed by GYRO_FS_SEL register code:
- *   FS_SEL=0 -> +/-2000 DPS,   16.4 LSB/(deg/s)
- *   FS_SEL=1 -> +/-1000 DPS,   32.8
- *   FS_SEL=2 -> +/-500  DPS,   65.5
- *   FS_SEL=3 -> +/-250  DPS,  131.0
- *   FS_SEL=4 -> +/-125  DPS,  262.0
- *   FS_SEL=5 -> +/-62.5 DPS,  524.3
- *   FS_SEL=6 -> +/-31.25 DPS, 1048.6
- *   FS_SEL=7 -> +/-15.625 DPS,2097.2
- */
-static const uint16_t iim42652_gyro_sensitivity_x10[8] = {
-	164, 328, 655, 1310, 2620, 5243, 10486, 20972
+/* Sensitivity tables indexed by FS_SEL register code.
+ * Values come from the IIM-42652 datasheet via the macros in iim42652_reg.h.
+ * Designated initializers ensure the entry order matches the FS_SEL enum
+ * regardless of source order, so adding entries elsewhere stays safe. */
+static const uint8_t iim42652_accel_sensitivity_shift[IIM42652_ACCEL_FS_COUNT] = {
+	[ACCEL_FS_16G] = IIM42652_ACCEL_SENS_16G_SHIFT,
+	[ACCEL_FS_8G]  = IIM42652_ACCEL_SENS_8G_SHIFT,
+	[ACCEL_FS_4G]  = IIM42652_ACCEL_SENS_4G_SHIFT,
+	[ACCEL_FS_2G]  = IIM42652_ACCEL_SENS_2G_SHIFT,
 };
 
-/* Update cached SI conversion factors to match a target FS_SEL.
- * Accel sensitivity_shift formula: 2 ^ shift = LSB / g.
- *   FS_SEL=0 (+/-16G):  2048 LSB/g -> shift = 11
- *   FS_SEL=3 (+/-2G):  16384 LSB/g -> shift = 14
- */
+static const uint16_t iim42652_gyro_sensitivity_x10[IIM42652_GYRO_FS_COUNT] = {
+	[GYRO_FS_2000DPS] = IIM42652_GYRO_SENS_2000DPS_X10,
+	[GYRO_FS_1000DPS] = IIM42652_GYRO_SENS_1000DPS_X10,
+	[GYRO_FS_500DPS]  = IIM42652_GYRO_SENS_500DPS_X10,
+	[GYRO_FS_250DPS]  = IIM42652_GYRO_SENS_250DPS_X10,
+	[GYRO_FS_125DPS]  = IIM42652_GYRO_SENS_125DPS_X10,
+	[GYRO_FS_62DPS]   = IIM42652_GYRO_SENS_62DPS_X10,
+	[GYRO_FS_32DPS]   = IIM42652_GYRO_SENS_32DPS_X10,
+	[GYRO_FS_15DPS]   = IIM42652_GYRO_SENS_15DPS_X10,
+};
+
 static void update_accel_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
 {
-	data->accel_sensitivity_shift = 11 + sf_idx;
+	if (sf_idx >= IIM42652_ACCEL_FS_COUNT) {
+		LOG_ERR("Invalid accel FS_SEL %u", sf_idx);
+		return;
+	}
+	data->accel_sensitivity_shift = iim42652_accel_sensitivity_shift[sf_idx];
 }
 
 static void update_gyro_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
 {
+	if (sf_idx >= IIM42652_GYRO_FS_COUNT) {
+		LOG_ERR("Invalid gyro FS_SEL %u", sf_idx);
+		return;
+	}
 	data->gyro_sensitivity_x10 = iim42652_gyro_sensitivity_x10[sf_idx];
 }
 
