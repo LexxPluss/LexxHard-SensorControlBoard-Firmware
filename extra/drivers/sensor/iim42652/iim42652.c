@@ -46,21 +46,19 @@ static const uint16_t iim42652_gyro_sensitivity_x10[IIM42652_GYRO_FS_COUNT] = {
 	[GYRO_FS_15DPS]   = IIM42652_GYRO_SENS_15DPS_X10,
 };
 
+/* Callers (iim42652_set_fs, iim42652_attr_set, devicetree-backed init) are
+ * responsible for range-checking sf_idx before reaching here, so the cached
+ * SI conversion factor always stays in sync with what gets written to the
+ * FS register. The assert catches programming mistakes during development. */
 static void update_accel_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
 {
-	if (sf_idx >= IIM42652_ACCEL_FS_COUNT) {
-		LOG_ERR("Invalid accel FS_SEL %u", sf_idx);
-		return;
-	}
+	__ASSERT_NO_MSG(sf_idx < IIM42652_ACCEL_FS_COUNT);
 	data->accel_sensitivity_shift = iim42652_accel_sensitivity_shift[sf_idx];
 }
 
 static void update_gyro_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
 {
-	if (sf_idx >= IIM42652_GYRO_FS_COUNT) {
-		LOG_ERR("Invalid gyro FS_SEL %u", sf_idx);
-		return;
-	}
+	__ASSERT_NO_MSG(sf_idx < IIM42652_GYRO_FS_COUNT);
 	data->gyro_sensitivity_x10 = iim42652_gyro_sensitivity_x10[sf_idx];
 }
 
