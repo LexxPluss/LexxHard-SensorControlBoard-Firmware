@@ -34,6 +34,8 @@
 #include "common.hpp"
 #include "imu_controller.hpp"
 #include "runaway_detector.hpp"
+#include "sensor/iim42652/iim42652_reg.h"
+#include "sensor/iim42652/iim42652_setup.h"
 
 namespace lexxhard::imu_controller {
 
@@ -161,6 +163,113 @@ public:
             k_msleep(1);
         }
     }
+    void regdump(const struct shell *shell) const {
+        if (!device_is_ready(dev)) {
+            shell_error(shell, "IMU device not ready");
+            return;
+        }
+
+        struct entry {
+            const char *name;
+            uint8_t bank;
+            uint8_t addr;
+        };
+        static const entry table[] = {
+            {"WHO_AM_I            (B0 0x75)", BIT_BANK_SEL_0, REG_WHO_AM_I},
+            {"DEVICE_CONFIG       (B0 0x11)", BIT_BANK_SEL_0, REG_DEVICE_CONFIG},
+            {"INTF_CONFIG0        (B0 0x4C)", BIT_BANK_SEL_0, REG_INTF_CONFIG0},
+            {"INTF_CONFIG1        (B0 0x4D)", BIT_BANK_SEL_0, REG_INTF_CONFIG1},
+            {"PWR_MGMT0           (B0 0x4E)", BIT_BANK_SEL_0, REG_PWR_MGMT0},
+            {"GYRO_CONFIG0        (B0 0x4F)", BIT_BANK_SEL_0, REG_GYRO_CONFIG0},
+            {"ACCEL_CONFIG0       (B0 0x50)", BIT_BANK_SEL_0, REG_ACCEL_CONFIG0},
+            {"GYRO_CONFIG1        (B0 0x51)", BIT_BANK_SEL_0, REG_GYRO_CONFIG1},
+            {"GYRO_ACCEL_CONFIG0  (B0 0x52)", BIT_BANK_SEL_0, REG_GYRO_ACCEL_CONFIG0},
+            {"ACCEL_CONFIG1       (B0 0x53)", BIT_BANK_SEL_0, REG_ACCEL_CONFIG1},
+            {"SELF_TEST_CONFIG    (B0 0x70)", BIT_BANK_SEL_0, REG_SELF_TEST_CONFIG},
+            {"TEMP_DATA1          (B0 0x1D)", BIT_BANK_SEL_0, REG_TEMP_DATA1},
+            {"TEMP_DATA0          (B0 0x1E)", BIT_BANK_SEL_0, REG_TEMP_DATA0},
+            {"ACCEL_DATA_X1       (B0 0x1F)", BIT_BANK_SEL_0, REG_ACCEL_DATA_X1},
+            {"ACCEL_DATA_X0       (B0 0x20)", BIT_BANK_SEL_0, REG_ACCEL_DATA_X0},
+            {"ACCEL_DATA_Y1       (B0 0x21)", BIT_BANK_SEL_0, REG_ACCEL_DATA_Y1},
+            {"ACCEL_DATA_Y0       (B0 0x22)", BIT_BANK_SEL_0, REG_ACCEL_DATA_Y0},
+            {"ACCEL_DATA_Z1       (B0 0x23)", BIT_BANK_SEL_0, REG_ACCEL_DATA_Z1},
+            {"ACCEL_DATA_Z0       (B0 0x24)", BIT_BANK_SEL_0, REG_ACCEL_DATA_Z0},
+            {"GYRO_DATA_X1        (B0 0x25)", BIT_BANK_SEL_0, REG_GYRO_DATA_X1},
+            {"GYRO_DATA_X0        (B0 0x26)", BIT_BANK_SEL_0, REG_GYRO_DATA_X0},
+            {"GYRO_DATA_Y1        (B0 0x27)", BIT_BANK_SEL_0, REG_GYRO_DATA_Y1},
+            {"GYRO_DATA_Y0        (B0 0x28)", BIT_BANK_SEL_0, REG_GYRO_DATA_Y0},
+            {"GYRO_DATA_Z1        (B0 0x29)", BIT_BANK_SEL_0, REG_GYRO_DATA_Z1},
+            {"GYRO_DATA_Z0        (B0 0x2A)", BIT_BANK_SEL_0, REG_GYRO_DATA_Z0},
+            {"OFFSET_USER0        (B4 0x77)", BIT_BANK_SEL_4, REG_OFFSET_USER0},
+            {"OFFSET_USER1        (B4 0x78)", BIT_BANK_SEL_4, REG_OFFSET_USER1},
+            {"OFFSET_USER2        (B4 0x79)", BIT_BANK_SEL_4, REG_OFFSET_USER2},
+            {"OFFSET_USER3        (B4 0x7A)", BIT_BANK_SEL_4, REG_OFFSET_USER3},
+            {"OFFSET_USER4        (B4 0x7B)", BIT_BANK_SEL_4, REG_OFFSET_USER4},
+            {"OFFSET_USER5        (B4 0x7C)", BIT_BANK_SEL_4, REG_OFFSET_USER5},
+            {"OFFSET_USER6        (B4 0x7D)", BIT_BANK_SEL_4, REG_OFFSET_USER6},
+            {"OFFSET_USER7        (B4 0x7E)", BIT_BANK_SEL_4, REG_OFFSET_USER7},
+            {"OFFSET_USER8        (B4 0x7F)", BIT_BANK_SEL_4, REG_OFFSET_USER8},
+        };
+
+        shell_print(shell, "IIM-42652 register dump (sensor running, no power-cycle):");
+        uint8_t accel_cfg0 = 0xFF;
+        for (const auto &e : table) {
+            uint8_t v = 0xFF;
+            int rc = iim42652_diag_read_reg(dev, e.bank, e.addr, &v);
+            if (rc == 0) {
+                shell_print(shell, "  %s = 0x%02X", e.name, v);
+            } else {
+                shell_print(shell, "  %s = read err %d", e.name, rc);
+            }
+            if (e.bank == BIT_BANK_SEL_0 && e.addr == REG_ACCEL_CONFIG0 && rc == 0) {
+                accel_cfg0 = v;
+            }
+        }
+
+        /* Atomic 6-byte burst from ACCEL_DATA_X1..Z0 so the three axes come
+         * from the same sample. Iterating single-byte reads in the table
+         * above can split an axis across two ODR ticks at 50 Hz. */
+        uint8_t accel_burst[6] = {0};
+        int rc_burst = iim42652_diag_read_regs(dev, BIT_BANK_SEL_0,
+                                               REG_ACCEL_DATA_X1,
+                                               accel_burst, sizeof(accel_burst));
+        if (rc_burst != 0) {
+            shell_print(shell, "  raw accel burst read err %d", rc_burst);
+            return;
+        }
+
+        int16_t ax = static_cast<int16_t>((accel_burst[0] << 8) | accel_burst[1]);
+        int16_t ay = static_cast<int16_t>((accel_burst[2] << 8) | accel_burst[3]);
+        int16_t az = static_cast<int16_t>((accel_burst[4] << 8) | accel_burst[5]);
+
+        /* Decode FSR from ACCEL_CONFIG0[7:5] (BIT_ACCEL_FSR / SHIFT_ACCEL_FS_SEL).
+         * The shift values come from DS §3.1 and match the driver's
+         * iim42652_accel_sensitivity_shift[] table. */
+        const char *fsr_label = "?";
+        int lsb_shift = -1;
+        if (accel_cfg0 != 0xFF) {
+            uint8_t fs_sel = (accel_cfg0 & BIT_ACCEL_FSR) >> SHIFT_ACCEL_FS_SEL;
+            switch (fs_sel) {
+            case ACCEL_FS_16G: fsr_label = "16g"; lsb_shift = IIM42652_ACCEL_SENS_16G_SHIFT; break;
+            case ACCEL_FS_8G:  fsr_label = "8g";  lsb_shift = IIM42652_ACCEL_SENS_8G_SHIFT; break;
+            case ACCEL_FS_4G:  fsr_label = "4g";  lsb_shift = IIM42652_ACCEL_SENS_4G_SHIFT; break;
+            case ACCEL_FS_2G:  fsr_label = "2g";  lsb_shift = IIM42652_ACCEL_SENS_2G_SHIFT; break;
+            }
+        }
+
+        if (lsb_shift > 0) {
+            float lsb_per_g = static_cast<float>(1u << lsb_shift);
+            shell_print(shell,
+                "  raw accel burst (FSR=%s, %.0f LSB/g): X=%6d (%.4f g)  Y=%6d (%.4f g)  Z=%6d (%.4f g)",
+                fsr_label, lsb_per_g,
+                ax, ax / lsb_per_g, ay, ay / lsb_per_g, az, az / lsb_per_g);
+        } else {
+            shell_print(shell,
+                "  raw accel burst (ACCEL_CONFIG0=0x%02X, FSR unknown): X=%6d Y=%6d Z=%6d",
+                accel_cfg0, ax, ay, az);
+        }
+    }
+
     void info(const shell *shell) const {
         double accel_x = from_fixed<ACCEL_SCALING>(pack_i16t(message.accel_data_upper[0], message.accel_data_lower[0]));
         double accel_y = from_fixed<ACCEL_SCALING>(pack_i16t(message.accel_data_upper[1], message.accel_data_lower[1]));
@@ -233,8 +342,17 @@ int info(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int regdump(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    impl.regdump(shell);
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(info, NULL, "IMU information", info),
+    SHELL_CMD(regdump, NULL, "IIM-42652 register dump (WHO_AM_I, configs, OFFSET_USER, raw ACCEL/GYRO/TEMP)", regdump),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(imu, &sub, "IMU commands", NULL);

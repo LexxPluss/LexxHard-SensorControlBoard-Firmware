@@ -492,3 +492,52 @@ int iim42652_turn_off_sensor(const struct device *dev)
 
 	return 0;
 }
+
+int iim42652_diag_read_regs(const struct device *dev, uint8_t bank, uint8_t addr,
+			    uint8_t *buf, size_t len)
+{
+	struct iim42652_data *drv_data = dev->data;
+	const struct iim42652_config *cfg = dev->config;
+	uint8_t bank_val;
+	int rc;
+
+	if (buf == NULL || len == 0) {
+		return -EINVAL;
+	}
+
+	/* Serialize with sample_fetch() — without this, a 50 Hz fetch could
+	 * land between our bank-select and bank-restore and read INT_STATUS /
+	 * FIFO_COUNT from the wrong bank. */
+	k_mutex_lock(&drv_data->bus_lock, K_FOREVER);
+
+	bank_val = bank;
+	rc = inv_spi_single_write(&cfg->spi, REG_BANK_SEL, &bank_val);
+	if (rc) {
+		/* Bank-select write failed: usually bank is unchanged, but we
+		 * cannot be sure. Fall through to the restore path so Bank 0
+		 * is asserted regardless. */
+		goto restore_bank;
+	}
+
+	rc = inv_spi_read(&cfg->spi, addr, buf, len);
+
+restore_bank:
+	if (bank != BIT_BANK_SEL_0) {
+		uint8_t b0 = BIT_BANK_SEL_0;
+		int rc2 = inv_spi_single_write(&cfg->spi, REG_BANK_SEL, &b0);
+		if (rc == 0) {
+			rc = rc2;
+		}
+		/* If both the original op and the restore failed, the original
+		 * error wins — that's what the caller actually cares about. */
+	}
+
+	k_mutex_unlock(&drv_data->bus_lock);
+	return rc;
+}
+
+int iim42652_diag_read_reg(const struct device *dev, uint8_t bank, uint8_t addr,
+			   uint8_t *val)
+{
+	return iim42652_diag_read_regs(dev, bank, addr, val, 1);
+}
