@@ -197,7 +197,21 @@ int iim42652_sensor_init(const struct device *dev)
 	/* Need at least 10ms after soft reset */
 	k_msleep(10);
 
-	v = BIT_GYRO_AFSR_MODE_HFS | BIT_ACCEL_AFSR_MODE_HFS | BIT_CLK_SEL_PLL;
+	/* INTF_CONFIG1 RMW: preserve reserved bits[7:4] (DS §14.29). The previous
+	 * unconditional write of (BIT_GYRO_AFSR_MODE_HFS | BIT_ACCEL_AFSR_MODE_HFS |
+	 * BIT_CLK_SEL_PLL) = 0x51 clobbered reserved bits 7 and 4. The AFSR_MODE
+	 * macros were carried over from ICM-426xx and are not applicable to
+	 * IIM-42652 — writing them is undefined behavior on this part.
+	 */
+	result = inv_spi_read(&cfg->spi, REG_INTF_CONFIG1, &v, 1);
+	if (result) {
+		LOG_ERR("read REG_INTF_CONFIG1 failed");
+		return result;
+	}
+	LOG_INF("INTF_CONFIG1 reset value = 0x%02X", v);
+
+	v &= ~0x0F;             /* clear ACCEL_LP_CLK_SEL, RTC_MODE, CLKSEL */
+	v |= BIT_CLK_SEL_PLL;   /* set CLKSEL = PLL */
 
 	result = inv_spi_single_write(&cfg->spi, REG_INTF_CONFIG1, &v);
 
@@ -205,6 +219,7 @@ int iim42652_sensor_init(const struct device *dev)
 		LOG_ERR("write REG_INTF_CONFIG1 failed");
 		return result;
 	}
+	LOG_INF("INTF_CONFIG1 after RMW   = 0x%02X", v);
 
 	v = BIT_EN_DREG_FIFO_D2A |
 	    BIT_TMST_TO_REGS_EN |
