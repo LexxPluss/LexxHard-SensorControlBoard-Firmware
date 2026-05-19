@@ -547,4 +547,27 @@ enum {
 	ACCEL_FS_2G,
 };
 
+/* Number of valid FS_SEL codes (matches the enums above). */
+#define IIM42652_ACCEL_FS_COUNT		4
+#define IIM42652_GYRO_FS_COUNT		8
+
+/* Datasheet sensitivities per IIM-42652 register map (Sections 3.1, 3.2).
+ * Accel sensitivity (LSB/g) is a power of 2, expressed as a right-shift
+ * applied to (raw * SENSOR_G) in iim42652_convert_accel(). */
+#define IIM42652_ACCEL_SENS_16G_SHIFT	11	/* 2048 LSB/g = 2^11 */
+#define IIM42652_ACCEL_SENS_8G_SHIFT	12	/* 4096 LSB/g = 2^12 */
+#define IIM42652_ACCEL_SENS_4G_SHIFT	13	/* 8192 LSB/g = 2^13 */
+#define IIM42652_ACCEL_SENS_2G_SHIFT	14	/* 16384 LSB/g = 2^14 */
+
+/* Gyro sensitivity stored x10 to preserve fractional LSB/(deg/s) values
+ * in integer arithmetic (see iim42652_convert_gyro()). */
+#define IIM42652_GYRO_SENS_2000DPS_X10	164	/* 16.4 LSB/(deg/s) */
+#define IIM42652_GYRO_SENS_1000DPS_X10	328	/* 32.8 LSB/(deg/s) */
+#define IIM42652_GYRO_SENS_500DPS_X10	655	/* 65.5 LSB/(deg/s) */
+#define IIM42652_GYRO_SENS_250DPS_X10	1310	/* 131.0 LSB/(deg/s) */
+#define IIM42652_GYRO_SENS_125DPS_X10	2620	/* 262.0 LSB/(deg/s) */
+#define IIM42652_GYRO_SENS_62DPS_X10	5243	/* 524.3 LSB/(deg/s) */
+#define IIM42652_GYRO_SENS_32DPS_X10	10486	/* 1048.6 LSB/(deg/s) */
+#define IIM42652_GYRO_SENS_15DPS_X10	20972	/* 2097.2 LSB/(deg/s) */
+
 #endif /* __SENSOR_IIM42652_IIM42652_REG__ */
