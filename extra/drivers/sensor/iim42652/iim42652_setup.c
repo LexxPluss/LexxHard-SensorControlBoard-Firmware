@@ -47,7 +47,7 @@ int iim42652_set_fs(const struct device *dev, uint16_t a_sf, uint16_t g_sf)
 	if (result) {
 		return result;
 	}
-	LOG_INF("ACCEL_CONFIG0 written = 0x%02X (FS_SEL=%u)", databuf, a_sf);
+	LOG_DBG("ACCEL_CONFIG0 written = 0x%02X (FS_SEL=%u)", databuf, a_sf);
 
 	result = inv_spi_read(&cfg->spi, REG_GYRO_CONFIG0, &databuf, 1);
 
@@ -63,7 +63,7 @@ int iim42652_set_fs(const struct device *dev, uint16_t a_sf, uint16_t g_sf)
 	if (result) {
 		return result;
 	}
-	LOG_INF("GYRO_CONFIG0 written = 0x%02X (FS_SEL=%u)", databuf, g_sf);
+	LOG_DBG("GYRO_CONFIG0 written = 0x%02X (FS_SEL=%u)", databuf, g_sf);
 
 	return 0;
 }
