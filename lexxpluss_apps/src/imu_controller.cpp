@@ -33,6 +33,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include "common.hpp"
+#include "imu_calibration.hpp"
 #include "imu_controller.hpp"
 #include "runaway_detector.hpp"
 #include "sensor/iim42652/iim42652_reg.h"
@@ -127,6 +128,8 @@ public:
 
                     sensor_channel_get(dev, SENSOR_CHAN_ACCEL_XYZ, accel);
                     sensor_channel_get(dev, SENSOR_CHAN_GYRO_XYZ, gyro);
+
+                    imu_calibration::feed_sample(accel, gyro);
 
                     //sensor -x is system y, sensor -y is systemx, sensor z is system z
                     accel_data[1] = - accel_value_to_int16_t(&accel[0]);
@@ -354,6 +357,12 @@ int regdump(const struct shell *shell, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(info, NULL, "IMU information", info),
     SHELL_CMD(regdump, NULL, "IIM-42652 register dump (WHO_AM_I, configs, OFFSET_USER, raw ACCEL/GYRO/TEMP)", regdump),
+#ifdef LEXXHARD_IMU_CALIBRATION
+    SHELL_CMD(calrun,  NULL, "Manual calibration dry-run: compute biases + would-write step values; OFFSET_USER NOT touched",
+              lexxhard::imu_calibration::cmd_calrun),
+    SHELL_CMD(calinfo, NULL, "Show last calrun result + current OFFSET_USER decode",
+              lexxhard::imu_calibration::cmd_calinfo),
+#endif
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(imu, &sub, "IMU commands", NULL);
