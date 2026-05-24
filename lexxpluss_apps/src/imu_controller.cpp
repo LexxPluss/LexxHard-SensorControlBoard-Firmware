@@ -24,6 +24,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
@@ -43,7 +44,7 @@ LOG_MODULE_REGISTER(imu);
 
 char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 static struct sensor_trigger data_trigger;
-bool int_flag{false};
+std::atomic<bool> int_flag{false};
 
 class imu_fetcher {
 public:
