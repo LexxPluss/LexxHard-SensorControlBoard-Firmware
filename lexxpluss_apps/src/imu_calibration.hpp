@@ -7,15 +7,21 @@
  * feed_sample() collapses to a no-op so the IMU fetcher loop is unchanged.
  * When on, the shell registers `imu calrun` and `imu calinfo` subcommands.
  *
- * Concurrency model:
- *   - The IMU fetcher thread (imu_controller.cpp) calls feed_sample() once
- *     per sample. Only that thread mutates the accumulator.
- *   - The shell thread (cmd_calrun) initiates a run via an atomic state
- *     transition IDLE -> RUNNING, then polls the same atomic. It never
- *     touches the accumulator or the sensor directly.
- *   - finalize() runs on the fetcher thread when the sample count reaches
- *     N_SAMPLES, then publishes the final state with a release store so
- *     the shell sees a consistent g_diag on its next acquire load.
+ * Concurrency model (state machine, see imu_calibration.cpp for details):
+ *
+ *   IDLE/DONE/FAILED   shell CAS -> STARTING
+ *   STARTING           shell exclusively writes g_acc + g_diag, then
+ *                      release-store -> RUNNING
+ *   RUNNING            fetcher exclusively writes g_acc via feed_sample()
+ *   FINALIZING         whoever wins RUNNING -> FINALIZING CAS exclusively
+ *                      writes g_diag (fetcher in finalize(), or shell on
+ *                      timeout). Loser does nothing.
+ *   DONE/FAILED        terminal; g_diag is stable and safe to read after
+ *                      an acquire-load observes one of these.
+ *
+ * feed_sample() only acts when state == RUNNING; STARTING and FINALIZING
+ * make it bail, so the shell side has uncontended access to shared data
+ * during those phases.
  */
 #pragma once
 

@@ -39,9 +39,36 @@ namespace lexxhard::imu_calibration {
 
 namespace {
 
+/* State machine, with two intermediate states to make all shared-data
+ * writes single-writer:
+ *
+ *   IDLE / DONE / FAILED   - terminal-ish; shell may start a new run
+ *
+ *      shell CAS {IDLE,DONE,FAILED} -> STARTING
+ *      shell exclusively owns g_acc + g_diag (clears both)
+ *      shell release-store STARTING -> RUNNING
+ *
+ *   RUNNING                - fetcher exclusively writes g_acc; nobody
+ *                            writes g_diag
+ *
+ *      whoever CAS-wins RUNNING -> FINALIZING owns g_diag exclusively:
+ *        - fetcher hits N samples in feed_sample() -> finalize()
+ *        - shell timeout in cmd_calrun()
+ *      Winner writes g_diag, then release-store FINALIZING -> DONE/FAILED.
+ *      Loser of the CAS does nothing.
+ *
+ *   FINALIZING             - exclusive g_diag write phase; readers must
+ *                            spin until DONE/FAILED.
+ *
+ * feed_sample() only acts when state == RUNNING. It ignores STARTING and
+ * FINALIZING so the shell side has uncontended access to g_acc / g_diag
+ * during those phases.
+ */
 enum class state_t : int {
     IDLE = 0,
+    STARTING,
     RUNNING,
+    FINALIZING,
     DONE,
     FAILED,
 };
@@ -109,6 +136,17 @@ int16_t clamp_step(double s) {
 }
 
 void finalize() {
+    /* Claim exclusive g_diag write right via RUNNING -> FINALIZING CAS.
+     * If the shell's timeout path won the race we bail; whatever it wrote
+     * (or zeroed) into g_diag is now authoritative. */
+    int expected = static_cast<int>(state_t::RUNNING);
+    if (!g_state.compare_exchange_strong(
+            expected,
+            static_cast<int>(state_t::FINALIZING),
+            std::memory_order_acq_rel)) {
+        return;
+    }
+
     constexpr int N = N_SAMPLES;
     const double ax_mean = g_acc.sum_ax / N;
     const double ay_mean = g_acc.sum_ay / N;
@@ -323,29 +361,34 @@ int cmd_calrun(const struct shell *shell, size_t argc, char **argv) {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
-    /* Accept restart from IDLE / DONE / FAILED; reject if RUNNING. */
-    auto try_acquire = []() -> bool {
+    /* Acquire phase: CAS {IDLE,DONE,FAILED} -> STARTING. While STARTING,
+     * feed_sample() bails out, so we have exclusive access to g_acc and
+     * g_diag and can reset them safely. */
+    auto try_acquire_starting = []() -> bool {
         for (auto from : {state_t::IDLE, state_t::DONE, state_t::FAILED}) {
             int expected = static_cast<int>(from);
             if (g_state.compare_exchange_strong(
                     expected,
-                    static_cast<int>(state_t::RUNNING),
+                    static_cast<int>(state_t::STARTING),
                     std::memory_order_acq_rel)) {
                 return true;
             }
         }
         return false;
     };
-    if (!try_acquire()) {
+    if (!try_acquire_starting()) {
         shell_error(shell, "Calibration already running. Wait for it to finish.");
         return 1;
     }
 
-    /* Reset accumulator. State has just transitioned to RUNNING, so the
-     * fetcher loop may already pass the gate; the first DRAIN_SAMPLES are
-     * discarded anyway. */
+    /* Single-writer phase: nobody else touches g_acc or g_diag. */
     g_acc = accumulator_t{};
     g_acc.drain_remaining = DRAIN_SAMPLES;
+    g_diag = diag_t{};  /* clear stale stats from previous run */
+
+    /* Release-store STARTING -> RUNNING. The fetcher's next acquire-load
+     * sees both the new state AND the cleared accumulator. */
+    g_state.store(static_cast<int>(state_t::RUNNING), std::memory_order_release);
 
     shell_print(shell,
                 "calrun: dry-run, collecting %d samples (~%d s @ 50 Hz). Keep robot static.",
@@ -361,16 +404,30 @@ int cmd_calrun(const struct shell *shell, size_t argc, char **argv) {
         k_msleep(POLL_INTERVAL_MS);
     }
 
-    if (g_state.load(std::memory_order_acquire) == static_cast<int>(state_t::RUNNING)) {
-        /* Timed out. Mark diag and transition to FAILED so future calls retry. */
-        g_diag.ever_ran = true;
-        g_diag.timeout = true;
-        g_diag.envelope_ok = false;
-        g_diag.motion_ok = false;
-        g_diag.final_state = state_t::FAILED;
-        g_diag.collected = g_acc.collected;
-        g_diag.fail_reason = "timeout (insufficient samples)";
-        g_state.store(static_cast<int>(state_t::FAILED), std::memory_order_release);
+    /* Timeout path. Try to win RUNNING -> FINALIZING; only the winner
+     * gets to write g_diag. If fetcher just finalized concurrently,
+     * we lose the CAS and its g_diag is authoritative. */
+    {
+        int expected = static_cast<int>(state_t::RUNNING);
+        if (g_state.compare_exchange_strong(
+                expected,
+                static_cast<int>(state_t::FINALIZING),
+                std::memory_order_acq_rel)) {
+            g_diag.ever_ran = true;
+            g_diag.timeout = true;
+            g_diag.envelope_ok = false;
+            g_diag.motion_ok = false;
+            g_diag.final_state = state_t::FAILED;
+            g_diag.collected = g_acc.collected;
+            g_diag.fail_reason = "timeout (insufficient samples)";
+            g_state.store(static_cast<int>(state_t::FAILED), std::memory_order_release);
+        } else {
+            /* Fetcher won the race. Wait briefly for it to publish DONE/FAILED. */
+            while (g_state.load(std::memory_order_acquire) ==
+                   static_cast<int>(state_t::FINALIZING)) {
+                k_yield();
+            }
+        }
     }
 
     print_diag(shell);
