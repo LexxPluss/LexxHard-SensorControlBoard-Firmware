@@ -1184,6 +1184,12 @@ public:
     bool is_wheel_poweroff() const {
         return wheel_poweroff;
     }
+    bool software_resume_from_ros() const {
+        return software_resume_request;
+    }
+    void consume_software_resume() {
+        software_resume_request = false;
+    }
 private:
     void reset_queue() {
         msg_rcv_pb msg;
@@ -1208,6 +1214,9 @@ private:
         if (auto_charge_request_enable != msg.ros_auto_charge_request_enable) {
             LOG_INF("ROS Auto Charge Request Enable: %d", msg.ros_auto_charge_request_enable);
         }
+        if (software_resume_request != msg.ros_software_resume_request) {
+            LOG_INF("ROS Software Resume Request: %d", msg.ros_software_resume_request);
+        }
 
         emergency_stop = msg.ros_emergency_stop;
         power_off = msg.ros_power_off;
@@ -1215,12 +1224,14 @@ private:
         wheel_poweroff = msg.ros_wheel_power_off;
         lockdown = msg.ros_lockdown;
         auto_charge_request_enable = msg.ros_auto_charge_request_enable;
+        software_resume_request = msg.ros_software_resume_request;
 
         // heartbeat is not timeout means heartbeat is detected
         heartbeat_detect |= !ros_heartbeat_timeout;
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
-        wheel_poweroff{false}, lockdown{false}, auto_charge_request_enable{false};
+        wheel_poweroff{false}, lockdown{false}, auto_charge_request_enable{false},
+        software_resume_request{false};
 };
 
 class safety_lidar { // Variables Implemented
@@ -1605,6 +1616,14 @@ private:
                 else {
                     LOG_DBG("heartbeat NG\n");
                     set_new_state(POWER_STATE::STANDBY);
+                }
+            } else if (mbd.software_resume_from_ros()) {
+                mbd.consume_software_resume();
+                if (mbd.is_ready()) {
+                    LOG_DBG("software resume request\n");
+                    set_new_state(POWER_STATE::NORMAL);
+                } else {
+                    LOG_DBG("software resume request but heartbeat NG\n");
                 }
             } else if (should_manual_charge()) {
                 LOG_DBG("plugged to manual charger\n");

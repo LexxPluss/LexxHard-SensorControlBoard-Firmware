@@ -43,6 +43,7 @@ struct msg_rcv_pb {
     bool ros_wheel_power_off;
     bool ros_lockdown;
     bool ros_auto_charge_request_enable;
+    bool ros_software_resume_request;
 } __attribute__((aligned(4)));
 
 

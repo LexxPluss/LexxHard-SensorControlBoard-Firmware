@@ -121,6 +121,7 @@ public:
             msg.heart_beat = frame.data[3] & 0x01;
             msg.lockdown = (4 < frame.dlc) ? frame.data[4] & 0x01 : 0;  // this condition is for backward compatibility
             msg.auto_charge_request_enable = (5 < frame.dlc) ? frame.data[5] & 0x01 : 1;  // this condition is for backward compatibility
+            msg.software_resume_request = (6 < frame.dlc) ? frame.data[6] & 0x01 : 0;  // this condition is for backward compatibility
 
             if(prev_msg.emergency_stop != msg.emergency_stop) {
                 LOG_INF("Emergency Stop: %d", msg.emergency_stop);
@@ -145,6 +146,10 @@ public:
             if (prev_msg.auto_charge_request_enable != msg.auto_charge_request_enable) {
                 LOG_INF("Auto Charge Request Enable: %d", msg.auto_charge_request_enable);
                 prev_msg.auto_charge_request_enable = msg.auto_charge_request_enable;
+            }
+            if (prev_msg.software_resume_request != msg.software_resume_request) {
+                LOG_INF("Software Resume Request: %d", msg.software_resume_request);
+                prev_msg.software_resume_request = msg.software_resume_request;
             }
 
             while (k_msgq_put(&can_controller::msgq_control, &msg, K_NO_WAIT) != 0)
