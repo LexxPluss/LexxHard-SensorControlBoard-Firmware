@@ -90,6 +90,7 @@ public:
                 ros2board.wheel_power_off = false;
                 ros2board.lockdown = false;
                 ros2board.auto_charge_request_enable = true;
+                ros2board.software_resume_request = false;
                 heartbeat_timeout = false;
             }
 

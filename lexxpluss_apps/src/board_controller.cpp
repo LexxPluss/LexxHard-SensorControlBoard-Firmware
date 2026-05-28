@@ -1146,6 +1146,7 @@ public:
         power_off = false;
         wheel_poweroff = false;
         lockdown = false;
+        software_resume_request = false;
 
         reset_heartbeat();
         reset_queue();
@@ -1607,24 +1608,8 @@ private:
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (rsw.get_state() == resume_switch::STATE::PUSHED) {
-                LOG_DBG("resume switch pushed\n");
-                if (mbd.is_ready()) {
-                    LOG_DBG("heartbeat OK\n");
-                    set_new_state(POWER_STATE::NORMAL);
-                }
-                else {
-                    LOG_DBG("heartbeat NG\n");
-                    set_new_state(POWER_STATE::STANDBY);
-                }
-            } else if (mbd.software_resume_from_ros()) {
-                mbd.consume_software_resume();
-                if (mbd.is_ready()) {
-                    LOG_DBG("software resume request\n");
-                    set_new_state(POWER_STATE::NORMAL);
-                } else {
-                    LOG_DBG("software resume request but heartbeat NG\n");
-                }
+            } else if (is_resume_requested()) {
+                try_resume();
             } else if (should_manual_charge()) {
                 LOG_DBG("plugged to manual charger\n");
                 set_new_state(POWER_STATE::MANUAL_CHARGE);
@@ -1980,7 +1965,27 @@ private:
     bool should_manual_charge() {
         return mc.is_plugged();
     }
-    
+    bool is_resume_requested() {
+        if (rsw.get_state() == resume_switch::STATE::PUSHED) {
+            LOG_DBG("resume switch pushed\n");
+            return true;
+        }
+        if (mbd.software_resume_from_ros()) {
+            LOG_DBG("software resume request\n");
+            mbd.consume_software_resume();
+            return true;
+        }
+        return false;
+    }
+    void try_resume() {
+        if (mbd.is_ready()) {
+            set_new_state(POWER_STATE::NORMAL);
+        } else {
+            LOG_DBG("heartbeat NG\n");
+            set_new_state(POWER_STATE::STANDBY);
+        }
+    }
+
     power_switch psw;
     resume_switch rsw;
     key_switch ksw;
