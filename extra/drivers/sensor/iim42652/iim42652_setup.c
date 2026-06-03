@@ -197,7 +197,21 @@ int iim42652_sensor_init(const struct device *dev)
 	/* Need at least 10ms after soft reset */
 	k_msleep(10);
 
-	v = BIT_GYRO_AFSR_MODE_HFS | BIT_ACCEL_AFSR_MODE_HFS | BIT_CLK_SEL_PLL;
+	/* INTF_CONFIG1 RMW: preserve reserved bits[7:4] (DS §14.29). The previous
+	 * unconditional write of (BIT_GYRO_AFSR_MODE_HFS | BIT_ACCEL_AFSR_MODE_HFS |
+	 * BIT_CLK_SEL_PLL) = 0x51 clobbered reserved bits 7 and 4. The AFSR_MODE
+	 * macros were carried over from ICM-426xx and are not applicable to
+	 * IIM-42652 — writing them is undefined behavior on this part.
+	 */
+	result = inv_spi_read(&cfg->spi, REG_INTF_CONFIG1, &v, 1);
+	if (result) {
+		LOG_ERR("read REG_INTF_CONFIG1 failed");
+		return result;
+	}
+	LOG_INF("INTF_CONFIG1 reset value = 0x%02X", v);
+
+	v &= ~0x0F;             /* clear ACCEL_LP_CLK_SEL, RTC_MODE, CLKSEL */
+	v |= BIT_CLK_SEL_PLL;   /* set CLKSEL = PLL */
 
 	result = inv_spi_single_write(&cfg->spi, REG_INTF_CONFIG1, &v);
 
@@ -205,6 +219,7 @@ int iim42652_sensor_init(const struct device *dev)
 		LOG_ERR("write REG_INTF_CONFIG1 failed");
 		return result;
 	}
+	LOG_INF("INTF_CONFIG1 after RMW   = 0x%02X", v);
 
 	v = BIT_EN_DREG_FIFO_D2A |
 	    BIT_TMST_TO_REGS_EN |
@@ -476,4 +491,213 @@ int iim42652_turn_off_sensor(const struct device *dev)
 	iim42652_turn_off_fifo(dev);
 
 	return 0;
+}
+
+/* Write all six OFFSET_USER channels in one operation (DS §18).
+ *
+ *   gyro  step unit  = 1/32 dps      (range ±64 dps,    12-bit signed)
+ *   accel step unit  = 0.5 mG        (range ±1 g,        12-bit signed)
+ *
+ * Per DS §12.9 the register must be written with accel + gyro powered down.
+ * We only touch PWR_MGMT0 (not FIFO), so the trigger callback resumes
+ * seamlessly after restore. All 9 OFFSET_USER bytes get rewritten, so the
+ * shared-nibble registers (USER1 / USER4 / USER7) do NOT need RMW — every
+ * bit's source is one of the six caller-supplied step values.
+ *
+ * Sign convention (verified on PACO v71es007):
+ *   sensor_output = sensor_raw + OFFUSER
+ *   - ACCEL_Z: 2026-05-14, plan §3.1 (+40/-56 step experiments)
+ *   - GYRO X/Y/Z: 2026-05-15 (+320 step per axis → ~+320 LSB sensor-frame
+ *     shift on the matching GYRO_DATA register; all three axes same sign
+ *     as accel)
+ * So automated calibration should write OFFUSER = -bias_observed.
+ */
+int iim42652_set_offset_user(const struct device *dev,
+			     int16_t gx_step, int16_t gy_step, int16_t gz_step,
+			     int16_t ax_step, int16_t ay_step, int16_t az_step)
+{
+	struct iim42652_data *drv_data = dev->data;
+	const struct iim42652_config *cfg = dev->config;
+	uint8_t saved_pwr, off_val, bank;
+	int rc, rc2;
+	const int16_t steps[6] = {
+		gx_step, gy_step, gz_step,
+		ax_step, ay_step, az_step,
+	};
+	for (int i = 0; i < 6; i++) {
+		if (steps[i] < -2048 || steps[i] > 2047) {
+			return -EINVAL;
+		}
+	}
+
+	/* Build the 9-byte image of OFFSET_USER0..8 from the six 12-bit signed
+	 * fields. Shared-nibble layout from DS §18:
+	 *   USER0 = GX[7:0]
+	 *   USER1 = GY[11:8] | GX[11:8]
+	 *   USER2 = GY[7:0]
+	 *   USER3 = GZ[7:0]
+	 *   USER4 = AX[11:8] | GZ[11:8]
+	 *   USER5 = AX[7:0]
+	 *   USER6 = AY[7:0]
+	 *   USER7 = AZ[11:8] | AY[11:8]
+	 *   USER8 = AZ[7:0]
+	 * Cast through uint16_t before the >>8 to avoid signed-shift ambiguity.
+	 */
+	const uint16_t gx = (uint16_t)gx_step;
+	const uint16_t gy = (uint16_t)gy_step;
+	const uint16_t gz = (uint16_t)gz_step;
+	const uint16_t ax = (uint16_t)ax_step;
+	const uint16_t ay = (uint16_t)ay_step;
+	const uint16_t az = (uint16_t)az_step;
+	uint8_t off[9];
+	off[0] =  gx        & 0xFF;
+	off[1] = ((gy >> 8) & 0x0F) << 4 | ((gx >> 8) & 0x0F);
+	off[2] =  gy        & 0xFF;
+	off[3] =  gz        & 0xFF;
+	off[4] = ((ax >> 8) & 0x0F) << 4 | ((gz >> 8) & 0x0F);
+	off[5] =  ax        & 0xFF;
+	off[6] =  ay        & 0xFF;
+	off[7] = ((az >> 8) & 0x0F) << 4 | ((ay >> 8) & 0x0F);
+	off[8] =  az        & 0xFF;
+
+	k_mutex_lock(&drv_data->bus_lock, K_FOREVER);
+
+	rc = inv_spi_read(&cfg->spi, REG_PWR_MGMT0, &saved_pwr, 1);
+	if (rc) {
+		goto out_unlock;
+	}
+
+	off_val = saved_pwr & ~0x0F;
+	rc = inv_spi_single_write(&cfg->spi, REG_PWR_MGMT0, &off_val);
+	if (rc) {
+		goto restore_pwr;
+	}
+
+	k_msleep(2);
+
+	bank = BIT_BANK_SEL_4;
+	rc = inv_spi_single_write(&cfg->spi, REG_BANK_SEL, &bank);
+	if (rc) {
+		goto restore_bank;
+	}
+
+	for (int i = 0; i < 9; i++) {
+		rc = inv_spi_single_write(&cfg->spi,
+					  REG_OFFSET_USER0 + i,
+					  &off[i]);
+		if (rc) {
+			/* Best-effort recovery: scrub all 9 bytes back to 0 so
+			 * the chip is left in a known (zero-offset) state rather
+			 * than a partial mix of new + old values. We ignore the
+			 * return code of the scrub writes — if the bus is dead
+			 * there's nothing more we can do, but the caller will
+			 * see the original failure code and can decide. */
+			LOG_WRN("OFFSET_USER write failed at byte %d (rc=%d), scrubbing all to 0",
+				i, rc);
+			uint8_t zero = 0;
+			for (int j = 0; j < 9; j++) {
+				(void)inv_spi_single_write(&cfg->spi,
+							   REG_OFFSET_USER0 + j,
+							   &zero);
+			}
+			break;
+		}
+	}
+
+restore_bank:
+	/* Always attempt to restore Bank 0, even if selecting Bank 4 reported
+	 * an error. Everything below this point assumes Bank 0:
+	 *   SIGNAL_PATH_RESET (0x4B) — Bank 4 0x4B is ACCEL_WOM_Y_THR
+	 *   PWR_MGMT0         (0x4E) — Bank 4 0x4E is INT_SOURCE7
+	 * If bank0 select fails we must not write those addresses blindly, or
+	 * we would corrupt the wrong-bank register. Sensors stay powered down. */
+	bank = BIT_BANK_SEL_0;
+	rc2 = inv_spi_single_write(&cfg->spi, REG_BANK_SEL, &bank);
+	const bool bank0_restored_after_off = (rc2 == 0);
+	if (rc == 0) {
+		rc = rc2;
+	}
+
+	if (!bank0_restored_after_off) {
+		LOG_ERR("Bank 0 restore failed (rc=%d); skipping FIFO flush and PWR_MGMT0 restore; sensors left OFF",
+			rc2);
+		goto out_unlock;
+	}
+
+	/* Bank confirmed 0. Flush FIFO best-effort so the first packet after
+	 * we restore PWR_MGMT0 reflects the new OFFSET. */
+	{
+		uint8_t flush = BIT_FIFO_FLUSH;
+		int rc3 = inv_spi_single_write(&cfg->spi,
+					       REG_SIGNAL_PATH_RESET,
+					       &flush);
+		if (rc3) {
+			LOG_WRN("FIFO flush after OFFSET write failed: %d", rc3);
+		}
+	}
+
+restore_pwr:
+	/* Reached either via fall-through from restore_bank (bank0_restored is
+	 * true) or via the early `goto restore_pwr` taken when the PWR_MGMT0
+	 * OFF write itself failed — in that case bank was never switched to
+	 * Bank 4, so PWR_MGMT0 still resolves to the Bank 0 register. */
+	rc2 = inv_spi_single_write(&cfg->spi, REG_PWR_MGMT0, &saved_pwr);
+	if (rc == 0) {
+		rc = rc2;
+	}
+
+	k_msleep(100);
+
+out_unlock:
+	k_mutex_unlock(&drv_data->bus_lock);
+	return rc;
+}
+
+int iim42652_diag_read_regs(const struct device *dev, uint8_t bank, uint8_t addr,
+			    uint8_t *buf, size_t len)
+{
+	struct iim42652_data *drv_data = dev->data;
+	const struct iim42652_config *cfg = dev->config;
+	uint8_t bank_val;
+	int rc;
+
+	if (buf == NULL || len == 0) {
+		return -EINVAL;
+	}
+
+	/* Serialize with sample_fetch() — without this, a 50 Hz fetch could
+	 * land between our bank-select and bank-restore and read INT_STATUS /
+	 * FIFO_COUNT from the wrong bank. */
+	k_mutex_lock(&drv_data->bus_lock, K_FOREVER);
+
+	bank_val = bank;
+	rc = inv_spi_single_write(&cfg->spi, REG_BANK_SEL, &bank_val);
+	if (rc) {
+		/* Bank-select write failed: usually bank is unchanged, but we
+		 * cannot be sure. Fall through to the restore path so Bank 0
+		 * is asserted regardless. */
+		goto restore_bank;
+	}
+
+	rc = inv_spi_read(&cfg->spi, addr, buf, len);
+
+restore_bank:
+	if (bank != BIT_BANK_SEL_0) {
+		uint8_t b0 = BIT_BANK_SEL_0;
+		int rc2 = inv_spi_single_write(&cfg->spi, REG_BANK_SEL, &b0);
+		if (rc == 0) {
+			rc = rc2;
+		}
+		/* If both the original op and the restore failed, the original
+		 * error wins — that's what the caller actually cares about. */
+	}
+
+	k_mutex_unlock(&drv_data->bus_lock);
+	return rc;
+}
+
+int iim42652_diag_read_reg(const struct device *dev, uint8_t bank, uint8_t addr,
+			   uint8_t *val)
+{
+	return iim42652_diag_read_regs(dev, bank, addr, val, 1);
 }

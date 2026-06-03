@@ -211,14 +211,39 @@ static int iim42652_sample_fetch(const struct device *dev,
 	struct iim42652_data *drv_data = dev->data;
 	const struct iim42652_config *cfg = dev->config;
 
+	k_mutex_lock(&drv_data->bus_lock, K_FOREVER);
+
 	/* Read INT_STATUS (0x45) and FIFO_COUNTH(0x46), FIFO_COUNTL(0x47) */
 	result = inv_spi_read(&cfg->spi, REG_INT_STATUS, drv_data->fifo_data, 3);
+	if (result) {
+		LOG_WRN("INT_STATUS/FIFO_COUNT read failed: %d", result);
+		goto out_unlock;
+	}
 
 	if (drv_data->fifo_data[0] & BIT_INT_STATUS_DRDY) {
 		fifo_count = (drv_data->fifo_data[1] << 8)
 			+ (drv_data->fifo_data[2]);
+
+		/* Discard the sample if FIFO_COUNT is zero or runaway — a
+		 * bank-select race or SPI glitch can corrupt the count and
+		 * pushing the decoded packet would emit garbage upstream.
+		 * Clamping was tempting but parsing 2048 bytes of unknown
+		 * content with the same FIFO_HEAD logic is still garbage out. */
+		if (fifo_count == 0 ||
+		    fifo_count > sizeof(drv_data->fifo_data)) {
+			LOG_WRN("fifo_count %u out of range [1, %u], dropping sample",
+				fifo_count,
+				(unsigned int)sizeof(drv_data->fifo_data));
+			result = -EIO;
+			goto out_unlock;
+		}
+
 		result = inv_spi_read(&cfg->spi, REG_FIFO_DATA, drv_data->fifo_data,
 				      fifo_count);
+		if (result) {
+			LOG_WRN("FIFO_DATA read failed: %d", result);
+			goto out_unlock;
+		}
 
 		/* FIFO Data structure
 		 * Packet 1 : FIFO Header(1), AccelX(2), AccelY(2),
@@ -286,7 +311,9 @@ static int iim42652_sample_fetch(const struct device *dev,
 		}
 	}
 
-	return 0;
+out_unlock:
+	k_mutex_unlock(&drv_data->bus_lock);
+	return result;
 }
 
 static int iim42652_attr_set(const struct device *dev,
@@ -420,6 +447,8 @@ static int iim42652_attr_get(const struct device *dev,
 static int iim42652_data_init(struct iim42652_data *data,
 			      const struct iim42652_config *cfg)
 {
+	k_mutex_init(&data->bus_lock);
+
 	data->accel_x = 0;
 	data->accel_y = 0;
 	data->accel_z = 0;
