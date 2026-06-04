@@ -688,6 +688,13 @@ public:
         }
         uart_irq_rx_enable(dev);
 
+        gpio_dt_spec gpio_comm_mode_dev = GET_GPIO(comm_mode);
+        if (!gpio_is_ready_dt(&gpio_comm_mode_dev)) {
+            LOG_ERR("gpio_is_ready_dt of comm_mode Failed\n");
+            return;
+        }
+        gpio_pin_set_dt(&gpio_comm_mode_dev, 0);
+
         return;
     }
     bool is_docked() const {
@@ -813,8 +820,9 @@ private: // Thermistor side starts here.
             return;
         }
 
-        for (int i{0}; i < IRDA_DATA_LEN; ++i) {
-            uart_poll_out(dev, buf[i]);
+        if (!serial_write(buf, IRDA_DATA_LEN)) {
+            LOG_ERR("Failed to send heartbeat");
+            return;
         }
        
         LOG_DBG("Hearbeat Send\n");
@@ -845,6 +853,23 @@ private: // Thermistor side starts here.
                 }
             }
         }
+    }
+    bool serial_write(uint8_t const* buf, size_t len) {
+        gpio_dt_spec gpio_comm_mode_dev = GET_GPIO(comm_mode);
+        if (!gpio_is_ready_dt(&gpio_comm_mode_dev)) {
+            LOG_ERR("gpio_is_ready_dt of comm_mode Failed\n");
+            return false;
+        }
+
+        gpio_pin_set_dt(&gpio_comm_mode_dev, 1); // assert DE: switch PLC transceiver to TX
+        for (size_t i{0}; i < len; ++i) {
+            uart_poll_out(dev, buf[i]);
+        }
+        // Hold DE briefly so the final byte fully shifts out before returning to RX.
+        k_usleep(20);
+        gpio_pin_set_dt(&gpio_comm_mode_dev, 0); // deassert DE: back to RX
+
+        return true;
     }
 
     const device* dev{nullptr}; // UART device
