@@ -1979,6 +1979,7 @@ private:
     }
     void try_resume() {
         if (mbd.is_ready()) {
+            LOG_DBG("heartbeat OK\n");
             set_new_state(POWER_STATE::NORMAL);
         } else {
             LOG_DBG("heartbeat NG\n");
