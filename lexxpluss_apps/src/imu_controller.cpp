@@ -358,7 +358,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub,
     SHELL_CMD(info, NULL, "IMU information", info),
     SHELL_CMD(regdump, NULL, "IIM-42652 register dump (WHO_AM_I, configs, OFFSET_USER, raw ACCEL/GYRO/TEMP)", regdump),
 #ifdef LEXXHARD_IMU_CALIBRATION
-    SHELL_CMD(calrun,  NULL, "Manual calibration dry-run: compute biases + would-write step values; OFFSET_USER NOT touched",
+    SHELL_CMD(calrun,  NULL, "Manual calibration. `calrun` = dry-run (no write). `calrun --write` = write GYRO_X/Y/Z + ACCEL_Z OFFSET_USER on gate pass (ACCEL_X/Y preserved)",
               lexxhard::imu_calibration::cmd_calrun),
     SHELL_CMD(calinfo, NULL, "Show last calrun result + current OFFSET_USER decode",
               lexxhard::imu_calibration::cmd_calinfo),

@@ -1,19 +1,35 @@
 /*
  * Copyright (c) 2026, LexxPluss Inc.
  *
- * Manual IMU calibration shell - DRY-RUN ONLY (PR #85).
+ * Manual IMU calibration shell (PR #86).
  *
  * Behaviour summary (see imu_calibration.hpp for concurrency model):
- *   `imu calrun`  - one-shot: drain transients, accumulate N_SAMPLES samples
- *                   off the running IMU fetcher loop, finalize means / stds /
- *                   would-write OFFSET_USER step values, run envelope + motion
- *                   gates, print result. Never writes hardware.
- *   `imu calinfo` - print the last calrun result plus the chip's current
- *                   OFFSET_USER registers decoded into per-axis step / mG / dps.
+ *   `imu calrun`         - dry-run: drain transients, accumulate N_SAMPLES
+ *                          samples off the running IMU fetcher loop, finalize
+ *                          means / stds / would-write OFFSET_USER step values,
+ *                          run envelope + motion gates, print result. Never
+ *                          writes hardware.
+ *   `imu calrun --write` - same collection, then (only if both gates pass)
+ *                          writes GYRO_X/Y/Z + ACCEL_Z OFFSET_USER. ACCEL_X/Y
+ *                          are read-merged (current register values preserved,
+ *                          NOT overwritten and NOT forced to 0) because a
+ *                          single static pose cannot separate sensor zero-g
+ *                          offset from mounting tilt — six-face test pending.
+ *   `imu calinfo`        - print the last calrun result plus the chip's current
+ *                          OFFSET_USER registers decoded into step / mG / dps.
  *
- * Algorithm is identical to the PACO-verified startup auto-cal v2; only the
- * trigger has changed (boot path -> manual shell). The actual `OFFSET_USER`
- * write moves to a follow-up PR (`imu calrun --write`).
+ * Collection algorithm is identical to the PACO-verified startup auto-cal v2;
+ * only the trigger changed (boot path -> manual shell). The write path reuses
+ * the driver's iim42652_set_offset_user(), verified on PACO 2026-05-15.
+ *
+ * Safety invariants for --write:
+ *   - default (no arg) never writes;
+ *   - only `imu calrun --write` (exactly) requests a write; any other arg is
+ *     rejected before sampling starts;
+ *   - write happens only when final_state == DONE (envelope + motion gates
+ *     both pass); gate fail / timeout => no write;
+ *   - if reading the current OFFSET_USER (for ACCEL_X/Y merge) fails, --write
+ *     aborts without writing — it never degrades to ax/ay = 0.
  */
 #include "imu_calibration.hpp"
 
@@ -23,6 +39,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -100,6 +117,8 @@ struct accumulator_t {
     double sum_ax2, sum_ay2, sum_az2;
     double sum_gx, sum_gy, sum_gz;
     double sum_gx2, sum_gy2, sum_gz2;
+    int64_t t_run_start_ms;    /* shell sets at RUNNING store */
+    int64_t t_first_sample_ms; /* fetcher sets on first post-drain sample */
 };
 accumulator_t g_acc{};
 
@@ -121,11 +140,48 @@ struct diag_t {
     bool motion_ok;
     bool timeout;
     const char *fail_reason;
+    /* timing (ms); -1 = not measured for this run */
+    int64_t t_collect_done_ms; /* finalize() timestamp, for shell poll_lag calc */
+    int drain_ms;
+    int sample_ms;
+    int collect_total_ms;
 };
 diag_t g_diag{};
 
 double sv_to_d(const struct sensor_value *v) {
     return static_cast<double>(v->val1) + static_cast<double>(v->val2) * 1e-6;
+}
+
+/* DS Sec.18 OFFSET_USER 12-bit signed unpack (shared by readback + ax/ay merge). */
+int16_t unpack12(uint8_t lo_byte, uint8_t high_nibble) {
+    uint16_t u = (static_cast<uint16_t>(high_nibble & 0x0F) << 8) | lo_byte;
+    if (u & 0x800) {
+        u |= 0xF000;  /* sign-extend 12-bit -> 16-bit */
+    }
+    return static_cast<int16_t>(u);
+}
+
+struct offset_steps_t {
+    int16_t gx, gy, gz, ax, ay, az;
+};
+
+/* Decode the 9-byte OFFSET_USER0..8 image into six 12-bit signed steps.
+ * MUST mirror iim42652_set_offset_user()'s packing exactly (the encoder is
+ * the single source of truth):
+ *   USER1 = GY[11:8]<<4 | GX[11:8]   (high nibble = GY, low nibble = GX)
+ *   USER4 = AX[11:8]<<4 | GZ[11:8]   (high nibble = AX, low nibble = GZ)
+ *   USER7 = AZ[11:8]<<4 | AY[11:8]   (high nibble = AZ, low nibble = AY)
+ * Cross-check: PACO 2026-05-15 az=-56 step (0xFC8) -> bytes ...,F0,C8, i.e.
+ * AZ[11:8]=0xF lives in USER7's HIGH nibble -> az = unpack12(buf[8], buf[7]>>4). */
+offset_steps_t decode_offset_user(const uint8_t buf[9]) {
+    return offset_steps_t{
+        /* gx */ unpack12(buf[0],  buf[1]       & 0x0F),
+        /* gy */ unpack12(buf[2], (buf[1] >> 4) & 0x0F),
+        /* gz */ unpack12(buf[3],  buf[4]       & 0x0F),
+        /* ax */ unpack12(buf[5], (buf[4] >> 4) & 0x0F),
+        /* ay */ unpack12(buf[6],  buf[7]       & 0x0F),
+        /* az */ unpack12(buf[8], (buf[7] >> 4) & 0x0F),
+    };
 }
 
 int16_t clamp_step(double s) {
@@ -146,6 +202,8 @@ void finalize() {
             std::memory_order_acq_rel)) {
         return;
     }
+
+    const int64_t t_collect_done = k_uptime_get();
 
     constexpr int N = N_SAMPLES;
     const double ax_mean = g_acc.sum_ax / N;
@@ -208,6 +266,11 @@ void finalize() {
     g_diag.collected = g_acc.collected;
     g_diag.ever_ran = true;
 
+    g_diag.t_collect_done_ms = t_collect_done;
+    g_diag.drain_ms = static_cast<int>(g_acc.t_first_sample_ms - g_acc.t_run_start_ms);
+    g_diag.sample_ms = static_cast<int>(t_collect_done - g_acc.t_first_sample_ms);
+    g_diag.collect_total_ms = static_cast<int>(t_collect_done - g_acc.t_run_start_ms);
+
     state_t final_state;
     if (g_diag.envelope_ok && g_diag.motion_ok) {
         final_state = state_t::DONE;
@@ -236,6 +299,9 @@ void feed_sample(const struct sensor_value accel[3],
     }
     if (g_acc.collected >= N_SAMPLES) {
         return;
+    }
+    if (g_acc.collected == 0) {
+        g_acc.t_first_sample_ms = k_uptime_get();  /* first post-drain sample */
     }
     const double ax = sv_to_d(&accel[0]);
     const double ay = sv_to_d(&accel[1]);
@@ -297,11 +363,11 @@ void print_diag(const struct shell *shell) {
     shell_print(shell, "  accel mG:  x=%+.2f y=%+.2f z=%+.2f", ros_ax, ros_ay, ros_az);
     shell_print(shell, "  gyro  dps: x=%+.4f y=%+.4f z=%+.4f", ros_gx, ros_gy, ros_gz);
 
-    shell_print(shell, "Would-write OFFSET_USER step (DRY-RUN, NOT applied):");
+    shell_print(shell, "Correction step (DRY-RUN; --write ADDS this to current OFFSET_USER):");
     shell_print(shell, "  gyro:  gx=%+5d gy=%+5d gz=%+5d",
                 g_diag.gx_step, g_diag.gy_step, g_diag.gz_step);
     shell_print(shell,
-                "  accel: ax=%+5d ay=%+5d az=%+5d  (ax/ay would NOT be written "
+                "  accel: ax=%+5d ay=%+5d az=%+5d  (ax/ay correction NOT applied "
                 "even with --write; six-face test pending)",
                 g_diag.ax_step, g_diag.ay_step, g_diag.az_step);
 
@@ -322,21 +388,7 @@ void print_current_offset(const struct shell *shell) {
         shell_warn(shell, "Read OFFSET_USER0..8 failed rc=%d", rc);
         return;
     }
-    auto unpack12 = [](uint8_t lo_byte, uint8_t high_nibble) -> int16_t {
-        uint16_t u = (static_cast<uint16_t>(high_nibble & 0x0F) << 8) | lo_byte;
-        if (u & 0x800) {
-            u |= 0xF000;  /* sign-extend 12-bit -> 16-bit */
-        }
-        return static_cast<int16_t>(u);
-    };
-    /* DS Sec.18 OFFSET_USER packing (verified on PACO 2026-05-15 with
-     * az=-56 step -> bytes 00,00,00,00,00,00,00,F0,C8). */
-    const int16_t gx = unpack12(buf[0], (buf[1] >> 4) & 0x0F);
-    const int16_t gy = unpack12(buf[2],  buf[1]       & 0x0F);
-    const int16_t gz = unpack12(buf[3], (buf[4] >> 4) & 0x0F);
-    const int16_t ax = unpack12(buf[5],  buf[4]       & 0x0F);
-    const int16_t ay = unpack12(buf[6], (buf[7] >> 4) & 0x0F);
-    const int16_t az = unpack12(buf[8],  buf[7]       & 0x0F);
+    const offset_steps_t o = decode_offset_user(buf);
 
     shell_print(shell, "Current OFFSET_USER (raw bytes 0..8):");
     shell_print(shell, "  %02X %02X %02X %02X %02X %02X %02X %02X %02X",
@@ -345,21 +397,109 @@ void print_current_offset(const struct shell *shell) {
     shell_print(shell, "Current OFFSET_USER (decoded, sensor frame):");
     shell_print(shell,
                 "  gyro:  gx=%+5d (%+.3f dps)  gy=%+5d (%+.3f dps)  gz=%+5d (%+.3f dps)",
-                gx, gx * (GYRO_STEP_MDPS / 1000.0),
-                gy, gy * (GYRO_STEP_MDPS / 1000.0),
-                gz, gz * (GYRO_STEP_MDPS / 1000.0));
+                o.gx, o.gx * (GYRO_STEP_MDPS / 1000.0),
+                o.gy, o.gy * (GYRO_STEP_MDPS / 1000.0),
+                o.gz, o.gz * (GYRO_STEP_MDPS / 1000.0));
     shell_print(shell,
                 "  accel: ax=%+5d (%+.2f mG)  ay=%+5d (%+.2f mG)  az=%+5d (%+.2f mG)",
-                ax, ax * ACCEL_STEP_MG,
-                ay, ay * ACCEL_STEP_MG,
-                az, az * ACCEL_STEP_MG);
+                o.ax, o.ax * ACCEL_STEP_MG,
+                o.ay, o.ay * ACCEL_STEP_MG,
+                o.az, o.az * ACCEL_STEP_MG);
+}
+
+/* Apply the last calrun's correction ON TOP OF the current OFFSET_USER.
+ *
+ * g_diag.*_step is a CORRECTION (= -measured_output_bias), not an absolute
+ * target. Because OFFSET_USER is applied in hardware before the data
+ * registers, calrun always measures the already-compensated output, so the
+ * correction must accumulate:
+ *     final = current + correction        (gx/gy/gz/az)
+ *     final = current                     (ax/ay preserved, correction shown
+ *                                          but not applied; six-face pending)
+ * This makes repeated --write convergent (a second run sees ~0 residual ->
+ * ~0 correction -> stays put) instead of overwriting good compensation.
+ *
+ * Returns 0 on success, negative on failure (nothing written). Aborts before
+ * writing if the current-OFFSET read fails or any final gx/gy/gz/az would
+ * exceed the 12-bit signed range [-2048, 2047] (no silent clamp). write_ms is
+ * the wall time of the set_offset_user() call only. */
+int apply_offset_write(const struct shell *shell, int *write_ms) {
+    *write_ms = -1;
+    const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(imu0));
+    if (!device_is_ready(dev)) {
+        shell_error(shell, "--write aborted: IMU device not ready (nothing written)");
+        return -ENODEV;
+    }
+    /* Read current OFFSET_USER so we can accumulate onto it and preserve
+     * ACCEL_X/Y. If this read fails we abort rather than guess. */
+    uint8_t buf[9];
+    int rc = iim42652_diag_read_regs(dev, BIT_BANK_SEL_4, REG_OFFSET_USER0, buf, 9);
+    if (rc) {
+        shell_error(shell,
+                    "--write aborted: read current OFFSET_USER failed rc=%d "
+                    "(nothing written)", rc);
+        return rc;
+    }
+    const offset_steps_t cur = decode_offset_user(buf);
+
+    /* final = current + correction for gx/gy/gz/az; ax/ay held at current. */
+    const int final_gx = cur.gx + g_diag.gx_step;
+    const int final_gy = cur.gy + g_diag.gy_step;
+    const int final_gz = cur.gz + g_diag.gz_step;
+    const int final_az = cur.az + g_diag.az_step;
+    const int16_t final_ax = cur.ax;
+    const int16_t final_ay = cur.ay;
+
+    /* Range check the accumulated values; abort (no silent clamp) if any
+     * gx/gy/gz/az would saturate the 12-bit signed OFFSET_USER field. */
+    auto out_of_range = [](int v) { return v < -2048 || v > 2047; };
+    if (out_of_range(final_gx) || out_of_range(final_gy) ||
+        out_of_range(final_gz) || out_of_range(final_az)) {
+        shell_error(shell,
+                    "--write aborted: accumulated OFFSET out of [-2048,2047] "
+                    "(final gx=%d gy=%d gz=%d az=%d); nothing written",
+                    final_gx, final_gy, final_gz, final_az);
+        return -ERANGE;
+    }
+
+    shell_print(shell, "OFFSET_USER write:");
+    shell_print(shell, "  current:    gx=%+d gy=%+d gz=%+d ax=%+d ay=%+d az=%+d",
+                cur.gx, cur.gy, cur.gz, cur.ax, cur.ay, cur.az);
+    shell_print(shell,
+                "  correction: gx=%+d gy=%+d gz=%+d ax=%+d ay=%+d az=%+d  "
+                "(ax/ay correction NOT applied; six-face pending)",
+                g_diag.gx_step, g_diag.gy_step, g_diag.gz_step,
+                g_diag.ax_step, g_diag.ay_step, g_diag.az_step);
+    shell_print(shell, "  final:      gx=%+d gy=%+d gz=%+d ax=%+d ay=%+d az=%+d",
+                final_gx, final_gy, final_gz, final_ax, final_ay, final_az);
+
+    const int64_t tw0 = k_uptime_get();
+    rc = iim42652_set_offset_user(dev,
+                                  static_cast<int16_t>(final_gx),
+                                  static_cast<int16_t>(final_gy),
+                                  static_cast<int16_t>(final_gz),
+                                  final_ax, final_ay,
+                                  static_cast<int16_t>(final_az));
+    *write_ms = static_cast<int>(k_uptime_get() - tw0);
+    if (rc) {
+        shell_error(shell, "OFFSET_USER write failed rc=%d", rc);
+        return rc;
+    }
+    return 0;
 }
 
 }  /* anonymous namespace */
 
 int cmd_calrun(const struct shell *shell, size_t argc, char **argv) {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+    /* Strict arg parse BEFORE any state change: only `imu calrun` or
+     * `imu calrun --write`. Reject anything else without starting sampling. */
+    bool want_write = false;
+    if (argc == 2 && std::strcmp(argv[1], "--write") == 0) {
+        want_write = true;
+    } else if (argc != 1) {
+        shell_error(shell, "usage: imu calrun [--write]");
+        return -EINVAL;
+    }
 
     /* Acquire phase: CAS {IDLE,DONE,FAILED} -> STARTING. While STARTING,
      * feed_sample() bails out, so we have exclusive access to g_acc and
@@ -384,6 +524,7 @@ int cmd_calrun(const struct shell *shell, size_t argc, char **argv) {
     /* Single-writer phase: nobody else touches g_acc or g_diag. */
     g_acc = accumulator_t{};
     g_acc.drain_remaining = DRAIN_SAMPLES;
+    g_acc.t_run_start_ms = k_uptime_get();
     g_diag = diag_t{};  /* clear stale stats from previous run */
 
     /* Release-store STARTING -> RUNNING. The fetcher's next acquire-load
@@ -391,7 +532,8 @@ int cmd_calrun(const struct shell *shell, size_t argc, char **argv) {
     g_state.store(static_cast<int>(state_t::RUNNING), std::memory_order_release);
 
     shell_print(shell,
-                "calrun: dry-run, collecting %d samples (~%d s @ 50 Hz). Keep robot static.",
+                "calrun: %s, collecting %d samples (~%d s @ 50 Hz). Keep robot static.",
+                want_write ? "WILL WRITE on gate pass" : "dry-run",
                 N_SAMPLES, (N_SAMPLES + DRAIN_SAMPLES) / 50);
 
     const int64_t deadline = k_uptime_get() + TIMEOUT_MS;
@@ -430,8 +572,54 @@ int cmd_calrun(const struct shell *shell, size_t argc, char **argv) {
         }
     }
 
+    const int64_t t_observed = k_uptime_get();
     print_diag(shell);
-    return g_diag.final_state == state_t::DONE ? 0 : 1;
+
+    /* --write: only on a clean DONE (both gates passed). gate fail / timeout
+     * => skip, never write. */
+    int write_ms = -1;
+    int write_rc = 0;
+    if (want_write) {
+        if (g_diag.final_state == state_t::DONE) {
+            write_rc = apply_offset_write(shell, &write_ms);
+            shell_print(shell, "");
+            print_current_offset(shell);
+        } else {
+            shell_print(shell, "--write skipped: gates did not pass (nothing written)");
+        }
+    }
+
+    /* Timing block. poll_lag = shell wakeup latency after finalize; kept
+     * separate from print time. total spans run-start to end of write/print. */
+    const int64_t t_end = k_uptime_get();
+    if (g_diag.timeout) {
+        shell_print(shell, "calrun timing: timed out after %d ms (no valid collection)",
+                    static_cast<int>(t_end - g_acc.t_run_start_ms));
+    } else {
+        const int poll_lag_ms = static_cast<int>(t_observed - g_diag.t_collect_done_ms);
+        const int total_ms = static_cast<int>(t_end - g_acc.t_run_start_ms);
+        if (write_ms >= 0) {
+            shell_print(shell,
+                        "calrun timing: drain_ms=%d sample_ms=%d collect_total_ms=%d "
+                        "poll_lag_ms=%d write_ms=%d total_ms=%d",
+                        g_diag.drain_ms, g_diag.sample_ms, g_diag.collect_total_ms,
+                        poll_lag_ms, write_ms, total_ms);
+        } else {
+            shell_print(shell,
+                        "calrun timing: drain_ms=%d sample_ms=%d collect_total_ms=%d "
+                        "poll_lag_ms=%d write_ms=n/a total_ms=%d",
+                        g_diag.drain_ms, g_diag.sample_ms, g_diag.collect_total_ms,
+                        poll_lag_ms, total_ms);
+        }
+    }
+
+    /* Calibration gate failure (or timeout) => non-zero. A clean cal that then
+     * failed to write (--write) must also surface as non-zero so the shell
+     * layer does not treat "collected OK but write failed" as success. */
+    if (g_diag.final_state != state_t::DONE) {
+        return 1;
+    }
+    return write_rc;  /* 0 on dry-run / successful write, non-zero on write failure */
 }
 
 int cmd_calinfo(const struct shell *shell, size_t argc, char **argv) {
