@@ -1820,6 +1820,7 @@ private:
         } break;
         case POWER_STATE::SUSPEND: {
             LOG_INF("enter SUSPEND\n");
+            mbd.consume_software_resume();
             psw.set_led(true);
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
@@ -1831,6 +1832,7 @@ private:
         } break;
         case POWER_STATE::RESUME_WAIT: {
             LOG_INF("enter RESUME_WAIT\n");
+            mbd.consume_software_resume();
             rsw.set_led(true);
         } break;
         case POWER_STATE::AUTO_CHARGE: {
