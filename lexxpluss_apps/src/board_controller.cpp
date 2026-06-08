@@ -1981,10 +1981,10 @@ private:
     }
     void try_resume() {
         if (mbd.is_ready()) {
-            LOG_DBG("heartbeat OK\n");
+            LOG_INF("heartbeat OK\n");
             set_new_state(POWER_STATE::NORMAL);
         } else {
-            LOG_DBG("heartbeat NG\n");
+            LOG_INF("heartbeat NG\n");
             set_new_state(POWER_STATE::STANDBY);
         }
     }
