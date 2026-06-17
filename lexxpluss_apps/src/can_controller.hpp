@@ -66,6 +66,7 @@ struct msg_board {
 
 struct msg_control {
     bool emergency_stop, power_off, wheel_power_off, heart_beat, lockdown, auto_charge_request_enable;
+    bool software_resume_request;
 } __attribute__((aligned(4)));
 
 void init();

@@ -1146,6 +1146,7 @@ public:
         power_off = false;
         wheel_poweroff = false;
         lockdown = false;
+        software_resume_request = false;
 
         reset_heartbeat();
         reset_queue();
@@ -1184,6 +1185,12 @@ public:
     bool is_wheel_poweroff() const {
         return wheel_poweroff;
     }
+    bool software_resume_from_ros() const {
+        return software_resume_request;
+    }
+    void consume_software_resume() {
+        software_resume_request = false;
+    }
 private:
     void reset_queue() {
         msg_rcv_pb msg;
@@ -1208,6 +1215,9 @@ private:
         if (auto_charge_request_enable != msg.ros_auto_charge_request_enable) {
             LOG_INF("ROS Auto Charge Request Enable: %d", msg.ros_auto_charge_request_enable);
         }
+        if (software_resume_request != msg.ros_software_resume_request) {
+            LOG_INF("ROS Software Resume Request: %d", msg.ros_software_resume_request);
+        }
 
         emergency_stop = msg.ros_emergency_stop;
         power_off = msg.ros_power_off;
@@ -1215,12 +1225,14 @@ private:
         wheel_poweroff = msg.ros_wheel_power_off;
         lockdown = msg.ros_lockdown;
         auto_charge_request_enable = msg.ros_auto_charge_request_enable;
+        software_resume_request = msg.ros_software_resume_request;
 
         // heartbeat is not timeout means heartbeat is detected
         heartbeat_detect |= !ros_heartbeat_timeout;
     }
     bool heartbeat_detect{false}, ros_heartbeat_timeout{false}, emergency_stop{true}, power_off{false},
-        wheel_poweroff{false}, lockdown{false}, auto_charge_request_enable{false};
+        wheel_poweroff{false}, lockdown{false}, auto_charge_request_enable{false},
+        software_resume_request{false};
 };
 
 class safety_lidar { // Variables Implemented
@@ -1596,16 +1608,8 @@ private:
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::SUSPEND);
-            } else if (rsw.get_state() == resume_switch::STATE::PUSHED) {
-                LOG_DBG("resume switch pushed\n");
-                if (mbd.is_ready()) {
-                    LOG_DBG("heartbeat OK\n");
-                    set_new_state(POWER_STATE::NORMAL);
-                }
-                else {
-                    LOG_DBG("heartbeat NG\n");
-                    set_new_state(POWER_STATE::STANDBY);
-                }
+            } else if (is_resume_requested()) {
+                try_resume();
             } else if (should_manual_charge()) {
                 LOG_DBG("plugged to manual charger\n");
                 set_new_state(POWER_STATE::MANUAL_CHARGE);
@@ -1816,6 +1820,7 @@ private:
         } break;
         case POWER_STATE::SUSPEND: {
             LOG_INF("enter SUSPEND\n");
+            mbd.consume_software_resume();
             psw.set_led(true);
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
@@ -1827,6 +1832,7 @@ private:
         } break;
         case POWER_STATE::RESUME_WAIT: {
             LOG_INF("enter RESUME_WAIT\n");
+            mbd.consume_software_resume();
             rsw.set_led(true);
         } break;
         case POWER_STATE::AUTO_CHARGE: {
@@ -1961,7 +1967,28 @@ private:
     bool should_manual_charge() {
         return mc.is_plugged();
     }
-    
+    bool is_resume_requested() {
+        if (rsw.get_state() == resume_switch::STATE::PUSHED) {
+            LOG_DBG("resume switch pushed\n");
+            return true;
+        }
+        if (mbd.software_resume_from_ros()) {
+            LOG_DBG("software resume request\n");
+            mbd.consume_software_resume();
+            return true;
+        }
+        return false;
+    }
+    void try_resume() {
+        if (mbd.is_ready()) {
+            LOG_INF("heartbeat OK\n");
+            set_new_state(POWER_STATE::NORMAL);
+        } else {
+            LOG_INF("heartbeat NG\n");
+            set_new_state(POWER_STATE::STANDBY);
+        }
+    }
+
     power_switch psw;
     resume_switch rsw;
     key_switch ksw;

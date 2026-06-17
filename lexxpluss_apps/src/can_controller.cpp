@@ -90,6 +90,7 @@ public:
                 ros2board.wheel_power_off = false;
                 ros2board.lockdown = false;
                 ros2board.auto_charge_request_enable = true;
+                ros2board.software_resume_request = false;
                 heartbeat_timeout = false;
             }
 
@@ -156,6 +157,7 @@ private:
         msg_board_to_pb.ros_wheel_power_off = ros2board.wheel_power_off;
         msg_board_to_pb.ros_lockdown = ros2board.lockdown;
         msg_board_to_pb.ros_auto_charge_request_enable = ros2board.auto_charge_request_enable;
+        msg_board_to_pb.ros_software_resume_request = ros2board.software_resume_request;
     }
     void publish_to_pb() {
         handler_to_pb();
@@ -164,7 +166,7 @@ private:
         }
     }
     msg_board board2ros{0};
-    msg_control ros2board{true, false, false, false, false, false};
+    msg_control ros2board{true, false, false, false, false, false, false};
     board_controller::msg_rcv_pb msg_board_to_pb{0};
     uint32_t prev_cycle_ros{0}, prev_cycle_send{0};
     bool heartbeat_timeout{false};
