@@ -85,6 +85,12 @@ char __aligned(4) msgq_control_buffer[8 * sizeof (msg_control)];
 
 static constexpr uint32_t ACTUATOR_NUM{3};
 
+// 0x208 direct-drive command-timeout watchdog: if the host stops refreshing
+// external CAN direct-control frames while a direct drive is active, force STOP
+// so a crashed/killed host cannot latch duty indefinitely. Must be >= ~5x the
+// host publish period (20Hz=50ms / 50Hz=20ms) to tolerate scheduling jitter.
+static constexpr uint32_t ACTUATOR_COMMAND_TIMEOUT_MS{250};
+
 struct msg_pwmtrampoline {
     bool all{false};
     int8_t index{0};
@@ -484,6 +490,7 @@ public:
         int32_t diff_abs{abs(target_position - cnt.get_location())};
         return diff_abs < thres_mm;
     }
+    bool is_active() const { return activated; }
 private:
     counter &cnt;
     float control_i{0.0f};
@@ -549,6 +556,11 @@ public:
     }
     bool is_moving() {
         return cnt.get_delta_pulse() != 0;
+    }
+    bool is_position_control_active() const { return posctl.is_active(); }
+    bool is_direct_driving() const {
+        auto [direction, duty]{pwm.get_duty()};
+        return direction != msg_control::STOP && duty != 0;
     }
     void reset() {
         cnt.reset();
@@ -657,19 +669,52 @@ public:
         reset_actuator();
 
         uint32_t prev_cycle{k_cycle_get_32()};
+        uint32_t last_external_direct_cycle{k_cycle_get_32()};
+        bool external_direct_watchdog_armed{false};
+        bool command_timeout_latched{false};
 
         while (true) {
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
             bool is_emergency{board_controller::is_emergency()};  // -> board controller
             msg_control can2actuator;
-            if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency)
+            if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency) {
                 handle_control(can2actuator);
+                if (can2actuator.source == msg_control::source_type::EXTERNAL_CAN_0X208) {
+                    external_direct_watchdog_armed = has_nonzero_direct_command(can2actuator);
+                    last_external_direct_cycle = k_cycle_get_32();
+                    command_timeout_latched = false;
+                } else {
+                    // Internal direct frame (e.g. init_location homing) owns the PWM;
+                    // it must not keep an old external watchdog armed.
+                    external_direct_watchdog_armed = false;
+                    command_timeout_latched = false;
+                }
+            }
             msg_pwmtrampoline pwmtrampoline;
-            if (k_msgq_get(&msgq_pwmtrampoline, &pwmtrampoline, K_NO_WAIT) == 0 && !is_emergency)
+            if (k_msgq_get(&msgq_pwmtrampoline, &pwmtrampoline, K_NO_WAIT) == 0 && !is_emergency) {
+                // msgq_pwmtrampoline is also an internal direct-PWM path (shell jogs,
+                // pwm_trampoline_all STOP after init/to_location). Disarm so a stale
+                // external 0x208 watchdog cannot force-STOP an internal direct drive.
+                external_direct_watchdog_armed = false;
+                command_timeout_latched = false;
                 handle_pwmtrampoline(pwmtrampoline);
+            }
             if (is_emergency)
                 pwm_direct_all(msg_control::STOP);
+            else if (external_direct_watchdog_armed &&
+                     !any_position_control_active() &&
+                     any_direct_driving()) {
+                uint32_t since_ms{k_cyc_to_ms_near32(k_cycle_get_32() - last_external_direct_cycle)};
+                if (since_ms > ACTUATOR_COMMAND_TIMEOUT_MS) {
+                    if (!command_timeout_latched) {
+                        LOG_WRN("actuator 0x208 command timeout (%u ms): forcing STOP", since_ms);
+                        command_timeout_latched = true;
+                    }
+                    pwm_direct_all(msg_control::STOP);
+                    external_direct_watchdog_armed = false; // re-arm on next external frame
+                }
+            }
             uint32_t now_cycle{k_cycle_get_32()};
             uint32_t dt_ms{k_cyc_to_ms_near32(now_cycle - prev_cycle)};
             if (dt_ms > 20) {
@@ -767,6 +812,7 @@ public:
     }
     void control_trampoline(const int8_t (&directions)[ACTUATOR_NUM], const uint8_t (&powers)[ACTUATOR_NUM]) {
         msg_control message;
+        message.source = msg_control::source_type::INTERNAL; // internal drive must not arm the 0x208 watchdog
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
             message.actuators[i].direction = directions[i];
             message.actuators[i].power = powers[i];
@@ -788,6 +834,24 @@ private:
     void pwm_direct_all(int direction, uint8_t pwm_duty = 0) {
         for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
             act[i].direct(direction, pwm_duty);
+    }
+    bool any_position_control_active() const {
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            if (act[i].is_position_control_active())
+                return true;
+        return false;
+    }
+    bool any_direct_driving() const {
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            if (act[i].is_direct_driving())
+                return true;
+        return false;
+    }
+    static bool has_nonzero_direct_command(const msg_control &msg) {
+        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            if (msg.actuators[i].direction != msg_control::STOP && msg.actuators[i].power != 0)
+                return true;
+        return false;
     }
     void pwm_trampoline_all(int direction, uint8_t pwm_duty = 0) const {
         msg_pwmtrampoline message;
