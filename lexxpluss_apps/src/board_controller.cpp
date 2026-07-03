@@ -1409,6 +1409,7 @@ private:
                 gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
+#ifndef ENABLE_PUSH_MODE
             if (!ksw.is_running()) {
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
                 if (!gpio_is_ready_dt(&gpio_dev)) {
@@ -1419,6 +1420,7 @@ private:
                 gpio_pin_set_dt(&gpio_dev, 0);
                 LOG_DBG("wheel power was cut off\n");
             }
+#endif
         };
         
         psw.poll();
@@ -1497,9 +1499,11 @@ private:
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_lockdown()) {
                set_new_state(POWER_STATE::LOCKDOWN);
+#ifndef ENABLE_PUSH_MODE
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::SUSPEND);
+#endif
             } else if (mbd.power_off_from_ros()) {
                 LOG_DBG("receive power off from ROS\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1513,6 +1517,7 @@ private:
                 LOG_DBG("emergency switch asserted\n");
                 use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
+#ifndef ENABLE_PUSH_MODE
             } else if (sl.is_asserted()) {
                 LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1523,6 +1528,7 @@ private:
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::SUSPEND);
+#endif
             } else if (!charge_guard_asserted && ac.is_docked() && bmu.is_chargable()) {
                 if(ac.is_charger_ready() == true){
                     LOG_DBG("docked to auto charger\n");
@@ -1691,7 +1697,9 @@ private:
         case POWER_STATE::NORMAL: {
             LOG_INF("leave NORMAL");
             k_timer_stop(&charge_guard_timeout);
+#ifndef ENABLE_PUSH_MODE
             wsw.set_disable(true, use_software_brake);
+#endif
         } break;
         case POWER_STATE::POST: {
             LOG_INF("leave POST\n");
@@ -1786,7 +1794,11 @@ private:
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
+#ifdef ENABLE_PUSH_MODE
+            wsw.set_disable(false);
+#else
             wsw.set_disable(ksw.is_maintenance());
+#endif
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");

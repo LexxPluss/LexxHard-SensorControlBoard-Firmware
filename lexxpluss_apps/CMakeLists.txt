@@ -31,6 +31,10 @@ FILE(GLOB ros_sources ../ros_msgs/*.cpp)
 target_sources(app PRIVATE ${app_sources} ${ros_sources})
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs)
 
+if(FEATURES_FILE)
+    include(${FEATURES_FILE})
+endif()
+
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)
 endif()
@@ -46,6 +50,10 @@ if(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
     message(WARNING "UNSAFE BUILD: BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST is enabled. "
                     "Safety lidar assertion is forced to false. "
                     "DO NOT flash to a robot allowed to drive.")
+endif()
+
+if(ENABLE_PUSH_MODE)
+    add_definitions(-DENABLE_PUSH_MODE)
 endif()
 
 if(VERSION)
