@@ -34,3 +34,4 @@
 /tools/
 /zephyr/
 /compile_commands.json
+lexxpluss_apps/tests/*/build/
