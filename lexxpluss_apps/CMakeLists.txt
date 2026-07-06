@@ -39,6 +39,10 @@ if(USE_TWO_STATE_KEY_SWITCH)
     add_definitions(-DUSE_TWO_STATE_KEY_SWITCH)
 endif()
 
+if(LEXXHARD_IMU_CALIBRATION)
+    add_definitions(-DLEXXHARD_IMU_CALIBRATION)
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()

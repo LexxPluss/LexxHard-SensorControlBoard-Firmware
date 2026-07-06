@@ -25,6 +25,14 @@ typedef void (*tap_fetch_t)(const struct device *dev);
 int iim42652_tap_fetch(const struct device *dev);
 
 struct iim42652_data {
+	/* Serializes SPI bus access and (more importantly) bank-select
+	 * transitions across sample_fetch() and any diagnostic / runtime path
+	 * that selects a non-zero bank. Without this, a 50 Hz sample_fetch()
+	 * running concurrently with a Bank-4 access can read INT_STATUS /
+	 * FIFO_COUNT / FIFO_DATA from the wrong bank and end up with bogus
+	 * fifo_count, which previously could overrun fifo_data[]. */
+	struct k_mutex bus_lock;
+
 	uint8_t fifo_data[HARDWARE_FIFO_SIZE];
 
 	int16_t accel_x;

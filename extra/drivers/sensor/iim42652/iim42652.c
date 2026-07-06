@@ -24,9 +24,43 @@
 
 LOG_MODULE_REGISTER(IIM42652, CONFIG_SENSOR_LOG_LEVEL);
 
-static const uint16_t iim42652_gyro_sensitivity_x10[] = {
-	1310, 655, 328, 164
+/* Sensitivity tables indexed by FS_SEL register code.
+ * Values come from the IIM-42652 datasheet via the macros in iim42652_reg.h.
+ * Designated initializers ensure the entry order matches the FS_SEL enum
+ * regardless of source order, so adding entries elsewhere stays safe. */
+static const uint8_t iim42652_accel_sensitivity_shift[IIM42652_ACCEL_FS_COUNT] = {
+	[ACCEL_FS_16G] = IIM42652_ACCEL_SENS_16G_SHIFT,
+	[ACCEL_FS_8G]  = IIM42652_ACCEL_SENS_8G_SHIFT,
+	[ACCEL_FS_4G]  = IIM42652_ACCEL_SENS_4G_SHIFT,
+	[ACCEL_FS_2G]  = IIM42652_ACCEL_SENS_2G_SHIFT,
 };
+
+static const uint16_t iim42652_gyro_sensitivity_x10[IIM42652_GYRO_FS_COUNT] = {
+	[GYRO_FS_2000DPS] = IIM42652_GYRO_SENS_2000DPS_X10,
+	[GYRO_FS_1000DPS] = IIM42652_GYRO_SENS_1000DPS_X10,
+	[GYRO_FS_500DPS]  = IIM42652_GYRO_SENS_500DPS_X10,
+	[GYRO_FS_250DPS]  = IIM42652_GYRO_SENS_250DPS_X10,
+	[GYRO_FS_125DPS]  = IIM42652_GYRO_SENS_125DPS_X10,
+	[GYRO_FS_62DPS]   = IIM42652_GYRO_SENS_62DPS_X10,
+	[GYRO_FS_32DPS]   = IIM42652_GYRO_SENS_32DPS_X10,
+	[GYRO_FS_15DPS]   = IIM42652_GYRO_SENS_15DPS_X10,
+};
+
+/* Callers (iim42652_set_fs, iim42652_attr_set, devicetree-backed init) are
+ * responsible for range-checking sf_idx before reaching here, so the cached
+ * SI conversion factor always stays in sync with what gets written to the
+ * FS register. The assert catches programming mistakes during development. */
+static void update_accel_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
+{
+	__ASSERT_NO_MSG(sf_idx < IIM42652_ACCEL_FS_COUNT);
+	data->accel_sensitivity_shift = iim42652_accel_sensitivity_shift[sf_idx];
+}
+
+static void update_gyro_sensitivity(struct iim42652_data *data, uint8_t sf_idx)
+{
+	__ASSERT_NO_MSG(sf_idx < IIM42652_GYRO_FS_COUNT);
+	data->gyro_sensitivity_x10 = iim42652_gyro_sensitivity_x10[sf_idx];
+}
 
 /* see "Accelerometer Measurements" section from register map description */
 static void iim42652_convert_accel(struct sensor_value *val,
@@ -177,14 +211,39 @@ static int iim42652_sample_fetch(const struct device *dev,
 	struct iim42652_data *drv_data = dev->data;
 	const struct iim42652_config *cfg = dev->config;
 
+	k_mutex_lock(&drv_data->bus_lock, K_FOREVER);
+
 	/* Read INT_STATUS (0x45) and FIFO_COUNTH(0x46), FIFO_COUNTL(0x47) */
 	result = inv_spi_read(&cfg->spi, REG_INT_STATUS, drv_data->fifo_data, 3);
+	if (result) {
+		LOG_WRN("INT_STATUS/FIFO_COUNT read failed: %d", result);
+		goto out_unlock;
+	}
 
 	if (drv_data->fifo_data[0] & BIT_INT_STATUS_DRDY) {
 		fifo_count = (drv_data->fifo_data[1] << 8)
 			+ (drv_data->fifo_data[2]);
+
+		/* Discard the sample if FIFO_COUNT is zero or runaway — a
+		 * bank-select race or SPI glitch can corrupt the count and
+		 * pushing the decoded packet would emit garbage upstream.
+		 * Clamping was tempting but parsing 2048 bytes of unknown
+		 * content with the same FIFO_HEAD logic is still garbage out. */
+		if (fifo_count == 0 ||
+		    fifo_count > sizeof(drv_data->fifo_data)) {
+			LOG_WRN("fifo_count %u out of range [1, %u], dropping sample",
+				fifo_count,
+				(unsigned int)sizeof(drv_data->fifo_data));
+			result = -EIO;
+			goto out_unlock;
+		}
+
 		result = inv_spi_read(&cfg->spi, REG_FIFO_DATA, drv_data->fifo_data,
 				      fifo_count);
+		if (result) {
+			LOG_WRN("FIFO_DATA read failed: %d", result);
+			goto out_unlock;
+		}
 
 		/* FIFO Data structure
 		 * Packet 1 : FIFO Header(1), AccelX(2), AccelY(2),
@@ -252,7 +311,9 @@ static int iim42652_sample_fetch(const struct device *dev,
 		}
 	}
 
-	return 0;
+out_unlock:
+	k_mutex_unlock(&drv_data->bus_lock);
+	return result;
 }
 
 static int iim42652_attr_set(const struct device *dev,
@@ -263,6 +324,16 @@ static int iim42652_attr_set(const struct device *dev,
 	struct iim42652_data *drv_data = dev->data;
 
 	__ASSERT_NO_MSG(val != NULL);
+
+	/* ODR and FS are written to the chip only during turn_on_sensor().
+	 * Reject runtime changes; caller must turn_off_sensor() first so
+	 * the cached config matches what was last written to hardware. */
+	if ((attr == SENSOR_ATTR_SAMPLING_FREQUENCY ||
+	     attr == SENSOR_ATTR_FULL_SCALE) &&
+	    drv_data->sensor_started) {
+		LOG_WRN("Config change requires turn_off_sensor first");
+		return -EBUSY;
+	}
 
 	switch (chan) {
 	case SENSOR_CHAN_ACCEL_X:
@@ -283,6 +354,8 @@ static int iim42652_attr_set(const struct device *dev,
 				return -EINVAL;
 			} else {
 				drv_data->accel_sf = val->val1;
+				update_accel_sensitivity(drv_data,
+							 drv_data->accel_sf);
 			}
 		} else {
 			LOG_ERR("Not supported ATTR");
@@ -308,6 +381,8 @@ static int iim42652_attr_set(const struct device *dev,
 				return -EINVAL;
 			} else {
 				drv_data->gyro_sf = val->val1;
+				update_gyro_sensitivity(drv_data,
+							drv_data->gyro_sf);
 			}
 		} else {
 			LOG_ERR("Not supported ATTR");
@@ -372,6 +447,8 @@ static int iim42652_attr_get(const struct device *dev,
 static int iim42652_data_init(struct iim42652_data *data,
 			      const struct iim42652_config *cfg)
 {
+	k_mutex_init(&data->bus_lock);
+
 	data->accel_x = 0;
 	data->accel_y = 0;
 	data->accel_z = 0;
@@ -405,8 +482,8 @@ static int iim42652_init(const struct device *dev)
 	iim42652_data_init(drv_data, cfg);
 	iim42652_sensor_init(dev);
 
-	drv_data->accel_sensitivity_shift = 14 - 3;
-	drv_data->gyro_sensitivity_x10 = iim42652_gyro_sensitivity_x10[3];
+	update_accel_sensitivity(drv_data, drv_data->accel_sf);
+	update_gyro_sensitivity(drv_data, drv_data->gyro_sf);
 
 #ifdef CONFIG_IIM42652_TRIGGER
 	if (iim42652_init_interrupt(dev) < 0) {
