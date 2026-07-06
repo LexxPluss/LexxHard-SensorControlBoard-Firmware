@@ -63,9 +63,10 @@ struct msg_control {
         int8_t direction; // -1:down, 0:stop, 1:up
         uint8_t power;    // 0-100 duty[%]
     } actuators[3]; // Center / Left / Right
-    // Origin of this control frame. Only EXTERNAL_CAN_0X208 (host duty control)
-    // arms the 0x208 command-timeout watchdog; INTERNAL frames (e.g. init_location
-    // homing via control_trampoline) must NOT arm it, or homing would be force-stopped.
+    // Origin of this control frame. Only a non-STOP EXTERNAL_CAN_0X208 frame (host duty
+    // control) arms the 0x208 command-timeout watchdog; INTERNAL frames (e.g. init_location
+    // homing via control_trampoline) actively DISARM it -- merely "not arming" would leave a
+    // stale external watchdog armed and force-stop homing 250 ms later.
     enum class source_type : uint8_t { INTERNAL, EXTERNAL_CAN_0X208 };
     source_type source{source_type::INTERNAL};
     static constexpr int8_t DOWN{-1}, STOP{0}, UP{1};
