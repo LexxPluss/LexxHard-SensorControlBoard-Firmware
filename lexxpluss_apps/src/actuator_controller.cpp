@@ -694,10 +694,16 @@ public:
             msg_pwmtrampoline pwmtrampoline;
             if (k_msgq_get(&msgq_pwmtrampoline, &pwmtrampoline, K_NO_WAIT) == 0 && !is_emergency) {
                 // msgq_pwmtrampoline is also an internal direct-PWM path (shell jogs,
-                // pwm_trampoline_all STOP after init/to_location). Disarm so a stale
-                // external 0x208 watchdog cannot force-STOP an internal direct drive.
-                external_direct_watchdog_armed = false;
-                command_timeout_latched = false;
+                // pwm_trampoline_all STOP after init/to_location). Only a full-takeover
+                // (.all) frame owns every axis, so only it may disarm a stale external
+                // 0x208 watchdog. A single-index (.all == false) frame drives just one
+                // axis; disarming on it would let a dead host's duty latch on the
+                // untouched axes. Leave the watchdog armed for those axes -- safe-side,
+                // since firing forces pwm_direct_all(STOP) on every axis anyway.
+                if (pwmtrampoline.all) {
+                    external_direct_watchdog_armed = false;
+                    command_timeout_latched = false;
+                }
                 handle_pwmtrampoline(pwmtrampoline);
             }
             if (is_emergency)
@@ -712,7 +718,7 @@ public:
                         command_timeout_latched = true;
                     }
                     pwm_direct_all(msg_control::STOP);
-                    external_direct_watchdog_armed = false; // re-arm on next external frame
+                    external_direct_watchdog_armed = false; // re-armed by the next non-STOP external frame (has_nonzero_direct_command gate)
                 }
             }
             uint32_t now_cycle{k_cycle_get_32()};
