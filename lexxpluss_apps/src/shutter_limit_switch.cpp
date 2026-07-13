@@ -26,6 +26,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/drivers/gpio.h>
 #include "shutter_limit_switch.hpp"
 #include "common.hpp"
@@ -85,6 +86,14 @@ public:
 
     void on_edge_isr() { detector.on_edge_isr(); }
 
+    void info(const shell *shell) const {
+        shell_print(shell, "state:%s open:%c closed:%c mask:%s",
+                    shutter_limit_detector::to_cstr(detector.get_state()),
+                    read(open_dev) ? 'H' : 'L',
+                    read(closed_dev) ? 'H' : 'L',
+                    interrupts_enabled ? "off" : "on");
+    }
+
 private:
     static bool read(const gpio_dt_spec &dev) { return gpio_pin_get_dt(&dev) > 0; }
 
@@ -118,6 +127,18 @@ void poll()
 {
     impl.poll();
 }
+
+int info(const shell *shell, size_t argc, char **argv)
+{
+    impl.info(shell);
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_shutter_limit_switch,
+    SHELL_CMD(info, NULL, "Shutter limit switch information", info),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(shutter_limit_switch, &sub_shutter_limit_switch, "Shutter limit switch commands", NULL);
 
 k_msgq msgq;
 

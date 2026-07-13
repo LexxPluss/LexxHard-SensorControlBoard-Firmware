@@ -61,4 +61,14 @@ state detector::decode(bool open_level, bool closed_level)
     return state::unknown;
 }
 
+const char *to_cstr(state s)
+{
+    switch (s) {
+    case state::open: return "open";
+    case state::closed: return "closed";
+    case state::between: return "between";
+    default: return "unknown";
+    }
+}
+
 }

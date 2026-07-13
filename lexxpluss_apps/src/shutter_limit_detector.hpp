@@ -45,6 +45,8 @@ constexpr uint32_t power_on_mask_ms{100};
 
 bool is_power_on_masked(uint32_t elapsed_ms);
 
+const char *to_cstr(state s);
+
 // Interrupt + software-reconfirm hybrid (DESIGN_Belt_Conveyor_Feature.md sec.1).
 // The EXTI ISR only calls on_edge_isr(), which must stay minimal (no GPIO
 // reads, no logging). The main loop calls poll() every cycle with a fresh,

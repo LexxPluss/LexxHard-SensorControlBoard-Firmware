@@ -90,3 +90,11 @@ ZTEST(shutter_limit_detector, test_power_on_mask_boundary)
     zassert_false(is_power_on_masked(100));
     zassert_false(is_power_on_masked(101));
 }
+
+ZTEST(shutter_limit_detector, test_to_cstr)
+{
+    zassert_mem_equal(to_cstr(state::unknown), "unknown", 7);
+    zassert_mem_equal(to_cstr(state::open), "open", 4);
+    zassert_mem_equal(to_cstr(state::closed), "closed", 6);
+    zassert_mem_equal(to_cstr(state::between), "between", 7);
+}
