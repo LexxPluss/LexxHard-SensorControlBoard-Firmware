@@ -461,11 +461,12 @@
 			compatible = "gpio-pin";
 			gpios = <&gpiob 3 GPIO_ACTIVE_HIGH>;
 		};
-		spare_gpio_10: spare_gpio_10 {
+		/* Shutter Limit Switch (EMX4-T12C) */
+		shutter_limit_open: shutter_limit_open {
 			compatible = "gpio-pin";
 			gpios = <&gpiob 4 GPIO_ACTIVE_HIGH>;
 		};
-		spare_gpio_11: spare_gpio_11 {
+		shutter_limit_closed: shutter_limit_closed {
 			compatible = "gpio-pin";
 			gpios = <&gpioc 8 GPIO_ACTIVE_HIGH>;
 		};
