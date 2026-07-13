@@ -44,8 +44,6 @@ static void on_closed_edge(const device *dev, gpio_callback *cb, uint32_t pins);
 
 class shutter_limit_switch_impl {
 public:
-    static constexpr int32_t POLL_INTERVAL_MS{20};
-
     int init() {
         k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
         if (!gpio_is_ready_dt(&open_dev) || !gpio_is_ready_dt(&closed_dev)) {
@@ -62,28 +60,27 @@ public:
         return 0;
     }
 
-    void run() {
-        while (true) {
-            auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
-            if (!interrupts_enabled) {
-                if (!shutter_limit_detector::is_power_on_masked(elapsed)) {
-                    // Mask window elapsed: enable EXTI, then read the level
-                    // directly once to seed the state (DESIGN doc "Post-mask
-                    // state init"), independent of any edge having fired.
-                    gpio_pin_interrupt_configure_dt(&open_dev, GPIO_INT_EDGE_BOTH);
-                    gpio_pin_interrupt_configure_dt(&closed_dev, GPIO_INT_EDGE_BOTH);
-                    interrupts_enabled = true;
-                    detector.on_edge_isr();
-                    detector.poll(read(open_dev), read(closed_dev));
-                }
-            } else {
+    // Called once per iteration of the caller's own loop (currently
+    // actuator_controller's ~10ms cycle) -- no sleep/loop of its own here.
+    void poll() {
+        auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
+        if (!interrupts_enabled) {
+            if (!shutter_limit_detector::is_power_on_masked(elapsed)) {
+                // Mask window elapsed: enable EXTI, then read the level
+                // directly once to seed the state (DESIGN doc "Post-mask
+                // state init"), independent of any edge having fired.
+                gpio_pin_interrupt_configure_dt(&open_dev, GPIO_INT_EDGE_BOTH);
+                gpio_pin_interrupt_configure_dt(&closed_dev, GPIO_INT_EDGE_BOTH);
+                interrupts_enabled = true;
+                detector.on_edge_isr();
                 detector.poll(read(open_dev), read(closed_dev));
             }
-            msg const m{.state = detector.get_state()};
-            while (k_msgq_put(&msgq, &m, K_NO_WAIT) != 0)
-                k_msgq_purge(&msgq);
-            k_msleep(POLL_INTERVAL_MS);
+        } else {
+            detector.poll(read(open_dev), read(closed_dev));
         }
+        msg const m{.state = detector.get_state()};
+        while (k_msgq_put(&msgq, &m, K_NO_WAIT) != 0)
+            k_msgq_purge(&msgq);
     }
 
     void on_edge_isr() { detector.on_edge_isr(); }
@@ -117,12 +114,11 @@ void init()
     impl.init();
 }
 
-void run(void *p1, void *p2, void *p3)
+void poll()
 {
-    impl.run();
+    impl.poll();
 }
 
-k_thread thread;
 k_msgq msgq;
 
 }

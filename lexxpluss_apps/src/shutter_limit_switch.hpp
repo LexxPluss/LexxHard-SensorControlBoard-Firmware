@@ -34,9 +34,12 @@ struct msg {
     shutter_limit_detector::state state;
 } __attribute__((aligned(4)));
 
+// No dedicated thread/stack: this module is driven from the caller's own
+// poll loop (currently actuator_controller, since the Shutter motor is the
+// Center axis and any future stop-on-limit-switch logic will live there
+// too). init() still owns GPIO/EXTI setup and must run once at boot.
 void init();
-void run(void *p1, void *p2, void *p3);
-extern k_thread thread;
+void poll();
 extern k_msgq msgq;
 }
 
