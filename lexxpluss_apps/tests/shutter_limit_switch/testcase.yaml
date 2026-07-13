@@ -1,0 +1,4 @@
+tests:
+  shutter.limit_switch:
+    platform_allow: native_sim
+    tags: shutter

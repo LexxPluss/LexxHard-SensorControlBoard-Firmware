@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build
+	rm -rf build-mcuboot build build-test
 
 .PHONY: distclean
 distclean: clean
@@ -56,6 +56,11 @@ bootloader:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/${WORKDIR}/extra
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
+
+.PHONY: test
+test:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: firmware
 firmware:

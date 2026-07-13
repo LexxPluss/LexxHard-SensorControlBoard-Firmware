@@ -90,7 +90,7 @@ public:
         constexpr auto get_status_char = [](bool status) {
             return status ? 'H' : 'L';
         };
-        shell_print(shell, "INPUT  0:%c 1:%c 2:%c 3:%c", get_status_char(gpio_in_status[0]), get_status_char(gpio_in_status[1]), get_status_char(gpio_in_status[2]), get_status_char(gpio_in_status[3]));
+        shell_print(shell, "INPUT  2:%c 3:%c (0,1 removed: now dedicated to Shutter Limit Switch)", get_status_char(gpio_in_status[0]), get_status_char(gpio_in_status[1]));
         shell_print(shell, "OUTPUT 0:%c 1:%c 2:%c 3:%c", get_status_char(gpio_out_status[0]), get_status_char(gpio_out_status[1]), get_status_char(gpio_out_status[2]), get_status_char(gpio_out_status[3]));
     }
 
@@ -122,14 +122,16 @@ private:
     }
 
     bool update_status() {
-        for(size_t i = 0; i < 4; i++) {
+        for(size_t i = 0; i < gpio_out_devs.size(); i++) {
             auto status = get_gpio(&gpio_out_devs[i]);
             if(!status.has_value()) {
                 return false;
             }
             gpio_out_status[i] = status.value();
+        }
 
-            status = get_gpio(&gpio_in_devs[i]);
+        for(size_t i = 0; i < gpio_in_devs.size(); i++) {
+            auto status = get_gpio(&gpio_in_devs[i]);
             if(!status.has_value()) {
                 return false;
             }
@@ -148,21 +150,23 @@ private:
 
     msg create_msg() const {
         return msg{
-            .gpio_in_0 = gpio_in_status[0],
-            .gpio_in_1 = gpio_in_status[1],
-            .gpio_in_2 = gpio_in_status[2],
-            .gpio_in_3 = gpio_in_status[3],
+            // 0/1 no longer backed by a GPIO: their physical pins (former
+            // spare_gpio_10/11) are now dedicated to the Shutter Limit Switch.
+            .gpio_in_0 = false,
+            .gpio_in_1 = false,
+            .gpio_in_2 = gpio_in_status[0],
+            .gpio_in_3 = gpio_in_status[1],
         };
     }
 
     bool check_devices(){
-        for(size_t i = 0; i < 4; i++) {
+        for(size_t i = 0; i < gpio_out_devs.size(); i++) {
             if (!gpio_is_ready_dt(&gpio_out_devs[i])) {
                 return false;
             }
         }
 
-        for(size_t i = 0; i < 4; i++) {
+        for(size_t i = 0; i < gpio_in_devs.size(); i++) {
             if (!gpio_is_ready_dt(&gpio_in_devs[i])) {
                 return false;
             }
@@ -178,13 +182,15 @@ private:
         GET_GPIO(spare_gpio_9)
     }};
     std::array<bool, 4> gpio_out_status;
-    const std::array<const gpio_dt_spec, 4> gpio_in_devs{{
-        GET_GPIO(spare_gpio_10),
-        GET_GPIO(spare_gpio_11),
+    // spare_gpio_10/11 (formerly gpio_in_devs[0]/[1]) are now dedicated to the
+    // Shutter Limit Switch (see shutter_limit_switch.cpp) and removed from
+    // this generic bank; not backfilled with other spare pins pending
+    // hardware-side pin allocation confirmation.
+    const std::array<const gpio_dt_spec, 2> gpio_in_devs{{
         GET_GPIO(spare_gpio_12),
         GET_GPIO(spare_gpio_13)
     }};
-    std::array<bool, 4> gpio_in_status;
+    std::array<bool, 2> gpio_in_status;
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)

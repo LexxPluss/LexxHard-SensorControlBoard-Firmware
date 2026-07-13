@@ -39,6 +39,7 @@
 #include "runaway_detector.hpp"
 #include "uss_controller.hpp"
 #include "gpio_controller.hpp"
+#include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
 
 namespace {
@@ -56,6 +57,7 @@ K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(gpio_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(shutter_limit_switch_stack, 2048);
 K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 
@@ -181,12 +183,6 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_wheel_motor_right), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
-    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_10), gpios);
-    if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
-    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_11), gpios);
-    if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_12), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
@@ -302,6 +298,7 @@ int main()
     lexxhard::runaway_detector::init();
     lexxhard::uss_controller::init();
     lexxhard::gpio_controller::init();
+    lexxhard::shutter_limit_switch::init();
     lexxhard::tug_encoder_controller::init();
 
     RUN(actuator_controller, 2);
@@ -316,6 +313,7 @@ int main()
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
     RUN(gpio_controller, 2);
+    RUN(shutter_limit_switch, 2);
     RUN(tug_encoder_controller, 2);
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
