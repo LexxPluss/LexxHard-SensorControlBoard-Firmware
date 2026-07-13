@@ -38,12 +38,6 @@ LOG_MODULE_REGISTER(shutter_limit_switch);
 
 char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
-// ISR trampolines must be free functions to hand to gpio_init_callback();
-// forward-declared here so shutter_limit_switch_impl::init() can take their
-// address before their (later) definition in this file.
-static void on_open_edge(const device *dev, gpio_callback *cb, uint32_t pins);
-static void on_closed_edge(const device *dev, gpio_callback *cb, uint32_t pins);
-
 class shutter_limit_switch_impl {
 public:
     int init() {
@@ -52,22 +46,24 @@ public:
             LOG_ERR("gpio_is_ready_dt Failed");
             return -1;
         }
-        gpio_pin_configure_dt(&open_dev, GPIO_INPUT);
-        gpio_pin_configure_dt(&closed_dev, GPIO_INPUT);
-        gpio_init_callback(&open_cb, on_open_edge, BIT(open_dev.pin));
-        gpio_init_callback(&closed_cb, on_closed_edge, BIT(closed_dev.pin));
-        gpio_add_callback(open_dev.port, &open_cb);
-        gpio_add_callback(closed_dev.port, &closed_cb);
+        if (int const ret{gpio_pin_configure_dt(&open_dev, GPIO_INPUT)}; ret != 0)
+            LOG_ERR("gpio_pin_configure_dt(open) failed: %d", ret);
+        if (int const ret{gpio_pin_configure_dt(&closed_dev, GPIO_INPUT)}; ret != 0)
+            LOG_ERR("gpio_pin_configure_dt(closed) failed: %d", ret);
         start_time = k_uptime_get();
         return 0;
     }
 
     // Called once per iteration of the caller's own loop (currently
     // actuator_controller's ~10ms cycle) -- no sleep/loop of its own here.
+    // Plain polling: no EXTI (see
+    // INVESTIGATION_shutter_limit_switch_exti_conflict_20260713.md -- the
+    // Open signal's EXTI line was already claimed by another sensor's
+    // interrupt). EMX4-T12C has no mechanical bounce, so an unconditional
+    // level copy needs no debounce.
     void poll() {
-        if (!interrupts_enabled)
-            try_unmask();
-        if (interrupts_enabled)
+        auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
+        if (!shutter_limit_detector::is_power_on_masked(elapsed))
             detector.poll(read(open_dev), read(closed_dev));
         msg const m{
             .open_bit = detector.get_open_bit(),
@@ -77,54 +73,25 @@ public:
             k_msgq_purge(&msgq);
     }
 
-    void on_edge_isr() { detector.on_edge_isr(); }
-
     void info(const shell *shell) const {
-        shell_print(shell, "state:%s open:%c closed:%c mask:%s",
+        auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
+        shell_print(shell, "state:%s raw_open:%c raw_closed:%c confirmed_open:%c confirmed_closed:%c mask:%s",
                     shutter_limit_detector::to_cstr(detector.get_state()),
                     read(open_dev) ? 'H' : 'L',
                     read(closed_dev) ? 'H' : 'L',
-                    interrupts_enabled ? "off" : "on");
+                    detector.get_open_bit() ? 'H' : 'L',
+                    detector.get_closed_bit() ? 'H' : 'L',
+                    shutter_limit_detector::is_power_on_masked(elapsed) ? "on" : "off");
     }
 
 private:
-    void try_unmask() {
-        auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
-        if (shutter_limit_detector::is_power_on_masked(elapsed))
-            return;
-        // Mask window elapsed: enable EXTI, then force one reconfirm pass
-        // (via the on_edge_isr() flag, resolved by poll()'s unconditional
-        // detector.poll() call right after this returns) to seed the state
-        // (DESIGN doc "Post-mask state init"), independent of any edge
-        // having fired.
-        gpio_pin_interrupt_configure_dt(&open_dev, GPIO_INT_EDGE_BOTH);
-        gpio_pin_interrupt_configure_dt(&closed_dev, GPIO_INT_EDGE_BOTH);
-        interrupts_enabled = true;
-        detector.on_edge_isr();
-    }
-
     static bool read(const gpio_dt_spec &dev) { return gpio_pin_get_dt(&dev) > 0; }
 
     gpio_dt_spec open_dev = GET_GPIO(shutter_limit_open);
     gpio_dt_spec closed_dev = GET_GPIO(shutter_limit_closed);
-    gpio_callback open_cb{};
-    gpio_callback closed_cb{};
     shutter_limit_detector::detector detector;
-    bool interrupts_enabled{false};
     int64_t start_time{0};
 } impl;
-
-// Kept minimal per DESIGN doc: no GPIO reads or logging in ISR context, only
-// flag the detector so the poll loop re-reads the level directly.
-void on_open_edge(const device *dev, gpio_callback *cb, uint32_t pins)
-{
-    impl.on_edge_isr();
-}
-
-void on_closed_edge(const device *dev, gpio_callback *cb, uint32_t pins)
-{
-    impl.on_edge_isr();
-}
 
 void init()
 {

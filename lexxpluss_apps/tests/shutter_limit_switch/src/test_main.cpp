@@ -49,63 +49,32 @@ ZTEST(shutter_limit_detector, test_to_cstr)
     zassert_mem_equal(to_cstr(state::between), "between", 7);
 }
 
-// The reconfirm-gating mechanism (on_edge_isr() + poll()) only updates
-// get_open_bit()/get_closed_bit() -- what's actually sent over CAN.
-// get_state() is decode(get_open_bit(), get_closed_bit()) (see
-// test_get_state_derives_from_confirmed_bits below), so asserting it here
-// too would just re-test decode()'s already-covered truth table.
+// EMX4-T12C is a non-contact sensor (no mechanical bounce), so poll() is a
+// plain, unconditional level-copy every cycle -- no EXTI, no edge gating.
+// (EXTI was dropped: STM32 EXTI lines are shared by pin NUMBER across GPIO
+// ports, and the Open signal's EXTI line was already claimed by another
+// sensor's interrupt -- see
+// INVESTIGATION_shutter_limit_switch_exti_conflict_20260713.md.)
 
 ZTEST(shutter_limit_detector, test_initial_bits)
 {
     // (true,true) so decode() reports unknown, not between, before the
-    // first reconfirm -- see test_get_state_derives_from_confirmed_bits.
+    // first poll().
     detector d;
     zassert_true(d.get_open_bit());
     zassert_true(d.get_closed_bit());
 }
 
-ZTEST(shutter_limit_detector, test_poll_without_edge_ignores_level_change)
+ZTEST(shutter_limit_detector, test_poll_copies_levels_unconditionally)
 {
     detector d;
-    // No on_edge_isr() call: a level presented to poll() must not update
-    // the confirmed bits, since the ISR is the only trigger to reconfirm.
-    d.poll(true, false);
-    zassert_true(d.get_open_bit());
-    zassert_true(d.get_closed_bit());
-}
-
-ZTEST(shutter_limit_detector, test_edge_then_poll_reconfirms)
-{
-    detector d;
-    d.on_edge_isr();
     d.poll(true, false);
     zassert_true(d.get_open_bit());
     zassert_false(d.get_closed_bit());
-}
 
-ZTEST(shutter_limit_detector, test_pending_flag_clears_after_poll)
-{
-    detector d;
-    d.on_edge_isr();
-    d.poll(true, false);
-    // Level change without a new edge must not move the confirmed bits.
     d.poll(false, true);
-    zassert_true(d.get_open_bit());
-    zassert_false(d.get_closed_bit());
-}
-
-ZTEST(shutter_limit_detector, test_transient_noise_still_reconfirms_current_level)
-{
-    detector d;
-    d.on_edge_isr();
-    d.poll(false, false);
     zassert_false(d.get_open_bit());
-    zassert_false(d.get_closed_bit());
-
-    d.on_edge_isr();
-    d.poll(true, false);
-    zassert_true(d.get_open_bit());
-    zassert_false(d.get_closed_bit());
+    zassert_true(d.get_closed_bit());
 }
 
 ZTEST(shutter_limit_detector, test_get_state_derives_from_confirmed_bits)
@@ -115,7 +84,6 @@ ZTEST(shutter_limit_detector, test_get_state_derives_from_confirmed_bits)
     // covered by test_decode_truth_table, so this only checks the wiring,
     // not every input combination.
     detector d;
-    d.on_edge_isr();
     d.poll(true, false);
     zassert_equal(d.get_state(), state::open);
 }

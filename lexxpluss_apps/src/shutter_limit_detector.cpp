@@ -32,16 +32,8 @@ bool is_power_on_masked(uint32_t elapsed_ms)
     return elapsed_ms < power_on_mask_ms;
 }
 
-void detector::on_edge_isr()
-{
-    pending_reconfirm = true;
-}
-
 void detector::poll(bool open_level, bool closed_level)
 {
-    if (!pending_reconfirm)
-        return;
-    pending_reconfirm = false;
     confirmed_open_bit = open_level;
     confirmed_closed_bit = closed_level;
 }

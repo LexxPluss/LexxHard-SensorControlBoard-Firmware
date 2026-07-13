@@ -47,29 +47,26 @@ bool is_power_on_masked(uint32_t elapsed_ms);
 
 const char *to_cstr(state s);
 
-// Interrupt + software-reconfirm hybrid (DESIGN_Belt_Conveyor_Feature.md sec.1).
-// The EXTI ISR only calls on_edge_isr(), which must stay minimal (no GPIO
-// reads, no logging). The main loop calls poll() every cycle with a fresh,
-// directly-read GPIO level; poll() re-derives the state from that level only
-// when an edge is pending, so a transient electrical glitch that triggered
-// the ISR but is already gone by the time poll() runs never latches a state
-// change.
+// Plain polling, no EXTI (see
+// INVESTIGATION_shutter_limit_switch_exti_conflict_20260713.md -- the Open
+// signal's EXTI line was already claimed by another sensor's interrupt, a
+// hardware pin-allocation conflict, not fixable in this module). EMX4-T12C
+// is a non-contact sensor with no mechanical bounce, so an unconditional
+// level copy every poll() cycle needs no debounce/reconfirm step.
 class detector {
 public:
-    void on_edge_isr();
     void poll(bool open_level, bool closed_level);
     // Derived on demand from get_open_bit()/get_closed_bit() -- debug
     // display only (see `shutter_limit_switch info`), so it's not cached.
     state get_state() const;
-    // The raw open/closed switch signals confirmed on the last reconfirm --
-    // for CAN transmission (bit7:6 of CAN_ID_GPIO_IN, see zcan_gpio.hpp).
+    // The confirmed open/closed switch signals -- for CAN transmission
+    // (bit7:6 of CAN_ID_GPIO_IN, see zcan_gpio.hpp).
     bool get_open_bit() const;
     bool get_closed_bit() const;
     static state decode(bool open_level, bool closed_level);
 private:
-    bool pending_reconfirm{false};
     // (true,true) decodes to state::unknown -- not (false,false), which
-    // would decode to between -- before the first reconfirm.
+    // would decode to between -- before the first poll().
     bool confirmed_open_bit{true};
     bool confirmed_closed_bit{true};
 };
