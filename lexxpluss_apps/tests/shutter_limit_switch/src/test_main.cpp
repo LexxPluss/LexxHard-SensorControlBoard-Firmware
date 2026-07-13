@@ -49,20 +49,17 @@ ZTEST(shutter_limit_detector, test_to_cstr)
     zassert_mem_equal(to_cstr(state::between), "between", 7);
 }
 
-// The reconfirm-gating mechanism (on_edge_isr() + poll()) updates
-// get_open_bit()/get_closed_bit() -- what's actually sent over CAN -- and
-// get_state() -- debug display only -- from the exact same code path, so
-// each case below asserts both together instead of duplicating the gating
-// logic in separate tests per output.
+// The reconfirm-gating mechanism (on_edge_isr() + poll()) only updates
+// get_open_bit()/get_closed_bit() -- what's actually sent over CAN.
+// get_state() is decode(get_open_bit(), get_closed_bit()) (see
+// test_get_state_derives_from_confirmed_bits below), so asserting it here
+// too would just re-test decode()'s already-covered truth table.
 
-ZTEST(shutter_limit_detector, test_initial_state)
+ZTEST(shutter_limit_detector, test_initial_bits)
 {
-    // Before the first reconfirm, get_open_bit()/get_closed_bit() must
-    // decode to state::unknown (i.e. both true, per decode()'s truth table)
-    // -- not (false,false), which decodes to state::between and would
-    // misreport "not yet confirmed" as a definite shutter position.
+    // (true,true) so decode() reports unknown, not between, before the
+    // first reconfirm -- see test_get_state_derives_from_confirmed_bits.
     detector d;
-    zassert_equal(d.get_state(), state::unknown);
     zassert_true(d.get_open_bit());
     zassert_true(d.get_closed_bit());
 }
@@ -71,9 +68,8 @@ ZTEST(shutter_limit_detector, test_poll_without_edge_ignores_level_change)
 {
     detector d;
     // No on_edge_isr() call: a level presented to poll() must not update
-    // anything, since the ISR is the only trigger to reconfirm.
+    // the confirmed bits, since the ISR is the only trigger to reconfirm.
     d.poll(true, false);
-    zassert_equal(d.get_state(), state::unknown);
     zassert_true(d.get_open_bit());
     zassert_true(d.get_closed_bit());
 }
@@ -83,7 +79,6 @@ ZTEST(shutter_limit_detector, test_edge_then_poll_reconfirms)
     detector d;
     d.on_edge_isr();
     d.poll(true, false);
-    zassert_equal(d.get_state(), state::open);
     zassert_true(d.get_open_bit());
     zassert_false(d.get_closed_bit());
 }
@@ -93,9 +88,8 @@ ZTEST(shutter_limit_detector, test_pending_flag_clears_after_poll)
     detector d;
     d.on_edge_isr();
     d.poll(true, false);
-    // Level change without a new edge must not move anything further.
+    // Level change without a new edge must not move the confirmed bits.
     d.poll(false, true);
-    zassert_equal(d.get_state(), state::open);
     zassert_true(d.get_open_bit());
     zassert_false(d.get_closed_bit());
 }
@@ -105,15 +99,25 @@ ZTEST(shutter_limit_detector, test_transient_noise_still_reconfirms_current_leve
     detector d;
     d.on_edge_isr();
     d.poll(false, false);
-    zassert_equal(d.get_state(), state::between);
     zassert_false(d.get_open_bit());
     zassert_false(d.get_closed_bit());
 
     d.on_edge_isr();
     d.poll(true, false);
-    zassert_equal(d.get_state(), state::open);
     zassert_true(d.get_open_bit());
     zassert_false(d.get_closed_bit());
+}
+
+ZTEST(shutter_limit_detector, test_get_state_derives_from_confirmed_bits)
+{
+    // Confirms get_state() is wired to decode(get_open_bit(),
+    // get_closed_bit()) -- decode()'s own truth table is already fully
+    // covered by test_decode_truth_table, so this only checks the wiring,
+    // not every input combination.
+    detector d;
+    d.on_edge_isr();
+    d.poll(true, false);
+    zassert_equal(d.get_state(), state::open);
 }
 
 ZTEST(shutter_limit_detector, test_power_on_mask_boundary)
