@@ -26,12 +26,18 @@
 #pragma once
 
 #include <zephyr/kernel.h>
-#include "shutter_limit_detector.hpp"
 
 namespace lexxhard::shutter_limit_switch {
 
+// The raw confirmed switch signals -- exactly
+// shutter_limit_detector::detector::get_open_bit()/get_closed_bit() --
+// carried straight through to CAN transmission (see zcan_gpio.hpp) without
+// re-deriving them from state. Debug/display use (e.g.
+// `shutter_limit_switch info`) reads detector::get_state() directly instead
+// of going through this msgq, so no decoded state is carried here.
 struct msg {
-    shutter_limit_detector::state state;
+    bool open_bit;
+    bool closed_bit;
 } __attribute__((aligned(4)));
 
 // No dedicated thread/stack: this module is driven from the caller's own

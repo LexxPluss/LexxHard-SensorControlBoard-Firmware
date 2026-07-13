@@ -91,10 +91,12 @@ public:
         }
     }
 private:
+    // bit7:6 = shutter limit switch open/closed; bit5:4 = gpio_in_2/gpio_in_3;
+    // bit3:0 = unused.
     uint8_t pack_gpio_input_status(gpio_controller::msg const &message) const {
         uint8_t ret{0};
-        ret |= static_cast<uint8_t>(message.gpio_in_0) << 7;
-        ret |= static_cast<uint8_t>(message.gpio_in_1) << 6;
+        ret |= static_cast<uint8_t>(message.shutter_limit_open) << 7;
+        ret |= static_cast<uint8_t>(message.shutter_limit_closed) << 6;
         ret |= static_cast<uint8_t>(message.gpio_in_2) << 5;
         ret |= static_cast<uint8_t>(message.gpio_in_3) << 4;
 

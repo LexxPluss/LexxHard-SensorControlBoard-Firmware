@@ -34,6 +34,7 @@
 #include <zephyr/drivers/gpio.h>
 #include "gpio_controller.hpp"
 #include "common.hpp"
+#include "shutter_limit_switch.hpp"
 
 namespace lexxhard::gpio_controller { 
 
@@ -90,7 +91,17 @@ public:
         constexpr auto get_status_char = [](bool status) {
             return status ? 'H' : 'L';
         };
-        shell_print(shell, "INPUT  2:%c 3:%c (0,1 removed: now dedicated to Shutter Limit Switch)", get_status_char(gpio_in_status[0]), get_status_char(gpio_in_status[1]));
+        // Positions 0/1 no longer read a real GPIO (those pins are now the
+        // Shutter Limit Switch, see shutter_limit_switch.cpp); displayed
+        // here as the same GPIO-like H/L characters, derived from the
+        // confirmed state cached by update_status() -- the same value
+        // create_msg() sends over CAN -- so this and the CAN packer never
+        // read shutter_limit_switch::msgq independently of each other.
+        shell_print(shell, "INPUT  0:%c 1:%c 2:%c 3:%c",
+                    get_status_char(shutter_limit_open),
+                    get_status_char(shutter_limit_closed),
+                    get_status_char(gpio_in_status[0]),
+                    get_status_char(gpio_in_status[1]));
         shell_print(shell, "OUTPUT 0:%c 1:%c 2:%c 3:%c", get_status_char(gpio_out_status[0]), get_status_char(gpio_out_status[1]), get_status_char(gpio_out_status[2]), get_status_char(gpio_out_status[3]));
     }
 
@@ -138,6 +149,15 @@ private:
             gpio_in_status[i] = status.value();
         }
 
+        // Peeked once here (not independently by info() and the CAN packer)
+        // so both always agree on the same confirmed shutter state. Carries
+        // the raw confirmed open/closed bits straight through -- no re-
+        // deriving them from shutter_message.state.
+        shutter_limit_switch::msg shutter_message{};
+        k_msgq_peek(&shutter_limit_switch::msgq, &shutter_message);
+        shutter_limit_open = shutter_message.open_bit;
+        shutter_limit_closed = shutter_message.closed_bit;
+
         return true;
     }
 
@@ -150,10 +170,8 @@ private:
 
     msg create_msg() const {
         return msg{
-            // 0/1 no longer backed by a GPIO: their physical pins (former
-            // spare_gpio_10/11) are now dedicated to the Shutter Limit Switch.
-            .gpio_in_0 = false,
-            .gpio_in_1 = false,
+            .shutter_limit_open = shutter_limit_open,
+            .shutter_limit_closed = shutter_limit_closed,
             .gpio_in_2 = gpio_in_status[0],
             .gpio_in_3 = gpio_in_status[1],
         };
@@ -191,6 +209,12 @@ private:
         GET_GPIO(spare_gpio_13)
     }};
     std::array<bool, 2> gpio_in_status;
+    // (true,true) decodes to shutter_limit_detector::state::unknown, not
+    // (false,false) (which decodes to between) -- matches
+    // shutter_limit_detector::detector's own default before shutter_message
+    // is ever populated.
+    bool shutter_limit_open{true};
+    bool shutter_limit_closed{true};
 } impl;
 
 int info(const shell *shell, size_t argc, char **argv)

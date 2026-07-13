@@ -30,9 +30,11 @@ namespace lexxhard::gpio_controller {
 
 #define GPIO_CAN_DATA_LENGTH 1
 
+// Declaration order matches CAN_ID_GPIO_IN's wire bit order (see
+// zcan_gpio.hpp): bit7=shutter_limit_open ... bit4=gpio_in_3.
 struct msg {
-    bool gpio_in_0: 1;
-    bool gpio_in_1: 1;
+    bool shutter_limit_open: 1;
+    bool shutter_limit_closed: 1;
     bool gpio_in_2: 1;
     bool gpio_in_3: 1;
 } __attribute__((aligned(4)));

@@ -42,12 +42,23 @@ void detector::poll(bool open_level, bool closed_level)
     if (!pending_reconfirm)
         return;
     pending_reconfirm = false;
-    current = decode(open_level, closed_level);
+    confirmed_open_bit = open_level;
+    confirmed_closed_bit = closed_level;
 }
 
 state detector::get_state() const
 {
-    return current;
+    return decode(confirmed_open_bit, confirmed_closed_bit);
+}
+
+bool detector::get_open_bit() const
+{
+    return confirmed_open_bit;
+}
+
+bool detector::get_closed_bit() const
+{
+    return confirmed_closed_bit;
 }
 
 state detector::decode(bool open_level, bool closed_level)

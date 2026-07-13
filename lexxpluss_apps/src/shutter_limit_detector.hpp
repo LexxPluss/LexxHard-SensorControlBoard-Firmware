@@ -58,11 +58,20 @@ class detector {
 public:
     void on_edge_isr();
     void poll(bool open_level, bool closed_level);
+    // Derived on demand from get_open_bit()/get_closed_bit() -- debug
+    // display only (see `shutter_limit_switch info`), so it's not cached.
     state get_state() const;
+    // The raw open/closed switch signals confirmed on the last reconfirm --
+    // for CAN transmission (bit7:6 of CAN_ID_GPIO_IN, see zcan_gpio.hpp).
+    bool get_open_bit() const;
+    bool get_closed_bit() const;
     static state decode(bool open_level, bool closed_level);
 private:
     bool pending_reconfirm{false};
-    state current{state::unknown};
+    // (true,true) decodes to state::unknown -- not (false,false), which
+    // would decode to between -- before the first reconfirm.
+    bool confirmed_open_bit{true};
+    bool confirmed_closed_bit{true};
 };
 
 }

@@ -29,6 +29,7 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/drivers/gpio.h>
 #include "shutter_limit_switch.hpp"
+#include "shutter_limit_detector.hpp"
 #include "common.hpp"
 
 namespace lexxhard::shutter_limit_switch {
@@ -64,22 +65,14 @@ public:
     // Called once per iteration of the caller's own loop (currently
     // actuator_controller's ~10ms cycle) -- no sleep/loop of its own here.
     void poll() {
-        auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
-        if (!interrupts_enabled) {
-            if (!shutter_limit_detector::is_power_on_masked(elapsed)) {
-                // Mask window elapsed: enable EXTI, then read the level
-                // directly once to seed the state (DESIGN doc "Post-mask
-                // state init"), independent of any edge having fired.
-                gpio_pin_interrupt_configure_dt(&open_dev, GPIO_INT_EDGE_BOTH);
-                gpio_pin_interrupt_configure_dt(&closed_dev, GPIO_INT_EDGE_BOTH);
-                interrupts_enabled = true;
-                detector.on_edge_isr();
-                detector.poll(read(open_dev), read(closed_dev));
-            }
-        } else {
+        if (!interrupts_enabled)
+            try_unmask();
+        if (interrupts_enabled)
             detector.poll(read(open_dev), read(closed_dev));
-        }
-        msg const m{.state = detector.get_state()};
+        msg const m{
+            .open_bit = detector.get_open_bit(),
+            .closed_bit = detector.get_closed_bit(),
+        };
         while (k_msgq_put(&msgq, &m, K_NO_WAIT) != 0)
             k_msgq_purge(&msgq);
     }
@@ -95,6 +88,21 @@ public:
     }
 
 private:
+    void try_unmask() {
+        auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
+        if (shutter_limit_detector::is_power_on_masked(elapsed))
+            return;
+        // Mask window elapsed: enable EXTI, then force one reconfirm pass
+        // (via the on_edge_isr() flag, resolved by poll()'s unconditional
+        // detector.poll() call right after this returns) to seed the state
+        // (DESIGN doc "Post-mask state init"), independent of any edge
+        // having fired.
+        gpio_pin_interrupt_configure_dt(&open_dev, GPIO_INT_EDGE_BOTH);
+        gpio_pin_interrupt_configure_dt(&closed_dev, GPIO_INT_EDGE_BOTH);
+        interrupts_enabled = true;
+        detector.on_edge_isr();
+    }
+
     static bool read(const gpio_dt_spec &dev) { return gpio_pin_get_dt(&dev) > 0; }
 
     gpio_dt_spec open_dev = GET_GPIO(shutter_limit_open);
