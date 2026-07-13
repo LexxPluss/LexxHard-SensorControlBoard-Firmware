@@ -1251,8 +1251,13 @@ public:
         ossd2_value = (gpio_pin_get_dt(&ossd2_dev) == 1);
     }
     bool is_asserted() const {
+#ifdef BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST
+        // Diagnostic build only — must not be enabled on a robot allowed to drive.
+        return false;
+#else
         // assert when ossd1 and ossd2 are low level
         return !ossd1_value && !ossd2_value;
+#endif
     }
     void request_reset() {
         should_reset = true;
@@ -2080,6 +2085,10 @@ SHELL_CMD_REGISTER(pbrd, &sub, "PowerBoard commands", NULL);
 
 void init()
 {
+#ifdef BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST
+    LOG_ERR("UNSAFE BUILD: AUTO_CHARGE safety-lidar bypass active "
+            "[safety_lidar=bypassed] - DO NOT DRIVE THIS ROBOT");
+#endif
     impl.init();
 }
 

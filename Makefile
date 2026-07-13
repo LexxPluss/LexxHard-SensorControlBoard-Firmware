@@ -78,6 +78,16 @@ firmware_interlock:
 	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_interlock.signed.confirmed.bin
 
+# Diagnostic-only target: bypass ONLY the safety-lidar assertion; KEEP E-stop active.
+# For Dasher (no safety-lidar hardware) actuator direct-drive testing -- the real
+# E-stop still gates the actuator. Robot must NOT be allowed to drive while running this.
+.PHONY: firmware_bypass_safety_lidar
+firmware_bypass_safety_lidar:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin
+	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_bypass_safety_lidar.signed.confirmed.bin
+
 .PHONY: firmware_initial
 firmware_initial:
 	$(MAKE) bootloader
