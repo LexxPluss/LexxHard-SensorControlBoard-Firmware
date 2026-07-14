@@ -147,7 +147,13 @@ public:
             // Independently checked here -- not shared with
             // actuator_controller's major loop -- so this loop's stop
             // guarantee doesn't depend on synchronizing with it.
-            if (board_controller::is_emergency())
+            // dev.is_failed() is the motor driver IC's hardware fault pin
+            // (INA240 current-sense feeding BD63150's RNF, same mechanism as
+            // Left/Right's fail_checker) -- a real-time, hardware-detected
+            // overcurrent/stall signal, much faster than the arrival_timeout
+            // stall_guard above. Previously only reported over CAN, never
+            // acted on here.
+            if (board_controller::is_emergency() || dev.is_failed())
                 dev.direct(shutter_controller::request::stop, 0);
             else
                 dev.direct(cmd.direction, cmd.duty);
