@@ -23,40 +23,34 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "shutter_controller.hpp"
+#pragma once
 
-namespace lexxhard::shutter_controller {
+#include <cstdint>
+#include <zephyr/kernel.h>
 
-drive_command decide_drive(state current_state, request requested_direction, uint8_t requested_duty)
-{
-    if (requested_direction == request::stop || requested_duty == 0)
-        return {request::stop, 0};
+namespace lexxhard::shutter_motor_controller {
 
-    switch (current_state) {
-    case state::open:
-        if (requested_direction == request::toward_open)
-            return {request::stop, 0};
-        break;
-    case state::closed:
-        if (requested_direction == request::toward_closed)
-            return {request::stop, 0};
-        break;
-    case state::between:
-        break;
-    case state::unknown:
-        return {request::stop, 0};
-    }
+// Forwarded from actuator_controller's handle_control() (CAN 0x208, Center
+// slot) -- the raw ±1/0 wire value, not yet mapped to open/close (see
+// shutter_controller::request_from_raw_direction()).
+struct msg_request {
+    int8_t direction;
+    uint8_t power;
+};
 
-    return {requested_direction, requested_duty};
-}
+// For actuator_controller's CAN 0x209 encoder/current report (Center slot).
+// encoder_count is always 0 -- Shutter has no physical encoder, unlike
+// Left/Right.
+struct info {
+    int32_t encoder_count;
+    int32_t current;
+    bool fail;
+};
 
-request request_from_raw_direction(int8_t raw_direction)
-{
-    if (raw_direction > 0)
-        return request::toward_open;
-    if (raw_direction < 0)
-        return request::toward_closed;
-    return request::stop;
-}
+void init();
+void run(void *p1, void *p2, void *p3);
+info get_info();
+extern k_thread thread;
+extern k_msgq msgq_request;
 
 }
