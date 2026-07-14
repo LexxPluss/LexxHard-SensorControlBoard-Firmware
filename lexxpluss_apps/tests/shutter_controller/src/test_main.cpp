@@ -141,3 +141,59 @@ ZTEST(shutter_controller, test_stalled_stop_direction_never_stalls)
 {
     zassert_false(is_stalled(request::stop, state::between, 999999));
 }
+
+ZTEST(shutter_controller, test_stall_guard_passes_through_when_ok)
+{
+    stall_guard guard;
+    auto const cmd{guard.poll({request::toward_open, 30}, state::between, 0)};
+    zassert_equal(cmd.direction, request::toward_open);
+    zassert_equal(cmd.duty, 30);
+    zassert_equal(guard.retry_count(), 0);
+    zassert_false(guard.is_latched());
+}
+
+// Mirrors actuator_controller's fail_checker (fail_max) -- retries with a
+// fresh window each time, then latches once retries exceed max_retries(10).
+ZTEST(shutter_controller, test_stall_guard_retries_then_latches)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    for (int i = 1; i <= 11; ++i) {
+        auto const cmd{guard.poll(requested, state::between, i * arrival_timeout_ms)};
+        zassert_equal(cmd.direction, request::stop);
+        zassert_equal(guard.retry_count(), i);
+    }
+    zassert_true(guard.is_latched());
+    // Once latched, it stays stopped even with a short elapsed time --
+    // it no longer grants a fresh retry window at all.
+    auto const cmd{guard.poll(requested, state::between, 11 * arrival_timeout_ms + 1)};
+    zassert_equal(cmd.direction, request::stop);
+}
+
+ZTEST(shutter_controller, test_stall_guard_clears_when_target_reached)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    guard.poll(requested, state::between, arrival_timeout_ms);
+    zassert_equal(guard.retry_count(), 1);
+    // decide_drive() itself now returns stop, since state::open blocks
+    // further toward_open -- the target was reached after all.
+    auto const cmd{guard.poll({request::stop, 0}, state::open, arrival_timeout_ms + 1)};
+    zassert_equal(cmd.direction, request::stop);
+    zassert_equal(guard.retry_count(), 0);
+    zassert_false(guard.is_latched());
+}
+
+ZTEST(shutter_controller, test_stall_guard_clears_on_direction_change)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    guard.poll(requested, state::between, arrival_timeout_ms);
+    zassert_equal(guard.retry_count(), 1);
+    auto const cmd{guard.poll({request::toward_closed, 30}, state::between, arrival_timeout_ms + 1)};
+    zassert_equal(cmd.direction, request::toward_closed);
+    zassert_equal(guard.retry_count(), 0);
+}

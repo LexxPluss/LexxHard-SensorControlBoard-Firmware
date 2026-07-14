@@ -70,4 +70,30 @@ bool is_stalled(request driving_direction, state current_state, uint32_t elapsed
     return elapsed_ms_in_direction >= arrival_timeout_ms;
 }
 
+drive_command stall_guard::poll(drive_command cmd, state current_state, uint32_t now_ms)
+{
+    if (cmd.direction != active_direction) {
+        // Either the Limit Switch reached the target (decide_drive() itself
+        // now returns stop) or the caller requested a genuinely different
+        // direction -- either way, this is a fresh attempt.
+        active_direction = cmd.direction;
+        direction_start_ms = now_ms;
+        retries = 0;
+        return cmd;
+    }
+    if (is_latched())
+        return {request::stop, 0};
+
+    uint32_t const elapsed{now_ms - direction_start_ms};
+    if (!is_stalled(cmd.direction, current_state, elapsed))
+        return cmd;
+
+    // Stalled: retry with a fresh window, up to max_retries times, then give
+    // up and latch (is_latched() above will keep returning stop until
+    // cmd.direction changes).
+    ++retries;
+    direction_start_ms = now_ms;
+    return {request::stop, 0};
+}
+
 }
