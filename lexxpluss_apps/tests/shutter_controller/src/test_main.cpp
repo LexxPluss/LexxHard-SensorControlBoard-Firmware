@@ -105,4 +105,39 @@ ZTEST(shutter_controller, test_request_from_raw_direction)
     zassert_equal(request_from_raw_direction(1), request::toward_open);
     zassert_equal(request_from_raw_direction(-1), request::toward_closed);
     zassert_equal(request_from_raw_direction(0), request::stop);
+    // Boundary generalization beyond the exact ±1 wire values -- the
+    // implementation is sign-based (>0/<0), not an exact match against 1/-1.
+    zassert_equal(request_from_raw_direction(2), request::toward_open);
+    zassert_equal(request_from_raw_direction(-5), request::toward_closed);
+}
+
+// TODO(placeholder timeout, see shutter_controller.hpp): 180000ms is
+// provisional pending separate confirmation of the shutter's actual
+// full-travel time.
+ZTEST(shutter_controller, test_stalled_boundary)
+{
+    // Driving toward open, never reaching it -- stalled once the timeout elapses.
+    zassert_false(is_stalled(request::toward_open, state::between, 179999));
+    zassert_true(is_stalled(request::toward_open, state::between, 180000));
+}
+
+ZTEST(shutter_controller, test_stalled_not_when_target_reached)
+{
+    // Reached the state the direction should produce -- never stalled, even
+    // well past the timeout (this is normal: driving stops once decide_drive()
+    // blocks further motion at the limit).
+    zassert_false(is_stalled(request::toward_open, state::open, 999999));
+    zassert_false(is_stalled(request::toward_closed, state::closed, 999999));
+}
+
+ZTEST(shutter_controller, test_stalled_wrong_direction_still_counts)
+{
+    // Reaching the *other* limit doesn't satisfy "toward_open" -- still stalled.
+    zassert_true(is_stalled(request::toward_open, state::closed, 180000));
+    zassert_true(is_stalled(request::toward_closed, state::open, 180000));
+}
+
+ZTEST(shutter_controller, test_stalled_stop_direction_never_stalls)
+{
+    zassert_false(is_stalled(request::stop, state::between, 999999));
 }

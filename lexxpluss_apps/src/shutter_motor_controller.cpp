@@ -115,6 +115,7 @@ public:
         if (int const ret{gpio_pin_configure_dt(&closed_dev, GPIO_INPUT)}; ret != 0)
             LOG_ERR("gpio_pin_configure_dt(closed) failed: %d", ret);
         start_time = k_uptime_get();
+        drive_direction_start_uptime = start_time;
         return 0;
     }
 
@@ -134,7 +135,23 @@ public:
                 detector.poll(read(open_dev), read(closed_dev));
 
             auto const requested_direction{shutter_controller::request_from_raw_direction(last_request.direction)};
-            auto const cmd{shutter_controller::decide_drive(detector.get_state(), requested_direction, last_request.power)};
+            auto const state{detector.get_state()};
+            auto cmd{shutter_controller::decide_drive(state, requested_direction, last_request.power)};
+
+            // Reset the stall timer whenever the actually-applied direction
+            // changes (including transitions to/from stop); otherwise keep
+            // accumulating -- if it's been continuously driving toward the
+            // same direction this long without the Limit Switch reaching the
+            // state that direction should produce, presume it's stuck (see
+            // shutter_controller.hpp is_stalled() -- provisional 3-minute
+            // timeout, NOT a CAN communication timeout).
+            if (cmd.direction != current_drive_direction) {
+                current_drive_direction = cmd.direction;
+                drive_direction_start_uptime = k_uptime_get();
+            }
+            auto const elapsed_in_direction{static_cast<uint32_t>(k_uptime_get() - drive_direction_start_uptime)};
+            if (shutter_controller::is_stalled(cmd.direction, state, elapsed_in_direction))
+                cmd = {shutter_controller::request::stop, 0};
 
             // Independently checked here -- not shared with
             // actuator_controller's major loop -- so this loop's stop
@@ -154,26 +171,31 @@ public:
 
     void print_info(const shell *shell) const {
         auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
+        auto const elapsed_in_direction{static_cast<uint32_t>(k_uptime_get() - drive_direction_start_uptime)};
         auto const [direction, duty]{dev.get_duty()};
         shell_print(shell,
-                    "state:%s raw_open:%c raw_closed:%c mask:%s requested_direction:%d requested_power:%u direction:%d duty:%u current:%d fail:%d",
+                    "state:%s raw_open:%c raw_closed:%c mask:%s requested_direction:%d requested_power:%u "
+                    "direction:%d duty:%u elapsed_in_direction_ms:%u stalled:%s current:%d fail:%d",
                     shutter_limit_detector::to_cstr(detector.get_state()),
                     read(open_dev) ? 'H' : 'L',
                     read(closed_dev) ? 'H' : 'L',
                     shutter_limit_detector::is_power_on_masked(elapsed) ? "on" : "off",
                     last_request.direction, last_request.power,
-                    static_cast<int>(direction), duty,
+                    static_cast<int>(direction), duty, elapsed_in_direction,
+                    shutter_controller::is_stalled(current_drive_direction, detector.get_state(), elapsed_in_direction) ? "yes" : "no",
                     dev.get_current(), dev.is_failed());
     }
 
 private:
-    static bool read(const gpio_dt_spec &dev) { return gpio_pin_get_dt(&dev) > 0; }
+    static bool read(const gpio_dt_spec &spec) { return gpio_pin_get_dt(&spec) > 0; }
 
     shutter dev;
     gpio_dt_spec open_dev = GET_GPIO(shutter_limit_open);
     gpio_dt_spec closed_dev = GET_GPIO(shutter_limit_closed);
     shutter_limit_detector::detector detector;
     int64_t start_time{0};
+    int64_t drive_direction_start_uptime{0};
+    shutter_controller::request current_drive_direction{shutter_controller::request::stop};
     msg_request last_request{0, 0};
 } impl;
 

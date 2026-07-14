@@ -59,4 +59,15 @@ request request_from_raw_direction(int8_t raw_direction)
     return request::stop;
 }
 
+bool is_stalled(request driving_direction, state current_state, uint32_t elapsed_ms_in_direction)
+{
+    if (driving_direction == request::stop)
+        return false;
+    if (driving_direction == request::toward_open && current_state == state::open)
+        return false;
+    if (driving_direction == request::toward_closed && current_state == state::closed)
+        return false;
+    return elapsed_ms_in_direction >= arrival_timeout_ms;
+}
+
 }

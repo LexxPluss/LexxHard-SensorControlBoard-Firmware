@@ -58,4 +58,21 @@ drive_command decide_drive(state current_state, request requested_direction, uin
 // else in this module depends on which way it turns out to be.
 request request_from_raw_direction(int8_t raw_direction);
 
+// TODO(placeholder, non-functional requirement unconfirmed, 2026-07-14): if
+// the shutter has been continuously driven toward `driving_direction` for
+// longer than arrival_timeout_ms without the Limit Switch reaching the state
+// that direction should produce (toward_open -> state::open, toward_closed
+// -> state::closed), it's presumed stuck (mechanical jam or similar) and
+// must stop regardless of what decide_drive() would otherwise allow. This is
+// NOT a communication/dead-host timeout -- CAN heartbeat liveness is handled
+// by a separate frame/mechanism (board_controller's is_dead()/is_emergency())
+// -- it's purely "did the expected physical transition happen in time."
+// It's also a simpler, time-based alternative/complement to Current control
+// (stuck shutter detection via current sensing, Phase2, out of scope) --
+// not a replacement for it. 3 minutes is a provisional value pending
+// separate confirmation of the shutter's actual full-travel time.
+constexpr uint32_t arrival_timeout_ms{180000};
+
+bool is_stalled(request driving_direction, state current_state, uint32_t elapsed_ms_in_direction);
+
 }
