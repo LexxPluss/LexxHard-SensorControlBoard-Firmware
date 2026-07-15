@@ -60,7 +60,7 @@ request request_from_raw_direction(int8_t raw_direction);
 
 // TODO(placeholder, non-functional requirement unconfirmed, 2026-07-14): if
 // the shutter has been continuously driven toward `driving_direction` for
-// longer than arrival_timeout_ms without the Limit Switch reaching the state
+// longer than ARRIVAL_TIMEOUT_MS without the Limit Switch reaching the state
 // that direction should produce (toward_open -> state::open, toward_closed
 // -> state::closed), it's presumed stuck (mechanical jam or similar) and
 // must stop regardless of what decide_drive() would otherwise allow. This is
@@ -71,14 +71,14 @@ request request_from_raw_direction(int8_t raw_direction);
 // (stuck shutter detection via current sensing, Phase2, out of scope) --
 // not a replacement for it. 3 minutes is a provisional value pending
 // separate confirmation of the shutter's actual full-travel time.
-constexpr uint32_t arrival_timeout_ms{180000};
+constexpr uint32_t ARRIVAL_TIMEOUT_MS{180000};
 
 bool is_stalled(request driving_direction, state current_state, uint32_t elapsed_ms_in_direction);
 
 // Mirrors actuator_controller's fail_checker retry-then-give-up pattern
 // (fail_max) rather than retrying forever or latching on the very first
-// timeout: a stall retries (gets a fresh arrival_timeout_ms window) up to
-// max_retries times, then latches to stop permanently. The latch clears
+// timeout: a stall retries (gets a fresh ARRIVAL_TIMEOUT_MS window) up to
+// MAX_RETRIES times, then latches to stop permanently. The latch clears
 // automatically the moment decide_drive()'s output direction actually
 // differs from what's been stuck (either the Limit Switch reached the
 // target after all, or the caller requested a different direction) -- no
@@ -91,14 +91,21 @@ public:
     // command to actually apply.
     drive_command poll(drive_command cmd, state current_state, uint32_t now_ms);
     int retry_count() const { return retries; }
-    bool is_latched() const { return retries > max_retries; }
+    bool is_latched() const { return retries > MAX_RETRIES; }
 private:
     // Provisional, mirrors actuator_controller's fail_max(10); no basis yet
     // for how many stuck-then-recovered cycles are realistic for Shutter.
-    static constexpr int max_retries{10};
+    static constexpr int MAX_RETRIES{10};
     request active_direction{request::stop};
     uint32_t direction_start_ms{0};
     int retries{0};
 };
+
+// Shared with actuator_controller's ACTUATOR_COMMAND_TIMEOUT_MS -- a comms
+// fail-safe against a stale CAN 0x208 stream, not overtravel protection
+// (the Limit Switch alone owns that). 250ms is Left/Right's existing value.
+constexpr uint32_t COMMAND_FRESHNESS_TIMEOUT_MS{250};
+
+bool is_command_stale(uint32_t elapsed_ms_since_last_command);
 
 }

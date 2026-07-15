@@ -67,7 +67,7 @@ bool is_stalled(request driving_direction, state current_state, uint32_t elapsed
         return false;
     if (driving_direction == request::toward_closed && current_state == state::closed)
         return false;
-    return elapsed_ms_in_direction >= arrival_timeout_ms;
+    return elapsed_ms_in_direction >= ARRIVAL_TIMEOUT_MS;
 }
 
 drive_command stall_guard::poll(drive_command cmd, state current_state, uint32_t now_ms)
@@ -94,6 +94,11 @@ drive_command stall_guard::poll(drive_command cmd, state current_state, uint32_t
     ++retries;
     direction_start_ms = now_ms;
     return {request::stop, 0};
+}
+
+bool is_command_stale(uint32_t elapsed_ms_since_last_command)
+{
+    return elapsed_ms_since_last_command >= COMMAND_FRESHNESS_TIMEOUT_MS;
 }
 
 }

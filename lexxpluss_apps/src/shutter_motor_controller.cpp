@@ -115,6 +115,7 @@ public:
         if (int const ret{gpio_pin_configure_dt(&closed_dev, GPIO_INPUT)}; ret != 0)
             LOG_ERR("gpio_pin_configure_dt(closed) failed: %d", ret);
         start_time = k_uptime_get();
+        last_command_uptime = start_time;
         return 0;
     }
 
@@ -126,37 +127,28 @@ public:
     void run() {
         while (true) {
             msg_request req;
-            if (k_msgq_get(&msgq_request, &req, K_NO_WAIT) == 0)
+            if (k_msgq_get(&msgq_request, &req, K_NO_WAIT) == 0) {
                 last_request = req;
+                last_command_uptime = k_uptime_get();
+            }
 
             auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
             if (!shutter_limit_detector::is_power_on_masked(elapsed))
                 detector.poll(read(open_dev), read(closed_dev));
 
+            // emergency/fail/stale command all reset last_request so a
+            // frozen command can't silently resume once cleared.
+            auto const command_elapsed{static_cast<uint32_t>(k_uptime_get() - last_command_uptime)};
+            bool const override_stop{board_controller::is_emergency() || dev.is_failed()
+                                      || shutter_controller::is_command_stale(command_elapsed)};
+            if (override_stop)
+                last_request = msg_request{};
+
             auto const requested_direction{shutter_controller::request_from_raw_direction(last_request.direction)};
             auto const state{detector.get_state()};
             auto const decided{shutter_controller::decide_drive(state, requested_direction, last_request.power)};
-            // Retries a stall with a fresh window up to a limited number of
-            // times, then latches to stop -- mirrors actuator_controller's
-            // fail_checker (fail_max) rather than retrying forever or
-            // latching on the very first timeout (see shutter_controller.hpp
-            // stall_guard -- provisional 3-minute window, NOT a CAN
-            // communication timeout).
             auto const cmd{stall.poll(decided, state, static_cast<uint32_t>(k_uptime_get()))};
-
-            // Independently checked here -- not shared with
-            // actuator_controller's major loop -- so this loop's stop
-            // guarantee doesn't depend on synchronizing with it.
-            // dev.is_failed() is the motor driver IC's hardware fault pin
-            // (INA240 current-sense feeding BD63150's RNF, same mechanism as
-            // Left/Right's fail_checker) -- a real-time, hardware-detected
-            // overcurrent/stall signal, much faster than the arrival_timeout
-            // stall_guard above. Previously only reported over CAN, never
-            // acted on here.
-            if (board_controller::is_emergency() || dev.is_failed())
-                dev.direct(shutter_controller::request::stop, 0);
-            else
-                dev.direct(cmd.direction, cmd.duty);
+            dev.direct(cmd.direction, cmd.duty);
 
             k_msleep(1);
         }
@@ -168,18 +160,22 @@ public:
 
     void print_info(const shell *shell) const {
         auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
+        auto const command_elapsed{static_cast<uint32_t>(k_uptime_get() - last_command_uptime)};
         auto const [direction, duty]{dev.get_duty()};
         shell_print(shell,
                     "state:%s raw_open:%c raw_closed:%c mask:%s requested_direction:%d requested_power:%u "
-                    "direction:%d duty:%u stall_retries:%d stall_latched:%s current:%d fail:%d",
+                    "emergency:%s fail:%d command_stale:%s direction:%d duty:%u stall_retries:%d stall_latched:%s current:%d",
                     shutter_limit_detector::to_cstr(detector.get_state()),
                     read(open_dev) ? 'H' : 'L',
                     read(closed_dev) ? 'H' : 'L',
                     shutter_limit_detector::is_power_on_masked(elapsed) ? "on" : "off",
                     last_request.direction, last_request.power,
+                    board_controller::is_emergency() ? "yes" : "no",
+                    dev.is_failed(),
+                    shutter_controller::is_command_stale(command_elapsed) ? "yes" : "no",
                     static_cast<int>(direction), duty,
                     stall.retry_count(), stall.is_latched() ? "yes" : "no",
-                    dev.get_current(), dev.is_failed());
+                    dev.get_current());
     }
 
 private:
@@ -191,6 +187,7 @@ private:
     shutter_limit_detector::detector detector;
     shutter_controller::stall_guard stall;
     int64_t start_time{0};
+    int64_t last_command_uptime{0};
     msg_request last_request{0, 0};
 } impl;
 
