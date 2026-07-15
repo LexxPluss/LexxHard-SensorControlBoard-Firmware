@@ -97,9 +97,6 @@ ZTEST(shutter_controller, test_unknown_state_always_stops)
     zassert_equal(closed_cmd.duty, 0);
 }
 
-// TODO(direction mapping unconfirmed, see shutter_controller.hpp): this only
-// checks the mapping is wired up and self-consistent, not that it matches
-// the real motor's rotation direction.
 ZTEST(shutter_controller, test_request_from_raw_direction)
 {
     zassert_equal(request_from_raw_direction(1), request::toward_open);

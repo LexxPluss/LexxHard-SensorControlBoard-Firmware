@@ -50,12 +50,9 @@ struct drive_command {
 // further toward an already-reached limit is always rejected.
 drive_command decide_drive(state current_state, request requested_direction, uint8_t requested_duty);
 
-// TODO(direction mapping unconfirmed): mirrors msg_control::UP(+1)/DOWN(-1)/
-// STOP(0) (actuator_controller.hpp) without including that Zephyr-dependent
-// header. This assumes UP means "toward open" -- NOT verified against real
-// hardware yet (see TESTPLAN_shutter_controller_20260714.md sec.2.0). Fix
-// this single mapping once the real rotation direction is confirmed; nothing
-// else in this module depends on which way it turns out to be.
+// Mirrors msg_control::UP(+1)/DOWN(-1)/STOP(0) (actuator_controller.hpp)
+// without including that Zephyr-dependent header. Confirmed on real
+// hardware: UP(+1) drives toward open, DOWN(-1) toward closed.
 request request_from_raw_direction(int8_t raw_direction);
 
 // TODO(placeholder, non-functional requirement unconfirmed, 2026-07-14): if

@@ -60,9 +60,8 @@ public:
         return 0;
     }
     // toward_closed -> pin 1 (mirrors DOWN in actuator_controller's
-    // pwm_driver), toward_open -> pin 2 (mirrors UP). Physical rotation
-    // direction is unconfirmed (see shutter_controller.hpp); this only needs
-    // to be internally consistent with request_from_raw_direction().
+    // pwm_driver), toward_open -> pin 2 (mirrors UP) -- confirmed on real
+    // hardware (see shutter_controller.hpp).
     void direct(shutter_controller::request req, uint8_t duty) {
         uint32_t pulse_ns[2]{CONTROL_PERIOD_NS, CONTROL_PERIOD_NS};
         if (req != shutter_controller::request::stop && duty != 0) {
