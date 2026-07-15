@@ -149,14 +149,13 @@ private:
             gpio_in_status[i] = status.value();
         }
 
-        // Peeked once here (not independently by info() and the CAN packer)
-        // so both always agree on the same confirmed shutter state. Carries
-        // the raw confirmed open/closed bits straight through -- no re-
-        // deriving them from shutter_message.state.
-        shutter_limit_switch::msg shutter_message{};
-        k_msgq_peek(&shutter_limit_switch::msgq, &shutter_message);
-        shutter_limit_open = shutter_message.open_bit;
-        shutter_limit_closed = shutter_message.closed_bit;
+        // Keep the previous values on peek failure rather than overwrite
+        // with a zeroed message.
+        shutter_limit_switch::msg shutter_message;
+        if (k_msgq_peek(&shutter_limit_switch::msgq, &shutter_message) == 0) {
+            shutter_limit_open = shutter_message.open_bit;
+            shutter_limit_closed = shutter_message.closed_bit;
+        }
 
         return true;
     }

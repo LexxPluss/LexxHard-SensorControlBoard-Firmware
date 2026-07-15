@@ -296,8 +296,8 @@ int main()
     lexxhard::zcan_main::init();
     lexxhard::runaway_detector::init();
     lexxhard::uss_controller::init();
-    lexxhard::gpio_controller::init();
     lexxhard::shutter_limit_switch::init();
+    lexxhard::gpio_controller::init();
     lexxhard::tug_encoder_controller::init();
 
     RUN(actuator_controller, 2);

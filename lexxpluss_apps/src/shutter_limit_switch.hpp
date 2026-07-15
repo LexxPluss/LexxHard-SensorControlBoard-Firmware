@@ -29,21 +29,13 @@
 
 namespace lexxhard::shutter_limit_switch {
 
-// The raw confirmed switch signals -- exactly
-// shutter_limit_detector::detector::get_open_bit()/get_closed_bit() --
-// carried straight through to CAN transmission (see zcan_gpio.hpp) without
-// re-deriving them from state. Debug/display use (e.g.
-// `shutter_limit_switch info`) reads detector::get_state() directly instead
-// of going through this msgq, so no decoded state is carried here.
+// Confirmed (debounced) switch signals, not raw GPIO levels -- see
+// shutter_limit_detector::detector::get_open_bit()/get_closed_bit().
 struct msg {
     bool open_bit;
     bool closed_bit;
 } __attribute__((aligned(4)));
 
-// No dedicated thread/stack: this module is driven from the caller's own
-// poll loop (currently actuator_controller, since the Shutter motor is the
-// Center axis and any future stop-on-limit-switch logic will live there
-// too). init() still owns GPIO/EXTI setup and must run once at boot.
 void init();
 void poll();
 extern k_msgq msgq;

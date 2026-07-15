@@ -36,12 +36,14 @@ namespace lexxhard::shutter_limit_switch {
 
 LOG_MODULE_REGISTER(shutter_limit_switch);
 
-char __aligned(4) msgq_buffer[8 * sizeof (msg)];
+// Depth-1 mailbox: consumer only peeks, never dequeues.
+constexpr uint32_t msgq_depth{1};
+char __aligned(4) msgq_buffer[msgq_depth * sizeof (msg)];
 
 class shutter_limit_switch_impl {
 public:
     int init() {
-        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), msgq_depth);
         if (!gpio_is_ready_dt(&open_dev) || !gpio_is_ready_dt(&closed_dev)) {
             LOG_ERR("gpio_is_ready_dt Failed");
             return -1;
