@@ -32,11 +32,8 @@ namespace lexxhard::shutter_controller {
 
 using lexxhard::shutter_limit_detector::state;
 
-// Logical direction, not the raw CAN +1/-1 encoding -- the physical
-// RAISE/LOWER-to-open/close mapping is unverified on real hardware
-// (TESTPLAN_shutter_controller_20260714.md sec.2.0), so that conversion is
-// deliberately kept out of this pure logic and left to the caller once
-// confirmed.
+// Logical direction, not the raw CAN +1/-1 encoding -- that conversion is
+// deliberately kept out of this pure logic (see request_from_raw_direction()).
 enum class request : uint8_t { stop, toward_open, toward_closed };
 
 struct drive_command {
