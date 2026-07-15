@@ -31,7 +31,7 @@
 namespace lexxhard::shutter_motor_controller {
 
 // Forwarded from actuator_controller's handle_control() (CAN 0x208, Center
-// slot) -- the raw ±1/0 wire value, not yet mapped to open/close (see
+// slot) -- the raw +1/-1/0 wire value, not yet mapped to open/close (see
 // shutter_controller::request_from_raw_direction()).
 struct msg_request {
     int8_t direction;

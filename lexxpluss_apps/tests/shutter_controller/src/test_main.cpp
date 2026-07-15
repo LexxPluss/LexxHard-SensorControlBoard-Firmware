@@ -102,7 +102,7 @@ ZTEST(shutter_controller, test_request_from_raw_direction)
     zassert_equal(request_from_raw_direction(1), request::toward_open);
     zassert_equal(request_from_raw_direction(-1), request::toward_closed);
     zassert_equal(request_from_raw_direction(0), request::stop);
-    // Boundary generalization beyond the exact ±1 wire values -- the
+    // Boundary generalization beyond the exact +1/-1 wire values -- the
     // implementation is sign-based (>0/<0), not an exact match against 1/-1.
     zassert_equal(request_from_raw_direction(2), request::toward_open);
     zassert_equal(request_from_raw_direction(-5), request::toward_closed);
