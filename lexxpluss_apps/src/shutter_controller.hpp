@@ -72,27 +72,17 @@ constexpr uint32_t ARRIVAL_TIMEOUT_MS{180000};
 
 bool is_stalled(request driving_direction, state current_state, uint32_t elapsed_ms_in_direction);
 
-// Mirrors actuator_controller's fail_checker retry-then-give-up pattern
-// (fail_max) rather than retrying forever or latching on the very first
-// timeout: a stall retries (gets a fresh ARRIVAL_TIMEOUT_MS window) up to
-// MAX_RETRIES times, then latches to stop permanently. The latch clears
-// automatically the moment decide_drive()'s output direction actually
-// differs from what's been stuck (either the Limit Switch reached the
-// target after all, or the caller requested a different direction) -- no
-// separate reset command needed.
+// Mirrors actuator_controller's fail_checker retry-then-give-up pattern:
+// retries with a fresh ARRIVAL_TIMEOUT_MS window up to MAX_RETRIES times,
+// then latches to stop. Clears once decide_drive()'s output direction
+// changes (target reached, or a different direction requested).
 class stall_guard {
 public:
-    // now_ms: caller's monotonic clock (e.g. k_uptime_get()). cmd:
-    // decide_drive()'s output this cycle, before any stall override.
-    // current_state: this cycle's confirmed Limit Switch state. Returns the
-    // command to actually apply.
     drive_command poll(drive_command cmd, state current_state, uint32_t now_ms);
     int retry_count() const { return retries; }
     bool is_latched() const { return retries > MAX_RETRIES; }
 private:
-    // Provisional, mirrors actuator_controller's fail_max(10); no basis yet
-    // for how many stuck-then-recovered cycles are realistic for Shutter.
-    static constexpr int MAX_RETRIES{10};
+    static constexpr int MAX_RETRIES{10};  // provisional, mirrors fail_max
     request active_direction{request::stop};
     uint32_t direction_start_ms{0};
     int retries{0};
