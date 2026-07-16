@@ -195,6 +195,44 @@ ZTEST(shutter_controller, test_stall_guard_clears_on_direction_change)
     zassert_equal(guard.retry_count(), 0);
 }
 
+// Regression case (found via code review, see
+// INVESTIGATION_stall_guard_override_interaction_20260716): a transient stop
+// injected by run()'s override_stop (emergency/fail/is_command_stale) must
+// not be mistaken for a legitimate direction change (target reached, or a
+// genuinely new request) -- otherwise a real jam's retry history is wiped
+// out by an unrelated comms blip or emergency toggle.
+ZTEST(shutter_controller, test_stall_guard_survives_transient_stop_during_retry)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    guard.poll(requested, state::between, ARRIVAL_TIMEOUT_MS);
+    zassert_equal(guard.retry_count(), 1);
+
+    // override_stop fires for one cycle (e.g. is_command_stale()), then the
+    // same direction resumes.
+    guard.poll({request::stop, 0}, state::between, ARRIVAL_TIMEOUT_MS + 1);
+    auto const cmd{guard.poll(requested, state::between, ARRIVAL_TIMEOUT_MS + 2)};
+    zassert_equal(cmd.direction, request::toward_open);
+    zassert_equal(guard.retry_count(), 1);
+}
+
+ZTEST(shutter_controller, test_stall_guard_survives_transient_stop_when_latched)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    for (int i = 1; i <= 11; ++i)
+        guard.poll(requested, state::between, i * ARRIVAL_TIMEOUT_MS);
+    zassert_true(guard.is_latched());
+
+    // A transient override_stop must not clear the latch.
+    guard.poll({request::stop, 0}, state::between, 11 * ARRIVAL_TIMEOUT_MS + 1);
+    auto const cmd{guard.poll(requested, state::between, 11 * ARRIVAL_TIMEOUT_MS + 2)};
+    zassert_equal(cmd.direction, request::stop);
+    zassert_true(guard.is_latched());
+}
+
 // TODO(placeholder threshold, see shutter_controller.hpp).
 ZTEST(shutter_controller, test_command_stale_boundary)
 {
