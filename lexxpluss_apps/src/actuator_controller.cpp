@@ -39,7 +39,6 @@
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "common.hpp"
-#include "shutter_limit_switch.hpp"
 #include "shutter_motor_controller.hpp"
 #include "tug_encoder_controller.hpp"
 
@@ -681,11 +680,6 @@ public:
             // index 0 (Center) skipped -- not part of this array (see run()).
             for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
-            // shutter_limit_switch::poll() still runs here (CAN 0x212
-            // report cadence, ~10ms) -- shutter_motor_controller's Minor
-            // loop reads the same GPIOs independently at ~1ms for the
-            // stop-on-limit decision itself.
-            shutter_limit_switch::poll();
             bool is_emergency{board_controller::is_emergency()};  // -> board controller
             msg_control can2actuator;
             if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency) {
@@ -739,13 +733,12 @@ public:
                 {
                     // Center slot: Shutter has no encoder, so encoder_count
                     // is always 0; current/fail come from the independent
-                    // shutter object (shutter_motor_controller), not act[0].
+                    // shutter object, not act[0]. Its fail is reported but
+                    // excluded from `failed` -- reset_actuator() can't fix it.
                     auto const shutter_info{shutter_motor_controller::get_info()};
                     actuator2can.encoder_count[0] = shutter_info.encoder_count;
                     actuator2can.current[0] = shutter_info.current;
                     actuator2can.fail[0] = shutter_info.fail;
-                    if (shutter_info.fail)
-                        failed = true;
                 }
                 for (uint32_t i{1}; i < ACTUATOR_NUM; ++i) {
                     int8_t direction;

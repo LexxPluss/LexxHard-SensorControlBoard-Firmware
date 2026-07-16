@@ -33,6 +33,7 @@
 #include "shutter_motor_controller.hpp"
 #include "shutter_controller.hpp"
 #include "shutter_limit_detector.hpp"
+#include "shutter_limit_switch.hpp"
 #include "board_controller.hpp"
 #include "adc_reader.hpp"
 #include "common.hpp"
@@ -105,24 +106,14 @@ public:
             LOG_ERR("shutter pwm init failed.");
             return -1;
         }
-        if (!gpio_is_ready_dt(&open_dev) || !gpio_is_ready_dt(&closed_dev)) {
-            LOG_ERR("gpio_is_ready_dt Failed");
-            return -1;
-        }
-        if (int const ret{gpio_pin_configure_dt(&open_dev, GPIO_INPUT)}; ret != 0)
-            LOG_ERR("gpio_pin_configure_dt(open) failed: %d", ret);
-        if (int const ret{gpio_pin_configure_dt(&closed_dev, GPIO_INPUT)}; ret != 0)
-            LOG_ERR("gpio_pin_configure_dt(closed) failed: %d", ret);
-        start_time = k_uptime_get();
-        last_command_uptime = start_time;
+        last_command_uptime = k_uptime_get();
         return 0;
     }
 
-    // ~1ms cadence: Shutter has no encoder backup, so Limit Switch
-    // detection-to-stop latency directly equals mechanical overtravel
-    // distance -- this loop is intentionally independent of
-    // actuator_controller's ~10ms major loop (see
-    // DESIGN_actuator_controller_20260714.md sec.7).
+    // ~1ms cadence: Limit Switch detection-to-stop latency directly equals
+    // mechanical overtravel distance, since Shutter has no encoder backup.
+    // Polls shutter_limit_switch itself so the confirmed bits stay fresh
+    // at this cadence, not actuator_controller's ~10ms.
     void run() {
         while (true) {
             msg_request req;
@@ -131,9 +122,8 @@ public:
                 last_command_uptime = k_uptime_get();
             }
 
-            auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
-            if (!shutter_limit_detector::is_power_on_masked(elapsed))
-                detector.poll(read(open_dev), read(closed_dev));
+            shutter_limit_switch::poll();
+            auto const state{get_state()};
 
             // emergency/fail/stale command all reset last_request so a
             // frozen command can't silently resume once cleared.
@@ -144,7 +134,6 @@ public:
                 last_request = msg_request{};
 
             auto const requested_direction{shutter_controller::request_from_raw_direction(last_request.direction)};
-            auto const state{detector.get_state()};
             auto const decided{shutter_controller::decide_drive(state, requested_direction, last_request.power)};
             auto const cmd{stall.poll(decided, state, static_cast<uint32_t>(k_uptime_get()))};
             dev.direct(cmd.direction, cmd.duty);
@@ -158,16 +147,12 @@ public:
     }
 
     void print_info(const shell *shell) const {
-        auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
         auto const command_elapsed{static_cast<uint32_t>(k_uptime_get() - last_command_uptime)};
         auto const [direction, duty]{dev.get_duty()};
         shell_print(shell,
-                    "state:%s raw_open:%c raw_closed:%c mask:%s requested_direction:%d requested_power:%u "
+                    "state:%s requested_direction:%d requested_power:%u "
                     "emergency:%s fail:%d command_stale:%s direction:%d duty:%u stall_retries:%d stall_latched:%s current:%d",
-                    shutter_limit_detector::to_cstr(detector.get_state()),
-                    read(open_dev) ? 'H' : 'L',
-                    read(closed_dev) ? 'H' : 'L',
-                    shutter_limit_detector::is_power_on_masked(elapsed) ? "on" : "off",
+                    shutter_limit_detector::to_cstr(get_state()),
                     last_request.direction, last_request.power,
                     board_controller::is_emergency() ? "yes" : "no",
                     dev.is_failed(),
@@ -178,14 +163,15 @@ public:
     }
 
 private:
-    static bool read(const gpio_dt_spec &spec) { return gpio_pin_get_dt(&spec) > 0; }
+    // (true,true) on peek failure -> state::unknown, fail-safe.
+    static shutter_limit_detector::state get_state() {
+        shutter_limit_switch::msg m{true, true};
+        k_msgq_peek(&shutter_limit_switch::msgq, &m);
+        return shutter_limit_detector::detector::decode(m.open_bit, m.closed_bit);
+    }
 
     shutter dev;
-    gpio_dt_spec open_dev = GET_GPIO(shutter_limit_open);
-    gpio_dt_spec closed_dev = GET_GPIO(shutter_limit_closed);
-    shutter_limit_detector::detector detector;
     shutter_controller::stall_guard stall;
-    int64_t start_time{0};
     int64_t last_command_uptime{0};
     msg_request last_request{0, 0};
 } impl;
