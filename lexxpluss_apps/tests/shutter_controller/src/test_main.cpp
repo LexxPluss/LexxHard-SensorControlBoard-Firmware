@@ -233,6 +233,26 @@ ZTEST(shutter_controller, test_stall_guard_survives_transient_stop_when_latched)
     zassert_true(guard.is_latched());
 }
 
+// Regression case: an override_stop that lasts far longer than
+// ARRIVAL_TIMEOUT_MS must not leave a stale direction_start_ms behind --
+// otherwise resuming the same direction sees an inflated elapsed time and
+// gets spuriously marked stalled, wasting a retry (or eventually latching)
+// on a shutter that was never actually jammed.
+ZTEST(shutter_controller, test_stall_guard_pauses_timer_during_long_override)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+
+    // override_stop holds for far longer than ARRIVAL_TIMEOUT_MS.
+    guard.poll({request::stop, 0}, state::between, 10 * ARRIVAL_TIMEOUT_MS);
+
+    // Resuming right after the override clears must not look stalled.
+    auto const cmd{guard.poll(requested, state::between, 10 * ARRIVAL_TIMEOUT_MS + 1)};
+    zassert_equal(cmd.direction, request::toward_open);
+    zassert_equal(guard.retry_count(), 0);
+}
+
 // TODO(placeholder threshold, see shutter_controller.hpp).
 ZTEST(shutter_controller, test_command_stale_boundary)
 {

@@ -73,13 +73,19 @@ bool is_stalled(request driving_direction, state current_state, uint32_t elapsed
 drive_command stall_guard::poll(drive_command cmd, state current_state, uint32_t now_ms)
 {
     if (cmd.direction != active_direction) {
-        // Either the Limit Switch reached the target (decide_drive() itself
-        // now returns stop) or the caller requested a genuinely different
-        // direction -- either way, this is a fresh attempt.
-        active_direction = cmd.direction;
+        bool const reached{(active_direction == request::toward_open && current_state == state::open)
+                            || (active_direction == request::toward_closed && current_state == state::closed)};
+        if (cmd.direction != request::stop || reached) {
+            // Target reached, or a genuinely different direction requested.
+            active_direction = cmd.direction;
+            direction_start_ms = now_ms;
+            retries = 0;
+            return cmd;
+        }
+        // Transient safety-override stop -- preserve retry/latch history,
+        // and slide the window so it doesn't count as elapsed once driving resumes.
         direction_start_ms = now_ms;
-        retries = 0;
-        return cmd;
+        return {request::stop, 0};
     }
     if (is_latched())
         return {request::stop, 0};
