@@ -151,7 +151,8 @@ public:
         auto const [direction, duty]{dev.get_duty()};
         shell_print(shell,
                     "state:%s requested_direction:%d requested_power:%u "
-                    "emergency:%s fail:%d command_stale:%s direction:%d duty:%u stall_retries:%d stall_latched:%s current:%d",
+                    "emergency:%s fail:%d command_stale:%s direction:%d duty:%u "
+                    "stall_retries:%d stall_latched:%s current:%d",
                     shutter_limit_detector::to_cstr(get_state()),
                     last_request.direction, last_request.power,
                     board_controller::is_emergency() ? "yes" : "no",
@@ -205,8 +206,9 @@ int cmd_drive(const shell *shell, size_t argc, char **argv)
         shell_error(shell, "power must be 0-100.");
         return 1;
     }
-    shell_print(shell, "[debug-only] bypassing CAN 0x208 / actuator_controller's emergency gate for request delivery only -- "
-                        "this module's own emergency/Limit-Switch/fail/stall checks still apply.");
+    shell_print(shell, "[debug-only] bypassing CAN 0x208 / actuator_controller's emergency "
+                        "gate for request delivery only -- this module's own "
+                        "emergency/Limit-Switch/fail/stall checks still apply.");
     msg_request const req{static_cast<int8_t>(direction_int), static_cast<uint8_t>(power_int)};
     while (k_msgq_put(&msgq_request, &req, K_NO_WAIT) != 0)
         k_msgq_purge(&msgq_request);
@@ -215,7 +217,9 @@ int cmd_drive(const shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_shutter_motor,
     SHELL_CMD(info, NULL, "Shutter motor information", cmd_info),
-    SHELL_CMD(drive, NULL, "[debug only] Directly inject a drive request, bypassing CAN/actuator_controller's emergency gate", cmd_drive),
+    SHELL_CMD(drive, NULL,
+        "[debug only] Directly inject a drive request, bypassing CAN/actuator_controller's emergency gate",
+        cmd_drive),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(shutter_motor, &sub_shutter_motor, "Shutter motor commands", NULL);
