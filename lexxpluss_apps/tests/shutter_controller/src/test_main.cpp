@@ -253,6 +253,98 @@ ZTEST(shutter_controller, test_stall_guard_pauses_timer_during_long_override)
     zassert_equal(guard.retry_count(), 0);
 }
 
+ZTEST(shutter_controller, test_stall_guard_clears_on_direction_change_when_latched)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    for (int i = 1; i <= 11; ++i)
+        guard.poll(requested, state::between, i * ARRIVAL_TIMEOUT_MS);
+    zassert_true(guard.is_latched());
+
+    // A direction change (toward_closed) must clear the latch.
+    auto const cmd{guard.poll({request::toward_closed, 30}, state::between, 11 * ARRIVAL_TIMEOUT_MS + 1)};
+    zassert_equal(cmd.direction, request::toward_closed);
+    zassert_false(guard.is_latched());
+    zassert_equal(guard.retry_count(), 0);
+}
+
+ZTEST(shutter_controller, test_stall_guard_clears_when_target_reached_when_latched)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    for (int i = 1; i <= 11; ++i)
+        guard.poll(requested, state::between, i * ARRIVAL_TIMEOUT_MS);
+    zassert_true(guard.is_latched());
+
+    // Target reached (state::open for active_direction toward_open) with a stop command must clear the latch.
+    auto const cmd{guard.poll({request::stop, 0}, state::open, 11 * ARRIVAL_TIMEOUT_MS + 1)};
+    zassert_equal(cmd.direction, request::stop);
+    zassert_false(guard.is_latched());
+    zassert_equal(guard.retry_count(), 0);
+}
+
+ZTEST(shutter_controller, test_stall_guard_clears_when_target_reached_closed)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_closed, 30};
+    guard.poll(requested, state::between, 0);
+    guard.poll(requested, state::between, ARRIVAL_TIMEOUT_MS);
+    zassert_equal(guard.retry_count(), 1);
+
+    // Target reached (state::closed for active_direction toward_closed) with a stop command must clear the retry count.
+    auto const cmd{guard.poll({request::stop, 0}, state::closed, ARRIVAL_TIMEOUT_MS + 1)};
+    zassert_equal(cmd.direction, request::stop);
+    zassert_equal(guard.retry_count(), 0);
+    zassert_false(guard.is_latched());
+}
+
+ZTEST(shutter_controller, test_stall_guard_clears_on_direction_change_closed)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_closed, 30};
+    guard.poll(requested, state::between, 0);
+    guard.poll(requested, state::between, ARRIVAL_TIMEOUT_MS);
+    zassert_equal(guard.retry_count(), 1);
+
+    // Direction change to toward_open must clear the retry count.
+    auto const cmd{guard.poll({request::toward_open, 30}, state::between, ARRIVAL_TIMEOUT_MS + 1)};
+    zassert_equal(cmd.direction, request::toward_open);
+    zassert_equal(guard.retry_count(), 0);
+}
+
+ZTEST(shutter_controller, test_stall_guard_pauses_timer_repeated_transient_stops)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    
+    // Start driving
+    guard.poll(requested, state::between, 0);
+
+    // Repeated transient stops (e.g. comms glitches or emergency toggles)
+    // Drive 10s -> Stop 1s -> Drive 10s -> Stop 1s -> ...
+    // Total driving time exceeds ARRIVAL_TIMEOUT_MS (180s) but each continuous segment is short.
+    uint32_t current_time{0};
+    for (int i = 0; i < 20; ++i) {
+        current_time += 10000; // Drive 10s
+        auto cmd = guard.poll(requested, state::between, current_time);
+        zassert_equal(cmd.direction, request::toward_open);
+        zassert_equal(guard.retry_count(), 0);
+
+        current_time += 1000;  // Stop 1s
+        cmd = guard.poll({request::stop, 0}, state::between, current_time);
+        zassert_equal(cmd.direction, request::stop);
+        zassert_equal(guard.retry_count(), 0);
+    }
+
+    // Resume driving again, must still not be stalled because direction_start_ms keeps sliding
+    current_time += 10;
+    auto cmd = guard.poll(requested, state::between, current_time);
+    zassert_equal(cmd.direction, request::toward_open);
+    zassert_equal(guard.retry_count(), 0);
+}
+
 // TODO(placeholder threshold, see shutter_controller.hpp).
 ZTEST(shutter_controller, test_command_stale_boundary)
 {
