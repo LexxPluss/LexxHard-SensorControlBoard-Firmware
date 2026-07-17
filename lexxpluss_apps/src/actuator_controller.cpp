@@ -631,8 +631,7 @@ public:
 
     void run() {
         // act[0] (Center) is intentionally left uninitialized -- Shutter is
-        // owned by shutter_motor_controller's Minor loop, not this array
-        // (DESIGN_actuator_controller_20260714.md sec.7).
+        // owned by shutter_motor_controller's Minor loop, not this array.
         if (act[1].init(POS::LEFT) != 0 ||
             act[2].init(POS::RIGHT) != 0)
         {
@@ -846,8 +845,7 @@ public:
     }
 private:
     // Center (index 0) is not part of act[] -- Shutter is a standalone
-    // object owned solely by shutter_motor_controller's Minor loop (see
-    // DESIGN_actuator_controller_20260714.md sec.7). Only an
+    // object owned solely by shutter_motor_controller's Minor loop. Only an
     // EXTERNAL_CAN_0X208 frame's Center slot is forwarded there; an INTERNAL
     // frame (e.g. control_trampoline() for Left/Right homing) always carries
     // a meaningless placeholder for Center, so it's dropped rather than

@@ -195,12 +195,8 @@ ZTEST(shutter_controller, test_stall_guard_clears_on_direction_change)
     zassert_equal(guard.retry_count(), 0);
 }
 
-// Regression case (found via code review, see
-// INVESTIGATION_stall_guard_override_interaction_20260716): a transient stop
-// injected by run()'s override_stop (emergency/fail/is_command_stale) must
-// not be mistaken for a legitimate direction change (target reached, or a
-// genuinely new request) -- otherwise a real jam's retry history is wiped
-// out by an unrelated comms blip or emergency toggle.
+// Regression: a transient stop from run()'s emergency/fail/stale-command
+// override must not look like a legitimate direction change.
 ZTEST(shutter_controller, test_stall_guard_survives_transient_stop_during_retry)
 {
     stall_guard guard;

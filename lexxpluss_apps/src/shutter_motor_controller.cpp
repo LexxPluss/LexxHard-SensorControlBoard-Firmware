@@ -46,8 +46,7 @@ char __aligned(4) msgq_request_buffer[8 * sizeof (msg_request)];
 
 // Independent from actuator_controller's pwm_driver/fail_checker (act[]) --
 // deliberately not shared, so the Major loop (Left/Right) and this Minor
-// loop (Center) never write to the same object (see
-// DESIGN_actuator_controller_20260714.md sec.7).
+// loop (Center) never write to the same object.
 class shutter {
 public:
     int init() {
