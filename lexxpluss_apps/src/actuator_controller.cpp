@@ -39,6 +39,7 @@
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "common.hpp"
+#include "motor_driver.hpp"
 #include "shutter_motor_controller.hpp"
 #include "tug_encoder_controller.hpp"
 
@@ -391,59 +392,6 @@ private:
     int32_t velocity{0}, pulse_value{0}, prev_pulse_value{0};
 };
 
-// This class for control 2 GPIOs as PWM
-class pwm_driver {
-public:
-    int init(POS pos) {
-        switch (pos) {
-        case POS::CENTER:
-            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm5));
-            dev[1] = dev[0];
-            pin[0] = 1;
-            pin[1] = 2;
-            break;
-        case POS::LEFT:
-            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm8));
-            dev[1] = dev[0];
-            pin[0] = 1;
-            pin[1] = 2;
-            break;
-        case POS::RIGHT:
-            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm2));
-            dev[1] = dev[0];
-            pin[0] = 3;
-            pin[1] = 4;
-            break;
-        }
-        if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
-            return -1;
-        set_duty(msg_control::STOP);
-        return 0;
-    }
-    void set_duty(int8_t direction, uint8_t duty = 0) {
-        uint32_t pulse_ns[2]{CONTROL_PERIOD_NS, CONTROL_PERIOD_NS};
-        if (direction != msg_control::STOP && duty != 0) {
-            uint32_t duty_rev{std::clamp(100U - duty, 0U, 100U)};
-            uint32_t ns{duty_rev * CONTROL_PERIOD_NS / 100};
-            pulse_ns[direction < msg_control::STOP ? 0 : 1] = ns;
-        }
-        pwm_set(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
-        pwm_set(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
-        this->direction = direction;
-        this->duty = duty;
-    }
-    std::tuple<int8_t, uint8_t> get_duty() const {
-        return {direction, duty};
-    }
-private:
-    uint32_t pin[2]{0, 0};
-    int8_t direction{msg_control::STOP};
-    uint8_t duty{0};
-    const device *dev[2]{nullptr, nullptr};
-    static constexpr uint32_t CONTROL_HZ{10000};
-    static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
-};
-
 // This calls counter
 class position_control {
 public:
@@ -504,29 +452,18 @@ private:
 class actuator {
 public:
     int init(POS pos) {
-        if (pwm.init(pos) != 0)
-            return -1;
-        cnt.init(pos);
-
+        motor_driver::axis a;
         switch (pos) {
-        case POS::CENTER:
-            current_adc = adc_reader::ACTUATOR_C;
-            fail_checker.init(POS::CENTER);
-            break;
-        case POS::LEFT:
-            current_adc = adc_reader::ACTUATOR_L;
-            fail_checker.init(POS::LEFT);
-            break;
-        case POS::RIGHT:
-            current_adc = adc_reader::ACTUATOR_R;
-            fail_checker.init(POS::RIGHT);
-            break;
+        case POS::CENTER: a = motor_driver::axis::CENTER; break;
+        case POS::LEFT:   a = motor_driver::axis::LEFT; break;
+        case POS::RIGHT:  a = motor_driver::axis::RIGHT; break;
         default:
             LOG_INF("invalid actuator position.");
             return -1;
         }
-        if (!fail_checker.ready())
+        if (pwm.init(a) != 0)
             return -1;
+        cnt.init(pos);
         return 0;
     }
     void poll() {
@@ -570,55 +507,17 @@ public:
         auto [direction, duty]{pwm.get_duty()};
         return {
             cnt.get_pulse(),
-            calc_current(current_adc >= 0 ? adc_reader::get(current_adc) : 0),
-            fail_checker.is_failed(),
+            pwm.get_current(),
+            pwm.is_failed(),
             direction,
             duty
         };
     }
 private:
-    int32_t calc_current(int32_t adc_voltage_mv) const {
-        static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
-        float current_a{adc_voltage_mv * 1e-3f / AMP_GAIN * VOLTAGE_DIVIDER / SHUNT_REGISTER};
-        return static_cast<int32_t>(current_a * 1e+3f);
-    }
     counter cnt;
-    pwm_driver pwm;
+    motor_driver::driver pwm;
     position_control posctl{cnt};
     uint32_t prev_cycle{0};
-    int32_t current_adc{-1};
-    class {
-    public:
-        void init(POS pos) {
-            switch (pos) {
-            case POS::CENTER:
-                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_c_fail), gpios);
-                break;
-            case POS::LEFT:
-                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_l_fail), gpios);
-                break;
-            case POS::RIGHT:
-                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_r_fail), gpios);
-                break;
-            default:
-                LOG_INF("invalid actuator position.");
-                return;
-            }
-            
-            if (gpio_is_ready_dt(&dev))
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
-            this->pin = pin;
-        }
-        bool ready() const {return gpio_is_ready_dt(&dev);}
-        
-        bool is_failed() const {
-            return ready() ? gpio_pin_get_dt(&dev) == 0 : false;
-        }
-    private:
-        uint32_t pin{0};
-        // const device *dev{nullptr};
-        gpio_dt_spec dev;
-    } fail_checker;
 };
 
 class actuator_controller_impl {

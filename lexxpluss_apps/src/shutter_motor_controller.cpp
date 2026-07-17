@@ -23,20 +23,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <algorithm>
+#include <cstdlib>
 #include <tuple>
-#include <zephyr/device.h>
-#include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/pwm.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include "shutter_motor_controller.hpp"
 #include "shutter_controller.hpp"
 #include "shutter_limit_detector.hpp"
 #include "shutter_limit_switch.hpp"
+#include "motor_driver.hpp"
 #include "board_controller.hpp"
-#include "adc_reader.hpp"
-#include "common.hpp"
 
 namespace lexxhard::shutter_motor_controller {
 
@@ -44,57 +40,30 @@ LOG_MODULE_REGISTER(shutter_motor_controller);
 
 char __aligned(4) msgq_request_buffer[8 * sizeof (msg_request)];
 
-// Independent from actuator_controller's pwm_driver/fail_checker (act[]) --
-// deliberately not shared, so the Major loop (Left/Right) and this Minor
-// loop (Center) never write to the same object.
+// Thin translation between shutter_controller::request and motor_driver's
+// int8_t direction -- Center owns its own motor_driver::driver instance,
+// independent from the Major loop's (Left/Right).
 class shutter {
 public:
-    int init() {
-        pwm_dev = DEVICE_DT_GET(DT_NODELABEL(pwm5));
-        if (!device_is_ready(pwm_dev))
-            return -1;
-        direct(shutter_controller::request::stop, 0);
-        fail_dev = GET_GPIO(act_c_fail);
-        if (gpio_is_ready_dt(&fail_dev))
-            gpio_pin_configure_dt(&fail_dev, GPIO_INPUT);
-        return 0;
-    }
-    // toward_closed -> pin 1 (mirrors DOWN in actuator_controller's
-    // pwm_driver), toward_open -> pin 2 (mirrors UP) -- confirmed on real
-    // hardware (see shutter_controller.hpp).
+    int init() { return dev.init(motor_driver::axis::CENTER); }
+    // toward_closed mirrors DOWN(-1), toward_open mirrors UP(+1) -- confirmed
+    // on real hardware (see shutter_controller.hpp).
     void direct(shutter_controller::request req, uint8_t duty) {
-        uint32_t pulse_ns[2]{CONTROL_PERIOD_NS, CONTROL_PERIOD_NS};
-        if (req != shutter_controller::request::stop && duty != 0) {
-            uint32_t const duty_rev{std::clamp(100U - duty, 0U, 100U)};
-            uint32_t const ns{duty_rev * CONTROL_PERIOD_NS / 100};
-            pulse_ns[req == shutter_controller::request::toward_closed ? 0 : 1] = ns;
-        }
-        pwm_set(pwm_dev, 1, CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
-        pwm_set(pwm_dev, 2, CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
-        direction = req;
-        this->duty = duty;
+        int8_t const dir{req == shutter_controller::request::toward_closed ? int8_t{-1} :
+                          req == shutter_controller::request::toward_open ? int8_t{1} : int8_t{0}};
+        dev.set_duty(dir, duty);
     }
-    int32_t get_current() const {
-        return calc_current(adc_reader::get(adc_reader::ACTUATOR_C));
-    }
-    bool is_failed() const {
-        return gpio_is_ready_dt(&fail_dev) ? gpio_pin_get_dt(&fail_dev) == 0 : false;
-    }
+    int32_t get_current() const { return dev.get_current(); }
+    bool is_failed() const { return dev.is_failed(); }
     std::tuple<shutter_controller::request, uint8_t> get_duty() const {
-        return {direction, duty};
+        auto const [dir, duty]{dev.get_duty()};
+        auto const req{dir < 0 ? shutter_controller::request::toward_closed :
+                        dir > 0 ? shutter_controller::request::toward_open :
+                        shutter_controller::request::stop};
+        return {req, duty};
     }
 private:
-    static int32_t calc_current(int32_t adc_voltage_mv) {
-        static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
-        float const current_a{adc_voltage_mv * 1e-3f / AMP_GAIN * VOLTAGE_DIVIDER / SHUNT_REGISTER};
-        return static_cast<int32_t>(current_a * 1e+3f);
-    }
-    const device *pwm_dev{nullptr};
-    gpio_dt_spec fail_dev{};
-    shutter_controller::request direction{shutter_controller::request::stop};
-    uint8_t duty{0};
-    static constexpr uint32_t CONTROL_HZ{10000};
-    static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
+    motor_driver::driver dev;
 };
 
 class shutter_motor_controller_impl {
