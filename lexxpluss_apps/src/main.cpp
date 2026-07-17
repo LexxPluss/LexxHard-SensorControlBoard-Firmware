@@ -39,6 +39,7 @@
 #include "runaway_detector.hpp"
 #include "uss_controller.hpp"
 #include "gpio_controller.hpp"
+#include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
 
 namespace {
@@ -181,12 +182,6 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(pgood_wheel_motor_right), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
-    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_10), gpios);
-    if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
-    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_11), gpios);
-    if (gpio_is_ready_dt(&gpio_dev))
-        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(spare_gpio_12), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_HIGH);
@@ -301,6 +296,7 @@ int main()
     lexxhard::zcan_main::init();
     lexxhard::runaway_detector::init();
     lexxhard::uss_controller::init();
+    lexxhard::shutter_limit_switch::init();
     lexxhard::gpio_controller::init();
     lexxhard::tug_encoder_controller::init();
 

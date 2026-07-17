@@ -39,6 +39,7 @@
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "common.hpp"
+#include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
 
 // for HW counter
@@ -676,6 +677,11 @@ public:
         while (true) {
             for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
+            // Shutter motor is the Center axis (index 0) of this same
+            // actuator array; polled here rather than from a dedicated
+            // thread/stack so a future stop-on-limit-switch feature can act
+            // on shutter_limit_switch's state within this same loop.
+            shutter_limit_switch::poll();
             bool is_emergency{board_controller::is_emergency()};  // -> board controller
             msg_control can2actuator;
             if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency) {

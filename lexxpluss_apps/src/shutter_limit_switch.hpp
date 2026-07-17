@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, LexxPluss Inc.
+ * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,34 +22,23 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #pragma once
 
 #include <zephyr/kernel.h>
 
-namespace lexxhard::gpio_controller {
+namespace lexxhard::shutter_limit_switch {
 
-#define GPIO_CAN_DATA_LENGTH 1
-
-// Declaration order matches CAN_ID_GPIO_IN's wire bit order (see
-// zcan_gpio.hpp): bit7=shutter_limit_open ... bit4=gpio_in_3.
+// Confirmed (debounced) switch signals, not raw GPIO levels -- see
+// shutter_limit_detector::detector::get_open_bit()/get_closed_bit().
 struct msg {
-    bool shutter_limit_open: 1;
-    bool shutter_limit_closed: 1;
-    bool gpio_in_2: 1;
-    bool gpio_in_3: 1;
-} __attribute__((aligned(4)));
-
-struct msg_control {
-    bool ros_gpio_out_0: 1;
-    bool ros_gpio_out_1: 1;
-    bool ros_gpio_out_2: 1;
-    bool ros_gpio_out_3: 1;
+    bool open_bit;
+    bool closed_bit;
 } __attribute__((aligned(4)));
 
 void init();
-void run(void *p1, void *p2, void *p3);
-extern k_thread thread;
-extern k_msgq msgq, msgq_control;
+void poll();
+extern k_msgq msgq;
 }
 
 // vim: set expandtab shiftwidth=4:

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, LexxPluss Inc.
+ * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,34 +22,56 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#pragma once
 
-#include <zephyr/kernel.h>
+#include "shutter_limit_detector.hpp"
 
-namespace lexxhard::gpio_controller {
+namespace lexxhard::shutter_limit_detector {
 
-#define GPIO_CAN_DATA_LENGTH 1
-
-// Declaration order matches CAN_ID_GPIO_IN's wire bit order (see
-// zcan_gpio.hpp): bit7=shutter_limit_open ... bit4=gpio_in_3.
-struct msg {
-    bool shutter_limit_open: 1;
-    bool shutter_limit_closed: 1;
-    bool gpio_in_2: 1;
-    bool gpio_in_3: 1;
-} __attribute__((aligned(4)));
-
-struct msg_control {
-    bool ros_gpio_out_0: 1;
-    bool ros_gpio_out_1: 1;
-    bool ros_gpio_out_2: 1;
-    bool ros_gpio_out_3: 1;
-} __attribute__((aligned(4)));
-
-void init();
-void run(void *p1, void *p2, void *p3);
-extern k_thread thread;
-extern k_msgq msgq, msgq_control;
+bool is_power_on_masked(uint32_t elapsed_ms)
+{
+    return elapsed_ms < power_on_mask_ms;
 }
 
-// vim: set expandtab shiftwidth=4:
+void detector::poll(bool open_level, bool closed_level)
+{
+    confirmed_open_bit = open_level;
+    confirmed_closed_bit = closed_level;
+}
+
+state detector::get_state() const
+{
+    return decode(confirmed_open_bit, confirmed_closed_bit);
+}
+
+bool detector::get_open_bit() const
+{
+    return confirmed_open_bit;
+}
+
+bool detector::get_closed_bit() const
+{
+    return confirmed_closed_bit;
+}
+
+state detector::decode(bool open_level, bool closed_level)
+{
+    if (open_level && !closed_level)
+        return state::open;
+    if (!open_level && closed_level)
+        return state::closed;
+    if (!open_level && !closed_level)
+        return state::between;
+    return state::unknown;
+}
+
+const char *to_cstr(state s)
+{
+    switch (s) {
+    case state::open: return "open";
+    case state::closed: return "closed";
+    case state::between: return "between";
+    default: return "unknown";
+    }
+}
+
+}

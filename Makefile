@@ -57,6 +57,11 @@ bootloader:
 	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/${WORKDIR}/extra
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
+.PHONY: test
+test:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: firmware
 firmware:
 	$(RUNNER) west zephyr-export
