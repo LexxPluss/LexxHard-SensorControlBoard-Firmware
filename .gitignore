@@ -25,6 +25,7 @@
 /.west/
 /bootloader/
 /build/
+/build-bypass-safety-lidar/
 /build-mcuboot/
 /build-test/
 /modules/
