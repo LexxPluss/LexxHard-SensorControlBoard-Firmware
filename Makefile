@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-test build-test-shutter-controller build-bypass-safety-lidar
+	rm -rf build-mcuboot build build-test build-test-shutter-controller build-test-motor-driver build-bypass-safety-lidar
 
 .PHONY: distclean
 distclean: clean
@@ -62,6 +62,7 @@ test:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_controller -d build-test-shutter-controller -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/motor_driver -d build-test-motor-driver -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: firmware
 firmware:
