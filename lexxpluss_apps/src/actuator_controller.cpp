@@ -349,6 +349,7 @@ public:
     static float get_mm_per_pulse(POS pos) {
         switch (pos) {
         case POS::CENTER:
+            LOG_WRN("get_mm_per_pulse(CENTER) called: Center is Shutter, has no encoder.");
             return 50.0f / 1054.0f;
         case POS::LEFT:
             if (tug_encoder_controller::is_tug_connected()) {
