@@ -23,6 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <algorithm>
 #include "motor_driver_calc.hpp"
 
 namespace lexxhard::motor_driver_calc {
@@ -32,8 +33,7 @@ void calc_pulse_ns(int8_t direction, uint8_t duty, uint32_t period_ns, uint32_t 
     pulse_ns[0] = period_ns;
     pulse_ns[1] = period_ns;
     if (direction != 0 && duty != 0) {
-        uint32_t const duty_clamped{duty > 100U ? 100U : static_cast<uint32_t>(duty)};
-        uint32_t const duty_rev{100U - duty_clamped};
+        uint32_t const duty_rev{std::clamp(100U - duty, 0U, 100U)};
         uint32_t const ns{duty_rev * period_ns / 100};
         pulse_ns[direction < 0 ? 0 : 1] = ns;
     }

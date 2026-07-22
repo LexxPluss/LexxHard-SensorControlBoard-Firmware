@@ -82,6 +82,40 @@ ZTEST(motor_driver_calc, test_down_half_duty)
     zassert_equal(pulse_ns[1], PERIOD_NS);
 }
 
+// duty is uint8_t (0-255); CAN 0x208's power field is unvalidated, so
+// out-of-range duty (>100) must fail safe to no-output, not a full-duty drive.
+ZTEST(motor_driver_calc, test_up_duty_101_fails_safe_to_no_output)
+{
+    uint32_t pulse_ns[2];
+    calc_pulse_ns(UP, 101, PERIOD_NS, pulse_ns);
+    zassert_equal(pulse_ns[0], PERIOD_NS);
+    zassert_equal(pulse_ns[1], PERIOD_NS);
+}
+
+ZTEST(motor_driver_calc, test_down_duty_101_fails_safe_to_no_output)
+{
+    uint32_t pulse_ns[2];
+    calc_pulse_ns(DOWN, 101, PERIOD_NS, pulse_ns);
+    zassert_equal(pulse_ns[0], PERIOD_NS);
+    zassert_equal(pulse_ns[1], PERIOD_NS);
+}
+
+ZTEST(motor_driver_calc, test_up_duty_255_max_uint8_fails_safe_to_no_output)
+{
+    uint32_t pulse_ns[2];
+    calc_pulse_ns(UP, 255, PERIOD_NS, pulse_ns);
+    zassert_equal(pulse_ns[0], PERIOD_NS);
+    zassert_equal(pulse_ns[1], PERIOD_NS);
+}
+
+ZTEST(motor_driver_calc, test_down_duty_255_max_uint8_fails_safe_to_no_output)
+{
+    uint32_t pulse_ns[2];
+    calc_pulse_ns(DOWN, 255, PERIOD_NS, pulse_ns);
+    zassert_equal(pulse_ns[0], PERIOD_NS);
+    zassert_equal(pulse_ns[1], PERIOD_NS);
+}
+
 ZTEST(motor_driver_calc, test_current_zero_voltage)
 {
     zassert_equal(calc_current_ma(0), 0);
