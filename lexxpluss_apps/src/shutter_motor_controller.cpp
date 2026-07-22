@@ -75,6 +75,7 @@ public:
             return -1;
         }
         last_command_uptime = k_uptime_get();
+        init_ok = true;
         return 0;
     }
 
@@ -83,6 +84,12 @@ public:
     // Polls shutter_limit_switch itself so the confirmed bits stay fresh
     // at this cadence, not actuator_controller's ~10ms.
     void run() {
+        // Mirrors every other HW-backed controller (actuator_controller,
+        // imu_controller, etc.): don't drive the motor if init() failed.
+        if (!init_ok) {
+            LOG_ERR("shutter motor controller init failed, not running.");
+            return;
+        }
         while (true) {
             msg_request req;
             if (k_msgq_get(&msgq_request, &req, K_NO_WAIT) == 0) {
@@ -143,6 +150,7 @@ private:
     shutter_controller::stall_guard stall;
     int64_t last_command_uptime{0};
     msg_request last_request{0, 0};
+    bool init_ok{false};
 } impl;
 
 int cmd_info(const shell *shell, size_t argc, char **argv)
