@@ -1,0 +1,4720 @@
+{
+  "contract": "tof_can_wire_contract.md",
+  "contract_version": "2026-08-02e",
+  "contract_sha256": "9c09ebe2c5962c7d16a30102fd3e8c0c3f16b4259669039d9890afa882c0a37b",
+  "note": "CAN identifiers are deliberately absent: they are pending allocation and are injected by each implementation. Frames are hex, byte 0 leftmost. DLC is 8 for every frame.",
+  "constants": {
+    "invalid_sentinel": 4095,
+    "max_valid_mm": 4094,
+    "zones": 64,
+    "chunks_per_grid": 16,
+    "zones_per_chunk": 4,
+    "timeout_ms": 300,
+    "source_stale_ms": 1000,
+    "startup_grace_ms": 3000,
+    "source_id_hanging_front_right": 0,
+    "source_id_hanging_front_left": 1
+  },
+  "grids": [
+    {
+      "name": "ramp",
+      "source_id": 0,
+      "generation": 0,
+      "zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ],
+      "data_frames": [
+        "0000000032064096",
+        "00010C80FA12C15E",
+        "00021901C21F4226",
+        "000325828A2BC2EE",
+        "00043203523843B6",
+        "00053E841A44C47E",
+        "00064B04E2514546",
+        "00075785AA5DC60E",
+        "00086406726A46D6",
+        "000970873A76C79E",
+        "000A7D0802834866",
+        "000B8988CA8FC92E",
+        "000C9609929C49F6",
+        "000DA28A5AA8CABE",
+        "000EAF0B22B54B86",
+        "000FBB8BEAC1CC4E"
+      ],
+      "health_frame": "0000400060000000",
+      "expected_valid_zone_count": 64
+    },
+    {
+      "name": "all_invalid",
+      "source_id": 1,
+      "generation": 7,
+      "zones_mm": [
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095
+      ],
+      "data_frames": [
+        "0710FFFFFFFFFFFF",
+        "0711FFFFFFFFFFFF",
+        "0712FFFFFFFFFFFF",
+        "0713FFFFFFFFFFFF",
+        "0714FFFFFFFFFFFF",
+        "0715FFFFFFFFFFFF",
+        "0716FFFFFFFFFFFF",
+        "0717FFFFFFFFFFFF",
+        "0718FFFFFFFFFFFF",
+        "0719FFFFFFFFFFFF",
+        "071AFFFFFFFFFFFF",
+        "071BFFFFFFFFFFFF",
+        "071CFFFFFFFFFFFF",
+        "071DFFFFFFFFFFFF",
+        "071EFFFFFFFFFFFF",
+        "071FFFFFFFFFFFFF"
+      ],
+      "health_frame": "0710000061000000",
+      "expected_valid_zone_count": 0
+    },
+    {
+      "name": "boundaries",
+      "source_id": 0,
+      "generation": 254,
+      "zones_mm": [
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256,
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256,
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256,
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256,
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256,
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256,
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256,
+        0,
+        1,
+        4093,
+        4094,
+        4095,
+        2048,
+        255,
+        256
+      ],
+      "data_frames": [
+        "FE00000001FFDFFE",
+        "FE01FFF8000FF100",
+        "FE02000001FFDFFE",
+        "FE03FFF8000FF100",
+        "FE04000001FFDFFE",
+        "FE05FFF8000FF100",
+        "FE06000001FFDFFE",
+        "FE07FFF8000FF100",
+        "FE08000001FFDFFE",
+        "FE09FFF8000FF100",
+        "FE0A000001FFDFFE",
+        "FE0BFFF8000FF100",
+        "FE0C000001FFDFFE",
+        "FE0DFFF8000FF100",
+        "FE0E000001FFDFFE",
+        "FE0FFFF8000FF100"
+      ],
+      "health_frame": "FE00380060000000",
+      "expected_valid_zone_count": 56
+    },
+    {
+      "name": "single_close_target",
+      "source_id": 1,
+      "generation": 255,
+      "zones_mm": [
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        719,
+        720,
+        721,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        727,
+        728,
+        729,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        735,
+        736,
+        737,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095,
+        4095
+      ],
+      "data_frames": [
+        "FF10FFFFFFFFFFFF",
+        "FF11FFFFFFFFFFFF",
+        "FF12FFFFFFFFFFFF",
+        "FF13FFFFFFFFFFFF",
+        "FF14FFFFFFFFF2CF",
+        "FF152D02D1FFFFFF",
+        "FF16FFFFFFFFF2D7",
+        "FF172D82D9FFFFFF",
+        "FF18FFFFFFFFF2DF",
+        "FF192E02E1FFFFFF",
+        "FF1AFFFFFFFFFFFF",
+        "FF1BFFFFFFFFFFFF",
+        "FF1CFFFFFFFFFFFF",
+        "FF1DFFFFFFFFFFFF",
+        "FF1EFFFFFFFFFFFF",
+        "FF1FFFFFFFFFFFFF"
+      ],
+      "health_frame": "FF10090061000000",
+      "expected_valid_zone_count": 9
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "in_order",
+      "description": "All sixteen chunks in order, then health. Baseline.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ],
+      "expected_source_id": 0
+    },
+    {
+      "name": "reverse_order",
+      "description": "Chunks arrive in descending index order. Bitmap keying must not care.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "health_first",
+      "description": "Health wins arbitration and arrives before any data frame. The two IDs have no mutual ordering guarantee, so this is normal traffic, not an error.",
+      "frames": [
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "health_interleaved",
+      "description": "Health arrives in the middle of the grid.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "lost_chunk",
+      "description": "Chunk 5 never arrives. Bitmap stays 0xFFDF, so nothing is published even though health is valid, and the assembly times out.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "INCOMPLETE_BY_TIMEOUT": 1
+      },
+      "expected_bitmap": 65503
+    },
+    {
+      "name": "missing_health",
+      "description": "All sixteen chunks arrive, health never does. The publish gate needs both.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "INCOMPLETE_BY_TIMEOUT": 1
+      },
+      "expected_bitmap": 65535
+    },
+    {
+      "name": "duplicate_chunk_identical",
+      "description": "Chunk 2 arrives twice with an identical payload: a benign retransmission. Counted, discarded, the grid still completes.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "DUPLICATE_CHUNK_IDENTICAL": 1,
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "conflicting_chunk_rejects",
+      "description": "Chunk 2 arrives twice with DIFFERENT payloads. Two values for one (source, generation, chunk) means a firmware fault or two streams mixing, and there is no basis for picking one. The generation is retired, so the health frame that follows finds nothing to close.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0302001002003004",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "CONFLICTING_CHUNK": 1,
+        "FRAME_FOR_RETIRED_GENERATION": 1
+      }
+    },
+    {
+      "name": "conflicting_chunk_not_resurrected",
+      "description": "A conflict arrives early, then the rest of the generation arrives normally. Every later frame of the retired generation is rejected; nothing can revive it.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0301009009009009",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "CONFLICTING_CHUNK": 1,
+        "FRAME_FOR_RETIRED_GENERATION": 14
+      }
+    },
+    {
+      "name": "cross_grid_splice_attempt",
+      "description": "Chunks 0-7 of generation 3, then chunks 8-15 of generation 4. A decoder keyed only on chunk index would splice these into one bogus grid. Generation equality discards the generation-3 partial and retires it, so the trailing generation-3 health frame is rejected and the generation-4 remnant times out. Neither grid completes.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0408000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0409FFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "040A000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "040BFFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "040C000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "040DFFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "040E000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "040FFFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "INCOMPLETE_BY_GENERATION_CHANGE": 1,
+        "FRAME_FOR_RETIRED_GENERATION": 1,
+        "INCOMPLETE_BY_TIMEOUT": 1
+      }
+    },
+    {
+      "name": "generation_wrap",
+      "description": "Generation 255 completes, then generation 0 completes. Equality keying makes the wrap an ordinary new grid, not a regression.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "FF10000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF110C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF121901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF143203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF153E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF164B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF175785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF186406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "FF1FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "FF10400061000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0010000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0011FFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0012000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0013FFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0014000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0015FFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0016000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0017FFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0018000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0019FFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "001A000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "001BFFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "001C000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "001DFFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "001E000001FFDFFE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "001FFFF8000FF100",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0010380061000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 2
+      },
+      "expected_publish_count": 2
+    },
+    {
+      "name": "both_sources_interleaved",
+      "description": "The two sources' grids are interleaved frame by frame on one CAN ID. Separate assembly slots per source_id must keep them apart.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0B10FFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C00000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B11FFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B12FFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B13FFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B14FFFFFFFFF2CF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B152D02D1FFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B16FFFFFFFFF2D7",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B172D82D9FFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B18FFFFFFFFF2DF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B192E02E1FFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B1AFFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B1BFFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B1CFFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B1DFFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B1EFFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0B1FFFFFFFFFFFFF",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "0C0FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0B10090061000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0C00400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 2
+      },
+      "expected_publish_count": 2
+    },
+    {
+      "name": "timeout",
+      "description": "Fifteen chunks arrive, the sixteenth arrives 350 ms after the first. The slot has already expired at 300 ms and its generation is retired, so the late chunk and the late health are both rejected rather than starting a fresh assembly.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 350
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 350
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 651
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "INCOMPLETE_BY_TIMEOUT": 1,
+        "FRAME_FOR_RETIRED_GENERATION": 2
+      }
+    },
+    {
+      "name": "just_inside_timeout",
+      "description": "The same traffic 10 ms earlier, at 290 ms, still completes. Pins the boundary.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 290
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 290
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 591
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "retired_generation_not_revived_after_timeout",
+      "description": "Regression test. A generation times out, and then the complete grid arrives, same generation. If the timeout merely cleared the slot, this would reassemble and publish data that had already been judged untrustworthy. Every frame must be rejected instead.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "3200000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "32010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "32021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "32043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "32064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "32075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "32086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "320FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 400
+        },
+        {
+          "kind": "data",
+          "hex": "3200000032064096",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "32010C80FA12C15E",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "32021901C21F4226",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320325828A2BC2EE",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "32043203523843B6",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "32053E841A44C47E",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "32064B04E2514546",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "32075785AA5DC60E",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "32086406726A46D6",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320970873A76C79E",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320A7D0802834866",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320B8988CA8FC92E",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320C9609929C49F6",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320DA28A5AA8CABE",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320EAF0B22B54B86",
+          "t_ms": 500
+        },
+        {
+          "kind": "data",
+          "hex": "320FBB8BEAC1CC4E",
+          "t_ms": 500
+        },
+        {
+          "kind": "health",
+          "hex": "3200400060000000",
+          "t_ms": 500
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 801
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "INCOMPLETE_BY_TIMEOUT": 1,
+        "FRAME_FOR_RETIRED_GENERATION": 17
+      }
+    },
+    {
+      "name": "bad_source_id",
+      "description": "source_id 9 does not exist. The frame cannot be attributed to any source, so it is counted as malformed and dropped without touching a tracker.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "03900640C812C190",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "MALFORMED_HEADER": 1
+      }
+    },
+    {
+      "name": "health_reserved_nibble_set",
+      "description": "Health byte 1 low nibble is non-zero, which the contract forbids. The health frame is not structurally valid, so the gate stays shut and the grid times out.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0305400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "MALFORMED_HEADER": 1,
+        "INCOMPLETE_BY_TIMEOUT": 1
+      }
+    },
+    {
+      "name": "health_generation_mismatch",
+      "description": "A complete generation-3 grid, but the health frame carries generation 4. The health frame does not close the grid \u2014 it replaces the slot. The generation-3 grid is discarded and the lone health frame then times out as an orphan.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0400400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "INCOMPLETE_BY_GENERATION_CHANGE": 1,
+        "ORPHAN_HEALTH_TIMEOUT": 1
+      }
+    },
+    {
+      "name": "health_count_mismatch_rejects",
+      "description": "Health claims 40 valid zones but 64 decode as valid. The packer contradicts its own summary, so one of the two is wrong and there is no way to tell which; the zone data cannot be trusted either. Reject, count, and raise an operator-visible diagnostic.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300280060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "HEALTH_COUNT_MISMATCH": 1
+      }
+    },
+    {
+      "name": "health_count_out_of_range",
+      "description": "valid_zone_count of 200 exceeds 64. Structurally invalid, not merely mismatched. 0xFF is reserved for a future status-only frame and is not defined yet.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300C80060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "MALFORMED_HEADER": 1,
+        "INCOMPLETE_BY_TIMEOUT": 1
+      }
+    },
+    {
+      "name": "duplicate_health_identical",
+      "description": "Health arrives twice with identical bytes while the grid is still incomplete. Same rule as a duplicate chunk: benign, counted, ignored.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "DUPLICATE_HEALTH_IDENTICAL": 1,
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "duplicate_health_differing_only_in_reserved_fields",
+      "description": "Health arrives twice. The second sets reserved status bits 4-7 and reserved bytes 6-7, which a future firmware is allowed to do. The normalised values are equal, so this is a benign retransmission. Comparing raw bytes here would retire a good grid the day the firmware starts using those fields \u2014 forward compatibility turning into data loss.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "030040F06000ABCD",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "DUPLICATE_HEALTH_IDENTICAL": 1,
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "conflicting_health_rejects",
+      "description": "Two health frames for one generation disagree. As with a conflicting chunk there is no basis for choosing either summary, so the generation is retired.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400160000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "CONFLICTING_HEALTH": 1,
+        "FRAME_FOR_RETIRED_GENERATION": 1
+      }
+    },
+    {
+      "name": "recovered_flags_do_not_gate",
+      "description": "Health reports a recovered I2C error and a chain-length mismatch. Under the firmware transmit obligation, a grid only exists after a complete successful model-verified read, so these describe the past or the chain, never this grid. It publishes.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400560000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ],
+      "expected_flags": 5
+    },
+    {
+      "name": "peer_enumeration_failure_reported",
+      "description": "The right source publishes normally while reporting that the OTHER sensor failed enumeration. This is how a sensor that emits nothing at all becomes visible: the surviving one says so. Publishes, and the flag must reach diagnostics.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400850000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ],
+      "expected_flags": 8
+    },
+    {
+      "name": "reserved_bytes_set_are_ignored",
+      "description": "A future firmware populates health bytes 6-7 and reserved flag bits 4-7. An older decoder must ignore them rather than reject the frame.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "030040F06000ABCD",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ]
+    },
+    {
+      "name": "watchdog_never_seen_within_grace",
+      "description": "No traffic at all, polled 100 ms after startup. Both sources are NEVER_SEEN, but that is the ordinary state of a system still starting up and must not alarm.",
+      "frames": [
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 100
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 401
+        }
+      ],
+      "publishes": false,
+      "expected_events": {},
+      "expected_state_src0": "NEVER_SEEN",
+      "expected_state_src1": "NEVER_SEEN"
+    },
+    {
+      "name": "watchdog_never_seen_after_grace",
+      "description": "Still no traffic at 3500 ms, past the 3000 ms startup grace. Both sources remain NEVER_SEEN and this now alarms, once each. Nothing else in the protocol can detect this: with no frames, every frame-level check is vacuous.",
+      "frames": [
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 100
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 3500
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 3801
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "SOURCE_NEVER_SEEN": 2
+      },
+      "expected_state_src0": "NEVER_SEEN",
+      "expected_state_src1": "NEVER_SEEN"
+    },
+    {
+      "name": "watchdog_never_seen_then_first_grid_recovers",
+      "description": "Regression test. A source alarmed as NEVER_SEEN and then delivers its first grid. The alarm must be cleared with SOURCE_RECOVERED; an alarm that can be raised but never lowered is worse than none.",
+      "frames": [
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 3500
+        },
+        {
+          "kind": "data",
+          "hex": "3C00000032064096",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C010C80FA12C15E",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C021901C21F4226",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0325828A2BC2EE",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C043203523843B6",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C053E841A44C47E",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C064B04E2514546",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C075785AA5DC60E",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C086406726A46D6",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0970873A76C79E",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0A7D0802834866",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0B8988CA8FC92E",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0C9609929C49F6",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0DA28A5AA8CABE",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0EAF0B22B54B86",
+          "t_ms": 3600
+        },
+        {
+          "kind": "data",
+          "hex": "3C0FBB8BEAC1CC4E",
+          "t_ms": 3600
+        },
+        {
+          "kind": "health",
+          "hex": "3C00400060000000",
+          "t_ms": 3600
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 3901
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "SOURCE_NEVER_SEEN": 2,
+        "SOURCE_RECOVERED": 1,
+        "GRID_PUBLISHED": 1
+      },
+      "expected_state_src0": "HEALTHY",
+      "expected_state_src1": "NEVER_SEEN"
+    },
+    {
+      "name": "watchdog_stale_then_recovers",
+      "description": "The right source publishes at t=0, is HEALTHY at 500 ms, has gone STALE_NO_FRAMES by 1500 ms, then publishes again at 1600 ms and is HEALTHY at 1650 ms. Recovery is reported too, so an operator sees the clear as well as the onset. Both alarms are edge triggered: three polls produce at most one event each.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "1400000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "14010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "14021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "14043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "14053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "14064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "14075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "14086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "140FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "1400400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 500
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 1500
+        },
+        {
+          "kind": "data",
+          "hex": "1500000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1501FFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1502000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1503FFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1504000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1505FFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1506000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1507FFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1508000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "1509FFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "150A000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "150BFFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "150C000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "150DFFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "150E000001FFDFFE",
+          "t_ms": 1600
+        },
+        {
+          "kind": "data",
+          "hex": "150FFFF8000FF100",
+          "t_ms": 1600
+        },
+        {
+          "kind": "health",
+          "hex": "1500380060000000",
+          "t_ms": 1600
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 1650
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 1951
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 2,
+        "SOURCE_STALE": 1,
+        "SOURCE_RECOVERED": 1
+      },
+      "expected_publish_count": 2,
+      "expected_state_src0": "HEALTHY",
+      "expected_state_src1": "NEVER_SEEN"
+    },
+    {
+      "name": "watchdog_frames_without_completion",
+      "description": "Frames keep arriving for the right source but no grid ever completes. Past the startup grace plus the stale threshold the source is STALE_NOT_COMPLETING, not STALE_NO_FRAMES. The distinction matters \u2014 this is chunk loss or corruption, whereas no frames at all would point at the chain, power, enumeration or the CAN filter. The left source, silent throughout, alarms as NEVER_SEEN in the same poll.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "1E00000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1E0FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "1F00000032064096",
+          "t_ms": 2000
+        },
+        {
+          "kind": "data",
+          "hex": "1F010C80FA12C15E",
+          "t_ms": 2000
+        },
+        {
+          "kind": "data",
+          "hex": "2000000032064096",
+          "t_ms": 4000
+        },
+        {
+          "kind": "data",
+          "hex": "20010C80FA12C15E",
+          "t_ms": 4000
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 4100
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 4401
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "INCOMPLETE_BY_TIMEOUT": 3,
+        "SOURCE_STALE": 1,
+        "SOURCE_NEVER_SEEN": 1
+      },
+      "expected_state_src0": "STALE_NOT_COMPLETING",
+      "expected_state_src1": "NEVER_SEEN"
+    },
+    {
+      "name": "watchdog_malformed_frames_are_still_frames",
+      "description": "A source sends only malformed frames. They name a real source, so they are evidence the transport is alive and must count towards liveness: the source is STALE_NOT_COMPLETING, not STALE_NO_FRAMES. Reporting no frames here would send an investigation towards the chain or the CAN filter when the fault is corruption.",
+      "frames": [
+        {
+          "kind": "health",
+          "hex": "0105400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0205400060000000",
+          "t_ms": 2000
+        },
+        {
+          "kind": "health",
+          "hex": "0305400060000000",
+          "t_ms": 4000
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 4100
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 4401
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "MALFORMED_HEADER": 3,
+        "SOURCE_STALE": 1,
+        "SOURCE_NEVER_SEEN": 1
+      },
+      "expected_state_src0": "STALE_NOT_COMPLETING",
+      "expected_state_src1": "NEVER_SEEN"
+    },
+    {
+      "name": "watchdog_staleness_is_per_source",
+      "description": "The left source keeps publishing while the right one stops after a single grid. At 1500 ms the right is stale and the left is healthy. Staleness must never be a single global flag.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "2800000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "280FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "2800400060000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "2810000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28110C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28121901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28143203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28153E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28164B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28175785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "28186406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "281FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "2810400061000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "2910000032064096",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "29110C80FA12C15E",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "29121901C21F4226",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291325828A2BC2EE",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "29143203523843B6",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "29153E841A44C47E",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "29164B04E2514546",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "29175785AA5DC60E",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "29186406726A46D6",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291970873A76C79E",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291A7D0802834866",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291B8988CA8FC92E",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291C9609929C49F6",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291DA28A5AA8CABE",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291EAF0B22B54B86",
+          "t_ms": 1200
+        },
+        {
+          "kind": "data",
+          "hex": "291FBB8BEAC1CC4E",
+          "t_ms": 1200
+        },
+        {
+          "kind": "health",
+          "hex": "2910400061000000",
+          "t_ms": 1200
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 1500
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 1801
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 3,
+        "SOURCE_STALE": 1
+      },
+      "expected_publish_count": 3,
+      "expected_state_src0": "STALE_NO_FRAMES",
+      "expected_state_src1": "HEALTHY"
+    }
+  ]
+}
