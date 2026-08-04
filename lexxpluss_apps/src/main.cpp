@@ -41,6 +41,9 @@
 #include "gpio_controller.hpp"
 #include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
+#ifdef TOF_I2C_DIAG
+#include "tof_diag.hpp"
+#endif
 
 namespace {
 
@@ -298,7 +301,13 @@ int main()
     lexxhard::uss_controller::init();
     lexxhard::shutter_limit_switch::init();
     lexxhard::gpio_controller::init();
+#ifdef TOF_I2C_DIAG
+    // Diagnostic build: the tug encoder poller is the only other i2c2 user
+    // and would race the tof_diag shell commands, so it is not started.
+    lexxhard::tof_diag::init();
+#else
     lexxhard::tug_encoder_controller::init();
+#endif
 
     RUN(actuator_controller, 2);
     RUN(actuator_service_controller, 2);
@@ -312,7 +321,9 @@ int main()
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
     RUN(gpio_controller, 2);
+#ifndef TOF_I2C_DIAG
     RUN(tug_encoder_controller, 2);
+#endif
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
 

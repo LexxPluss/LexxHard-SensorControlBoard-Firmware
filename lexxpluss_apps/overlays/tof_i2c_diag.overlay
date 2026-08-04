@@ -1,0 +1,26 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * Diagnostic overlay for the firmware_tof_i2c_diag build only.
+ *
+ * - Sets i2c2 to 400 kHz explicitly: the binding default is 100 kHz, at
+ *   which no ToF schedule closes (see docs and the bandwidth analysis).
+ *   The `tof_diag speed` shell command can still move it at runtime.
+ * - Declares /tof_diag_pinctrl so the shell can hand PF0/PF1 back to the
+ *   I2C2 alternate function after a bit-bang session, via the pinctrl API
+ *   instead of raw register writes.
+ */
+
+&i2c2 {
+    clock-frequency = <400000>;
+};
+
+/ {
+    tof_diag_pinctrl: tof_diag_pinctrl {
+        compatible = "lexxpluss,tof-diag-pinctrl";
+        pinctrl-0 = <&i2c2_sda_pf0 &i2c2_scl_pf1>;
+        pinctrl-names = "default";
+        status = "okay";
+    };
+};

@@ -48,6 +48,19 @@ if(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
                     "DO NOT flash to a robot allowed to drive.")
 endif()
 
+# Diagnostic-only: ToF differential-I2C bring-up shell (AMRSW-2322 Phase D).
+# Enables the `tof_diag` command group and disables the tug encoder polling
+# thread, the only other i2c2 user. E-stop handling is NOT affected.
+# tof_diag_pinctrl.c is C (PINCTRL_DT_DEFINE does not compile as C++) and is
+# outside the src/*.cpp glob, so it is added explicitly here.
+if(TOF_I2C_DIAG)
+    add_definitions(-DTOF_I2C_DIAG)
+    target_sources(app PRIVATE src/tof_diag_pinctrl.c)
+    message(WARNING "DIAGNOSTIC BUILD: TOF_I2C_DIAG is enabled. "
+                    "Tug encoder polling is disabled and the tof_diag shell owns i2c2. "
+                    "Not a production image.")
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()

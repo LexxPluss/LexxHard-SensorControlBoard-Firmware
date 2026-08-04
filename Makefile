@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-tof-i2c-diag build-test-tof-diag
 
 .PHONY: distclean
 distclean: clean
@@ -95,6 +95,25 @@ firmware_bypass_safety_lidar:
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.confirmed.bin out/zephyr_bypass_safety_lidar.signed.confirmed.bin
+
+# Diagnostic-only target: ToF differential-I2C bring-up shell (AMRSW-2322 Phase D).
+# Builds on top of the safety-lidar bypass (Dasher has no safety-lidar hardware)
+# and KEEPS E-stop active. Adds the `tof_diag` shell command group, sets i2c2 to
+# 400 kHz via overlay, and disables the tug encoder polling thread -- the only
+# other i2c2 user. Dedicated build directory for the same cache-leak reason as
+# firmware_bypass_safety_lidar above.
+.PHONY: firmware_tof_i2c_diag
+firmware_tof_i2c_diag:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-i2c-diag -- -DTOF_I2C_DIAG=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_i2c_diag.overlay -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-i2c-diag/zephyr/zephyr.signed.bin out/zephyr_tof_i2c_diag.signed.bin
+	mv build-tof-i2c-diag/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_i2c_diag.signed.confirmed.bin
+
+# Host-side tests for the pure bit-bang core used by tof_diag.
+.PHONY: test_tof_diag
+test_tof_diag:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_diag -d build-test-tof-diag -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: firmware_initial
 firmware_initial:
