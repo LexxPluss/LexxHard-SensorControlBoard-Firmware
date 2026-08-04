@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer
 
 .PHONY: distclean
 distclean: clean
@@ -61,6 +61,14 @@ bootloader:
 test:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the ToF grid packer, driven by the golden vectors in
+# docs/can/ and pinning the contract SHA-256 (the firmware half of the
+# cross-repository lock; SCBDriver pins the same SHA on the decoder side).
+.PHONY: test_tof_packer
+test_tof_packer:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: firmware
 firmware:
