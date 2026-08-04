@@ -63,6 +63,14 @@ public:
         return 0;
     }
 
+#ifdef TOF_I2C_DIAG
+    void mark_disconnected_for_diag() {
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
+        is_tug_connected_status.store(false);
+        LOG_WRN("TUG Encoder forced disconnected (TOF_I2C_DIAG build, i2c2 untouched)");
+    }
+#endif
+
     void run() {
         if (!device_is_ready(dev)) {
             LOG_ERR("TUG Encoder device not found");
@@ -381,6 +389,10 @@ int tug_encoder_burn(const shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+// The tug shell drives i2c2 directly; in the ToF diagnostic build that bus
+// belongs to the tof_diag shell and impl.dev is never initialised, so the
+// commands are not registered at all.
+#ifndef TOF_I2C_DIAG
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tug_encoder,
     SHELL_CMD(info, NULL, "TUG Encoder information", tug_encoder_info),
     SHELL_CMD(token, NULL, "Generate new token for burning angle", tug_encoder_token),
@@ -388,11 +400,24 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tug_encoder,
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(tug_encoder, &sub_tug_encoder, "TUG Encoder commands", NULL);
+#endif
 
 void init()
 {
     impl.init();
 }
+
+#ifdef TOF_I2C_DIAG
+// Diagnostic-build replacement for init()+run(): initialises the message
+// queue (its consumers must not see an uninitialised k_msgq) and resolves
+// the connection state to a definite "disconnected" without ever touching
+// i2c2. Without this, is_tug_connected() -- which blocks until the state
+// is decided -- would hang the actuator thread at startup.
+void init_disconnected_for_diag()
+{
+    impl.mark_disconnected_for_diag();
+}
+#endif
 
 void run(void *p1, void *p2, void *p3)
 {

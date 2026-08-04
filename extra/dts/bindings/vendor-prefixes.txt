@@ -1,0 +1,3 @@
+# Vendor prefixes for devicetree bindings under this directory.
+# Format: <prefix><TAB><vendor name>
+lexxpluss	LexxPluss Inc.

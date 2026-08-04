@@ -60,7 +60,9 @@ K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(gpio_controller_stack, 2048);
+#ifndef TOF_I2C_DIAG
 K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
+#endif
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 
 #define RUN(name, prio) \
@@ -303,7 +305,11 @@ int main()
     lexxhard::gpio_controller::init();
 #ifdef TOF_I2C_DIAG
     // Diagnostic build: the tug encoder poller is the only other i2c2 user
-    // and would race the tof_diag shell commands, so it is not started.
+    // and would race the tof_diag shell commands, so its thread is not
+    // started. Its state must still resolve to "disconnected" -- with the
+    // optional left unset, is_tug_connected() blocks forever and takes the
+    // actuator thread down with it at startup.
+    lexxhard::tug_encoder_controller::init_disconnected_for_diag();
     lexxhard::tof_diag::init();
 #else
     lexxhard::tug_encoder_controller::init();

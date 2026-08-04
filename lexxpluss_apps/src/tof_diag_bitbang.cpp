@@ -23,8 +23,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <errno.h>
-
 #include "tof_diag_bitbang.hpp"
 
 namespace lexxhard::tof_diag {
@@ -123,14 +121,20 @@ probe_result master::probe(uint8_t addr7)
     return ack == 0 ? probe_result::ACK : probe_result::NACK;
 }
 
-void master::bus_clear()
+bool master::bus_clear()
 {
     ops.sda_release();
     for (int i{0}; i < 9; ++i) {
         ops.scl_drive_low();
         ops.delay_half_bit();
         ops.scl_release();
-        (void)wait_scl_high();
+        if (!wait_scl_high()) {
+            // A clamped clock cannot be cleared by clocking; abort rather
+            // than emit eight more pulses into a held-low line.
+            ops.scl_release();
+            ops.sda_release();
+            return false;
+        }
         ops.delay_half_bit();
     }
     // STOP in case the slave released SDA during the pulses.
@@ -138,24 +142,29 @@ void master::bus_clear()
     ops.sda_drive_low();
     ops.delay_half_bit();
     ops.scl_release();
-    (void)wait_scl_high();
+    if (!wait_scl_high()) {
+        ops.sda_release();
+        return false;
+    }
     ops.delay_half_bit();
     ops.sda_release();
+    return true;
 }
 
-void stress_stats::count(int err)
+void stress_stats::count(int err, uint32_t elapsed_us)
 {
     ++attempts;
-    if (err == 0)
+    if (elapsed_us > worst_elapsed_us)
+        worst_elapsed_us = elapsed_us;
+    if (err == 0) {
         ++ok;
-    else if (err == -EIO)
-        ++nack_or_io;
-    else if (err == -ETIMEDOUT)
-        ++timeout;
-    else if (err == -EBUSY)
-        ++busy;
+        return;
+    }
+    last_error = err;
+    if (elapsed_us >= slow_threshold_us)
+        ++failed_slow;
     else
-        ++other_error;
+        ++failed_fast;
 }
 
 }

@@ -37,6 +37,12 @@ struct msg {
 void init();
 void run(void *p1, void *p2, void *p3);
 bool is_tug_connected();
+#ifdef TOF_I2C_DIAG
+// Diagnostic build only: resolve the connection state to a definite
+// "disconnected" and initialise the msgq without touching i2c2, so
+// is_tug_connected() callers (the actuator thread) do not block forever.
+void init_disconnected_for_diag();
+#endif
 extern k_thread thread;
 extern k_msgq msgq;
 }

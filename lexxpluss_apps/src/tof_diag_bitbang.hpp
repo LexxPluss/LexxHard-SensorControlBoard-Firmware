@@ -66,8 +66,10 @@ public:
     // START, addr7 << 1 (write direction), sample ACK, STOP.
     probe_result probe(uint8_t addr7);
     // Nine clock pulses with SDA released, then STOP: the standard recovery
-    // for a slave left mid-transfer holding SDA low.
-    void bus_clear();
+    // for a slave left mid-transfer holding SDA low. Returns false if SCL
+    // never went high -- a clamped clock cannot be cleared by clocking, and
+    // reporting success there would send the operator down the wrong path.
+    bool bus_clear();
 private:
     // Half-bit periods to wait on a stretched SCL before declaring it stuck.
     static constexpr int stretch_budget{64};
@@ -78,19 +80,29 @@ private:
     pin_ops &ops;
 };
 
-// Classified counters for repeated probe/transfer attempts. The counting
-// rules are pure so they are host-testable; the errno values come from
-// whichever i2c path the caller used (hardware driver or bit-bang glue).
+// Counters for repeated probe/transfer attempts, pure and host-testable.
+//
+// Deliberately NOT classified by errno: on the STM32 Zephyr driver a NACK,
+// a bus error (BERR/ARLO) and the controller's own transfer timeout all
+// collapse to -EIO (zephyr/drivers/i2c/i2c_ll_stm32_v2.c), so errno carries
+// no diagnostic detail on the hardware path. Failures are split by
+// *duration* instead -- a NACK fails within a bit time, a controller
+// timeout only after its internal deadline -- and finer discrimination is
+// the job of the bit-bang path and the logic analyser.
 struct stress_stats {
+    explicit stress_stats(uint32_t slow_threshold_us = 10000)
+        : slow_threshold_us(slow_threshold_us) {}
+
+    uint32_t slow_threshold_us;
     uint32_t attempts{0};
     uint32_t ok{0};
-    uint32_t nack_or_io{0};    // -EIO: NACK on the STM32 driver, or a generic bus error
-    uint32_t timeout{0};       // -ETIMEDOUT
-    uint32_t busy{0};          // -EBUSY
-    uint32_t other_error{0};
+    uint32_t failed_fast{0};   // failed in under the threshold: NACK-like
+    uint32_t failed_slow{0};   // failed at or over the threshold: timeout-like
     uint32_t data_mismatch{0}; // successful reads whose payload differs from the reference
+    uint32_t worst_elapsed_us{0};
+    int last_error{0};         // raw errno of the most recent failure
 
-    void count(int err);
+    void count(int err, uint32_t elapsed_us);
     bool all_ok() const { return attempts == ok && data_mismatch == 0; }
 };
 

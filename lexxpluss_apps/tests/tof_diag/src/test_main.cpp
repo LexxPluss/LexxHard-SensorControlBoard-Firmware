@@ -231,30 +231,42 @@ ZTEST(tof_diag_bitbang, test_bus_clear_pulses_and_stops)
 {
     sim_bus bus(0x29);
     master m(bus);
-    m.bus_clear();
+    zassert_true(m.bus_clear());
     zassert_true(bus.scl_rises >= 9);
     zassert_true(bus.saw_stop);
 }
 
-ZTEST(tof_diag_bitbang, test_stress_stats_classification)
+// A clamped clock cannot be cleared by clocking; reporting success there
+// would send the operator down the wrong path (P1 from review).
+ZTEST(tof_diag_bitbang, test_bus_clear_fails_when_scl_clamped)
 {
-    stress_stats stats;
-    stats.count(0);
-    stats.count(-EIO);
-    stats.count(-ETIMEDOUT);
-    stats.count(-EBUSY);
-    stats.count(-42);
-    zassert_equal(stats.attempts, 5u);
+    sim_bus bus(0x29);
+    bus.clamp_scl();
+    master m(bus);
+    zassert_false(m.bus_clear());
+}
+
+// Failures are split by duration, not errno: on the STM32 driver a NACK, a
+// bus error and the controller timeout all return -EIO, so errno carries no
+// diagnostic detail on the hardware path.
+ZTEST(tof_diag_bitbang, test_stress_stats_duration_split)
+{
+    stress_stats stats(10000); // 10 ms threshold
+    stats.count(0, 200);
+    stats.count(-EIO, 150);     // NACK-like: fails within a bit time
+    stats.count(-EIO, 120000);  // timeout-like: fails only after the deadline
+    stats.count(-EIO, 10000);   // exactly at the threshold counts as slow
+    zassert_equal(stats.attempts, 4u);
     zassert_equal(stats.ok, 1u);
-    zassert_equal(stats.nack_or_io, 1u);
-    zassert_equal(stats.timeout, 1u);
-    zassert_equal(stats.busy, 1u);
-    zassert_equal(stats.other_error, 1u);
+    zassert_equal(stats.failed_fast, 1u);
+    zassert_equal(stats.failed_slow, 2u);
+    zassert_equal(stats.last_error, -EIO);
+    zassert_equal(stats.worst_elapsed_us, 120000u);
     zassert_false(stats.all_ok());
 
     stress_stats clean;
-    clean.count(0);
-    clean.count(0);
+    clean.count(0, 300);
+    clean.count(0, 400);
     zassert_true(clean.all_ok());
     clean.data_mismatch = 1;
     zassert_false(clean.all_ok());

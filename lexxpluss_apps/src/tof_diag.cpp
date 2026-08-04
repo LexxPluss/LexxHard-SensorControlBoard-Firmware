@@ -101,15 +101,29 @@ bool parse_addr7(const char *arg, uint8_t &addr)
     return true;
 }
 
+// On this driver (i2c_ll_stm32_v2.c) a NACK, a bus error and the
+// controller's transfer timeout all return -EIO, so the label makes no
+// claim errno cannot back. Discrimination comes from the elapsed time
+// printed next to it, the bitbang path and the logic analyser.
 const char *errno_label(int err)
 {
     switch (err) {
-    case 0:          return "OK";
-    case -EIO:       return "-EIO (NACK on the STM32 driver, or generic bus error)";
-    case -ETIMEDOUT: return "-ETIMEDOUT (stuck bus or unreleased clock stretch)";
-    case -EBUSY:     return "-EBUSY (controller busy)";
-    default:         return "unclassified";
+    case 0:    return "OK";
+    case -EIO: return "-EIO (transfer failed: NACK, bus error or controller "
+                      "timeout are indistinguishable on this driver)";
+    default:   return "error (see errno)";
     }
+}
+
+// Runs one i2c operation and reports its duration: the only signal the
+// hardware path has for telling a fast NACK from a driver-timeout failure.
+template <typename F>
+int timed_i2c(F &&operation, uint32_t &elapsed_us)
+{
+    uint32_t const start{k_cycle_get_32()};
+    int const ret{operation()};
+    elapsed_us = static_cast<uint32_t>(k_cyc_to_us_floor64(k_cycle_get_32() - start));
+    return ret;
 }
 
 // Zero-length write probe, same shape as Zephyr's own `i2c scan`.
@@ -140,9 +154,14 @@ int vl53_wr8(uint8_t addr7, uint16_t reg, uint8_t value)
 
 void print_stats(const struct shell *shell, const stress_stats &stats)
 {
-    shell_print(shell, "attempts:%u ok:%u nack/io:%u timeout:%u busy:%u other:%u data_mismatch:%u -> %s",
-                stats.attempts, stats.ok, stats.nack_or_io, stats.timeout, stats.busy,
-                stats.other_error, stats.data_mismatch, stats.all_ok() ? "CLEAN" : "ERRORS");
+    shell_print(shell, "attempts:%u ok:%u failed_fast(<%uus):%u failed_slow:%u "
+                       "data_mismatch:%u worst:%uus last_err:%d -> %s",
+                stats.attempts, stats.ok, stats.slow_threshold_us, stats.failed_fast,
+                stats.failed_slow, stats.data_mismatch, stats.worst_elapsed_us,
+                stats.last_error, stats.all_ok() ? "CLEAN" : "ERRORS");
+    if (stats.failed_fast + stats.failed_slow > 0)
+        shell_print(shell, "note: errno cannot separate NACK / bus error / timeout on this "
+                           "driver; fast failures are NACK-like, slow ones timeout-like");
 }
 
 // Owns PF0/PF1 as open-drain GPIOs for the duration of one shell command.
@@ -156,7 +175,10 @@ public:
     explicit bitbang_session(bool swap)
         : sda_pin(swap ? 1u : 0u), scl_pin(swap ? 0u : 1u) {}
     ~bitbang_session() override {
-        tof_diag_pinctrl_restore();
+        int const ret{tof_diag_pinctrl_restore()};
+        if (ret != 0)
+            LOG_ERR("pinctrl restore failed (%d): PF0/PF1 may still be GPIO, "
+                    "hardware i2c2 unusable until reboot", ret);
     }
     int configure() const {
         if (!device_is_ready(gpiof_dev))
@@ -235,9 +257,10 @@ int cmd_probe(const struct shell *shell, size_t argc, char **argv)
         return -EINVAL;
     }
     bool const use_read{argc > 2 && strcmp(argv[2], "read") == 0};
-    int const ret{hw_probe(addr, use_read)};
-    shell_print(shell, "hw probe 0x%02x (%s): %d %s", addr, use_read ? "read" : "write",
-                ret, errno_label(ret));
+    uint32_t elapsed_us{0};
+    int const ret{timed_i2c([&] { return hw_probe(addr, use_read); }, elapsed_us)};
+    shell_print(shell, "hw probe 0x%02x (%s): %d %s, %u us", addr, use_read ? "read" : "write",
+                ret, errno_label(ret), elapsed_us);
     return 0;
 }
 
@@ -274,9 +297,14 @@ int cmd_bb_clear(const struct shell *shell, size_t argc, char **argv)
         return ret;
     }
     master bus(session);
-    bus.bus_clear();
-    shell_print(shell, "bus clear done (9 clocks + STOP, %s)", swap ? "swap" : "no swap");
-    return 0;
+    if (bus.bus_clear()) {
+        shell_print(shell, "bus clear done (9 clocks + STOP, %s)", swap ? "swap" : "no swap");
+        return 0;
+    }
+    shell_error(shell, "bus clear FAILED: SCL held low throughout (%s) -- clocking cannot "
+                       "recover a clamped clock; check power and the harness",
+                swap ? "swap" : "no swap");
+    return -EIO;
 }
 
 int configure_role_pin(int index)
@@ -403,6 +431,14 @@ int cmd_vl53_id_l7(const struct shell *shell, size_t, char **argv)
         shell_error(shell, "read failed: %d %s (page restore: %d)", ret, errno_label(ret), restore);
         return ret;
     }
+    if (restore != 0) {
+        // No verdict on a device left on the wrong register page: the id
+        // bytes were read, but nothing after this point can be trusted.
+        shell_error(shell, "0x%02x: device_id=0x%02x revision=0x%02x but page-2 restore FAILED (%d): "
+                           "device left on page 0, retry before trusting further reads",
+                    addr, id, revision, restore);
+        return restore;
+    }
     shell_print(shell, "0x%02x: device_id=0x%02x revision=0x%02x -> %s (VL53L7CX expects 0xf0/0x02)",
                 addr, id, revision, (id == 0xf0 && revision == 0x02) ? "MATCH" : "MISMATCH");
     return 0;
@@ -463,8 +499,11 @@ int cmd_stress_probe(const struct shell *shell, size_t, char **argv)
         return -EINVAL;
     }
     stress_stats stats;
-    for (uint32_t i{0}; i < count; ++i)
-        stats.count(hw_probe(addr, false));
+    for (uint32_t i{0}; i < count; ++i) {
+        uint32_t elapsed_us{0};
+        int const ret{timed_i2c([&] { return hw_probe(addr, false); }, elapsed_us)};
+        stats.count(ret, elapsed_us);
+    }
     shell_print(shell, "note: address-probe stress only proves ACK/NACK stability, not data integrity");
     print_stats(shell, stats);
     return 0;
@@ -490,14 +529,14 @@ int stress_xfer_common(const struct shell *shell, char **argv, bool reg16)
     stress_stats stats;
     bool have_reference{false};
     for (uint32_t i{0}; i < count; ++i) {
-        int ret;
-        if (reg16) {
-            ret = vl53_rd(addr, static_cast<uint16_t>(reg), current, len);
-        } else {
+        uint32_t elapsed_us{0};
+        int const ret{timed_i2c([&] {
+            if (reg16)
+                return vl53_rd(addr, static_cast<uint16_t>(reg), current, len);
             uint8_t const index{static_cast<uint8_t>(reg)};
-            ret = i2c_write_read(i2c2_dev, addr, &index, 1, current, len);
-        }
-        stats.count(ret);
+            return i2c_write_read(i2c2_dev, addr, &index, 1, current, len);
+        }, elapsed_us)};
+        stats.count(ret, elapsed_us);
         if (ret == 0) {
             if (!have_reference) {
                 memcpy(reference, current, len);
