@@ -65,4 +65,73 @@ result readdress_l4(i2c_ops &ops, uint8_t old_addr, uint8_t new_addr)
     return r;
 }
 
+namespace {
+
+void l7_postmortem(i2c_ops &ops, l7_result &r, uint8_t old_addr, uint8_t new_addr)
+{
+    r.postmortem = true;
+    r.old_probe_rc = ops.probe(old_addr);
+    r.new_probe_rc = ops.probe(new_addr);
+}
+
+}  // namespace
+
+l7_result readdress_l7(i2c_ops &ops, uint8_t old_addr, uint8_t new_addr)
+{
+    l7_result r{0, l7_stage::done, 0, 0, false, 0, 0, false, 0};
+    if (old_addr == new_addr) {
+        r.rc = -EINVAL;
+        r.failed_at = l7_stage::validate;
+        return r;
+    }
+    if (ops.probe(new_addr) == 0) {
+        r.rc = -EADDRINUSE;
+        r.failed_at = l7_stage::collision;
+        return r;
+    }
+    if (int const rc{ops.wr8(old_addr, kL7PageReg, 0x00)}; rc != 0) {
+        r.rc = rc;
+        r.failed_at = l7_stage::page_select;
+        l7_postmortem(ops, r, old_addr, new_addr);
+        return r;
+    }
+    if (int const rc{ops.wr8(old_addr, kL7AddrReg, new_addr)}; rc != 0) {
+        r.rc = rc;
+        r.failed_at = l7_stage::addr_write;
+        l7_postmortem(ops, r, old_addr, new_addr);
+        // Decision table: old silent + new answering means the write very
+        // likely landed and only its ACK was lost -- continue on the new
+        // address and let verify decide. Every other combination stops here.
+        if (!(r.old_probe_rc != 0 && r.new_probe_rc == 0))
+            return r;
+        r.write_ack_lost = true;
+    }
+    uint8_t buf[2]{};
+    if (int const rc{ops.rd(new_addr, kL7IdReg, buf, sizeof buf)}; rc != 0) {
+        r.rc = rc;
+        r.failed_at = l7_stage::verify;
+        l7_postmortem(ops, r, old_addr, new_addr);
+        return r;
+    }
+    r.device_id = buf[0];
+    r.revision = buf[1];
+    if (buf[0] != kL7DeviceId || buf[1] != kL7Revision) {
+        // The device answered with the wrong identity. Still restore page 2
+        // -- never leave a responding device on page 0 -- then report.
+        r.restore_rc = ops.wr8(new_addr, kL7PageReg, 0x02);
+        r.rc = -ENODEV;
+        r.failed_at = l7_stage::verify;
+        return r;
+    }
+    if (int const rc{ops.wr8(new_addr, kL7PageReg, 0x02)}; rc != 0) {
+        r.rc = rc;
+        r.failed_at = l7_stage::page_restore;
+        l7_postmortem(ops, r, old_addr, new_addr);
+        return r;
+    }
+    r.rc = 0;
+    r.failed_at = l7_stage::done;
+    return r;
+}
+
 }  // namespace lexxhard::tof_diag_readdress

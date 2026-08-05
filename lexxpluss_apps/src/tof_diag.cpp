@@ -464,31 +464,82 @@ int cmd_vl53_id_l4(const struct shell *shell, size_t, char **argv)
     return 0;
 }
 
+void print_l7_postmortem(const struct shell *shell, const lexxhard::tof_diag_readdress::l7_result &r,
+                         uint8_t old_addr, uint8_t new_addr)
+{
+    shell_print(shell, "post-mortem (LPn untouched): 0x%02x %s, 0x%02x %s",
+                old_addr, r.old_probe_rc == 0 ? "ACK" : "silent",
+                new_addr, r.new_probe_rc == 0 ? "ACK" : "silent");
+    if (r.old_probe_rc == 0 && r.new_probe_rc != 0)
+        shell_print(shell, "verdict: the address write did not take effect -- safe to stop");
+    else if (r.old_probe_rc != 0 && r.new_probe_rc == 0)
+        shell_print(shell, "verdict: device answers on the new address only");
+    else if (r.old_probe_rc != 0 && r.new_probe_rc != 0)
+        shell_print(shell, "verdict: no answer on either address -- capture SP1 level, power and an "
+                           "analyser trace BEFORE lpn alloff (LPn low resets the dynamic address "
+                           "and destroys this evidence)");
+    else
+        shell_print(shell, "verdict: both addresses ACK -- address collision or multiple devices "
+                           "enabled, stop immediately");
+}
+
 int cmd_vl53_setaddr_l7(const struct shell *shell, size_t, char **argv)
 {
+    namespace readdress = lexxhard::tof_diag_readdress;
     uint8_t old_addr{0}, new_addr{0};
     if (!parse_addr7(argv[1], old_addr) || !parse_addr7(argv[2], new_addr)) {
         shell_error(shell, "usage: vl53 setaddr_l7 <old7> <new7>");
         return -EINVAL;
     }
-    // ULD vl53l7cx_set_i2c_address: page 0, write the 7-bit address to
-    // register 0x0004, then continue on the new address (page 2 restore).
-    int ret{vl53_wr8(old_addr, 0x7fff, 0x00)};
-    if (ret == 0)
-        ret = vl53_wr8(old_addr, 0x0004, new_addr);
-    if (ret != 0) {
-        shell_error(shell, "address write failed on 0x%02x: %d %s", old_addr, ret, errno_label(ret));
-        return ret;
+    // Register choice, staging, failure semantics and the post-mortem live
+    // in the pure, host-tested helper; this is only the bus glue plus the
+    // operator decision table.
+    struct hw_ops final : readdress::i2c_ops {
+        int probe(uint8_t addr7) override { return hw_probe(addr7, false); }
+        int wr8(uint8_t addr7, uint16_t reg, uint8_t value) override { return vl53_wr8(addr7, reg, value); }
+        int rd(uint8_t addr7, uint16_t reg, uint8_t *buf, size_t len) override { return vl53_rd(addr7, reg, buf, len); }
+    } ops;
+    auto const r{readdress::readdress_l7(ops, old_addr, new_addr)};
+    switch (r.failed_at) {
+    case readdress::l7_stage::validate:
+        shell_error(shell, "old and new address are identical; a same-address move proves nothing");
+        break;
+    case readdress::l7_stage::collision:
+        shell_error(shell, "0x%02x already ACKs: refusing to merge two devices onto one address", new_addr);
+        break;
+    case readdress::l7_stage::page_select:
+        shell_error(shell, "page-0 select failed on 0x%02x: %d %s", old_addr, r.rc, errno_label(r.rc));
+        print_l7_postmortem(shell, r, old_addr, new_addr);
+        break;
+    case readdress::l7_stage::addr_write:
+        shell_error(shell, "address write (reg 0x0004) failed on 0x%02x: %d %s",
+                    old_addr, r.rc, errno_label(r.rc));
+        print_l7_postmortem(shell, r, old_addr, new_addr);
+        break;
+    case readdress::l7_stage::verify:
+        if (r.rc == -ENODEV) {
+            shell_error(shell, "0x%02x -> 0x%02x, device_id=0x%02x revision=0x%02x -> MISMATCH "
+                               "(VL53L7CX expects 0xf0/0x02), not a success (page-2 restore: %d)",
+                        old_addr, new_addr, r.device_id, r.revision, r.restore_rc);
+        } else {
+            shell_error(shell, "id read on new address 0x%02x failed: %d %s",
+                        new_addr, r.rc, errno_label(r.rc));
+            print_l7_postmortem(shell, r, old_addr, new_addr);
+        }
+        break;
+    case readdress::l7_stage::page_restore:
+        shell_error(shell, "page-2 restore failed on 0x%02x: %d %s -- device may be left on page 0, "
+                           "retry before trusting further reads",
+                    new_addr, r.rc, errno_label(r.rc));
+        print_l7_postmortem(shell, r, old_addr, new_addr);
+        break;
+    case readdress::l7_stage::done:
+        shell_print(shell, "0x%02x -> 0x%02x, device_id=0x%02x revision=0x%02x -> MATCH (VL53L7CX expects 0xf0/0x02)%s",
+                    old_addr, new_addr, r.device_id, r.revision,
+                    r.write_ack_lost ? " [note: address-write ACK was lost but the move verified; treat the link as suspect]" : "");
+        break;
     }
-    ret = vl53_wr8(new_addr, 0x7fff, 0x02);
-    if (ret != 0) {
-        shell_error(shell, "device did not answer on new address 0x%02x: %d %s",
-                    new_addr, ret, errno_label(ret));
-        return ret;
-    }
-    shell_print(shell, "0x%02x -> 0x%02x, device answers on the new address; verify with: vl53 id_l7 0x%02x",
-                old_addr, new_addr, new_addr);
-    return 0;
+    return r.rc;
 }
 
 int cmd_vl53_setaddr_l4(const struct shell *shell, size_t, char **argv)

@@ -76,4 +76,54 @@ struct result {
 
 result readdress_l4(i2c_ops &ops, uint8_t old_addr, uint8_t new_addr);
 
+// --- VL53L7CX (L5CX family) ---
+//
+// The ULD sequence is: select register page 0, write the 7-bit address to
+// 0x0004, continue on the new address. The id registers (0x0000/0x0001) are
+// also on page 0, so the move is verified there before restoring page 2.
+//
+// A transient failure on DS20001 (2026-08-05) showed why every stage must be
+// individually observable and why a failure must be followed by probing BOTH
+// addresses immediately: LPn low resets the dynamic address to the default,
+// so any recovery that touches LPn destroys the evidence of how far the
+// write got. The post-mortem probes run before control returns to the
+// operator, with LPn untouched.
+
+inline constexpr uint16_t kL7PageReg{0x7fff};
+inline constexpr uint16_t kL7AddrReg{0x0004};
+inline constexpr uint16_t kL7IdReg{0x0000};
+inline constexpr uint8_t kL7DeviceId{0xf0};
+inline constexpr uint8_t kL7Revision{0x02};
+
+enum class l7_stage : uint8_t {
+    validate,      // argument rejection, no bus traffic
+    collision,     // new address already ACKs, nothing written
+    page_select,   // wr8(old, 0x7fff, 0x00) failed
+    addr_write,    // wr8(old, 0x0004, new7) failed
+    verify,        // id read on the new address failed or mismatched
+    page_restore,  // wr8(new, 0x7fff, 0x02) failed
+    done,
+};
+
+struct l7_result {
+    int rc;              // 0 on success, negative errno on failure
+    l7_stage failed_at;  // l7_stage::done when rc == 0
+    uint8_t device_id;   // valid once the verify read succeeded
+    uint8_t revision;
+    // Filled whenever an I2C stage failed: both addresses probed at once,
+    // LPn untouched. 0 = ACK. Feeds the operator decision table.
+    bool postmortem;
+    int old_probe_rc;
+    int new_probe_rc;
+    // The address write itself reported failure, but the post-mortem showed
+    // the device answering on the new address only, and verify + restore
+    // then succeeded there: the write landed and only its ACK was lost.
+    bool write_ack_lost;
+    // The id-mismatch path still restores page 2 (never leave a responding
+    // device on page 0); this records that restore's own rc.
+    int restore_rc;
+};
+
+l7_result readdress_l7(i2c_ops &ops, uint8_t old_addr, uint8_t new_addr);
+
 }  // namespace lexxhard::tof_diag_readdress
