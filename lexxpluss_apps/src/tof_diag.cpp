@@ -55,6 +55,7 @@
 
 #include "tof_diag.hpp"
 #include "tof_diag_bitbang.hpp"
+#include "tof_diag_readdress.hpp"
 
 // Defined in tof_diag_pinctrl.c: hands PF0/PF1 back to the I2C2 alternate
 // function. Lives in a C file because PINCTRL_DT_DEFINE does not compile
@@ -492,34 +493,45 @@ int cmd_vl53_setaddr_l7(const struct shell *shell, size_t, char **argv)
 
 int cmd_vl53_setaddr_l4(const struct shell *shell, size_t, char **argv)
 {
+    namespace readdress = lexxhard::tof_diag_readdress;
     uint8_t old_addr{0}, new_addr{0};
     if (!parse_addr7(argv[1], old_addr) || !parse_addr7(argv[2], new_addr)) {
         shell_error(shell, "usage: vl53 setaddr_l4 <old7> <new7>");
         return -EINVAL;
     }
-    // VL53L1 core (which the VL53L4CX shares): VL53L1_SetDeviceAddress()
-    // writes the 7-bit address to I2C_SLAVE__DEVICE_ADDRESS (0x0001) -- the
-    // ST API takes an 8-bit address and halves it before the write
-    // (vl53l1_api.c, register map: 7-bit field, msb=6 lsb=0). There is no
-    // register-page mechanism on this part; do NOT reuse the L7 sequence
-    // (page 0 + register 0x0004), the two parts differ in both respects.
-    int ret{vl53_wr8(old_addr, 0x0001, new_addr)};
-    if (ret != 0) {
-        shell_error(shell, "address write failed on 0x%02x: %d %s", old_addr, ret, errno_label(ret));
-        return ret;
-    }
-    // Prove the move by reading the model id back on the new address only.
-    uint8_t buf[2]{};
-    ret = vl53_rd(new_addr, 0x010f, buf, sizeof buf);
-    if (ret != 0) {
+    // The register choice, ordering and failure semantics live in the pure,
+    // host-tested helper (tof_diag_readdress.cpp); this is only the bus glue.
+    struct hw_ops final : readdress::i2c_ops {
+        int probe(uint8_t addr7) override { return hw_probe(addr7, false); }
+        int wr8(uint8_t addr7, uint16_t reg, uint8_t value) override { return vl53_wr8(addr7, reg, value); }
+        int rd(uint8_t addr7, uint16_t reg, uint8_t *buf, size_t len) override { return vl53_rd(addr7, reg, buf, len); }
+    } ops;
+    auto const r{readdress::readdress_l4(ops, old_addr, new_addr)};
+    switch (r.failed_at) {
+    case readdress::stage::validate:
+        shell_error(shell, "old and new address are identical; a same-address move proves nothing");
+        break;
+    case readdress::stage::collision:
+        shell_error(shell, "0x%02x already ACKs: refusing to merge two devices onto one address", new_addr);
+        break;
+    case readdress::stage::write:
+        shell_error(shell, "address write failed on 0x%02x: %d %s", old_addr, r.rc, errno_label(r.rc));
+        break;
+    case readdress::stage::read:
         shell_error(shell, "device did not answer on new address 0x%02x: %d %s",
-                    new_addr, ret, errno_label(ret));
-        return ret;
+                    new_addr, r.rc, errno_label(r.rc));
+        break;
+    case readdress::stage::verify:
+        shell_error(shell, "0x%02x -> 0x%02x, model_id=0x%02x module_type=0x%02x -> MISMATCH "
+                           "(VL53L4CX expects 0xeb/0xaa), not a success",
+                    old_addr, new_addr, r.model_id, r.module_type);
+        break;
+    case readdress::stage::done:
+        shell_print(shell, "0x%02x -> 0x%02x, model_id=0x%02x module_type=0x%02x -> MATCH (VL53L4CX expects 0xeb/0xaa)",
+                    old_addr, new_addr, r.model_id, r.module_type);
+        break;
     }
-    shell_print(shell, "0x%02x -> 0x%02x, model_id=0x%02x module_type=0x%02x -> %s (VL53L4CX expects 0xeb/0xaa)",
-                old_addr, new_addr, buf[0], buf[1],
-                (buf[0] == 0xeb && buf[1] == 0xaa) ? "MATCH" : "MISMATCH");
-    return 0;
+    return r.rc;
 }
 
 int cmd_stress_probe(const struct shell *shell, size_t, char **argv)
