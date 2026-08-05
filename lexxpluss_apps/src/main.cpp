@@ -42,6 +42,7 @@
 #include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
 #ifdef TOF_I2C_DIAG
+#include <zephyr/dfu/mcuboot.h>
 #include "tof_diag.hpp"
 #endif
 
@@ -332,6 +333,22 @@ int main()
 #endif
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
+
+#ifdef TOF_I2C_DIAG
+    // The diag image is delivered as a padded *test* image (trailer magic
+    // present, image_ok unset): the CAN DFU path writes raw bytes into
+    // slot1, so only the trailer embedded in the file can request a swap,
+    // and the SCB reset that applies it also power-cycles the whole
+    // machine. Without a runtime confirm that second boot would revert
+    // the image before anyone can interact with it. Confirming here, only
+    // after every subsystem thread has been started, keeps MCUboot's
+    // rollback intact: if this build crashes earlier in boot, the next
+    // power-cycle boots the production image again.
+    if (int rc = boot_write_img_confirmed(); rc == 0)
+        printk("tof_diag: image confirmed\n");
+    else
+        printk("tof_diag: image confirm failed (%d), will revert on next boot\n", rc);
+#endif
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
 

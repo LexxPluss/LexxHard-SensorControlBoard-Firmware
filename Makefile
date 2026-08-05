@@ -105,9 +105,17 @@ firmware_bypass_safety_lidar:
 .PHONY: firmware_tof_i2c_diag
 firmware_tof_i2c_diag:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-i2c-diag -- -DTOF_I2C_DIAG=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_i2c_diag.overlay -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-i2c-diag -- -DTOF_I2C_DIAG=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_i2c_diag.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-tof-i2c-diag/zephyr/zephyr.signed.bin out/zephyr_tof_i2c_diag.signed.bin
 	mv build-tof-i2c-diag/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_i2c_diag.signed.confirmed.bin
+# Padded *test* image for the CAN DFU path: identical to the confirmed
+# image except image_ok (24 bytes from the end, just before the 16-byte
+# boot magic) is left erased. The raw-write DFU only swaps images whose
+# trailer requests it, and an unpadded zephyr.signed.bin has no trailer at
+# all, so this is the only deliverable that both swaps and keeps MCUboot's
+# revert-on-failed-boot; the running image then confirms itself (main.cpp).
+	cp out/zephyr_tof_i2c_diag.signed.confirmed.bin out/zephyr_tof_i2c_diag.test.bin
+	printf '\377' | dd of=out/zephyr_tof_i2c_diag.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_i2c_diag.test.bin) - 24)) conv=notrunc status=none
 
 # Host-side tests for the pure bit-bang core used by tof_diag.
 .PHONY: test_tof_diag
