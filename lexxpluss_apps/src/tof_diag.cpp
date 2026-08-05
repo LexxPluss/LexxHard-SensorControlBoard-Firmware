@@ -490,6 +490,38 @@ int cmd_vl53_setaddr_l7(const struct shell *shell, size_t, char **argv)
     return 0;
 }
 
+int cmd_vl53_setaddr_l4(const struct shell *shell, size_t, char **argv)
+{
+    uint8_t old_addr{0}, new_addr{0};
+    if (!parse_addr7(argv[1], old_addr) || !parse_addr7(argv[2], new_addr)) {
+        shell_error(shell, "usage: vl53 setaddr_l4 <old7> <new7>");
+        return -EINVAL;
+    }
+    // VL53L1 core (which the VL53L4CX shares): VL53L1_SetDeviceAddress()
+    // writes the 7-bit address to I2C_SLAVE__DEVICE_ADDRESS (0x0001) -- the
+    // ST API takes an 8-bit address and halves it before the write
+    // (vl53l1_api.c, register map: 7-bit field, msb=6 lsb=0). There is no
+    // register-page mechanism on this part; do NOT reuse the L7 sequence
+    // (page 0 + register 0x0004), the two parts differ in both respects.
+    int ret{vl53_wr8(old_addr, 0x0001, new_addr)};
+    if (ret != 0) {
+        shell_error(shell, "address write failed on 0x%02x: %d %s", old_addr, ret, errno_label(ret));
+        return ret;
+    }
+    // Prove the move by reading the model id back on the new address only.
+    uint8_t buf[2]{};
+    ret = vl53_rd(new_addr, 0x010f, buf, sizeof buf);
+    if (ret != 0) {
+        shell_error(shell, "device did not answer on new address 0x%02x: %d %s",
+                    new_addr, ret, errno_label(ret));
+        return ret;
+    }
+    shell_print(shell, "0x%02x -> 0x%02x, model_id=0x%02x module_type=0x%02x -> %s (VL53L4CX expects 0xeb/0xaa)",
+                old_addr, new_addr, buf[0], buf[1],
+                (buf[0] == 0xeb && buf[1] == 0xaa) ? "MATCH" : "MISMATCH");
+    return 0;
+}
+
 int cmd_stress_probe(const struct shell *shell, size_t, char **argv)
 {
     uint8_t addr{0};
@@ -581,6 +613,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_vl53,
     SHELL_CMD_ARG(id_l7, NULL, "id_l7 <addr7> - VL53L7CX device id (expect 0xf0/0x02)", cmd_vl53_id_l7, 2, 0),
     SHELL_CMD_ARG(id_l4, NULL, "id_l4 <addr7> - VL53L4CX model id (expect 0xeb/0xaa)", cmd_vl53_id_l4, 2, 0),
     SHELL_CMD_ARG(setaddr_l7, NULL, "setaddr_l7 <old7> <new7> - reassign VL53L7CX address", cmd_vl53_setaddr_l7, 3, 0),
+    SHELL_CMD_ARG(setaddr_l4, NULL, "setaddr_l4 <old7> <new7> - reassign VL53L4CX address (VL53L1 core, reg 0x0001)", cmd_vl53_setaddr_l4, 3, 0),
     SHELL_SUBCMD_SET_END
 );
 
