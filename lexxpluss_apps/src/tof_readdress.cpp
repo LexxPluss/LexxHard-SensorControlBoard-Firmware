@@ -96,4 +96,23 @@ readdress_result readdress(model m, i2c_ops &ops, uint8_t old7, uint8_t new7,
     return {0, readdress_stage::none};
 }
 
+int read_id(model m, i2c_ops &ops, uint8_t addr7, tof_enum::id_bytes &out)
+{
+    uint8_t buf[2]{};
+    if (m == model::l7cx) {
+        if (int const rc{ops.wr8(addr7, kL7PageReg, 0x00)}; rc != 0)
+            return rc;
+        if (int const rc{ops.rd(addr7, kL7IdReg, buf, sizeof buf)}; rc != 0)
+            return rc;
+        if (int const rc{ops.wr8(addr7, kL7PageReg, 0x02)}; rc != 0)
+            return rc;
+    } else {
+        if (int const rc{ops.rd(addr7, kL4IdReg, buf, sizeof buf)}; rc != 0)
+            return rc;
+    }
+    out.first = buf[0];
+    out.second = buf[1];
+    return 0;
+}
+
 }  // namespace lexxhard::tof_readdress

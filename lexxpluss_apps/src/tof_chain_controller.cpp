@@ -42,6 +42,8 @@
 
 #include <errno.h>
 
+#include <atomic>
+
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
@@ -68,11 +70,12 @@ constexpr uint32_t kSensorBootMs{DT_PROP(DT_PATH(tof_chain), sensor_boot_ms)};
 
 K_MUTEX_DEFINE(chain_mutex);
 
-// Set once by init(); the commissioning command refuses to run on a chain
-// whose control lines or bus never came up -- operating half-initialised
-// hardware would produce verdicts that look like chain findings.
-bool init_ok{false};
-int init_rc{0};
+// Written by init(), read by the shell thread: one atomic word. 0 means
+// initialised; -EAGAIN means init has not run; any other negative errno is
+// the failure. The commissioning command refuses to run on a chain whose
+// control lines or bus never came up -- operating half-initialised hardware
+// would produce verdicts that look like chain findings.
+std::atomic<int> init_status{-EAGAIN};
 
 // Explicit zero-length write, the same probe shape the diagnostics used;
 // classification of the return code is the one-line glue rule.
@@ -121,25 +124,9 @@ struct zephyr_chain_ops final : tof_enum::chain_ops {
     }
     int read_id(tof_enum::model m, uint8_t addr7, tof_enum::id_bytes &out) override
     {
-        uint8_t buf[2]{};
-        if (m == tof_enum::model::l7cx) {
-            // ULD is_alive shape: page 0, read 0x0000/0x0001, page 2. Same
-            // policy as the production readdress: after a transport failure
-            // nothing further is written -- a device that did not answer is
-            // not "restored", it is reported, and the machine freezes.
-            if (int const rc{vl53_wr8(addr7, tof_readdress::kL7PageReg, 0x00)}; rc != 0)
-                return rc;
-            if (int const rc{vl53_rd(addr7, tof_readdress::kL7IdReg, buf, sizeof buf)}; rc != 0)
-                return rc;
-            if (int const rc{vl53_wr8(addr7, tof_readdress::kL7PageReg, 0x02)}; rc != 0)
-                return rc;  // read ok but the device is stuck on page 0: not usable
-        } else {
-            if (int const rc{vl53_rd(addr7, tof_readdress::kL4IdReg, buf, sizeof buf)}; rc != 0)
-                return rc;
-        }
-        out.first = buf[0];
-        out.second = buf[1];
-        return 0;
+        // Staging and failure policy live in the shared, host-tested helper.
+        real_bus bus{};
+        return tof_readdress::read_id(m, bus, addr7, out);
     }
     tof_enum::readdress_result readdress(tof_enum::model m, uint8_t old7, uint8_t new7) override
     {
@@ -233,8 +220,8 @@ const char *control_stage_name(tof_enum::control_stage s)
 
 int cmd_enum(const struct shell *shell, size_t, char **)
 {
-    if (!init_ok) {
-        shell_error(shell, "chain glue failed to initialise (rc=%d): refusing to run", init_rc);
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d): refusing to run", st);
         return -ENODEV;
     }
     if (k_mutex_lock(&chain_mutex, K_NO_WAIT) != 0) {
@@ -290,28 +277,27 @@ k_mutex &chain_lock()
 
 void init()
 {
-    init_ok = false;
     if (!device_is_ready(i2c2_dev)) {
         LOG_ERR("i2c2 not ready");
-        init_rc = -ENODEV;
+        init_status.store(-ENODEV);
         return;
     }
     if (!gpio_is_ready_dt(&data_pin) || !gpio_is_ready_dt(&clock_pin)) {
         LOG_ERR("chain control pin controller not ready");
-        init_rc = -ENODEV;
+        init_status.store(-ENODEV);
         return;
     }
     if (int const rc{gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
         LOG_ERR("data pin not configurable (%d)", rc);
-        init_rc = rc;
+        init_status.store(rc);
         return;
     }
     if (int const rc{gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
         LOG_ERR("clock pin not configurable (%d)", rc);
-        init_rc = rc;
+        init_status.store(rc);
         return;
     }
-    init_ok = true;
+    init_status.store(0);
     // Deliberately NO enumeration here: `tof enum` is a manual commissioning
     // step, and the acquisition thread (Phase 3) will own the boot-time
     // sequence once it exists.

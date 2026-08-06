@@ -293,3 +293,58 @@ ZTEST(tof_readdress_production, test_l7_verify_read_failure_freezes_without_rest
     zassert_true(r.failed_at == readdress_stage::verify);
     zassert_equal(bus.wr8_n, 2, "no page-2 restore after a failed verify read");
 }
+
+// The staged raw id read shares the transport-failure policy with the
+// guarded move; these pin the exact traffic of every branch so the recently
+// fixed continue-after-failure bug cannot return.
+ZTEST(tof_readdress_production, test_read_id_l7_success_exact_traffic)
+{
+    fake_bus bus{l7_bus()};
+    id_bytes out{};
+    zassert_equal(rd::read_id(model::l7cx, bus, 0x2a, out), 0);
+    zassert_equal(bus.wr8_n, 2, "page select and page restore only");
+    zassert_equal(bus.wr8_regs[0], rd::kL7PageReg);
+    zassert_equal(bus.wr8_vals[0], 0x00);
+    zassert_equal(bus.rd_n, 1);
+    zassert_equal(bus.rd_reg, rd::kL7IdReg);
+    zassert_equal(bus.wr8_regs[1], rd::kL7PageReg);
+    zassert_equal(bus.wr8_vals[1], 0x02);
+    zassert_equal(out.first, rd::kL7DeviceId);
+}
+
+ZTEST(tof_readdress_production, test_read_id_l7_page_select_failure_stops)
+{
+    fake_bus bus{l7_bus()};
+    bus.wr8_script[0] = -EIO;
+    id_bytes out{};
+    zassert_equal(rd::read_id(model::l7cx, bus, 0x2a, out), -EIO);
+    zassert_equal(bus.wr8_n, 1, "nothing after the failed page select");
+    zassert_equal(bus.rd_n, 0);
+}
+
+ZTEST(tof_readdress_production, test_read_id_l7_read_failure_skips_restore)
+{
+    fake_bus bus{l7_bus()};
+    bus.rd_rc = -EIO;
+    id_bytes out{};
+    zassert_equal(rd::read_id(model::l7cx, bus, 0x2a, out), -EIO);
+    zassert_equal(bus.wr8_n, 1, "no page restore after a failed id read");
+}
+
+ZTEST(tof_readdress_production, test_read_id_l7_restore_failure_fails_the_read)
+{
+    fake_bus bus{l7_bus()};
+    bus.wr8_script[1] = -EIO;
+    id_bytes out{};
+    zassert_equal(rd::read_id(model::l7cx, bus, 0x2a, out), -EIO);
+}
+
+ZTEST(tof_readdress_production, test_read_id_l4_single_unpaged_read)
+{
+    fake_bus bus{l4_bus()};
+    id_bytes out{};
+    zassert_equal(rd::read_id(model::l4cx, bus, 0x2c, out), 0);
+    zassert_equal(bus.wr8_n, 0, "no page registers on the L4");
+    zassert_equal(bus.rd_reg, rd::kL4IdReg);
+    zassert_equal(out.first, rd::kL4ModelId);
+}

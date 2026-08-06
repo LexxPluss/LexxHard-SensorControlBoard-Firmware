@@ -337,11 +337,18 @@ int main()
     // CAN DFU (which writes raw bytes into slot1, so only the embedded
     // trailer can request a swap), and the SCB reset that applies the swap
     // power-cycles the whole machine -- without a runtime confirm the image
-    // reverts before anyone can interact with it. Confirming only after
-    // every subsystem thread is up keeps MCUboot's rollback: a boot failure
-    // anywhere earlier still reverts to the previous image. A future
-    // dedicated ToF PRODUCTION target must decide its test-boot behaviour
-    // explicitly instead of inheriting this.
+    // reverts before anyone can interact with it.
+    //
+    // LIMITED GUARANTEE, stated precisely: RUN() creates threads with a
+    // 2-second start delay, so this confirm executes after thread CREATION
+    // but before any subsystem thread has actually run. Automatic rollback
+    // therefore covers crashes in main initialisation and thread creation
+    // only -- a fault once the threads start is already confirmed and
+    // stays. Deliberately kept immediate because of the verified CAN-DFU
+    // reboot cascade; do not delay the confirm past the thread start
+    // without first proving the cascade leaves it time to execute. A
+    // future dedicated ToF PRODUCTION target must decide its test-boot
+    // behaviour explicitly instead of inheriting this.
     if (int rc = boot_write_img_confirmed(); rc == 0)
         printk("tof_chain: image confirmed\n");
     else

@@ -92,4 +92,14 @@ tof_enum::readdress_result readdress(tof_enum::model m, i2c_ops &ops,
                                      uint8_t old7, uint8_t new7,
                                      tof_enum::id_bytes *seen = nullptr);
 
+// Raw identity read with the same failure policy as the guarded move: after
+// a transport failure nothing further is written. L7 (paged): a failed page
+// select returns, a failed id read returns WITHOUT attempting the restore,
+// the page-2 restore runs only after a successful read, and a failed
+// restore fails the whole read (a device stuck on page 0 is not usable).
+// L4: a single unpaged read. Returns 0 with `out` filled, else the errno of
+// the failing operation; no id-match judgement here -- that belongs to the
+// caller (the enumeration state machine).
+int read_id(tof_enum::model m, i2c_ops &ops, uint8_t addr7, tof_enum::id_bytes &out);
+
 }  // namespace lexxhard::tof_readdress
