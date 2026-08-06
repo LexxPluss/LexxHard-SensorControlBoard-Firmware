@@ -50,9 +50,13 @@ case "$mode" in
 esac
 
 head="$(git -C "$ZEPHYR" rev-parse HEAD)"
-if [ "$mode" = "apply" ] && [ "$head" != "$BASELINE" ]; then
+# apply AND verify are pinned to the baseline: a manifest bump must fail the
+# production build until the patches are re-validated against the new tree,
+# not pass because the diff happens to still apply. unapply stays unpinned
+# so `make update` can always hand west a pristine tree.
+if [ "$mode" != "unapply" ] && [ "$head" != "$BASELINE" ]; then
     echo "zephyr HEAD is $head, expected the pinned baseline $BASELINE" >&2
-    echo "(west update to the manifest revision before applying patches)" >&2
+    echo "(after a manifest bump: re-validate the patches, update BASELINE)" >&2
     exit 1
 fi
 

@@ -377,3 +377,13 @@ chain_result enumerate(chain_ops &ops, const chain_spec &spec)
 }
 
 }  // namespace lexxhard::tof_enum
+
+// The tri-state probe only exists on the interrupt-driven completion paths
+// of the patched driver (patches/zephyr/); the polling paths still return a
+// flat -EIO. Today CONFIG_I2C_STM32_INTERRUPT=y arrives via the Kconfig
+// default -- if it is ever switched off, enumeration would not break, it
+// would freeze fail-safe on every probe, which is safe but useless. Fail
+// the build instead. (Native-sim test builds are not STM32 and skip this.)
+#if defined(CONFIG_SOC_FAMILY_STM32) && !defined(CONFIG_I2C_STM32_INTERRUPT)
+#error "tof enumeration requires CONFIG_I2C_STM32_INTERRUPT: the NACK-classification patch covers only the interrupt-mode driver paths"
+#endif

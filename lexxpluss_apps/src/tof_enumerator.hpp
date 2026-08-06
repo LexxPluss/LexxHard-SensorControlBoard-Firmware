@@ -154,7 +154,9 @@ struct chain_ops {
 // transport_error -- the machine then freezes rather than guesses, and the
 // production build refuses to start anyway (the Makefile verifies the
 // patch before building). The NACK-plus-bus-fault priority lives in the
-// patch itself and is verified on hardware, not here.
+// patch itself and MUST be verified on hardware (empty address -> nack,
+// clamped SCL -> transport_error, live device -> ack); that check is still
+// pending, not done.
 inline probe_result classify_probe_rc(int rc)
 {
     if (rc == 0)
