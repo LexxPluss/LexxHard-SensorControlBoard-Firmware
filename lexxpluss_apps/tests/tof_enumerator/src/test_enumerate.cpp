@@ -40,6 +40,7 @@
 
 #include <zephyr/ztest.h>
 
+#include "tof_chain_spec.hpp"
 #include "tof_enumerator.hpp"
 
 namespace {
@@ -599,4 +600,20 @@ ZTEST(tof_enumerate, test_probe_rc_classifier)
     zassert_equal(classify_probe_rc(-ETIMEDOUT).rc, -ETIMEDOUT);
     zassert_true(classify_probe_rc(-EBUSY).state == probe_state::transport_error,
                  "unknown errnos must never pass as a clean NACK");
+}
+
+// The shipped Dasher spec must be valid by the machine's own validation and
+// carry the contract-owned source mapping (0 = right = position 1, 1 = left
+// = position 2 per the connectivity diagram, pending the frozen J29 map).
+ZTEST(tof_enumerate, test_shipped_dasher_spec_is_valid)
+{
+    auto const s{lexxhard::tof_chain::dasher_spec()};
+    fake_chain c{dasher_chain()};
+    auto const r{enumerate(c, s)};
+    zassert_true(r.spec == spec_error::none, "shipped spec must validate");
+    zassert_true(r.status == chain_status::complete);
+    zassert_equal(s.at[0].source_id, 0);
+    zassert_equal(s.at[1].source_id, 1);
+    zassert_true(s.at[0].expected == model::l7cx);
+    zassert_true(s.at[5].expected == model::l4cx);
 }

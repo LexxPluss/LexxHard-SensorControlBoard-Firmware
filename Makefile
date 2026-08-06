@@ -123,6 +123,21 @@ firmware_bypass_safety_lidar:
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.confirmed.bin out/zephyr_bypass_safety_lidar.signed.confirmed.bin
 
+# ToF chain enumeration build (AMRSW-2322 Phase 2): production firmware plus
+# the chain glue and the manual `tof enum` commissioning command. Requires
+# the NACK-classification patch (verified first) and stacks on the Dasher
+# safety-lidar bypass like the diagnostic build. Dedicated build directory
+# for the usual cache-leak reason.
+.PHONY: firmware_tof_chain
+firmware_tof_chain:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-chain -- -DENABLE_TOF_CHAIN=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-chain/zephyr/zephyr.signed.bin out/zephyr_tof_chain.signed.bin
+	mv build-tof-chain/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_chain.signed.confirmed.bin
+	cp out/zephyr_tof_chain.signed.confirmed.bin out/zephyr_tof_chain.test.bin
+	printf '\377' | dd of=out/zephyr_tof_chain.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_chain.test.bin) - 24)) conv=notrunc status=none
+
 .PHONY: firmware_initial
 firmware_initial:
 	$(MAKE) bootloader

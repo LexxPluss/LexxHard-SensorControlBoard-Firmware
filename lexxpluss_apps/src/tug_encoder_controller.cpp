@@ -63,6 +63,11 @@ public:
         return 0;
     }
 
+    void init_disconnected() {
+        k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
+        is_tug_connected_status.store(false);
+    }
+
     void run() {
         if (!device_is_ready(dev)) {
             LOG_ERR("TUG Encoder device not found");
@@ -401,6 +406,10 @@ void run(void *p1, void *p2, void *p3)
 
 bool is_tug_connected() {
     return impl.is_tug_connected();
+}
+
+void init_disconnected_for_tof() {
+    impl.init_disconnected();
 }
 
 k_thread thread;

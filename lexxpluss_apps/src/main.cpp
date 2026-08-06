@@ -41,6 +41,9 @@
 #include "gpio_controller.hpp"
 #include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
+#ifdef ENABLE_TOF_CHAIN
+#include "tof_chain_controller.hpp"
+#endif
 
 namespace {
 
@@ -57,7 +60,9 @@ K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(gpio_controller_stack, 2048);
+#ifndef ENABLE_TOF_CHAIN
 K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
+#endif
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 
 #define RUN(name, prio) \
@@ -298,7 +303,15 @@ int main()
     lexxhard::uss_controller::init();
     lexxhard::shutter_limit_switch::init();
     lexxhard::gpio_controller::init();
+#ifdef ENABLE_TOF_CHAIN
+    // The ToF chain owns i2c2; the tug encoder must resolve to
+    // "disconnected" without ever touching the bus, and its polling thread
+    // is not started.
+    lexxhard::tug_encoder_controller::init_disconnected_for_tof();
+    lexxhard::tof_chain_controller::init();
+#else
     lexxhard::tug_encoder_controller::init();
+#endif
 
     RUN(actuator_controller, 2);
     RUN(actuator_service_controller, 2);
@@ -312,7 +325,9 @@ int main()
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
     RUN(gpio_controller, 2);
+#ifndef ENABLE_TOF_CHAIN
     RUN(tug_encoder_controller, 2);
+#endif
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
 
