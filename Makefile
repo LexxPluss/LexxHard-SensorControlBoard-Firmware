@@ -73,6 +73,15 @@ test_tof_packer:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the ToF enumeration layer: currently the production
+# guarded readdress (exact-traffic properties the enumerator fakes cannot
+# prove, above all zero-writes-after-transport-error); the enumeration state
+# machine suite joins here.
+.PHONY: test_tof_enumerator
+test_tof_enumerator:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: firmware
 firmware:
 	$(RUNNER) west zephyr-export
