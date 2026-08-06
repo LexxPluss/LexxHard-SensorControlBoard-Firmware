@@ -30,6 +30,8 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 
 target_sources(app PRIVATE
     src/test_readdress_production.cpp
+    src/test_enumerate.cpp
     ${APP_SRC_DIR}/tof_readdress.cpp
+    ${APP_SRC_DIR}/tof_enumerator.cpp
 )
 target_include_directories(app PRIVATE ${APP_SRC_DIR})
