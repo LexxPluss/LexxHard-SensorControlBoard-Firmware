@@ -2,7 +2,7 @@
   "contract": "tof_can_wire_contract.md",
   "contract_version": "2026-08-02f",
   "contract_sha256": "8a3590d30f1fa334b68a579e3f20a12620afe82bf81328cec9312b662ea1ad1f",
-  "note": "CAN identifiers are deliberately absent: they are pending allocation and are injected by each implementation. Frames are hex, byte 0 leftmost. DLC is 8 for every frame.",
+  "note": "CAN identifiers are deliberately absent from the vectors: they are assigned in the contract (data 0x214, health 0x215) and injected by each implementation, so nothing here depends on the numbers. Frames are hex, byte 0 leftmost. DLC is 8 for every frame.",
   "constants": {
     "invalid_sentinel": 4095,
     "max_valid_mm": 4094,
