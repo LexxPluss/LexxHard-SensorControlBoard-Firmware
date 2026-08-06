@@ -42,8 +42,9 @@
 // frozen mapping arrives: electrical enumeration proves the type sequence,
 // never the mounting role of four identical boards.
 //
-// Target addresses 0x2A..0x2F are below every other device on this bus and
-// were used throughout the DS20001 bring-up.
+// Target addresses 0x2A..0x2F collide with no known device on this bus
+// (the on-board ADS7138 sits at 0x17) and were used throughout the DS20001
+// bring-up.
 
 #include "tof_enumerator.hpp"
 

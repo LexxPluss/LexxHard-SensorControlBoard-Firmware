@@ -335,6 +335,10 @@ private:
     static constexpr uint32_t DETECTION_RETRY_COUNT{10};
 } impl;
 
+#ifndef ENABLE_TOF_CHAIN
+// The ToF chain owns i2c2 and the tug encoder is initialised disconnected
+// with dev left null: these shell entries would dereference it. In
+// ENABLE_TOF_CHAIN builds the whole command group is not registered.
 int tug_encoder_info(const shell *shell, size_t argc, char **argv)
 {
     impl.tug_encoder_info(shell);
@@ -393,6 +397,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tug_encoder,
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(tug_encoder, &sub_tug_encoder, "TUG Encoder commands", NULL);
+#endif  // !ENABLE_TOF_CHAIN
 
 void init()
 {

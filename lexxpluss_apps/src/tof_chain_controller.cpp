@@ -68,6 +68,12 @@ constexpr uint32_t kSensorBootMs{DT_PROP(DT_PATH(tof_chain), sensor_boot_ms)};
 
 K_MUTEX_DEFINE(chain_mutex);
 
+// Set once by init(); the commissioning command refuses to run on a chain
+// whose control lines or bus never came up -- operating half-initialised
+// hardware would produce verdicts that look like chain findings.
+bool init_ok{false};
+int init_rc{0};
+
 // Explicit zero-length write, the same probe shape the diagnostics used;
 // classification of the return code is the one-line glue rule.
 int raw_probe(uint8_t addr7)
@@ -117,15 +123,16 @@ struct zephyr_chain_ops final : tof_enum::chain_ops {
     {
         uint8_t buf[2]{};
         if (m == tof_enum::model::l7cx) {
-            // ULD is_alive shape: page 0, read 0x0000/0x0001, page 2.
-            int rc{vl53_wr8(addr7, tof_readdress::kL7PageReg, 0x00)};
-            if (rc == 0)
-                rc = vl53_rd(addr7, tof_readdress::kL7IdReg, buf, sizeof buf);
-            int const restore{vl53_wr8(addr7, tof_readdress::kL7PageReg, 0x02)};
-            if (rc != 0)
+            // ULD is_alive shape: page 0, read 0x0000/0x0001, page 2. Same
+            // policy as the production readdress: after a transport failure
+            // nothing further is written -- a device that did not answer is
+            // not "restored", it is reported, and the machine freezes.
+            if (int const rc{vl53_wr8(addr7, tof_readdress::kL7PageReg, 0x00)}; rc != 0)
                 return rc;
-            if (restore != 0)
-                return restore;  // a device left on page 0 is not a usable read
+            if (int const rc{vl53_rd(addr7, tof_readdress::kL7IdReg, buf, sizeof buf)}; rc != 0)
+                return rc;
+            if (int const rc{vl53_wr8(addr7, tof_readdress::kL7PageReg, 0x02)}; rc != 0)
+                return rc;  // read ok but the device is stuck on page 0: not usable
         } else {
             if (int const rc{vl53_rd(addr7, tof_readdress::kL4IdReg, buf, sizeof buf)}; rc != 0)
                 return rc;
@@ -145,6 +152,12 @@ struct zephyr_chain_ops final : tof_enum::chain_ops {
     }
     int pulse_clock() override
     {
+        // Drive low FIRST: if an earlier failure left the line high, a
+        // naive high-then-low "pulse" would produce no rising edge and
+        // silently break the promise that a fresh run recovers the chain.
+        if (int const rc{gpio_pin_set_dt(&clock_pin, 0)}; rc != 0)
+            return rc;
+        k_busy_wait(100);
         if (int const rc{gpio_pin_set_dt(&clock_pin, 1)}; rc != 0)
             return rc;
         k_busy_wait(100);
@@ -220,6 +233,10 @@ const char *control_stage_name(tof_enum::control_stage s)
 
 int cmd_enum(const struct shell *shell, size_t, char **)
 {
+    if (!init_ok) {
+        shell_error(shell, "chain glue failed to initialise (rc=%d): refusing to run", init_rc);
+        return -ENODEV;
+    }
     if (k_mutex_lock(&chain_mutex, K_NO_WAIT) != 0) {
         shell_error(shell, "chain is busy (acquisition or another enum holds the lock)");
         return -EBUSY;
@@ -249,7 +266,11 @@ int cmd_enum(const struct shell *shell, size_t, char **)
                 r.source_allowed[0], r.source_allowed[1]);
     shell_print(shell, "note: driver return-code hardware verification PENDING "
                        "(empty addr->nack, clamped SCL->transport, live->ack)");
-    return r.status == tof_enum::chain_status::failed ? -EIO : 0;
+    // Distinct exit codes so scripts cannot mistake a degraded chain for a
+    // complete one: 0 only for COMPLETE, -ENODATA for DEGRADED, -EIO FAILED.
+    if (r.status == tof_enum::chain_status::complete)
+        return 0;
+    return r.status == tof_enum::chain_status::degraded ? -ENODATA : -EIO;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
@@ -269,11 +290,28 @@ k_mutex &chain_lock()
 
 void init()
 {
-    if (!device_is_ready(i2c2_dev))
+    init_ok = false;
+    if (!device_is_ready(i2c2_dev)) {
         LOG_ERR("i2c2 not ready");
-    if (gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE) != 0 ||
-        gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE) != 0)
-        LOG_ERR("chain control pins not configurable");
+        init_rc = -ENODEV;
+        return;
+    }
+    if (!gpio_is_ready_dt(&data_pin) || !gpio_is_ready_dt(&clock_pin)) {
+        LOG_ERR("chain control pin controller not ready");
+        init_rc = -ENODEV;
+        return;
+    }
+    if (int const rc{gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
+        LOG_ERR("data pin not configurable (%d)", rc);
+        init_rc = rc;
+        return;
+    }
+    if (int const rc{gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
+        LOG_ERR("clock pin not configurable (%d)", rc);
+        init_rc = rc;
+        return;
+    }
+    init_ok = true;
     // Deliberately NO enumeration here: `tof enum` is a manual commissioning
     // step, and the acquisition thread (Phase 3) will own the boot-time
     // sequence once it exists.

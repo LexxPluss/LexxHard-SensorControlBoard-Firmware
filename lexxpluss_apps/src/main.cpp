@@ -42,6 +42,7 @@
 #include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
 #ifdef ENABLE_TOF_CHAIN
+#include <zephyr/dfu/mcuboot.h>
 #include "tof_chain_controller.hpp"
 #endif
 
@@ -330,6 +331,22 @@ int main()
 #endif
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
+
+#ifdef ENABLE_TOF_CHAIN
+    // Commissioning builds are delivered as padded *test* images over the
+    // CAN DFU (which writes raw bytes into slot1, so only the embedded
+    // trailer can request a swap), and the SCB reset that applies the swap
+    // power-cycles the whole machine -- without a runtime confirm the image
+    // reverts before anyone can interact with it. Confirming only after
+    // every subsystem thread is up keeps MCUboot's rollback: a boot failure
+    // anywhere earlier still reverts to the previous image. A future
+    // dedicated ToF PRODUCTION target must decide its test-boot behaviour
+    // explicitly instead of inheriting this.
+    if (int rc = boot_write_img_confirmed(); rc == 0)
+        printk("tof_chain: image confirmed\n");
+    else
+        printk("tof_chain: image confirm failed (%d), will revert on next boot\n", rc);
+#endif
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
 
