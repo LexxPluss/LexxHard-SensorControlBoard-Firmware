@@ -476,8 +476,8 @@ void print_l7_postmortem(const struct shell *shell, const lexxhard::tof_diag_rea
         shell_print(shell, "verdict: device answers on the new address only");
     else if (r.old_probe_rc != 0 && r.new_probe_rc != 0)
         shell_print(shell, "verdict: no answer on either address -- capture SP1 level, power and an "
-                           "analyser trace BEFORE lpn alloff (LPn low resets the dynamic address "
-                           "and destroys this evidence)");
+                           "analyser trace BEFORE lpn alloff (alloff changes the enable/signal "
+                           "scene, and on L4 boards it also resets the dynamic address)");
     else
         shell_print(shell, "verdict: both addresses ACK -- address collision or multiple devices "
                            "enabled, stop immediately");

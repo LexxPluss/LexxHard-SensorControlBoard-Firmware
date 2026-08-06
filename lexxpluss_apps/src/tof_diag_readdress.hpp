@@ -84,10 +84,12 @@ result readdress_l4(i2c_ops &ops, uint8_t old_addr, uint8_t new_addr);
 //
 // A transient failure on DS20001 (2026-08-05) showed why every stage must be
 // individually observable and why a failure must be followed by probing BOTH
-// addresses immediately: LPn low resets the dynamic address to the default,
-// so any recovery that touches LPn destroys the evidence of how far the
-// write got. The post-mortem probes run before control returns to the
-// operator, with LPn untouched.
+// addresses immediately, with LPn untouched: touching LPn changes the
+// enable/signal scene the failure happened in, and on the L4 boards an
+// enable-low additionally resets the dynamic address (measured 2026-08-05
+// deep-night: the L4 enable is reset-class, while an L7 KEEPS its address
+// across enable-low while powered -- an earlier version of this comment
+// claimed the reset for both models, which the measurement refuted).
 
 inline constexpr uint16_t kL7PageReg{0x7fff};
 inline constexpr uint16_t kL7AddrReg{0x0004};
