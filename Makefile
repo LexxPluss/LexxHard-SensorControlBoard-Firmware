@@ -65,8 +65,11 @@ test:
 # Host-side tests for the ToF grid packer, driven by the golden vectors in
 # docs/can/ and pinning the contract SHA-256 (the firmware half of the
 # cross-repository lock; SCBDriver pins the same SHA on the decoder side).
+# The generator check runs first: it fails loudly if the contract was edited
+# without regenerating the vectors, which the SHA pins alone cannot see.
 .PHONY: test_tof_packer
 test_tof_packer:
+	$(RUNNER) python3 docs/can/gen_golden_vectors.py --check
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
