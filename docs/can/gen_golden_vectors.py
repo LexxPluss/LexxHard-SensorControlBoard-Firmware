@@ -718,7 +718,13 @@ def emit_header(v):
 
 
 def main():
-    check = "--check" in sys.argv[1:]
+    args = sys.argv[1:]
+    unknown = [a for a in args if a != "--check"]
+    if unknown:
+        # A typo like --chek must not silently fall through to generate mode
+        # and overwrite the committed artefacts.
+        sys.exit("unknown argument(s): %s -- only --check is accepted" % " ".join(unknown))
+    check = "--check" in args
     with open(os.path.join(HERE, CONTRACT), "rb") as f:
         contract_bytes = f.read()
     contract_sha = hashlib.sha256(contract_bytes).hexdigest()
