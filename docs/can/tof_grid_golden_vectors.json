@@ -1,7 +1,7 @@
 {
   "contract": "tof_can_wire_contract.md",
-  "contract_version": "2026-08-02e",
-  "contract_sha256": "9c09ebe2c5962c7d16a30102fd3e8c0c3f16b4259669039d9890afa882c0a37b",
+  "contract_version": "2026-08-02f",
+  "contract_sha256": "be5604fcbb089cd967fa87b6244ddd26e6fc83ee1a8767bf184eb484807f5348",
   "note": "CAN identifiers are deliberately absent: they are pending allocation and are injected by each implementation. Frames are hex, byte 0 leftmost. DLC is 8 for every frame.",
   "constants": {
     "invalid_sentinel": 4095,

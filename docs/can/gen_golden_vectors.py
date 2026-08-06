@@ -20,7 +20,7 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTRACT = "tof_can_wire_contract.md"
-CONTRACT_VERSION = "2026-08-02e"
+CONTRACT_VERSION = "2026-08-02f"
 
 INVALID = 0xFFF
 MAX_VALID = 0xFFE  # 4094 mm

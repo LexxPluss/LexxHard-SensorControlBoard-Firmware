@@ -30,14 +30,23 @@ Two identifiers are required:
 
 | Constant | Meaning | Value |
 | --- | --- | --- |
-| `TOF_GRID_DATA_ID` | all data frames, both sensors | pending allocation |
-| `TOF_GRID_HEALTH_ID` | all health frames, both sensors | pending allocation |
+| `TOF_GRID_DATA_ID` | all data frames, both sensors | `0x214` |
+| `TOF_GRID_HEALTH_ID` | all health frames, both sensors | `0x215` |
 
-The 0x2xx space is used in both directions across both repositories, and apparent gaps are not
-evidence of availability — `0x203` is the driver's PGV direction frame and `0x204` is the
-ultrasonic frame. IDs MUST come from the company allocation table. Until then, neither repository
-may hard-code a literal; both take the value from a build-time constant (firmware) or a ROS
-parameter (driver), and the golden vectors carry no ID field.
+`0x216` is additionally **reserved** for the four-channel drop-sense frame; its payload contract is
+separate and not yet written, so no filter or handler may claim it until that contract exists.
+
+These are a **self-assigned integration allocation**, authorized by the team (2026-08-06) in place
+of a central allocation table entry. Basis: a sweep of both repositories plus a live bus capture
+shows the SCB peripheral block `0x200-0x213` contiguously occupied and nothing above it; `0x214+`
+extends that block, and CAN arbitration ranks all three below every existing control and safety
+identifier. The relative order of `0x214` and `0x215` carries **no meaning**: this contract
+guarantees no ordering between data and health frames, and the two values are adjacent only because
+the block is contiguous. The assignment still has to be recorded in the team's CAN ID register —
+self-assignment means owning the allocation, not skipping the record.
+
+The values are injected as a build-time constant (firmware) and as a ROS parameter pair with these
+defaults (driver); the golden vectors carry no ID field.
 
 Source identity is carried **in the payload**, not in the identifier. This keeps every frame of one
 grid on a single identifier and costs one ID pair instead of one pair per sensor.
