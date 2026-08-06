@@ -585,3 +585,18 @@ ZTEST(tof_enumerate, test_post_census_violation_freezes_the_position)
     zassert_false(r.source_allowed[1], "the failing position's source is never granted");
     zassert_true(r.status == chain_status::degraded);
 }
+
+// The glue rule is deliberately tiny; these pin it. -ENXIO is what the
+// patched STM32 driver returns for a pure NACK; everything else that is
+// not success must land in transport_error with the errno preserved.
+ZTEST(tof_enumerate, test_probe_rc_classifier)
+{
+    zassert_true(classify_probe_rc(0).state == probe_state::ack);
+    zassert_true(classify_probe_rc(-ENXIO).state == probe_state::nack);
+    zassert_true(classify_probe_rc(-EIO).state == probe_state::transport_error);
+    zassert_equal(classify_probe_rc(-EIO).rc, -EIO);
+    zassert_true(classify_probe_rc(-ETIMEDOUT).state == probe_state::transport_error);
+    zassert_equal(classify_probe_rc(-ETIMEDOUT).rc, -ETIMEDOUT);
+    zassert_true(classify_probe_rc(-EBUSY).state == probe_state::transport_error,
+                 "unknown errnos must never pass as a clean NACK");
+}

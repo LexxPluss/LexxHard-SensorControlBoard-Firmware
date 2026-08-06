@@ -45,11 +45,14 @@ setup:
 	$(RUNNER) west init -l lexxpluss_apps
 	$(RUNNER) west update
 	$(RUNNER) west config --global zephyr.base-prefer configfile
+	./scripts/manage_zephyr_patches.sh apply
 	mkdir -p out
 
 .PHONY: update
 update:
+	./scripts/manage_zephyr_patches.sh unapply
 	$(RUNNER) west update
+	./scripts/manage_zephyr_patches.sh apply
 
 .PHONY: bootloader
 bootloader:
@@ -84,6 +87,7 @@ test_tof_enumerator:
 
 .PHONY: firmware
 firmware:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr.signed.bin
@@ -91,6 +95,7 @@ firmware:
 
 .PHONY: firmware_two_state_ksw
 firmware_two_state_ksw:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_two_state_ksw.signed.bin
@@ -98,6 +103,7 @@ firmware_two_state_ksw:
 
 .PHONY: firmware_interlock
 firmware_interlock:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
@@ -111,6 +117,7 @@ firmware_interlock:
 # silently emit a bypassed binary under the production filename out/zephyr.signed.bin.
 .PHONY: firmware_bypass_safety_lidar
 firmware_bypass_safety_lidar:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin

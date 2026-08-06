@@ -1,0 +1,169 @@
+Subject: [PATCH] drivers: i2c: stm32_v2: distinguish NACK from transport faults
+
+Baseline: zephyr v3.6.0 (468eb56cf242eedba62006ee758700ee6148763f)
+Applies to: drivers/i2c/i2c_ll_stm32_v2.c (interrupt-mode completion paths;
+the polling-mode build is out of scope for this integration, which selects
+CONFIG_I2C_STM32_INTERRUPT).
+
+The ISR already classifies failures into is_nack / is_arlo / is_err plus a
+transfer timeout, and the completion paths even log which one happened --
+then collapse all of them into a flat -EIO. Callers that must tell "the
+addressed device answered no" from "the transport itself failed" (an
+enumeration scan of a shared default address, where only a clean NACK
+proves the address vacant) get no signal.
+
+Return codes after this patch, in priority order:
+
+  transfer timeout                          -ETIMEDOUT
+  bus error or arbitration loss (any mix)   -EIO
+  pure NACK only                            -ENXIO
+  success                                   0
+
+A NACK that arrived together with a bus fault is deliberately NOT a clean
+NACK. -ENXIO for an address NACK follows existing precedent in other
+Zephyr I2C drivers; the generic i2c.h API today documents only -EIO, which
+an upstream submission of this change needs to address explicitly.
+
+---
+diff --git a/drivers/i2c/i2c_ll_stm32_v2.c b/drivers/i2c/i2c_ll_stm32_v2.c
+index a685ebebeb7..2af835cf4cc 100644
+--- a/drivers/i2c/i2c_ll_stm32_v2.c
++++ b/drivers/i2c/i2c_ll_stm32_v2.c
+@@ -522,28 +522,50 @@ static int stm32_i2c_msg_write(const struct device *dev, struct i2c_msg *msg,
+ 
+ 	return 0;
+ error:
+-	if (data->current.is_arlo) {
+-		LOG_DBG("%s: ARLO %d", __func__,
+-				    data->current.is_arlo);
+-		data->current.is_arlo = 0U;
+-	}
++	{
++		/* Classify before the flags are cleared. A pure NACK is the
++		 * addressed device answering "no" and becomes -ENXIO; anything
++		 * the transport itself broke stays -EIO, and a timeout is
++		 * -ETIMEDOUT. Priority: timeout, then bus error/arbitration
++		 * loss, then NACK -- a NACK that arrived together with a bus
++		 * fault must not be reported as a clean NACK.
++		 */
++		uint32_t const nack = data->current.is_nack;
++		uint32_t const bus_fault =
++			data->current.is_arlo | data->current.is_err;
++
++		if (data->current.is_arlo) {
++			LOG_DBG("%s: ARLO %d", __func__,
++					    data->current.is_arlo);
++			data->current.is_arlo = 0U;
++		}
+ 
+-	if (data->current.is_nack) {
+-		LOG_DBG("%s: NACK", __func__);
+-		data->current.is_nack = 0U;
+-	}
++		if (data->current.is_nack) {
++			LOG_DBG("%s: NACK", __func__);
++			data->current.is_nack = 0U;
++		}
+ 
+-	if (data->current.is_err) {
+-		LOG_DBG("%s: ERR %d", __func__,
+-				    data->current.is_err);
+-		data->current.is_err = 0U;
+-	}
++		if (data->current.is_err) {
++			LOG_DBG("%s: ERR %d", __func__,
++					    data->current.is_err);
++			data->current.is_err = 0U;
++		}
+ 
+-	if (is_timeout) {
+-		LOG_DBG("%s: TIMEOUT", __func__);
+-	}
++		if (is_timeout) {
++			LOG_DBG("%s: TIMEOUT", __func__);
++			return -ETIMEDOUT;
++		}
+ 
+-	return -EIO;
++		if (bus_fault) {
++			return -EIO;
++		}
++
++		if (nack) {
++			return -ENXIO;
++		}
++
++		return -EIO;
++	}
+ }
+ 
+ static int stm32_i2c_msg_read(const struct device *dev, struct i2c_msg *msg,
+@@ -581,28 +603,50 @@ static int stm32_i2c_msg_read(const struct device *dev, struct i2c_msg *msg,
+ 
+ 	return 0;
+ error:
+-	if (data->current.is_arlo) {
+-		LOG_DBG("%s: ARLO %d", __func__,
+-				    data->current.is_arlo);
+-		data->current.is_arlo = 0U;
+-	}
++	{
++		/* Classify before the flags are cleared. A pure NACK is the
++		 * addressed device answering "no" and becomes -ENXIO; anything
++		 * the transport itself broke stays -EIO, and a timeout is
++		 * -ETIMEDOUT. Priority: timeout, then bus error/arbitration
++		 * loss, then NACK -- a NACK that arrived together with a bus
++		 * fault must not be reported as a clean NACK.
++		 */
++		uint32_t const nack = data->current.is_nack;
++		uint32_t const bus_fault =
++			data->current.is_arlo | data->current.is_err;
++
++		if (data->current.is_arlo) {
++			LOG_DBG("%s: ARLO %d", __func__,
++					    data->current.is_arlo);
++			data->current.is_arlo = 0U;
++		}
+ 
+-	if (data->current.is_nack) {
+-		LOG_DBG("%s: NACK", __func__);
+-		data->current.is_nack = 0U;
+-	}
++		if (data->current.is_nack) {
++			LOG_DBG("%s: NACK", __func__);
++			data->current.is_nack = 0U;
++		}
+ 
+-	if (data->current.is_err) {
+-		LOG_DBG("%s: ERR %d", __func__,
+-				    data->current.is_err);
+-		data->current.is_err = 0U;
+-	}
++		if (data->current.is_err) {
++			LOG_DBG("%s: ERR %d", __func__,
++					    data->current.is_err);
++			data->current.is_err = 0U;
++		}
+ 
+-	if (is_timeout) {
+-		LOG_DBG("%s: TIMEOUT", __func__);
+-	}
++		if (is_timeout) {
++			LOG_DBG("%s: TIMEOUT", __func__);
++			return -ETIMEDOUT;
++		}
+ 
+-	return -EIO;
++		if (bus_fault) {
++			return -EIO;
++		}
++
++		if (nack) {
++			return -ENXIO;
++		}
++
++		return -EIO;
++	}
+ }
+ 
+ #else /* !CONFIG_I2C_STM32_INTERRUPT */

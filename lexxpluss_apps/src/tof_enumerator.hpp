@@ -146,6 +146,24 @@ struct chain_ops {
     virtual ~chain_ops() = default;
 };
 
+// The whole glue rule for turning the patched driver's return codes into
+// the tri-state probe. Requires the in-repo Zephyr patch
+// (patches/zephyr/0001-i2c-stm32-v2-distinguish-nack.patch): a pure NACK
+// comes back as -ENXIO, transport faults as -EIO / -ETIMEDOUT. Without the
+// patch every failure reads -EIO and this classifier reports
+// transport_error -- the machine then freezes rather than guesses, and the
+// production build refuses to start anyway (the Makefile verifies the
+// patch before building). The NACK-plus-bus-fault priority lives in the
+// patch itself and is verified on hardware, not here.
+inline probe_result classify_probe_rc(int rc)
+{
+    if (rc == 0)
+        return {probe_state::ack, 0};
+    if (rc == -ENXIO)
+        return {probe_state::nack, 0};
+    return {probe_state::transport_error, rc};
+}
+
 // Logical mounting role of a drop-sense board. Electrical enumeration can
 // prove the TYPE sequence but never the mounting role of four identical
 // boards; the role table is injected from the frozen mapping document
