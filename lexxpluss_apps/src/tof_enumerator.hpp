@@ -108,6 +108,9 @@ enum class readdress_stage : uint8_t {
 struct readdress_result {
     int rc{0};
     readdress_stage failed_at{readdress_stage::none};
+    // Success is BOTH rc == 0 AND failed_at == none. Callers must check
+    // both: a misbehaving backend returning rc == 0 with a failure stage
+    // (or vice versa) must never pass as success on a single-field test.
 };
 
 // The six injected operations. Control operations return status: a failed

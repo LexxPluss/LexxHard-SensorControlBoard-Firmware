@@ -80,14 +80,15 @@ readdress_result readdress(model m, i2c_ops &ops, uint8_t old7, uint8_t new7,
 
     if (m == model::l7cx) {
         // Restore page 2 whether or not the id matched: never leave a
-        // responding device on page 0. A restore failure outranks the id
-        // verdict only when the id was good; on a mismatch the mismatch is
-        // the story and the restore rc is secondary.
+        // responding device on page 0. A restore FAILURE outranks the id
+        // verdict either way -- a device stuck on page 0 poisons the next
+        // fresh run, and the caller must know; the mismatch evidence is not
+        // lost because `seen` already carries the id bytes.
         int const restore_rc{ops.wr8(new7, kL7PageReg, 0x02)};
-        if (!id_ok)
-            return {-ENODEV, readdress_stage::verify};
         if (restore_rc != 0)
             return {restore_rc, readdress_stage::page_restore};
+        if (!id_ok)
+            return {-ENODEV, readdress_stage::verify};
     } else if (!id_ok) {
         return {-ENODEV, readdress_stage::verify};
     }

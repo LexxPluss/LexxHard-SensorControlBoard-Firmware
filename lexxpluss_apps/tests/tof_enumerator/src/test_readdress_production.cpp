@@ -253,3 +253,43 @@ ZTEST(tof_readdress_production, test_l7_page_restore_failure_reported_after_good
     zassert_equal(r.rc, -EIO);
     zassert_true(r.failed_at == readdress_stage::page_restore);
 }
+
+// A failed page-2 restore outranks the id verdict: a device stuck on page 0
+// poisons the next fresh run, and `seen` keeps the mismatch evidence anyway.
+ZTEST(tof_readdress_production, test_l7_mismatch_with_failed_restore_reports_the_restore)
+{
+    fake_bus bus{l7_bus()};
+    bus.rd_data[0] = 0x00;
+    bus.rd_data[1] = 0x00;
+    bus.wr8_script[2] = -EIO;  // the restore write fails
+    id_bytes seen{};
+    auto const r{rd::readdress(model::l7cx, bus, 0x29, 0x2a, &seen)};
+    zassert_equal(r.rc, -EIO);
+    zassert_true(r.failed_at == readdress_stage::page_restore);
+    zassert_equal(seen.first, 0x00, "mismatch evidence still delivered via seen");
+}
+
+ZTEST(tof_readdress_production, test_l7_addr_write_failure_after_page_select_stops)
+{
+    fake_bus bus{l7_bus()};
+    bus.wr8_script[1] = -EIO;  // page select succeeded, address write fails
+    auto const r{rd::readdress(model::l7cx, bus, 0x29, 0x2a)};
+    zassert_equal(r.rc, -EIO);
+    zassert_true(r.failed_at == readdress_stage::addr_write);
+    zassert_equal(bus.wr8_n, 2, "no restore write after a failed address write");
+    zassert_equal(bus.rd_n, 0, "no id read after a failed address write");
+}
+
+// Policy under test: a failed verify READ freezes without attempting the
+// page restore -- the device's page state is unknown and further writes to
+// an unresponsive address prove nothing (the L4 test alone would not cover
+// the L7 branch).
+ZTEST(tof_readdress_production, test_l7_verify_read_failure_freezes_without_restore)
+{
+    fake_bus bus{l7_bus()};
+    bus.rd_rc = -EIO;
+    auto const r{rd::readdress(model::l7cx, bus, 0x29, 0x2a)};
+    zassert_equal(r.rc, -EIO);
+    zassert_true(r.failed_at == readdress_stage::verify);
+    zassert_equal(bus.wr8_n, 2, "no page-2 restore after a failed verify read");
+}
