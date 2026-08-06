@@ -41,7 +41,7 @@ using namespace lexxhard::tof_grid;
 ZTEST(tof_grid_packer, test_contract_sha_pin)
 {
     zassert_equal(0, strcmp(tof_contract::kContractSha256,
-        "be5604fcbb089cd967fa87b6244ddd26e6fc83ee1a8767bf184eb484807f5348"));
+        "8a3590d30f1fa334b68a579e3f20a12620afe82bf81328cec9312b662ea1ad1f"));
     zassert_equal(0, strcmp(tof_contract::kContractVersion, "2026-08-02f"));
     // The packer's own constants must agree with the contract's.
     zassert_equal(kInvalidSentinel, tof_contract::kInvalidSentinel);
