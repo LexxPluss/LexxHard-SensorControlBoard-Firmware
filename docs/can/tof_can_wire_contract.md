@@ -1,8 +1,9 @@
 # ToF grid CAN wire contract (AMRSW-2322)
 
-Contract version: **2026-08-02e**
-Status: **frozen** for implementation. Everything below is normative except the numeric CAN IDs,
-which are pending allocation and MUST be injected as constants/configuration.
+Contract version: **2026-08-02f**
+Status: **frozen** for implementation. Everything below is normative. The numeric CAN IDs are
+assigned (see the identifier section) and are still injected as constants/configuration rather
+than parsed out of this prose.
 
 This document is the single source of truth shared by two repositories:
 
