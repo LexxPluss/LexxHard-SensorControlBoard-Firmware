@@ -29,6 +29,7 @@
 
 #include "tof_contract_vectors.h"
 #include "tof_grid_packer.hpp"
+#include "tof_can_ids.hpp"
 
 using namespace lexxhard::tof_grid;
 
@@ -40,13 +41,42 @@ using namespace lexxhard::tof_grid;
 ZTEST(tof_grid_packer, test_contract_sha_pin)
 {
     zassert_equal(0, strcmp(tof_contract::kContractSha256,
-        "9c09ebe2c5962c7d16a30102fd3e8c0c3f16b4259669039d9890afa882c0a37b"));
-    zassert_equal(0, strcmp(tof_contract::kContractVersion, "2026-08-02e"));
+        "be5604fcbb089cd967fa87b6244ddd26e6fc83ee1a8767bf184eb484807f5348"));
+    zassert_equal(0, strcmp(tof_contract::kContractVersion, "2026-08-02f"));
     // The packer's own constants must agree with the contract's.
     zassert_equal(kInvalidSentinel, tof_contract::kInvalidSentinel);
     zassert_equal(kMaxValidMm, tof_contract::kMaxValidMm);
     zassert_equal(kZones, tof_contract::kZones);
     zassert_equal(kDataFrames, tof_contract::kChunksPerGrid);
+}
+
+ZTEST(tof_grid_packer, test_can_id_assignment)
+{
+    namespace ids = lexxhard::tof_can_ids;
+    // Pairwise distinct, standard 11-bit identifiers.
+    zassert_not_equal(ids::TOF_GRID_DATA_ID, ids::TOF_GRID_HEALTH_ID);
+    zassert_not_equal(ids::TOF_GRID_DATA_ID, ids::TOF_DROP_SENSE_RESERVED_ID);
+    zassert_not_equal(ids::TOF_GRID_HEALTH_ID, ids::TOF_DROP_SENSE_RESERVED_ID);
+    zassert_true(ids::TOF_GRID_DATA_ID <= 0x7ff);
+    zassert_true(ids::TOF_GRID_HEALTH_ID <= 0x7ff);
+    zassert_true(ids::TOF_DROP_SENSE_RESERVED_ID <= 0x7ff);
+    // No collision with any identifier either repository uses today, in
+    // either direction. This list is the 2026-08-06 sweep the assignment was
+    // based on (firmware zcan_*/CAN_ID_* defines, SCBDriver can_ids.hpp and a
+    // live capture); extend it when a new identifier is introduced.
+    static constexpr uint16_t kExisting[]{
+        0x100, 0x101, 0x103, 0x110, 0x111, 0x112, 0x113, 0x120, 0x130, 0x131,  // BMU
+        0x200, 0x201, 0x202, 0x203,                                            // PGV
+        0x204, 0x205, 0x206, 0x207,                                            // USS, LED, IMU
+        0x208, 0x209, 0x20a, 0x20b,                                            // actuator
+        0x20c, 0x20d, 0x20e, 0x20f,                                            // board, DFU
+        0x210, 0x211, 0x212, 0x213,                                            // tug encoder, GPIO, actuator service
+    };
+    for (auto const existing : kExisting) {
+        zassert_not_equal(ids::TOF_GRID_DATA_ID, existing);
+        zassert_not_equal(ids::TOF_GRID_HEALTH_ID, existing);
+        zassert_not_equal(ids::TOF_DROP_SENSE_RESERVED_ID, existing);
+    }
 }
 
 namespace {
