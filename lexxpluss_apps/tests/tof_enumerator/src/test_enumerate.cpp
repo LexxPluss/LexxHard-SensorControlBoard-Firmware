@@ -64,7 +64,14 @@ struct fake_chain final : chain_ops {
         uint8_t addr{kDefaultAddr};
         id_bytes custom_id{};       // used when custom
         bool use_custom_id{false};
-        int vanish_at_pulse{-1};    // present=false when pulse count reaches this
+        // The vanish knobs MUTE the sensor (it stops answering) without
+        // removing the board: the flip-flop chain stays intact, which is
+        // the physical situation "verified device went silent". present ==
+        // false is reserved for a genuinely absent board and breaks the
+        // enable cascade for everything downstream.
+        int vanish_at_pulse{-1};
+        int vanish_at_readdress{-1};
+        bool mute{false};
     };
     device dev[kMax]{};
     size_t count{0};
@@ -122,7 +129,7 @@ struct fake_chain final : chain_ops {
     int device_at(uint8_t addr) const
     {
         for (size_t i{0}; i < count; ++i)
-            if (dev[i].present && enabled(i) && dev[i].addr == addr)
+            if (dev[i].present && !dev[i].mute && enabled(i) && dev[i].addr == addr)
                 return static_cast<int>(i);
         return -1;
     }
@@ -160,6 +167,9 @@ struct fake_chain final : chain_ops {
     {
         push(op_kind::readdress, new7, false);
         ++readdress_calls;
+        for (size_t i{0}; i < count; ++i)
+            if (dev[i].vanish_at_readdress >= 0 && readdress_calls >= dev[i].vanish_at_readdress)
+                dev[i].mute = true;
         if (fail_readdress_at_call > 0 && readdress_calls == fail_readdress_at_call)
             return readdress_failure;
         (void)m;
@@ -192,7 +202,7 @@ struct fake_chain final : chain_ops {
             ++position_pulses;
         for (size_t i{0}; i < count; ++i)
             if (dev[i].vanish_at_pulse >= 0 && position_pulses >= dev[i].vanish_at_pulse)
-                dev[i].present = false;
+                dev[i].mute = true;
         refresh_enables();
         return 0;
     }
@@ -221,10 +231,10 @@ fake_chain dasher_chain()
 {
     fake_chain c{};
     c.count = 6;
-    c.dev[0] = {true, model::l7cx, kDefaultAddr, {}, false, -1};
-    c.dev[1] = {true, model::l7cx, kDefaultAddr, {}, false, -1};
+    c.dev[0] = {true, model::l7cx, kDefaultAddr, {}, false, -1, -1};
+    c.dev[1] = {true, model::l7cx, kDefaultAddr, {}, false, -1, -1};
     for (size_t i{2}; i < 6; ++i)
-        c.dev[i] = {true, model::l4cx, kDefaultAddr, {}, false, -1};
+        c.dev[i] = {true, model::l4cx, kDefaultAddr, {}, false, -1, -1};
     return c;
 }
 
@@ -303,6 +313,7 @@ ZTEST(tof_enumerate, test_invalid_specs_rejected_with_zero_ops)
                      static_cast<int>(tc.want));
         zassert_true(r.status == chain_status::failed);
         zassert_equal(c.log_n, 0u, "hardware was touched by an invalid spec");
+        zassert_equal(r.positions, 0u, "an invalid count must not leak into the result");
     }
 }
 
@@ -478,6 +489,9 @@ ZTEST(tof_enumerate, test_control_failure_marks_state_unknown_and_revokes_all)
     auto const r{enumerate(c, s)};
 
     zassert_true(r.at[2].verdict == outcome::control_failed);
+    zassert_equal(r.at[2].rc, -EIO, "the original errno must survive");
+    zassert_true(r.control_failed_at == control_stage::advance_pulse);
+    zassert_equal(r.control_rc, -EIO);
     zassert_equal(r.frozen_at, 3);
     zassert_false(r.control_state_known);
     zassert_true(r.at[0].verdict == outcome::enumerated);
@@ -494,6 +508,8 @@ ZTEST(tof_enumerate, test_setup_control_failure_freezes_before_any_position)
     auto const r{enumerate(c, s)};
 
     zassert_equal(r.frozen_at, 0, "setup phase");
+    zassert_true(r.control_failed_at == control_stage::data_low);
+    zassert_equal(r.control_rc, -EIO);
     zassert_false(r.control_state_known);
     zassert_false(r.data_commanded_high);
     zassert_true(r.status == chain_status::failed);
@@ -529,6 +545,25 @@ ZTEST(tof_enumerate, test_readdress_failure_freezes_with_stage_detail)
     zassert_equal(r.frozen_at, 3);
     zassert_equal(r.pulses_issued, 2, "no clock after the freeze");
     zassert_true(r.source_allowed[0] && r.source_allowed[1]);
+    zassert_true(r.status == chain_status::degraded);
+}
+
+// The post-census must apply the SAME revocation rule as the pre-census: a
+// verified device vanishing between a position's pre- and post-census is
+// caught in the post pass and still revokes exactly its own source.
+ZTEST(tof_enumerate, test_vanish_during_post_census_revokes_only_its_source)
+{
+    chain_spec const s{dasher_spec()};
+    fake_chain c{dasher_chain()};
+    c.dev[0].vanish_at_readdress = 3;  // disappears while position 3's move runs
+    auto const r{enumerate(c, s)};
+
+    zassert_true(r.at[2].verdict == outcome::verified_device_missing);
+    zassert_equal(r.at[2].offending_addr, 0x2A);
+    zassert_equal(r.frozen_at, 3);
+    zassert_true(r.at[0].verdict == outcome::enumerated, "verdicts are history");
+    zassert_false(r.source_allowed[0], "revoked in the POST census");
+    zassert_true(r.source_allowed[1], "the untouched source keeps its permission");
     zassert_true(r.status == chain_status::degraded);
 }
 

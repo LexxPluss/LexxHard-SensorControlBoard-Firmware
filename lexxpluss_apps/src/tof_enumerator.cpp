@@ -181,10 +181,10 @@ bool id_matches(model m, const id_bytes &b)
 chain_result enumerate(chain_ops &ops, const chain_spec &spec)
 {
     chain_result r{};
-    r.positions = spec.positions;
     r.spec = validate(spec);
     if (r.spec != spec_error::none)
-        return r;  // status stays failed; ZERO hardware operations
+        return r;  // status stays failed; ZERO hardware operations; positions stays 0
+    r.positions = spec.positions;
 
     // Grants are collected here and the revocation table is applied at the
     // end: the final source_allowed is decided by the table, never read
@@ -199,27 +199,41 @@ chain_result enumerate(chain_ops &ops, const chain_spec &spec)
         r.at[pos_index].offending_addr = offending;
         r.frozen_at = static_cast<int8_t>(pos_index + 1);
     }};
+    // One revocation rule for BOTH census passes: a transport error revokes
+    // everything, a verified device gone silent revokes exactly its source.
+    // Shared so the pre- and post-readdress paths cannot drift apart.
+    auto apply_census_failure{[&](size_t pos_index, const census &c) {
+        freeze(pos_index, c.verdict, c.rc, c.offending);
+        if (c.verdict == outcome::transport_failed)
+            revoke_all = true;
+        if (c.verdict == outcome::verified_device_missing) {
+            for (size_t j{0}; j < spec.positions; ++j)
+                if (spec.at[j].target_addr == c.offending && spec.at[j].source_id >= 0)
+                    granted[spec.at[j].source_id] = false;
+        }
+    }};
 
     // ---- all-off, then enable-start ----
-    if (ops.set_data(false) != 0) {
+    auto setup_control_failure{[&](control_stage stage, int rc) {
         r.frozen_at = 0;
         r.control_state_known = false;
+        r.control_failed_at = stage;
+        r.control_rc = rc;
         r.status = chain_status::failed;
+    }};
+    if (int const rc{ops.set_data(false)}; rc != 0) {
+        setup_control_failure(control_stage::data_low, rc);
         return r;
     }
     ops.wait(chain_ops::wait_reason::data_settle);
     for (uint8_t i{0}; i < spec.alloff_pulses; ++i) {
-        if (ops.pulse_clock() != 0) {
-            r.frozen_at = 0;
-            r.control_state_known = false;
-            r.status = chain_status::failed;
+        if (int const rc{ops.pulse_clock()}; rc != 0) {
+            setup_control_failure(control_stage::alloff_pulse, rc);
             return r;
         }
     }
-    if (ops.set_data(true) != 0) {
-        r.frozen_at = 0;
-        r.control_state_known = false;
-        r.status = chain_status::failed;
+    if (int const rc{ops.set_data(true)}; rc != 0) {
+        setup_control_failure(control_stage::data_high, rc);
         return r;
     }
     r.data_commanded_high = true;
@@ -228,9 +242,11 @@ chain_result enumerate(chain_ops &ops, const chain_spec &spec)
     // ---- one position per clock ----
     for (size_t k{0}; k < spec.positions; ++k) {
         if (k > 0) {
-            if (ops.pulse_clock() != 0) {
-                freeze(k, outcome::control_failed, 0, 0);
+            if (int const rc{ops.pulse_clock()}; rc != 0) {
+                freeze(k, outcome::control_failed, rc, 0);
                 r.control_state_known = false;
+                r.control_failed_at = control_stage::advance_pulse;
+                r.control_rc = rc;
                 revoke_all = true;
                 break;
             }
@@ -241,14 +257,7 @@ chain_result enumerate(chain_ops &ops, const chain_spec &spec)
 
         census const c{run_census(ops, spec, owned, k)};
         if (!c.clean) {
-            freeze(k, c.verdict, c.rc, c.offending);
-            if (c.verdict == outcome::transport_failed)
-                revoke_all = true;
-            if (c.verdict == outcome::verified_device_missing) {
-                for (size_t j{0}; j < spec.positions; ++j)
-                    if (spec.at[j].target_addr == c.offending && spec.at[j].source_id >= 0)
-                        granted[spec.at[j].source_id] = false;
-            }
+            apply_census_failure(k, c);
             break;
         }
 
@@ -304,9 +313,7 @@ chain_result enumerate(chain_ops &ops, const chain_spec &spec)
                     census const after{run_census(ops, spec, owned, k)};
                     if (!after.clean) {
                         owned[k] = false;
-                        freeze(k, after.verdict, after.rc, after.offending);
-                        if (after.verdict == outcome::transport_failed)
-                            revoke_all = true;
+                        apply_census_failure(k, after);
                         frozen = true;
                     } else if (after.d != probe_state::nack) {
                         owned[k] = false;

@@ -283,9 +283,15 @@ struct position_result {
 // positions stay enabled on their verified addresses (evidence preserved,
 // and the healthy hanging sensors keep working). Recovery from a frozen
 // chain is a fresh run (which starts with all-off), not an in-place repair.
+// Which control operation failed, for control_failed diagnostics.
+enum class control_stage : uint8_t { none, data_low, alloff_pulse, data_high, advance_pulse };
+
 struct chain_result {
     chain_status status{chain_status::failed};
     spec_error spec{spec_error::none};
+    // Number of VALID positions reported in at[]. Zero when the spec was
+    // rejected -- an invalid position count must not leak into a bound that
+    // consumers iterate with.
     size_t positions{0};
     position_result at[chain_spec::kMaxPositions]{};
     // Commanded state on return -- what was ASKED of the hardware, never a
@@ -293,6 +299,8 @@ struct chain_result {
     // control_failed freeze the hardware may not have executed the last
     // request, so consumers must treat the commanded values as unknown.
     bool control_state_known{true};
+    control_stage control_failed_at{control_stage::none};
+    int control_rc{0};
     bool data_commanded_high{false};
     uint8_t pulses_issued{0};    // excludes the all-off burst
     // interpretation
