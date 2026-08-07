@@ -73,9 +73,10 @@ private:
     static void warn_if_center_requested(int8_t location, uint8_t power)
     {
         LOG_DBG("Center init/location request received (location:%d power:%u) -- ignored.", location, power);
-        if (location != 0 || power != 0)
+        if (location != 0 || power != 0) {
             LOG_WRN("ignoring non-degenerate init/location request for Center (location:%d power:%u): "
                      "Shutter is not an encoder-controlled actuator.", location, power);
+        }
     }
 
     std::optional<struct msg_response> handle_request(struct  msg_request const& msg_req)

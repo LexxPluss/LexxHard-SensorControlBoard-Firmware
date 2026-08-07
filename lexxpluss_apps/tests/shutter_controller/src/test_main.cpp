@@ -195,8 +195,8 @@ ZTEST(shutter_controller, test_stall_guard_clears_on_direction_change)
     zassert_equal(guard.retry_count(), 0);
 }
 
-// Regression: a transient stop from run()'s emergency/fail/stale-command
-// override must not look like a legitimate direction change.
+// Regression: a transient stop from run()'s emergency/fail override must
+// not look like a legitimate direction change.
 ZTEST(shutter_controller, test_stall_guard_survives_transient_stop_during_retry)
 {
     stall_guard guard;
@@ -205,7 +205,7 @@ ZTEST(shutter_controller, test_stall_guard_survives_transient_stop_during_retry)
     guard.poll(requested, state::between, ARRIVAL_TIMEOUT_MS);
     zassert_equal(guard.retry_count(), 1);
 
-    // override_stop fires for one cycle (e.g. is_command_stale()), then the
+    // override_stop fires for one cycle (e.g. emergency/fail), then the
     // same direction resumes.
     guard.poll({request::stop, 0}, state::between, ARRIVAL_TIMEOUT_MS + 1);
     auto const cmd{guard.poll(requested, state::between, ARRIVAL_TIMEOUT_MS + 2)};
@@ -341,11 +341,32 @@ ZTEST(shutter_controller, test_stall_guard_pauses_timer_repeated_transient_stops
     zassert_equal(guard.retry_count(), 0);
 }
 
-// TODO(placeholder threshold, see shutter_controller.hpp).
-ZTEST(shutter_controller, test_command_stale_boundary)
+// Regression: a Limit Switch fault to state::unknown mid-drive must not be
+// treated like a transient safety override (emergency/fail) -- that would
+// pause the elapsed-time clock forever and defeat stall detection entirely,
+// leaving the anomaly permanently unobservable even though the motor itself
+// is already safely stopped by decide_drive().
+ZTEST(shutter_controller, test_stall_guard_detects_limit_switch_unknown_mid_drive)
 {
-    zassert_false(is_command_stale(0));
-    zassert_false(is_command_stale(249));
-    zassert_true(is_command_stale(250));
-    zassert_true(is_command_stale(251));
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+
+    // decide_drive() feeds {stop,0} every cycle while state::unknown persists.
+    guard.poll({request::stop, 0}, state::unknown, ARRIVAL_TIMEOUT_MS);
+    zassert_equal(guard.retry_count(), 1);
+
+    guard.poll({request::stop, 0}, state::unknown, 2 * ARRIVAL_TIMEOUT_MS);
+    zassert_equal(guard.retry_count(), 2);
+}
+
+ZTEST(shutter_controller, test_stall_guard_latches_when_limit_switch_stays_unknown)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+
+    for (int i = 1; i <= 11; ++i)
+        guard.poll({request::stop, 0}, state::unknown, i * ARRIVAL_TIMEOUT_MS);
+    zassert_true(guard.is_latched());
 }

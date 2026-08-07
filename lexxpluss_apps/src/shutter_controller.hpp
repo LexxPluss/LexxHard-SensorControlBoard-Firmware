@@ -85,11 +85,4 @@ private:
     int retries{0};
 };
 
-// Shared with actuator_controller's ACTUATOR_COMMAND_TIMEOUT_MS -- a comms
-// fail-safe against a stale CAN 0x208 stream, not overtravel protection
-// (the Limit Switch alone owns that). 250ms is Left/Right's existing value.
-constexpr uint32_t COMMAND_FRESHNESS_TIMEOUT_MS{250};
-
-bool is_command_stale(uint32_t elapsed_ms_since_last_command);
-
 }

@@ -29,17 +29,20 @@ namespace lexxhard::shutter_controller {
 
 drive_command decide_drive(state current_state, request requested_direction, uint8_t requested_duty)
 {
-    if (requested_direction == request::stop || requested_duty == 0)
+    if (requested_direction == request::stop || requested_duty == 0) {
         return {request::stop, 0};
+    }
 
     switch (current_state) {
     case state::open:
-        if (requested_direction == request::toward_open)
+        if (requested_direction == request::toward_open) {
             return {request::stop, 0};
+        }
         break;
     case state::closed:
-        if (requested_direction == request::toward_closed)
+        if (requested_direction == request::toward_closed) {
             return {request::stop, 0};
+        }
         break;
     case state::between:
         break;
@@ -52,21 +55,26 @@ drive_command decide_drive(state current_state, request requested_direction, uin
 
 request request_from_raw_direction(int8_t raw_direction)
 {
-    if (raw_direction > 0)
+    if (raw_direction > 0) {
         return request::toward_open;
-    if (raw_direction < 0)
+    }
+    if (raw_direction < 0) {
         return request::toward_closed;
+    }
     return request::stop;
 }
 
 bool is_stalled(request driving_direction, state current_state, uint32_t elapsed_ms_in_direction)
 {
-    if (driving_direction == request::stop)
+    if (driving_direction == request::stop) {
         return false;
-    if (driving_direction == request::toward_open && current_state == state::open)
+    }
+    if (driving_direction == request::toward_open && current_state == state::open) {
         return false;
-    if (driving_direction == request::toward_closed && current_state == state::closed)
+    }
+    if (driving_direction == request::toward_closed && current_state == state::closed) {
         return false;
+    }
     return elapsed_ms_in_direction >= ARRIVAL_TIMEOUT_MS;
 }
 
@@ -82,17 +90,35 @@ drive_command stall_guard::poll(drive_command cmd, state current_state, uint32_t
             retries = 0;
             return cmd;
         }
+        if (current_state == state::unknown) {
+            // Limit Switch fault mid-drive: decide_drive() safely blocks the
+            // motor every cycle, but this is a stall, not a transient
+            // override -- let elapsed accumulate so it eventually surfaces
+            // via retry_count()/is_latched() instead of going unnoticed
+            // forever.
+            if (is_latched()) {
+                return {request::stop, 0};
+            }
+            uint32_t const elapsed{now_ms - direction_start_ms};
+            if (elapsed >= ARRIVAL_TIMEOUT_MS) {
+                ++retries;
+                direction_start_ms = now_ms;
+            }
+            return {request::stop, 0};
+        }
         // Transient safety-override stop -- preserve retry/latch history,
         // and slide the window so it doesn't count as elapsed once driving resumes.
         direction_start_ms = now_ms;
         return {request::stop, 0};
     }
-    if (is_latched())
+    if (is_latched()) {
         return {request::stop, 0};
+    }
 
     uint32_t const elapsed{now_ms - direction_start_ms};
-    if (!is_stalled(cmd.direction, current_state, elapsed))
+    if (!is_stalled(cmd.direction, current_state, elapsed)) {
         return cmd;
+    }
 
     // Stalled: retry with a fresh window, up to max_retries times, then give
     // up and latch (is_latched() above will keep returning stop until
@@ -100,11 +126,6 @@ drive_command stall_guard::poll(drive_command cmd, state current_state, uint32_t
     ++retries;
     direction_start_ms = now_ms;
     return {request::stop, 0};
-}
-
-bool is_command_stale(uint32_t elapsed_ms_since_last_command)
-{
-    return elapsed_ms_since_last_command >= COMMAND_FRESHNESS_TIMEOUT_MS;
 }
 
 }

@@ -54,6 +54,7 @@ public:
         dev.set_duty(dir, duty);
     }
     int32_t get_current() const { return dev.get_current(); }
+    bool ready() const { return dev.ready(); }
     bool is_failed() const { return dev.is_failed(); }
     std::tuple<shutter_controller::request, uint8_t> get_duty() const {
         auto const [dir, duty]{dev.get_duty()};
@@ -74,7 +75,6 @@ public:
             LOG_ERR("shutter pwm init failed.");
             return -1;
         }
-        last_command_uptime = k_uptime_get();
         init_ok = true;
         return 0;
     }
@@ -94,19 +94,20 @@ public:
             msg_request req;
             if (k_msgq_get(&msgq_request, &req, K_NO_WAIT) == 0) {
                 last_request = req;
-                last_command_uptime = k_uptime_get();
             }
 
             shutter_limit_switch::poll();
             auto const state{get_state()};
 
-            // emergency/fail/stale command all reset last_request so a
-            // frozen command can't silently resume once cleared.
-            auto const command_elapsed{static_cast<uint32_t>(k_uptime_get() - last_command_uptime)};
-            bool const override_stop{board_controller::is_emergency() || dev.is_failed()
-                                      || shutter_controller::is_command_stale(command_elapsed)};
-            if (override_stop)
+            // emergency/fail reset last_request so a frozen command can't
+            // silently resume once cleared. CAN 0x208 freshness is not
+            // checked here: Center's stop is Limit Switch/stall_guard, which
+            // is independent of ROS host liveness, and the actual ROS design
+            // is a single-shot publish per scene transition, not a stream.
+            bool const override_stop{board_controller::is_emergency() || dev.is_failed()};
+            if (override_stop) {
                 last_request = msg_request{};
+            }
 
             auto const requested_direction{shutter_controller::request_from_raw_direction(last_request.direction)};
             auto const decided{shutter_controller::decide_drive(state, requested_direction, last_request.power)};
@@ -122,17 +123,18 @@ public:
     }
 
     void print_info(const shell *shell) const {
-        auto const command_elapsed{static_cast<uint32_t>(k_uptime_get() - last_command_uptime)};
         auto const [direction, duty]{dev.get_duty()};
         shell_print(shell,
+                    "init_ok:%s fail_gpio_ready:%s "
                     "state:%s requested_direction:%d requested_power:%u "
-                    "emergency:%s fail:%d command_stale:%s direction:%d duty:%u "
+                    "emergency:%s fail:%d direction:%d duty:%u "
                     "stall_retries:%d stall_latched:%s current:%d",
+                    init_ok ? "yes" : "no",
+                    dev.ready() ? "yes" : "no",
                     shutter_limit_detector::to_cstr(get_state()),
                     last_request.direction, last_request.power,
                     board_controller::is_emergency() ? "yes" : "no",
                     dev.is_failed(),
-                    shutter_controller::is_command_stale(command_elapsed) ? "yes" : "no",
                     static_cast<int>(direction), duty,
                     stall.retry_count(), stall.is_latched() ? "yes" : "no",
                     dev.get_current());
@@ -148,7 +150,6 @@ private:
 
     shutter dev;
     shutter_controller::stall_guard stall;
-    int64_t last_command_uptime{0};
     msg_request last_request{0, 0};
     bool init_ok{false};
 } impl;

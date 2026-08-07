@@ -462,8 +462,9 @@ public:
             LOG_INF("invalid actuator position.");
             return -1;
         }
-        if (pwm.init(a) != 0)
+        if (pwm.init(a) != 0) {
             return -1;
+        }
         cnt.init(pos);
         return 0;
     }
@@ -760,12 +761,13 @@ private:
             act[i].direct(msg.actuators[i].direction, msg.actuators[i].power);
     }
     void handle_pwmtrampoline(const msg_pwmtrampoline &msg) {
-        if (msg.all)
+        if (msg.all) {
             pwm_direct_all(msg.direction, msg.duty);
-        else if (msg.index != 0)
+        } else if (msg.index != 0) {
             act[msg.index].direct(msg.direction, msg.duty);
-        else
+        } else {
             LOG_WRN("ignoring direct-PWM request for Center: use 'shutter_motor' commands instead.");
+        }
     }
     void pwm_direct_all(int direction, uint8_t pwm_duty = 0) {
         for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)

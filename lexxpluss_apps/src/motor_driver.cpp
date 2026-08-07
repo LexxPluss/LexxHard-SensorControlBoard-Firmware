@@ -59,10 +59,12 @@ int driver::init(axis a)
         current_adc = adc_reader::ACTUATOR_R;
         break;
     }
-    if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
+    if (!device_is_ready(dev[0]) || !device_is_ready(dev[1])) {
         return -1;
-    if (!ready())
+    }
+    if (!ready()) {
         return -1;
+    }
     gpio_pin_configure_dt(&fail_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     set_duty(0);
     return 0;
