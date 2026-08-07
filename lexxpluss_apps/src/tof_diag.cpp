@@ -340,12 +340,78 @@ bool roles_assigned(const struct shell *shell)
     return true;
 }
 
+// Clock timing, split into the three segments of one pulse plus a settle.
+// Split rather than a single "pulse width" on purpose: a chain position can
+// fail to latch because the high time is too short for the far end to see an
+// edge, OR because the low time is too short for the far end to return to a
+// low level, in which case the next attempt produces no rising edge at all.
+// One combined knob cannot tell those two apart. Defaults reproduce the
+// original fixed behaviour so an unconfigured build measures the old baseline.
+struct clk_timing {
+    uint32_t low_before_us{100};
+    uint32_t high_us{100};
+    uint32_t low_after_us{100};
+    uint32_t post_pulse_settle_ms{0};
+};
+clk_timing clk_t;
+
+// Upper bounds exist only to keep a typo from parking the shell for minutes;
+// they are not a statement about what the hardware needs.
+constexpr uint32_t kMaxSegmentUs{100000};
+constexpr uint32_t kMaxSettleMs{10000};
+
 void clk_pulse()
 {
-    gpio_pin_set_dt(&spare_pins[clk_index], 1);
-    k_busy_wait(100);
+    // Drive low first: if a previous run left the line high, a naive
+    // high-then-low sequence produces no rising edge and the chain silently
+    // fails to advance. This mirrors the production glue's ordering.
     gpio_pin_set_dt(&spare_pins[clk_index], 0);
-    k_busy_wait(100);
+    k_busy_wait(clk_t.low_before_us);
+    gpio_pin_set_dt(&spare_pins[clk_index], 1);
+    k_busy_wait(clk_t.high_us);
+    gpio_pin_set_dt(&spare_pins[clk_index], 0);
+    k_busy_wait(clk_t.low_after_us);
+    if (clk_t.post_pulse_settle_ms > 0)
+        k_msleep(clk_t.post_pulse_settle_ms);
+}
+
+int cmd_lpn_timing(const struct shell *shell, size_t argc, char **argv)
+{
+    if (argc == 1) {
+        shell_print(shell,
+                    "clk timing: low_before=%u us high=%u us low_after=%u us settle=%u ms",
+                    clk_t.low_before_us, clk_t.high_us, clk_t.low_after_us,
+                    clk_t.post_pulse_settle_ms);
+        return 0;
+    }
+    // All four or none: a partial set would silently leave some segments at
+    // the previous run's value, which is exactly how a timing matrix gets
+    // misattributed.
+    if (argc != 5) {
+        shell_error(shell, "usage: lpn timing <low_before_us> <high_us> <low_after_us> <settle_ms>");
+        return -EINVAL;
+    }
+    clk_timing next{};
+    if (!parse_u32(argv[1], next.low_before_us) || !parse_u32(argv[2], next.high_us) ||
+        !parse_u32(argv[3], next.low_after_us) || !parse_u32(argv[4], next.post_pulse_settle_ms)) {
+        shell_error(shell, "usage: lpn timing <low_before_us> <high_us> <low_after_us> <settle_ms>");
+        return -EINVAL;
+    }
+    if (next.low_before_us > kMaxSegmentUs || next.high_us > kMaxSegmentUs ||
+        next.low_after_us > kMaxSegmentUs) {
+        shell_error(shell, "each us segment must be <= %u", kMaxSegmentUs);
+        return -EINVAL;
+    }
+    if (next.post_pulse_settle_ms > kMaxSettleMs) {
+        shell_error(shell, "settle must be <= %u ms", kMaxSettleMs);
+        return -EINVAL;
+    }
+    clk_t = next;
+    shell_print(shell,
+                "clk timing set: low_before=%u us high=%u us low_after=%u us settle=%u ms",
+                clk_t.low_before_us, clk_t.high_us, clk_t.low_after_us,
+                clk_t.post_pulse_settle_ms);
+    return 0;
 }
 
 int cmd_lpn_alloff(const struct shell *shell, size_t argc, char **argv)
@@ -358,10 +424,14 @@ int cmd_lpn_alloff(const struct shell *shell, size_t argc, char **argv)
         return -EINVAL;
     }
     gpio_pin_set_dt(&spare_pins[lpn_index], 0);
-    k_busy_wait(100);
+    k_busy_wait(clk_t.low_before_us);
     for (uint32_t i{0}; i < pulses; ++i)
         clk_pulse();
-    shell_print(shell, "LPn low, %u clock pulses: all chain positions disabled", pulses);
+    shell_print(shell,
+                "LPn low, %u clock pulses: all chain positions disabled "
+                "[low_before=%u us high=%u us low_after=%u us settle=%u ms]",
+                pulses, clk_t.low_before_us, clk_t.high_us, clk_t.low_after_us,
+                clk_t.post_pulse_settle_ms);
     return 0;
 }
 
@@ -385,7 +455,13 @@ int cmd_lpn_pulse(const struct shell *shell, size_t argc, char **argv)
     }
     for (uint32_t i{0}; i < pulses; ++i)
         clk_pulse();
-    shell_print(shell, "%u clock pulse(s): LPn level shifted along the chain", pulses);
+    // The timing is echoed with every pulse so that a transcript can never be
+    // read back without knowing which configuration produced it.
+    shell_print(shell,
+                "%u clock pulse(s): LPn level shifted along the chain "
+                "[low_before=%u us high=%u us low_after=%u us settle=%u ms]",
+                pulses, clk_t.low_before_us, clk_t.high_us, clk_t.low_after_us,
+                clk_t.post_pulse_settle_ms);
     return 0;
 }
 
@@ -669,6 +745,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_lpn,
     SHELL_CMD_ARG(alloff, NULL, "alloff [pulses=8] - LPn low + pulses: disable whole chain", cmd_lpn_alloff, 1, 1),
     SHELL_CMD_ARG(first, NULL, "first - LPn high: enable chain position 1", cmd_lpn_first, 1, 0),
     SHELL_CMD_ARG(pulse, NULL, "pulse [n=1] - shift LPn level along the chain", cmd_lpn_pulse, 1, 1),
+    SHELL_CMD_ARG(timing, NULL,
+                  "timing [low_before_us high_us low_after_us settle_ms] - show or set clock timing",
+                  cmd_lpn_timing, 1, 4),
     SHELL_SUBCMD_SET_END
 );
 
