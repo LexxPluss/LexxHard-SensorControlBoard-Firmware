@@ -62,6 +62,13 @@
 // as C++ (designated-initializer ordering).
 extern "C" int tof_diag_pinctrl_restore(void);
 
+// Also defined in tof_diag_pinctrl.c: raises SparePinGPIO1..4 to
+// very-high-speed and reads that setting back from OSPEEDR. Must be
+// re-applied after every gpio_pin_configure_dt() on these pins -- see the
+// comment on tof_diag_spare_gpio_speed_apply() for why.
+extern "C" int tof_diag_spare_gpio_speed_apply(void);
+extern "C" const char *tof_diag_spare_gpio_speed_label(int index);
+
 namespace lexxhard::tof_diag {
 
 LOG_MODULE_REGISTER(tof_diag);
@@ -209,7 +216,8 @@ int cmd_info(const struct shell *shell, size_t, char **)
                 "lpn", lpn_index + 1, clk_index + 1);
     for (int i{0}; i < 4; ++i) {
         int const level{gpio_pin_get_dt(&spare_pins[i])};
-        shell_print(shell, "SparePinGPIO%d: level=%d", i + 1, level);
+        shell_print(shell, "SparePinGPIO%d: level=%d speed=%s", i + 1, level,
+                    tof_diag_spare_gpio_speed_label(i));
     }
     shell_print(shell, "note: SparePinGPIO5 is comm_mode, not touched by this tool");
     return 0;
@@ -326,8 +334,16 @@ int cmd_lpn_use(const struct shell *shell, size_t, char **argv)
     int ret{configure_role_pin(lpn_index)};
     if (ret == 0)
         ret = configure_role_pin(clk_index);
-    shell_print(shell, "lpn=SparePinGPIO%u clk=SparePinGPIO%u (configure: %d), both driven low",
-                lpn, clk, ret);
+    // gpio_pin_configure_dt() above resets OSPEEDR to low speed on both
+    // pins as a side effect (STM32 driver detail, see tof_diag_pinctrl.c);
+    // reapply very-high-speed to all four candidates every time roles are
+    // (re)assigned, not just once at boot.
+    int const speed_ret{tof_diag_spare_gpio_speed_apply()};
+    if (ret == 0)
+        ret = speed_ret;
+    shell_print(shell, "lpn=SparePinGPIO%u clk=SparePinGPIO%u (configure: %d, speed reapply: %d), "
+                       "both driven low",
+                lpn, clk, ret, speed_ret);
     return ret;
 }
 
@@ -787,6 +803,9 @@ void init()
     LOG_WRN("TOF_I2C_DIAG build: tug encoder polling disabled, `tof_diag` shell active");
     if (!device_is_ready(i2c2_dev))
         LOG_ERR("i2c2 not ready");
+    int const speed_ret{tof_diag_spare_gpio_speed_apply()};
+    if (speed_ret != 0)
+        LOG_ERR("SparePinGPIO1-4 very-high-speed pinctrl apply failed (%d)", speed_ret);
 }
 
 }
