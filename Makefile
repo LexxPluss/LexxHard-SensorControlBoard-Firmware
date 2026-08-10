@@ -51,6 +51,11 @@ setup:
 update:
 	$(RUNNER) west update
 
+.PHONY: test
+test:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west twister -T lexxpluss_apps/tests --platform native_sim -v -A /${WORKDIR}/extra
+
 .PHONY: bootloader
 bootloader:
 	$(RUNNER) west zephyr-export

@@ -38,6 +38,7 @@
 #include <zephyr/sys/util.h>
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
+#include "bmu_lipy041_decode.hpp"
 #include "can_controller.hpp"
 #include "common.hpp"
 #include "led_controller.hpp"
@@ -901,15 +902,12 @@ public:
         }
     }
     bool is_ok() const {
-        LOG_DBG("data.mod_status1 %d", (data.mod_status1 & 0b10111111) == 0);
-        LOG_DBG("data.mod_status1 %d", (data.mod_status2 & 0b11100001) == 0);
-        LOG_DBG("data.bmu_alarm1 %d", (data.bmu_alarm1  & 0b11111111) == 0);
-        LOG_DBG("data.bmu_alarm2 %d", (data.bmu_alarm2  & 0b00000001) == 0);
+        LOG_DBG("data100.fail_status1 %d", (data100.fail_status1 & 0b10111111) == 0);
+        LOG_DBG("data101.fail_status2 %d", (data101.fail_status2 & 0b11111111) == 0);
+        LOG_DBG("data113.leader_alarm1 %d", (data113.leader_alarm1 & 0b00000111) == 0);
+        LOG_DBG("data113.leader_alarm2 %d", (data113.leader_alarm2 & 0b00001111) == 0);
 
-        return ((data.mod_status1 & 0b10111111) == 0 ||
-                (data.mod_status2 & 0b11100001) == 0 ||
-                (data.bmu_alarm1  & 0b11111111) == 0 ||
-                (data.bmu_alarm2  & 0b00000001) == 0);
+        return lexxhard::bmu_lipy041::is_ok(data100, data101, data113);
     }
     void get_fet_state(bool &c_fet, bool &d_fet, bool &p_dsg) {
         gpio_dt_spec gpio_c_dev = GET_GPIO(bmu_c_fet);
@@ -932,43 +930,35 @@ public:
         p_dsg = gpio_pin_get_dt(&gpio_p_dev) == 1;
     }
     bool is_full_charge() const {
-        return (data.mod_status1 & 0b01000000) != 0;
+        return lexxhard::bmu_lipy041::is_full_charge(data100);
     }
     bool is_chargable() const {
-        return !is_full_charge() && data.rsoc < 95;
+        return lexxhard::bmu_lipy041::is_chargable(data100, data101);
     }
     bool is_charging() const {
-        return data.pack_a > 0;
+        return lexxhard::bmu_lipy041::is_charging(data101);
     }
     uint8_t get_rsoc() const {
-        return data.rsoc;
+        return data100.rsoc_min;
     }
 private:
     void handle_can(can_frame &frame) {
         switch (frame.id) {
         case 0x100:
-            data.mod_status1 = frame.data[0];
-            data.asoc = frame.data[2];
-            data.rsoc = frame.data[3];
+            lexxhard::bmu_lipy041::decode_0x100(frame.data, data100);
             break;
         case 0x101:
-            data.mod_status2 = frame.data[6];
-            data.pack_a = (frame.data[0] << 8) | frame.data[1];
-            data.pack_v = (frame.data[4] << 8) | frame.data[5];
+            lexxhard::bmu_lipy041::decode_0x101(frame.data, data101);
             break;
         case 0x113:
-            data.bmu_alarm1 = frame.data[4];
-            data.bmu_alarm2 = frame.data[5];
+            lexxhard::bmu_lipy041::decode_0x113(frame.data, data113);
             break;
         }
     }
     const device *dev{nullptr};
-    struct {
-        int16_t pack_a{0};
-        uint16_t pack_v{0};
-        uint8_t mod_status1{0xff}, mod_status2{0xff}, bmu_alarm1{0xff}, bmu_alarm2{0xff};
-        uint8_t asoc{0}, rsoc{0};
-    } data;
+    lexxhard::bmu_lipy041::msg_0x100 data100;
+    lexxhard::bmu_lipy041::msg_0x101 data101;
+    lexxhard::bmu_lipy041::msg_0x113 data113;
 };
 
 class dcdc_converter { // Variables Implemented

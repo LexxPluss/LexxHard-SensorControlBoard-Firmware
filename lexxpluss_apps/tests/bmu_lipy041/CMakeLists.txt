@@ -1,4 +1,4 @@
-# Copyright (c) 2022, LexxPluss Inc.
+# Copyright (c) 2026, LexxPluss Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -21,16 +21,15 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-/.idea/
-/.west/
-/bootloader/
-/build/
-/build-bypass-safety-lidar/
-/build-mcuboot/
-/build-test/
-/twister-out/
-/modules/
-/ros_msgs/
-/tools/
-/zephyr/
-/compile_commands.json
+cmake_minimum_required(VERSION 3.20.0)
+
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(bmu_lipy041_decode_test)
+
+set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
+
+target_sources(app PRIVATE
+    src/test_main.cpp
+    ${APP_SRC_DIR}/bmu_lipy041_decode.cpp
+)
+target_include_directories(app PRIVATE ${APP_SRC_DIR})
