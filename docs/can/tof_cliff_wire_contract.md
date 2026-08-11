@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **draft-2026-08-11c**
+Contract version: **draft-2026-08-11d**
 Status: **provisional draft, NOT frozen.** The byte layouts, encodings and state rules below are
 written to be implementable as they stand, but four classes of content are deliberately unresolved and
 are listed in *Open decisions*: the health CAN identifier, the ROS message type for safety health, the
@@ -59,8 +59,8 @@ frame, so putting the more frequent traffic first minimises queueing overall.
 **That is not an argument that health is less important.** Both frames are safety-relevant: the
 health channel is what turns "no measurement arrived" from an ambiguity into a decision, and without
 it the data channel cannot be trusted at all. The arbitration choice therefore carries an obligation:
-**the worst-case health latency under full bus load must be shown, by measurement or analysis, to
-stay inside `T_health_max_gap`.** If it cannot, health takes the lower identifier instead. It is not
+**`T_health_delivery_max`, the worst-case health latency under full bus load, must be shown by
+measurement or analysis to stay inside `T_health_max_gap`.** If it cannot, health takes the lower identifier instead. It is not
 acceptable to justify the ordering by calling health diagnostic.
 
 Sensor identity travels **in the payload**, not in the identifier. Four identifiers would push a
@@ -217,7 +217,7 @@ byte 2 : cycle_seq                     (uint8, shared with the health frame, wra
 byte 3 : range_mm[15:8]                (big-endian, as in the grid contract)
 byte 4 : range_mm[7:0]
 byte 5 : range_status                  (the raw ULD status byte, transmitted unchanged)
-byte 6 : reserved, MUST be 0 on transmit and MUST be rejected if non-zero
+byte 6 : target_count                  (0-4: the ULD's NumberOfObjectsFound, before reduction)
 byte 7 : reserved, MUST be 0 on transmit and MUST be rejected if non-zero
 ```
 
@@ -232,8 +232,11 @@ byte 7 : reserved, MUST be 0 on transmit and MUST be rejected if non-zero
 - The measurement frame carries **no protocol version**: it is only ever accepted under an authorising
   health frame, which carries one. That gate is what makes the omission safe, so it must never be
   relaxed.
-- Bytes 6 and 7 are the designated space for a future SCB capture tick, if bounding the age of the
-  measurement rather than of its arrival ever becomes a requirement. Using them is a version bump.
+- `target_count` is the number of targets the ULD reported for this read, **before** the reduction
+  below. It does not change the meaning of `range_mm`; it exists so that a multi-target scene is
+  diagnosable after the fact instead of being invisible. `target_count > 4` is malformed.
+- Byte 7 is the designated space for a future SCB capture tick, if bounding the age of the measurement
+  rather than of its arrival ever becomes a requirement. Using it is a version bump.
 
 ### Why the sentinel is at the far end, and why a real cliff looks like an invalid read
 
@@ -250,6 +253,33 @@ safety frame here. Do not "fix" this by giving faults a distinguishable near val
 
 A shallower drop-off may instead return a valid, longer range. Both paths must therefore reach a stop,
 and where the threshold between floor and drop lies is the consumer's decision, not this contract's.
+
+### One frame carries one range, so the reduction is normative
+
+The VL53L4CX reports **up to four targets** per measurement, each with its own range and status
+(`VL53LX_MAX_RANGE_RESULTS = 4`, `NumberOfObjectsFound`, per-target `RangeStatus` and
+`RangeMilliMeter`). The wire carries exactly one range and one status, so the firmware must reduce, and
+**the reduction is part of this contract rather than an implementation choice.** Two implementations
+reducing differently would disagree about the floor while both passing their own tests.
+
+| Targets | Rule |
+| --- | --- |
+| 0 | status `255`, `range_mm = 0xFFFF`, `target_count = 0` |
+| 1 | that target's status, classified by the table below |
+| 2-4 | classify every target, then take the **most conservative class present**, in the order `SENSOR_FAULT` > `NO_SAMPLE` > `NO_TARGET` > `VALID_RANGE` |
+
+When the surviving class is `VALID_RANGE` and more than one target qualifies, transmit the **farthest**
+of them.
+
+**Farthest, not nearest — and this is the opposite of the grid path.** The hanging-object path takes the
+per-zone *minimum*, because there the hazard is something being closer than expected. Here the hazard is
+the floor being *farther* than expected, so the conservative choice inverts: a spurious near return from
+dust, a wheel edge or crosstalk must never be allowed to mask a real drop behind it. Anyone porting the
+reduction from the grid packer will take the minimum and silently disable cliff detection.
+
+Both rules are conservative by construction and both need a rate measured on hardware before the second
+freeze, because each can cost availability: any faulty target condemns the whole measurement, and the
+farthest-valid rule biases toward reporting a drop.
 
 ### `cycle_seq` proves novelty, never age
 
@@ -430,11 +460,14 @@ chosen per implementation:
 | `VALID_RANGE` | sent | a finite distance; **`0xFFFF` is forbidden** | `sample_produced` bit set | stays `READY`; the threshold decision is the consumer's |
 | `NO_TARGET` | sent | **MUST be `0xFFFF`** | `sample_produced` bit set | stays `READY`. This is data, not a failure, and the far-side value is what makes a real cliff stop the robot |
 | `SENSOR_FAULT` | sent | **`0xFFFF`**, raw status preserved | `sample_produced` **and** `sensor_fault` bits set | **loses `READY`** on that cycle: a faulty corner is an unmonitored corner, and there is no partial cliff protection |
-| `NO_SAMPLE` | **not sent** | n/a | `sample_produced` bit **clear** | counts as a missing read: tolerated for a bounded time, see *Readiness* |
+| `NO_SAMPLE` | **not sent** | n/a | `sample_produced` bit **clear** | counts as a missing sample: tolerated for a bounded time, see *Readiness* |
 
-`NO_SAMPLE` exists because a completed read does not always yield a measurement, and neither of the two
-statuses that behave this way is a scene property. Forcing them into `NO_TARGET` would inject a phantom
-cliff at every ranging start; forcing them into `SENSOR_FAULT` would report healthy hardware as broken.
+`NO_SAMPLE` exists for the two **start-up artefacts**, where the ULD hands back something that is not a
+measurement of the scene: the first interrupt after starting back-to-back ranging, and the first results
+whose wraparound check has not completed. ST's guidance for both is to discard them. Forcing them into
+`NO_TARGET` would inject a phantom cliff at every ranging start; forcing them into `SENSOR_FAULT` would
+report healthy hardware as broken. If either persists, the missing-sample budget converts it into a
+fault on its own, which is the correct outcome for a sensor that never leaves start-up.
 
 Both the packer and the decoder take their classification from the one generated table below. All four
 classes preserve the raw status byte where a frame is sent; firmware-level facts — read failed, sensor
@@ -451,19 +484,19 @@ decide what is safe, so every class below is **our** decision and the last colum
 | 0 | `RANGE_VALID` — range is valid | `VALID_RANGE` | The only unambiguous floor measurement | none |
 | 1 | `SIGMA_FAIL` — sigma above threshold | `NO_TARGET` | Device healthy, measurement not trustworthy. Calling it a fault would take a robot out of service for a floor-reflectance condition | Rate over the real floor materials; if common, tune the sigma threshold rather than reclassify |
 | 2 | `SIGNAL_FAIL` — return signal below threshold | `NO_TARGET` | **This is what a real drop-off looks like**: no return within range. Classifying it as a fault would report every genuine cliff as broken hardware | Rate over dark floors, which is the same signature |
-| 3 | `RANGE_VALID_MIN_RANGE_CLIPPED` — target below the minimum detection threshold, range clipped | **`SENSOR_FAULT`** | A blocked or fouled lens is indistinguishable from a very near floor. Publishing the clipped value as valid makes a permanently blinded sensor look healthy, which is the exact silent failure this design exists to remove | Confirm the as-mounted floor distance sits well above the part minimum, so normal operation never lands here. If it does, the mounting height is wrong |
+| 3 | `RANGE_VALID_MIN_RANGE_CLIPPED` — target below the minimum detection threshold, range clipped | **`SENSOR_FAULT`**, provisional | A blocked or fouled lens is indistinguishable from a very near floor. Publishing the clipped value as valid makes a permanently blinded sensor look healthy, which is the exact silent failure this design exists to remove | **Provisional until validated three ways**: the as-mounted floor distance measured against the part minimum, the rate over a normal floor, and an occlusion injection. A legitimate near target must not be reported as a permanent hardware fault |
 | 4 | `OUTOFBOUNDS_FAIL` — phase outside valid limits, not a wrap exit | `NO_TARGET` | Not interpretable as a distance; device healthy | If it appears in normal operation, treat it as a timing-budget or configuration problem |
 | 5 | `HARDWARE_FAIL` | `SENSOR_FAULT` | The device says it failed | none |
-| 6 | `RANGE_VALID_NO_WRAP_CHECK_FAIL` — range valid but the wraparound check was not done | `NO_TARGET` | **Must never be published as a range.** Without the wrap check a far target can alias to a *near* value, and a near value reads as "floor present", which fails in the unsafe direction | Whether the chosen distance mode and timing budget make this common; if so change the configuration, never the class |
+| 6 | `RANGE_VALID_NO_WRAP_CHECK_FAIL` — range valid but the wraparound check was not done | **`NO_SAMPLE`** | A start-up artefact, not a scene property: ST states these are the first results after ranging begins, before enough data exists for the wrap check, and advises discarding them. Not sent at all, which is safer than sending it as a range — without the wrap check a far target can alias to a *near* value, and near reads as "floor present" | Whether it clears within the expected number of reads after start. If it persists, the missing-sample budget faults the source, which is correct |
 | 7 | `WRAP_TARGET_FAIL` — wrapped target, no matching phase | `NO_TARGET` | The wrap check ran and rejected the target, so the real target is beyond the unambiguous range — the far side | none |
 | 8 | `PROCESSING_FAIL` — internal underflow or overflow | `SENSOR_FAULT` | An arithmetic failure inside the device or driver is not a scene property | none |
 | 9 | `XTALK_SIGNAL_FAIL` — crosstalk signal fail | `SENSOR_FAULT` | Points at the optical path or a missing crosstalk calibration. As `NO_TARGET` it would present as a permanent phantom cliff with no hardware indication | Whether crosstalk calibration is performed per unit with the final cover glass |
 | 10 | `SYNCRONISATION_INT` — first interrupt after starting back-to-back ranging; "ignore data" | **`NO_SAMPLE`** | Not a measurement at all. As `NO_TARGET` it would stop the robot once at every ranging start | Confirm it appears only on the first read after enabling |
-| 11 | `RANGE_VALID_MERGED_PULSE` — range ok but the object is several pulses merged | `NO_TARGET` | A step edge is exactly the geometry that merges returns, and the merged value can read as an intermediate floor where the true floor is far. Unsafe direction | Rate over a real edge and over plain floor; frequent on plain floor means the ROI or timing configuration needs work |
+| 11 | `RANGE_VALID_MERGED_PULSE` — range ok but the object is several pulses merged | `NO_TARGET`, provisional | ST considers the ranging itself successful with several targets merged. Treating a merged return as untrustworthy at a cliff edge is our safety policy, not the ULD's verdict: a step edge is exactly the geometry that merges returns, and the merged value can read as an intermediate floor where the true floor is far | **Provisional**: rate over a real edge and over plain floor. Frequent on plain floor means the ROI or timing configuration needs work, not a reclassification |
 | 12 | `TARGET_PRESENT_LACK_OF_SIGNAL` | `NO_TARGET` | Something is there but cannot be measured; no trustworthy floor | Same family as 1 and 2: dark or specular floors |
-| 13 | `MIN_RANGE_FAIL` — ULD comment says "unexpected error in SPAD array" | `SENSOR_FAULT` | Treated as a device-internal error, following the comment rather than the symbol name | **The ULD's own symbol and comment disagree.** Confirm against ST documentation before freezing; if it is really a range condition it moves to `NO_TARGET` |
+| 13 | `MIN_RANGE_FAIL` — the vendored ULD sets this from `VL53LX_DEVICEERROR_USERROICLIP` (`vl53lx_api.c`) | `SENSOR_FAULT` | An **ROI or configuration anomaly**: the device reports the user ROI clipped. Neither the symbol name nor the header's "SPAD array" comment describes what the implementation actually does, so the class follows the code path. Configuration faults are not scene outcomes | Confirm the ROI we configure cannot produce this in normal operation; if it can, the configuration is wrong |
 | 14 | `RANGE_INVALID` — driver returned a valid range with a negative value | `SENSOR_FAULT` | A negative distance is a defect, not a scene | none |
-| 255 | `NONE` — no update | **`NO_SAMPLE`** | The polling host read before a new result existed. Routine, and not a cliff | If frequent, the poll is not synchronised with data-ready and the schedule needs fixing |
+| 255 | `NONE` — the vendored ULD sets this when `active_results == 0`, forcing the reported distance to 8191 mm (`vl53lx_api.c`) | **`NO_TARGET`** | **No target detected, and no device error** — a result, not a missing sample. It is the ordinary outcome over a genuine drop-off, so a frame is sent with `0xFFFF`, `sample_produced` set and `READY` retained, and the consumer stops | none for the class. The firmware **must map it to the `0xFFFF` sentinel and never forward 8191 mm as a finite range**, which is a packer test case |
 
 ### Two traps this table exists to prevent
 
@@ -507,8 +540,9 @@ skips: **only a `cycle_valid` health frame may move the anchor**, and **a retire
 
 Reject, count and report: DLC other than 8; `frame_type` not matching the arrival identifier; an
 unsupported `protocol_version`; `source_id` outside 0-3; any non-zero reserved field; `mapping_state`
-outside `0x0`-`0x3`; `failing_chain_position` outside 1-6 and not `0xFF`; and, with `cycle_valid`
-clear, a non-zero `cycle_seq` or a non-zero per-cycle mask.
+outside `0x0`-`0x3`; `failing_chain_position` outside 1-6 and not `0xFF`; `target_count` above 4; a
+`target_count` of 0 that does not carry status `255` and `0xFFFF`; and, with `cycle_valid` clear, a
+non-zero `cycle_seq` or a non-zero per-cycle mask.
 
 Three **contradictions** are rejected on the same footing, because each means one of two fields is
 wrong with no safe way to guess which, and the inconsistency is itself evidence of a defect upstream:
@@ -518,8 +552,15 @@ wrong with no safe way to guess which, and the inconsistency is itself evidence 
   present with the bit clear — decidable only because cycles are correlated, and exactly the check that
   catches a packer bug before it becomes a silent blind corner
 - `failing_chain_position != 0xFF` with no `flags` bit 0-2 set and no incomplete mask
-- a measurement arriving while the current health says `UNKNOWN`, `LOST` or `FAULT`, which the firmware
-  obligations forbid
+- a measurement whose **own cycle's** health frame says `mapping_state` was not `PROVEN`, which the
+  firmware obligations forbid
+
+**That judgement is made against the health frame correlated to the measurement's own
+`(mapping_epoch, cycle_seq)`, never against the current health state.** The contract permits arbitrary
+interleaving, so a measurement from a cycle that was legitimately `PROVEN` can arrive after a newer
+health frame has reported `LOST`; treating it as illegal would manufacture a fault out of the reordering
+this contract itself allows. A measurement whose cycle is already retired is dropped and counted, not
+faulted; a measurement whose cycle has no health frame yet is buffered, which is the ordinary case.
 
 **Rejection is not enough.** Any of the above puts the cliff subsystem into **protocol FAULT
 immediately**, rather than leaving the consumer to notice a timeout later. In protocol FAULT no role
@@ -548,7 +589,7 @@ the missing one is exactly where an undetected drop would be.
 - `sensor_fault_mask == 0`
 - each of the four sources has an accepted measurement from a **new** cycle within `T_meas_max_gap`,
   and every one of those four measurements shares the epoch and cycle of an authorising health frame
-- no source has been short of a sample for more than `N_cycle_miss_max` consecutive cycles
+- no source has reached `N_cycle_miss_fault` consecutive cycles without a sample
 
 ### What is tolerated, and what is not
 
@@ -558,16 +599,22 @@ crosses one of the two bounds below. Gating on the instantaneous mask would make
 cycles and contradict `T_meas_max_gap`, so a single retryable NACK on a six-device chain would stop the
 robot.
 
-The tolerance has **two bounds, and whichever is reached first ends `READY`**:
+The tolerance has **two triggers, and whichever is reached first ends `READY`**:
 
-- `T_meas_max_gap` — elapsed time since that source's last accepted measurement
-- `N_cycle_miss_max` — consecutive cycles in which that source produced no sample
+- `T_meas_max_gap` — elapsed time on a **monotonic clock** since that source's last accepted
+  measurement. This is the **only guaranteed bound**, and it is the one the safety argument rests on,
+  because what physically matters is how far the robot travels while a corner is unmonitored
+- `N_cycle_miss_fault` — the source has produced no sample in that many **consecutive cycles**, counted
+  at `>=`, not `>`. Reaching it is a `FAULT` rather than a plain `NOT_READY`, because a source that has
+  missed that many cycles in a row is not late, it is broken
 
-**`N_cycle_miss_max` can only ever fire earlier than the time bound, never later.** It is a second,
-tighter trigger, not an extension: the contract requires
-`N_cycle_miss_max x T_cycle_nominal <= T_meas_max_gap`, so a cycle-count budget can never buy a source
-more time than the freshness budget allows. Exceeding the count is a `FAULT` rather than a plain
-`NOT_READY`, because a source that has missed that many consecutive cycles is not late, it is broken.
+**The count carries no timing guarantee, and the contract makes no claim that it fires earlier.** An
+earlier draft required `N x T_cycle_nominal <= T_meas_max_gap`; that formula was wrong in the unsafe
+direction. Cycle periods stretch under load — the same service-delay mechanism the six-board scheduling
+analysis quantifies — so N cycles can take considerably longer in wall-clock than N nominal periods, and
+a count-based bound derived from the nominal period would silently be looser than it claimed. The count
+is therefore a supplementary diagnostic trigger with an explicit fault outcome, never the thing that
+bounds blindness.
 
 **What is tolerated is a temporarily missing sample, never a faulty one.** A `sensor_fault_mask` bit
 costs `READY` on the cycle it appears in, with no cycle budget and no grace: the sensor has told us its
@@ -642,7 +689,8 @@ measured on real hardware.
 | `T_health_nominal` | nominal health snapshot period |
 | `T_health_max_gap` | maximum tolerable gap between consecutive **new** `health_seq` values |
 | `T_skew_max` | worst-case sampling phase skew across the four sensors within a cycle |
-| `N_cycle_miss_max` | consecutive cycles without a sample from one source before it faults |
+| `T_health_delivery_max` | worst-case health frame latency from production to reception under full bus load |
+| `N_cycle_miss_fault` | consecutive cycles without a sample from one source before it faults |
 | `N_cycle_advance_max` | largest plausible forward jump in `cycle_seq` before it is treated as implausible |
 
 Five rules constrain the eventual numbers rather than the schedule:
@@ -651,14 +699,15 @@ Five rules constrain the eventual numbers rather than the schedule:
   independently of the producer's real period is either a nuisance stop or a missed cliff.
 - **`T_meas_max_gap` must be derived from the stopping distance**, not from the cycle period: what
   matters is how far the robot travels while one corner is unmonitored.
-- **`T_health_max_gap` must be strictly larger than the worst-case health latency under full bus
-  load**, and the consumer's health timeout strictly larger again with margin, because the health frame
+- **`T_health_max_gap` must be strictly larger than `T_health_delivery_max`**, and the consumer's health
+  timeout strictly larger again with margin, because the health frame
   is chain-level: one dropped frame must not by itself trip a stop.
-- **`T_skew_max` + worst-case health latency < `T_cycle_assembly` < `T_meas_max_gap`.** Below the lower
+- **`T_skew_max` + `T_health_delivery_max` < `T_cycle_assembly` < `T_meas_max_gap`.** Below the lower
   bound, cycles expire while their own frames are still legitimately in flight; above the upper bound, a
   slot outlives the freshness of the data in it.
-- **`N_cycle_miss_max` x `T_cycle_nominal` <= `T_meas_max_gap`.** The cycle-count bound exists to fire
-  *earlier* than the time bound, never to extend it.
+- **`N_cycle_miss_fault` is not tied to any period.** It is a cycle count with a fault outcome and no
+  timing claim; `T_meas_max_gap` on a monotonic clock is the only bound the safety argument uses. Do not
+  reintroduce a product of a count and a nominal period, because cycle periods stretch under load.
 
 ## Golden vectors
 
@@ -693,8 +742,17 @@ Beyond the happy path the vectors MUST cover at least:
   FAULT, then resynchronisation from the next `cycle_valid` health frame)
 - a stale frame arriving after a wrap so that its `cycle_seq` aliases onto a live cycle, asserting it is
   caught as a conflict rather than accepted
-- a source short of a sample for exactly `N_cycle_miss_max` cycles and for one more
+- a source that produces no sample for several consecutive cycles while still inside `T_meas_max_gap`,
+  asserting the source is reported degraded but the subsystem stays `READY` until a trigger is reached
 - a single-cycle `sensor_fault_mask` bit, asserting `READY` is lost immediately with no cycle budget
+- a source reaching exactly `N_cycle_miss_fault` consecutive cycles without a sample (FAULT) and one
+  cycle short of it (still `READY` if within `T_meas_max_gap`)
+- a late measurement from a `PROVEN` cycle arriving after a newer health frame reports `LOST`, asserting
+  it is **not** a protocol fault
+- status `255` with `target_count = 0`, asserting `0xFFFF` on the wire and never 8191 mm
+- the multi-target reduction: two valid targets (the farther one is transmitted), a valid target
+  alongside a `SENSOR_FAULT` target (the whole measurement is `SENSOR_FAULT`), a valid target alongside a
+  `NO_TARGET` target, four targets, and `target_count` inconsistent with the reduced status
 - `failing_chain_position` set with no fault indication
 - an unsupported `protocol_version`, and a zero `protocol_version`
 - non-zero reserved fields, DLC other than 8, `frame_type` mismatched to its identifier, `source_id`
@@ -720,11 +778,15 @@ it is open.
   the four `Range` topics and the `+Inf` convention are settled above; the message definition and the
   package it lives in are not.
 - **All timing values** above, and with them the consumer timeouts.
-- **The validation column of the status classification.** The rows are proposed and complete, drawn
-  from the ULD's own definitions, but four of them carry a decision that only hardware can confirm:
-  code 3 as a fault rather than a near floor, code 6 and code 11 as untrustworthy despite their
-  `RANGE_VALID_*` names, and code 13, where the ULD's own symbol and comment disagree. Freezing requires
-  the measured rates on a real floor, because those rates *are* the false-stop budget.
+- **The validation column of the status classification.** The rows are complete and traced to the
+  vendored ULD's own code paths, but two are explicitly **provisional** and can only be settled on
+  hardware: code 3 as a fault rather than a near floor, which needs the as-mounted distance plus an
+  occlusion injection, and code 11 as untrustworthy, which needs edge and plain-floor rates. Freezing
+  requires those rates, because the `NO_TARGET` rows' rates *are* the false-stop budget.
+- **The multi-target reduction's availability cost.** The rule is frozen and conservative — any faulty
+  target condemns the measurement, and the farthest valid target wins — but the rate of multi-target
+  scenes and of mixed-status targets over a real floor is unmeasured, and either could cost more
+  availability than expected.
 - **A per-source distinction between an I2C failure and a no-update**, currently only visible at chain
   level. It would need another field and therefore a version bump; deferred deliberately.
 - **What evidence proves `mapping_state == PROVEN`**, which cannot be settled until the enable-chain
