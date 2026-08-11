@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **draft-2026-08-11d**
+Contract version: **draft-2026-08-11e**
 Status: **provisional draft, NOT frozen.** The byte layouts, encodings and state rules below are
 written to be implementable as they stand, but four classes of content are deliberately unresolved and
 are listed in *Open decisions*: the health CAN identifier, the ROS message type for safety health, the
@@ -631,6 +631,36 @@ measurement of the new epoch that arrived **before** its authorising health snap
 
 `READY` is lost immediately when any criterion fails.
 
+### Never having received health is a fault, not an eternal initialisation
+
+The absence of health has to be resolved in time, or a permanently broken link
+reads as "still starting up" forever, which is the same silence-looks-like-health
+failure this contract exists to remove. The mapping is normative:
+
+| Condition | State |
+| --- | --- |
+| No health received, still inside `T_startup_health_grace` | `NOT_READY`, reason: startup and no health |
+| No health received, grace expired | **`FAULT`**, reason: no health |
+| Health received, then no new `health_seq` within `T_health_max_gap` | **`FAULT`**, reason: health stale |
+
+The grace is its own required value rather than a reuse of `T_health_max_gap`,
+because the two bound different things: the grace covers node start, SCB boot and
+the first cycle, while `T_health_max_gap` bounds the interval between snapshots of
+a producer that is already running. The grid path keeps the same separation
+between its startup grace and its staleness threshold, for the same reason.
+
+### Two kinds of fault, and only one of them latches
+
+- A **timeout or condition fault** — no health, stale health, a stale source, a
+  sensor fault, a chain fault, a lost mapping — is computed afresh from the
+  current state on every snapshot, and therefore **clears by itself** once the
+  conditions hold again. It must not require a restart.
+- A **protocol fault** — a malformed frame or a contract contradiction — **latches**,
+  and clears only after one complete, contradiction-free cycle at a supported
+  version, as specified above. The difference is deliberate: a timeout says the
+  world changed, while a contradiction says one of the two ends is wrong, and that
+  deserves proof of recovery rather than the mere absence of the symptom.
+
 ### Publishing
 
 While `READY`, the decoder publishes the four role measurements, converting millimetres to metres at
@@ -646,7 +676,12 @@ While not `READY`:
 - `DiagnosticArray` is for the operator. It MUST NOT be the transport of any safety handshake
 
 The ROS-facing interface is four `sensor_msgs/Range` topics under `/global/system/cliff_tof/`, named
-for the roles, plus `/global/system/cliff_tof/health`. The driver normalises strictly before
+for the roles, plus `/global/system/cliff_tof/health` carrying `lexxauto_msgs/CliffTofSafetyHealth`. That
+message carries the driver's own readiness decision, and the consumer may release the cliff stop only
+while it reads `READY`; its `reason_mask` explains a decision and must not be used to re-derive one.
+**Its heartbeat counter is judged new by inequality with the previous value, never by numeric increase**,
+so the 32-bit wrap is an ordinary new snapshot rather than a regression — the same reasoning that makes
+`cycle_seq` an equality comparison rather than a magnitude one. The driver normalises strictly before
 publishing: a valid measurement becomes a finite range in metres; `NO_TARGET` and `SENSOR_FAULT`
 become `+Inf`. **`+Inf` is a convention this project defines, not something a `Range` consumer does
 automatically** — it happens to sit on the fail-safe side and is adopted for that reason, so it must be
@@ -689,6 +724,7 @@ measured on real hardware.
 | `T_cycle_nominal` | nominal acquisition-cycle period, which is what a health mask describes |
 | `T_meas_max_gap` | maximum tolerable gap between accepted measurements of one sensor |
 | `T_cycle_assembly` | how long one cycle slot may stay open before it expires |
+| `T_startup_health_grace` | how long after node start the absence of any health frame is `NOT_READY` rather than `FAULT` |
 | `T_health_nominal` | nominal health snapshot period |
 | `T_health_max_gap` | maximum tolerable gap between consecutive **new** `health_seq` values |
 | `T_skew_max` | worst-case sampling phase skew across the four sensors within a cycle |
@@ -708,6 +744,8 @@ Five rules constrain the eventual numbers rather than the schedule:
 - **`T_skew_max` + `T_health_delivery_max` < `T_cycle_assembly` < `T_meas_max_gap`.** Below the lower
   bound, cycles expire while their own frames are still legitimately in flight; above the upper bound, a
   slot outlives the freshness of the data in it.
+- **`T_startup_health_grace` must cover SCB boot plus the first acquisition cycle**, and is unrelated to
+  `T_health_max_gap`. It has no runnable default: unset means `CONFIG_ERROR`, like the other timeouts.
 - **`N_cycle_miss_fault` is not tied to any period.** It is a cycle count with a fault outcome and no
   timing claim; `T_meas_max_gap` on a monotonic clock is the only bound the safety argument uses. Do not
   reintroduce a product of a count and a nominal period, because cycle periods stretch under load.
