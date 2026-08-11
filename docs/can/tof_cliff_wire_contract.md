@@ -1,11 +1,11 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **draft-2026-08-11b**
+Contract version: **draft-2026-08-11c**
 Status: **provisional draft, NOT frozen.** The byte layouts, encodings and state rules below are
-written to be implementable as they stand, but three classes of content are deliberately unresolved
-and are listed in *Open decisions*: the health CAN identifier, the ROS message type for safety health,
-and every timing value. **No implementation may be released against this version**, and no golden
-vectors exist yet.
+written to be implementable as they stand, but four classes of content are deliberately unresolved and
+are listed in *Open decisions*: the health CAN identifier, the ROS message type for safety health, the
+validation column of the status classification, and every timing value. **No implementation may be
+released against this version**, and no golden vectors exist yet.
 
 This document is the single source of truth shared by two repositories:
 
@@ -44,6 +44,13 @@ CAN classic, 11-bit identifiers, on **CAN2 at 1 Mbit/s** (the SCB-to-IPC bus).
 `0x216` was reserved for this purpose on 2026-08-06 under the same team-authorized self-assignment
 that allocated `0x214`/`0x215`. This contract is what un-reserves it: until this document is frozen,
 no filter or handler may claim `0x216` either.
+
+`0x217` is the candidate for health. An offline sweep on 2026-08-11 found it unused in the firmware
+repository on `main` and on all three ToF branches, in `SCBDriver`, and in `LexxAuto` and
+`lexxauto_msgs`; the SCB block is contiguous `0x200`-`0x213` on `main` and extends to `0x216` with the
+grid allocation. **That is not an allocation.** A live bus capture is still required, because a device
+can transmit an identifier that appears in no source tree we hold, and the allocation must then be
+recorded here and in the team's CAN ID register.
 
 Two identifiers rather than one because measurement and health must **dispatch independently**.
 Measurement takes the lower identifier because there are four of it per cycle against one health
@@ -113,9 +120,91 @@ without it none of the cross-checks in this contract are decidable.
   any interleaving and correlate by `(mapping_epoch, cycle_seq)` rather than by arrival order.
 - `health_seq` and `cycle_seq` have **different jobs and must not be tied together**. `health_seq`
   increments on every snapshot and is the liveness counter; `cycle_seq` increments only when a cycle
-  actually completes. While no acquisition is running — enabled but not `PROVEN`, for instance —
-  health keeps flowing with `health_seq` advancing, `cycle_seq` held at the last completed cycle (or
-  `0` if none in this epoch) and all masks zero.
+  actually completes. While no acquisition is running — enabled but not `PROVEN`, for instance — health
+  keeps flowing with `health_seq` advancing and `cycle_valid` clear.
+- **The firmware MUST issue a new `mapping_epoch` whenever the cliff subsystem restarts**, so a cycle
+  counter never resumes mid-sequence. This is what keeps `cycle_seq` unambiguous across a reset, and it
+  removes the main way an old frame could alias onto a new cycle.
+
+### `cycle_valid`, and why cycle 0 needs distinguishing
+
+A health frame is published even when no acquisition is running, so most of its life is spent
+describing no cycle at all. `cycle_seq = 0` cannot mean both "no cycle has completed" and "the first
+cycle of this epoch", or the first real cycle of an epoch would be indistinguishable from a heartbeat —
+and, with the retirement rules below, could be treated as already retired.
+
+`cycle_valid` (health `flags` bit 3) resolves it:
+
+- **clear** — this is a state heartbeat only. It refreshes health liveness and carries `mapping_state`,
+  the `flags`, `failing_chain_position` and the enumeration masks, but it describes **no cycle**. The
+  decoder MUST ignore `cycle_seq` for correlation, MUST NOT retire or open any cycle on it, and MUST
+  NOT read the per-cycle masks. The firmware MUST transmit `cycle_seq = 0` and both per-cycle masks as
+  zero in this state.
+- **set** — `cycle_seq` names a completed cycle, and the per-cycle masks describe exactly that cycle.
+
+Note which masks this governs: `sample_produced_mask` and `sensor_fault_mask` are **per cycle**;
+`enumerated_mask` and `model_verified_mask` describe the **last enumeration attempt** and stay
+meaningful with `cycle_valid` clear, which is precisely what makes a heartbeat during `UNKNOWN` useful.
+
+### Cycle assembly and retirement
+
+The decoder holds at most **two open cycle slots** per epoch. A slot opens on the first frame carrying
+its `(mapping_epoch, cycle_seq)`, measurement or health, and records that arrival time.
+
+- A slot **completes** when its `cycle_valid` health frame has arrived and every measurement its
+  `sample_produced_mask` implies has arrived.
+- A slot **expires** after `T_cycle_assembly` from its first frame. On expiry it is retired and counted,
+  and the outcome depends on what was missing:
+  - its health arrived with `cycle_valid` and `sample_produced_mask` implied measurements that never
+    came → **protocol FAULT**. Health asserted data that does not exist, which means the producer and
+    the wire disagree
+  - its health never arrived → the measurements are discarded unaccepted, and the event is reported as
+    degraded. One lost health frame is a transport event, not a producer defect; persistent loss is
+    caught by `T_health_max_gap` instead
+- A slot is also retired when a **third** cycle opens: only the newest two are ever open.
+- **A retired cycle is final.** A later frame carrying a retired `(epoch, cycle_seq)` is counted and
+  dropped: it cannot reopen the slot, cannot refresh any freshness timestamp and cannot contribute to
+  `READY`.
+- An epoch change retires every cycle of the previous epoch immediately.
+
+`T_cycle_assembly` is not a free parameter. It must exceed the worst-case intra-cycle skew plus the
+worst-case health latency — otherwise cycles expire while their own frames are still legitimately in
+flight — and it must stay below `T_meas_max_gap`, since a slot outliving the freshness budget of the
+data in it serves no purpose:
+
+`T_skew_max + worst-case health latency  <  T_cycle_assembly  <  T_meas_max_gap`
+
+### Comparing cycle numbers, and the wrap
+
+`cycle_seq` is 8 bits, so comparisons are **modulo** comparisons, never magnitude comparisons. The
+decoder computes a signed difference against the current anchor:
+
+`delta = (int8_t)(incoming_cycle_seq - anchor_cycle_seq)`
+
+| `delta` | Meaning |
+| --- | --- |
+| `0` | the anchor cycle |
+| `-1` | the previous, still-open cycle |
+| `1` to `N_cycle_advance_max` | a new cycle: open a slot, and retire whatever falls out of the newest two |
+| anything else | **implausible**: protocol FAULT |
+
+Two rules make that table sound:
+
+- **Only a `cycle_valid` health frame may move the anchor.** A measurement for a plausible new cycle
+  may open a slot ahead of the anchor — that is the normal case, since measurements are transmitted
+  before their health frame — but it is never *accepted* until that cycle's health arrives. A
+  measurement can therefore never drag the anchor forward on its own.
+- **An implausible `delta` resynchronises rather than guesses.** Everything is retired, the anchor is
+  re-taken from the next `cycle_valid` health frame, and `READY` is withheld until a clean cycle
+  completes. The reason is reported distinctly from a malformed frame: a jump beyond
+  `N_cycle_advance_max` is indistinguishable from a wrap-aliased frame, and there is no safe way to
+  tell which it is.
+
+That closes the wrap: an old frame can only alias onto a live cycle if it is delayed by a full 256
+cycles, which is not a CAN transport phenomenon but a producer restart or a replayed capture. Both are
+covered — a restart must bump the epoch, and a replayed frame must still find an authorising health
+frame with the same epoch *and* cycle, where it collides with the real measurement for that triple and
+is caught as a conflict.
 
 ## Measurement frame (`TOF_CLIFF_MEAS_ID`)
 
@@ -178,9 +267,9 @@ DLC 8, always. One frame describes **the whole cliff subsystem**, not one sensor
 byte 0 : frame_type << 4 | protocol_version   (frame_type = 0x2; protocol_version = 0x1)
 byte 1 : mapping_epoch
 byte 2 : health_seq                    (uint8, wraps 255 -> 0)
-byte 3 : mapping_state << 4 | chain_fault
+byte 3 : mapping_state << 4 | flags
 byte 4 : enumerated_mask << 4 | model_verified_mask
-byte 5 : transport_read_completed_mask << 4 | sensor_fault_mask
+byte 5 : sample_produced_mask << 4 | sensor_fault_mask
 byte 6 : failing_chain_position        (1-6, or 0xFF for none)
 byte 7 : cycle_seq                     (the most recently completed cycle; 0 if none in this epoch)
 ```
@@ -202,7 +291,7 @@ which is the realistic failure once these images are deployed independently.
 *The grid contract has the same runtime gap and no version field. That is out of scope here and must
 not be silently changed: it needs its own version bump, vector regeneration and re-pin round.*
 
-### Mapping state and chain fault
+### Mapping state and flags
 
 | `mapping_state` | Meaning |
 | --- | --- |
@@ -212,31 +301,47 @@ not be silently changed: it needs its own version bump, vector regeneration and 
 | `0x3` `FAULT` | a fault prevents any trustworthy mapping |
 | `0x4`-`0xF` | malformed |
 
-`chain_fault` is a 4-bit flag field: bit 0 chain length differs from the configured expectation, bit 1
-enumeration was frozen because a non-tail position produced no new device, bit 2 a transport-level bus
-fault was seen, bit 3 reserved and MUST be 0.
+`flags` is the low nibble of byte 3:
+
+| Bit | Meaning |
+| --- | --- |
+| 0 | chain length differs from the configured expectation |
+| 1 | enumeration was frozen because a non-tail position produced no new device |
+| 2 | a transport-level bus fault was seen |
+| 3 | `cycle_valid` — see above |
+
+Bits 0-2 are the **chain faults**. Where this contract says "no chain fault" it means bits 0-2 all
+clear; `cycle_valid` is not a fault and must not be counted as one.
 
 ### The four masks
 
-Each mask is 4 bits, **bit `k` is `source_id` `k`**. They are *not* keyed by chain position, and they
-describe **the cycle named by `cycle_seq` in the same frame**.
+Each mask is 4 bits, **bit `k` is `source_id` `k`**. They are *not* keyed by chain position. Two are
+per cycle and two are not, and the difference matters:
 
-| Mask | What it observes |
-| --- | --- |
-| `enumerated_mask` | this source enumerated to its own address |
-| `model_verified_mask` | this source returned the expected model ID |
-| `transport_read_completed_mask` | this source completed an I2C read in this cycle |
-| `sensor_fault_mask` | this source's read in this cycle classified as `SENSOR_FAULT` |
+| Mask | Scope | What it observes |
+| --- | --- | --- |
+| `enumerated_mask` | last enumeration | this source enumerated to its own address |
+| `model_verified_mask` | last enumeration | this source returned the expected model ID |
+| `sample_produced_mask` | the cycle named by `cycle_seq` | this source's read completed **and produced a sample** in that cycle |
+| `sensor_fault_mask` | the cycle named by `cycle_seq` | that sample classified as `SENSOR_FAULT` |
 
-**`transport_read_completed_mask` is named for what it actually observes.** An I2C read can complete
-successfully and still return a ULD `SENSOR_FAULT` status; a field called "OK" would collapse two
-different facts into one bit. Whether a *usable range* was produced is carried by the measurement
-frame's status and range encoding, and by `sensor_fault_mask`. A consumer that needs "this sensor is
-delivering usable data" must look at both.
+**`sample_produced_mask` was called `transport_read_completed_mask` in `draft-2026-08-11b`, and the
+rename is deliberate.** A completed I2C read does not always yield a sample: the ULD returns
+`SYNCRONISATION_INT` on the first read after starting, and `NONE` when there is no update, and neither
+is a measurement (see *Status classification*). Defining the bit as "a read that produced a sample"
+keeps both directions of the measurement-presence cross-check exact; defining it as transport success
+would make one direction unenforceable.
+
+The distinction the old name protected is preserved: bit clear means no sample at all, bit set with
+`sensor_fault_mask` clear means a usable outcome — `VALID_RANGE` or `NO_TARGET` — and bit set with the
+fault bit set means a sample exists but the sensor reports it as unusable. What is *not* distinguished
+per source any more is an I2C failure from a no-update, which are separated only at chain level by
+`flags` bit 2. Splitting them per source would need another field and therefore a version bump.
 
 `sensor_fault_mask` is **per cycle, not latching**. A transient fault disappears from the next
 snapshot, so any escalation policy — how many consecutive cycles of fault become a persistent
-condition — belongs in the decoder, not in the firmware.
+condition — belongs in the decoder, not in the firmware. Note that unlike a missing sample, a sensor
+fault is **not** tolerated for a bounded number of cycles: it costs `READY` on the cycle it appears in.
 
 **While `mapping_state != PROVEN` the masks are diagnostic only.** They are keyed by `source_id`, and
 `source_id` has no proven physical meaning until the mapping is proven, so a consumer must not
@@ -265,9 +370,10 @@ Rejection alone is **not** the response to a malformed frame; see *Protocol faul
 
 ## Firmware obligations
 
-**A measurement frame is produced only by a complete read, and only while `mapping_state == PROVEN`.**
-A read that found no target is data, not a failure: it is transmitted with `0xFFFF` and its real
-status.
+**A measurement frame is produced only by a complete read that produced a sample, and only while
+`mapping_state == PROVEN`.** A read that found no target is data, not a failure: it is transmitted with
+`0xFFFF` and its real status. A read that completed without a sample — the two `NO_SAMPLE` statuses —
+produces no frame and leaves that source's `sample_produced_mask` bit clear.
 
 - An I2C read failure produces **no** measurement frame, and is reported through health only.
 - Old values are never re-sent. The firmware never fabricates `0 mm`, never substitutes a previous
@@ -307,7 +413,7 @@ status.
 
 The contract owns exactly one table mapping the raw ULD status to a class:
 
-`raw status -> VALID_RANGE / NO_TARGET / SENSOR_FAULT`
+`raw status -> VALID_RANGE / NO_TARGET / SENSOR_FAULT / NO_SAMPLE`
 
 The rule that reconciles raw passthrough with the firmware using that table — these read as
 contradictory and must be stated together:
@@ -316,21 +422,62 @@ contradictory and must be stated together:
 > only to select the range encoding and publication outcome; it never replaces the raw status with a
 > derived code.
 
-The three classes have frozen consequences, so the encoding cannot be chosen per implementation:
+The four classes have frozen consequences, so neither the encoding nor the readiness effect can be
+chosen per implementation:
 
-| Class | `range_mm` | Health | Consumer effect |
-| --- | --- | --- | --- |
-| `VALID_RANGE` | a finite distance; **`0xFFFF` is forbidden** | unaffected | the only case that may yield a finite range; the threshold decision is the consumer's |
-| `NO_TARGET` | **MUST be `0xFFFF`** | unaffected | data, not a failure. Stays `READY`, and the far-side value is what makes a real cliff stop the robot |
-| `SENSOR_FAULT` | **`0xFFFF`**, raw status preserved | `sensor_fault_mask` bit set for this cycle | not `READY`: a faulty corner is an unmonitored corner, and there is no partial cliff protection |
+| Class | Frame | `range_mm` | Health | Readiness effect |
+| --- | --- | --- | --- | --- |
+| `VALID_RANGE` | sent | a finite distance; **`0xFFFF` is forbidden** | `sample_produced` bit set | stays `READY`; the threshold decision is the consumer's |
+| `NO_TARGET` | sent | **MUST be `0xFFFF`** | `sample_produced` bit set | stays `READY`. This is data, not a failure, and the far-side value is what makes a real cliff stop the robot |
+| `SENSOR_FAULT` | sent | **`0xFFFF`**, raw status preserved | `sample_produced` **and** `sensor_fault` bits set | **loses `READY`** on that cycle: a faulty corner is an unmonitored corner, and there is no partial cliff protection |
+| `NO_SAMPLE` | **not sent** | n/a | `sample_produced` bit **clear** | counts as a missing read: tolerated for a bounded time, see *Readiness* |
 
-Both the packer and the decoder take their classification from the one generated table and its
-vectors. Firmware-level facts — read failed, sensor absent, configuration mismatch — live in health
-and must not re-express or contradict the ULD status.
+`NO_SAMPLE` exists because a completed read does not always yield a measurement, and neither of the two
+statuses that behave this way is a scene property. Forcing them into `NO_TARGET` would inject a phantom
+cliff at every ranging start; forcing them into `SENSOR_FAULT` would report healthy hardware as broken.
 
-The concrete status-to-class rows are **not yet filled in**: they must be transcribed from the
-VL53L4CX ULD's `RangeStatus` definitions when the driver is ported, not guessed from the VL53L7CX
-table.
+Both the packer and the decoder take their classification from the one generated table below. All four
+classes preserve the raw status byte where a frame is sent; firmware-level facts — read failed, sensor
+absent, configuration mismatch — live in health and must not re-express or contradict the ULD status.
+
+### The table
+
+Transcribed from `VL53LX_define_RangeStatus_group` in the VL53L4CX ULD (`vl53lx_def.h`), which is
+vendored in `LexxHard-ToFSensorBoard-Firmware`. The ULD defines what each code *means*; it does not
+decide what is safe, so every class below is **our** decision and the last column is what is still owed.
+
+| Raw | ULD symbol and meaning | Class | Safety rationale | Needs validation |
+| --- | --- | --- | --- | --- |
+| 0 | `RANGE_VALID` — range is valid | `VALID_RANGE` | The only unambiguous floor measurement | none |
+| 1 | `SIGMA_FAIL` — sigma above threshold | `NO_TARGET` | Device healthy, measurement not trustworthy. Calling it a fault would take a robot out of service for a floor-reflectance condition | Rate over the real floor materials; if common, tune the sigma threshold rather than reclassify |
+| 2 | `SIGNAL_FAIL` — return signal below threshold | `NO_TARGET` | **This is what a real drop-off looks like**: no return within range. Classifying it as a fault would report every genuine cliff as broken hardware | Rate over dark floors, which is the same signature |
+| 3 | `RANGE_VALID_MIN_RANGE_CLIPPED` — target below the minimum detection threshold, range clipped | **`SENSOR_FAULT`** | A blocked or fouled lens is indistinguishable from a very near floor. Publishing the clipped value as valid makes a permanently blinded sensor look healthy, which is the exact silent failure this design exists to remove | Confirm the as-mounted floor distance sits well above the part minimum, so normal operation never lands here. If it does, the mounting height is wrong |
+| 4 | `OUTOFBOUNDS_FAIL` — phase outside valid limits, not a wrap exit | `NO_TARGET` | Not interpretable as a distance; device healthy | If it appears in normal operation, treat it as a timing-budget or configuration problem |
+| 5 | `HARDWARE_FAIL` | `SENSOR_FAULT` | The device says it failed | none |
+| 6 | `RANGE_VALID_NO_WRAP_CHECK_FAIL` — range valid but the wraparound check was not done | `NO_TARGET` | **Must never be published as a range.** Without the wrap check a far target can alias to a *near* value, and a near value reads as "floor present", which fails in the unsafe direction | Whether the chosen distance mode and timing budget make this common; if so change the configuration, never the class |
+| 7 | `WRAP_TARGET_FAIL` — wrapped target, no matching phase | `NO_TARGET` | The wrap check ran and rejected the target, so the real target is beyond the unambiguous range — the far side | none |
+| 8 | `PROCESSING_FAIL` — internal underflow or overflow | `SENSOR_FAULT` | An arithmetic failure inside the device or driver is not a scene property | none |
+| 9 | `XTALK_SIGNAL_FAIL` — crosstalk signal fail | `SENSOR_FAULT` | Points at the optical path or a missing crosstalk calibration. As `NO_TARGET` it would present as a permanent phantom cliff with no hardware indication | Whether crosstalk calibration is performed per unit with the final cover glass |
+| 10 | `SYNCRONISATION_INT` — first interrupt after starting back-to-back ranging; "ignore data" | **`NO_SAMPLE`** | Not a measurement at all. As `NO_TARGET` it would stop the robot once at every ranging start | Confirm it appears only on the first read after enabling |
+| 11 | `RANGE_VALID_MERGED_PULSE` — range ok but the object is several pulses merged | `NO_TARGET` | A step edge is exactly the geometry that merges returns, and the merged value can read as an intermediate floor where the true floor is far. Unsafe direction | Rate over a real edge and over plain floor; frequent on plain floor means the ROI or timing configuration needs work |
+| 12 | `TARGET_PRESENT_LACK_OF_SIGNAL` | `NO_TARGET` | Something is there but cannot be measured; no trustworthy floor | Same family as 1 and 2: dark or specular floors |
+| 13 | `MIN_RANGE_FAIL` — ULD comment says "unexpected error in SPAD array" | `SENSOR_FAULT` | Treated as a device-internal error, following the comment rather than the symbol name | **The ULD's own symbol and comment disagree.** Confirm against ST documentation before freezing; if it is really a range condition it moves to `NO_TARGET` |
+| 14 | `RANGE_INVALID` — driver returned a valid range with a negative value | `SENSOR_FAULT` | A negative distance is a defect, not a scene | none |
+| 255 | `NONE` — no update | **`NO_SAMPLE`** | The polling host read before a new result existed. Routine, and not a cliff | If frequent, the poll is not synchronised with data-ready and the schedule needs fixing |
+
+### Two traps this table exists to prevent
+
+**Four ULD symbols begin with `RANGE_VALID`, and only one of them may be published as a range.** Codes
+3, 6 and 11 are all named `RANGE_VALID_*` and are all forbidden as finite ranges here, for three
+different reasons — a blocked lens, an unchecked wrap that can alias near, and a merged edge return.
+An implementer filtering by that name prefix would publish all three.
+
+**The false-stop budget of this feature is the sum of the `NO_TARGET` rows' rates on a real floor.**
+Every one of them stops the robot while the system reports itself healthy. If that rate turns out
+unacceptable, the remedies are sensor configuration — distance mode, timing budget, sigma and signal
+thresholds, ROI — or a temporal filter in the consumer. **Reclassifying a row toward `VALID_RANGE` is
+not a remedy**, because each of those rows can carry a near-looking value that reads as "floor
+present".
 
 ## Decoder and ROS publisher obligations
 
@@ -349,34 +496,30 @@ closed at two levels, and both are normative:
 
 Only the four role measurements are gated. Health is never gated.
 
-### Correlation and retirement
+### Correlation
 
-The decoder keeps at most **two open cycles per epoch**, the current and the previous, each holding up
-to four measurements and the health frame, all keyed by `(mapping_epoch, cycle_seq)`.
-
-A cycle closes when its health frame and every measurement its masks imply have been received, or when
-a newer cycle displaces it. **A closed or displaced cycle is retired**, and a later frame carrying a
-retired `(epoch, cycle_seq)` is counted and dropped: it cannot revive the cycle, cannot refresh any
-freshness timestamp and cannot contribute to `READY`. Without retirement, a late frame from an old
-cycle could reassemble a cycle that had already been judged untrustworthy — the same reasoning that
-makes a grid generation single-use.
-
-An epoch change retires every cycle of the previous epoch immediately.
+Slot opening, completion, expiry at `T_cycle_assembly`, retirement, the modulo comparison and the
+plausibility window are specified once in *The acquisition cycle is the unit of correlation* above, and
+are decoder obligations. Two of them are worth restating because they are the ones an implementation
+skips: **only a `cycle_valid` health frame may move the anchor**, and **a retired cycle is final**.
 
 ### Validation, and protocol fault
 
 Reject, count and report: DLC other than 8; `frame_type` not matching the arrival identifier; an
 unsupported `protocol_version`; `source_id` outside 0-3; any non-zero reserved field; `mapping_state`
-outside `0x0`-`0x3`; `chain_fault` bit 3 set; `failing_chain_position` outside 1-6 and not `0xFF`.
+outside `0x0`-`0x3`; `failing_chain_position` outside 1-6 and not `0xFF`; and, with `cycle_valid`
+clear, a non-zero `cycle_seq` or a non-zero per-cycle mask.
 
 Three **contradictions** are rejected on the same footing, because each means one of two fields is
 wrong with no safe way to guess which, and the inconsistency is itself evidence of a defect upstream:
 
 - a status class that contradicts the range sentinel
-- a `transport_read_completed_mask` bit set with no measurement for that source in that cycle, or a
-  measurement present with the bit clear — decidable only because cycles are correlated, and exactly
-  the check that catches a packer bug before it becomes a silent blind corner
-- `failing_chain_position != 0xFF` with no `chain_fault` bit and no incomplete mask
+- a `sample_produced_mask` bit set with no measurement for that source in that cycle, or a measurement
+  present with the bit clear — decidable only because cycles are correlated, and exactly the check that
+  catches a packer bug before it becomes a silent blind corner
+- `failing_chain_position != 0xFF` with no `flags` bit 0-2 set and no incomplete mask
+- a measurement arriving while the current health says `UNKNOWN`, `LOST` or `FAULT`, which the firmware
+  obligations forbid
 
 **Rejection is not enough.** Any of the above puts the cliff subsystem into **protocol FAULT
 immediately**, rather than leaving the consumer to notice a timeout later. In protocol FAULT no role
@@ -398,19 +541,37 @@ the missing one is exactly where an undetected drop would be.
 
 - the subsystem is not in protocol FAULT or `CONFIG_ERROR`, and `protocol_version` is supported
 - a health frame with a **new** `health_seq` was received within `T_health_max_gap`
+- the most recent health frame has `cycle_valid` set
 - `mapping_state == PROVEN`
-- `chain_fault == 0` and `failing_chain_position == 0xFF`
+- `flags` bits 0-2 all clear, and `failing_chain_position == 0xFF`
 - `enumerated_mask == 0xF` and `model_verified_mask == 0xF`
 - `sensor_fault_mask == 0`
 - each of the four sources has an accepted measurement from a **new** cycle within `T_meas_max_gap`,
   and every one of those four measurements shares the epoch and cycle of an authorising health frame
+- no source has been short of a sample for more than `N_cycle_miss_max` consecutive cycles
 
-`transport_read_completed_mask` is deliberately **not** an instantaneous `READY` gate. A mask short of
-`0xF` in one cycle is a **degraded** condition: it is reported, and it will cost `READY` on its own
-once a source exceeds `T_meas_max_gap`. Gating on the instantaneous mask instead would make the
-tolerance zero cycles and contradict `T_meas_max_gap`, so that a single retryable NACK on a six-device
-chain stops the robot. What must not be tolerated is *persistence*: after `N_cycle_miss_max`
-consecutive cycles with the mask short of `0xF`, the subsystem enters `FAULT` regardless of freshness.
+### What is tolerated, and what is not
+
+`sample_produced_mask` is deliberately **not** an instantaneous `READY` gate. A mask short of `0xF` in
+one cycle is a **degraded** condition: it is reported, and it costs `READY` on its own once the source
+crosses one of the two bounds below. Gating on the instantaneous mask would make the tolerance zero
+cycles and contradict `T_meas_max_gap`, so a single retryable NACK on a six-device chain would stop the
+robot.
+
+The tolerance has **two bounds, and whichever is reached first ends `READY`**:
+
+- `T_meas_max_gap` — elapsed time since that source's last accepted measurement
+- `N_cycle_miss_max` — consecutive cycles in which that source produced no sample
+
+**`N_cycle_miss_max` can only ever fire earlier than the time bound, never later.** It is a second,
+tighter trigger, not an extension: the contract requires
+`N_cycle_miss_max x T_cycle_nominal <= T_meas_max_gap`, so a cycle-count budget can never buy a source
+more time than the freshness budget allows. Exceeding the count is a `FAULT` rather than a plain
+`NOT_READY`, because a source that has missed that many consecutive cycles is not late, it is broken.
+
+**What is tolerated is a temporarily missing sample, never a faulty one.** A `sensor_fault_mask` bit
+costs `READY` on the cycle it appears in, with no cycle budget and no grace: the sensor has told us its
+sample is unusable, which is a different fact from not having produced one.
 
 On receiving a health snapshot with `PROVEN` and an epoch different from the current one, the decoder
 MUST discard the four cached ranges and their freshness timestamps from the previous epoch, reject any
@@ -477,12 +638,14 @@ measured on real hardware.
 | --- | --- |
 | `T_cycle_nominal` | nominal acquisition-cycle period, which is what a health mask describes |
 | `T_meas_max_gap` | maximum tolerable gap between accepted measurements of one sensor |
+| `T_cycle_assembly` | how long one cycle slot may stay open before it expires |
 | `T_health_nominal` | nominal health snapshot period |
 | `T_health_max_gap` | maximum tolerable gap between consecutive **new** `health_seq` values |
 | `T_skew_max` | worst-case sampling phase skew across the four sensors within a cycle |
-| `N_cycle_miss_max` | consecutive cycles with an incomplete read mask before the subsystem faults |
+| `N_cycle_miss_max` | consecutive cycles without a sample from one source before it faults |
+| `N_cycle_advance_max` | largest plausible forward jump in `cycle_seq` before it is treated as implausible |
 
-Three rules constrain the eventual numbers rather than the schedule:
+Five rules constrain the eventual numbers rather than the schedule:
 
 - **The ROS-side timeouts are derived from these values, never guessed.** A consumer timeout chosen
   independently of the producer's real period is either a nuisance stop or a missed cliff.
@@ -491,6 +654,11 @@ Three rules constrain the eventual numbers rather than the schedule:
 - **`T_health_max_gap` must be strictly larger than the worst-case health latency under full bus
   load**, and the consumer's health timeout strictly larger again with margin, because the health frame
   is chain-level: one dropped frame must not by itself trip a stop.
+- **`T_skew_max` + worst-case health latency < `T_cycle_assembly` < `T_meas_max_gap`.** Below the lower
+  bound, cycles expire while their own frames are still legitimately in flight; above the upper bound, a
+  slot outlives the freshness of the data in it.
+- **`N_cycle_miss_max` x `T_cycle_nominal` <= `T_meas_max_gap`.** The cycle-count bound exists to fire
+  *earlier* than the time bound, never to extend it.
 
 ## Golden vectors
 
@@ -501,7 +669,8 @@ and the driver decoder test. The grid contract's generator, vectors and SHA are 
 
 Beyond the happy path the vectors MUST cover at least:
 
-- each status class, and `0xFFFF` with `NO_TARGET` and with `SENSOR_FAULT`
+- every one of the sixteen raw statuses, mapped to its class, including all four `RANGE_VALID_*` codes
+  and both `NO_SAMPLE` codes
 - one source missing from a cycle; all four missing; a cycle with no measurements at all
 - `mapping_state` `UNKNOWN`, `PROVEN`, `LOST`, and recovery back to `PROVEN`
 - health stopping while measurements continue, and `health_seq` repeated
@@ -514,12 +683,22 @@ Beyond the happy path the vectors MUST cover at least:
 - `mapping_epoch` and `cycle_seq` wrapping 255 -> 0
 - measurement and health disagreeing on epoch, and on cycle
 - a status class contradicting the range sentinel
-- `transport_read_completed_mask` set with no measurement in that cycle, and the converse
+- `sample_produced_mask` set with no measurement in that cycle, and the converse
+- a `cycle_valid`-clear heartbeat immediately followed by the genuine cycle 0 of a new epoch, asserting
+  that the heartbeat neither opened nor retired a cycle
+- a `cycle_valid`-clear frame carrying a non-zero `cycle_seq` or a non-zero per-cycle mask
+- a cycle expiring at `T_cycle_assembly` with its health claiming a sample that never arrived (protocol
+  FAULT), and one expiring with no health at all (degraded, not a fault)
+- a `cycle_seq` jump of exactly `N_cycle_advance_max` (accepted) and one beyond it (implausible, protocol
+  FAULT, then resynchronisation from the next `cycle_valid` health frame)
+- a stale frame arriving after a wrap so that its `cycle_seq` aliases onto a live cycle, asserting it is
+  caught as a conflict rather than accepted
+- a source short of a sample for exactly `N_cycle_miss_max` cycles and for one more
+- a single-cycle `sensor_fault_mask` bit, asserting `READY` is lost immediately with no cycle budget
 - `failing_chain_position` set with no fault indication
 - an unsupported `protocol_version`, and a zero `protocol_version`
 - non-zero reserved fields, DLC other than 8, `frame_type` mismatched to its identifier, `source_id`
-  out of range, `mapping_state` out of range, `chain_fault` bit 3 set
-- `N_cycle_miss_max` consecutive incomplete cycles reaching `FAULT`
+  out of range, `mapping_state` out of range
 - a `CONFIG_ERROR` start, asserting that no role topic is ever advertised and that safety health
   publishes `FAULT`
 - protocol FAULT latching, and clearing only after one clean correlated cycle
@@ -541,7 +720,13 @@ it is open.
   the four `Range` topics and the `+Inf` convention are settled above; the message definition and the
   package it lives in are not.
 - **All timing values** above, and with them the consumer timeouts.
-- **The status-to-class rows**, to be transcribed from the VL53L4CX ULD rather than guessed.
+- **The validation column of the status classification.** The rows are proposed and complete, drawn
+  from the ULD's own definitions, but four of them carry a decision that only hardware can confirm:
+  code 3 as a fault rather than a near floor, code 6 and code 11 as untrustworthy despite their
+  `RANGE_VALID_*` names, and code 13, where the ULD's own symbol and comment disagree. Freezing requires
+  the measured rates on a real floor, because those rates *are* the false-stop budget.
+- **A per-source distinction between an I2C failure and a no-update**, currently only visible at chain
+  level. It would need another field and therefore a version bump; deferred deliberately.
 - **What evidence proves `mapping_state == PROVEN`**, which cannot be settled until the enable-chain
   defect is fixed.
 
