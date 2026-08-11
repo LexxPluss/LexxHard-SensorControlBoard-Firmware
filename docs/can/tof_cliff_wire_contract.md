@@ -264,7 +264,7 @@ reducing differently would disagree about the floor while both passing their own
 
 | Targets | Rule |
 | --- | --- |
-| 0 | status `255`, `range_mm = 0xFFFF`, `target_count = 0` |
+| 0 | status `255`, `range_mm = 0xFFFF`, `target_count = 0`. This holds in both directions: `target_count == 0` **if and only if** the frame carries status `255` and `range_mm == 0xFFFF` |
 | 1 | that target's status, classified by the table below |
 | 2-4 | classify every target, then take the **most conservative class present**, in the order `SENSOR_FAULT` > `NO_SAMPLE` > `NO_TARGET` > `VALID_RANGE` |
 
@@ -357,8 +357,11 @@ per cycle and two are not, and the difference matters:
 
 **`sample_produced_mask` was called `transport_read_completed_mask` in `draft-2026-08-11b`, and the
 rename is deliberate.** A completed I2C read does not always yield a sample: the ULD returns
-`SYNCRONISATION_INT` on the first read after starting, and `NONE` when there is no update, and neither
-is a measurement (see *Status classification*). Defining the bit as "a read that produced a sample"
+`SYNCRONISATION_INT` (10) on the first read after starting back-to-back ranging, and
+`RANGE_VALID_NO_WRAP_CHECK_FAIL` (6) until the wraparound check has enough data, and neither is a
+measurement of the scene (see *Status classification*). Those two statuses are the whole of `NO_SAMPLE`;
+in particular `NONE` (255) is **not** one of them — it is a real no-target result. Defining the bit as
+"a read that produced a sample"
 keeps both directions of the measurement-presence cross-check exact; defining it as transport success
 would make one direction unenforceable.
 
@@ -540,9 +543,9 @@ skips: **only a `cycle_valid` health frame may move the anchor**, and **a retire
 
 Reject, count and report: DLC other than 8; `frame_type` not matching the arrival identifier; an
 unsupported `protocol_version`; `source_id` outside 0-3; any non-zero reserved field; `mapping_state`
-outside `0x0`-`0x3`; `failing_chain_position` outside 1-6 and not `0xFF`; `target_count` above 4; a
-`target_count` of 0 that does not carry status `255` and `0xFFFF`; and, with `cycle_valid` clear, a
-non-zero `cycle_seq` or a non-zero per-cycle mask.
+outside `0x0`-`0x3`; `failing_chain_position` outside 1-6 and not `0xFF`; `target_count` above 4; any violation of the
+biconditional `target_count == 0` <-> (status `255` and `range_mm == 0xFFFF`), in either direction; and,
+with `cycle_valid` clear, a non-zero `cycle_seq` or a non-zero per-cycle mask.
 
 Three **contradictions** are rejected on the same footing, because each means one of two fields is
 wrong with no safe way to guess which, and the inconsistency is itself evidence of a defect upstream:
@@ -750,6 +753,8 @@ Beyond the happy path the vectors MUST cover at least:
 - a late measurement from a `PROVEN` cycle arriving after a newer health frame reports `LOST`, asserting
   it is **not** a protocol fault
 - status `255` with `target_count = 0`, asserting `0xFFFF` on the wire and never 8191 mm
+- both halves of the biconditional violated: `target_count = 0` with a finite range or a status other
+  than `255`, and status `255` with a non-zero `target_count`
 - the multi-target reduction: two valid targets (the farther one is transmitted), a valid target
   alongside a `SENSOR_FAULT` target (the whole measurement is `SENSOR_FAULT`), a valid target alongside a
   `NO_TARGET` target, four targets, and `target_count` inconsistent with the reduced status
