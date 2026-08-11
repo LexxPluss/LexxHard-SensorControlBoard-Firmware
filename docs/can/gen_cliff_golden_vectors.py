@@ -73,11 +73,10 @@ RESOLVED = {
 # ---------------------------------------------------------------------------
 # Event vocabulary.
 #
-# PROPOSAL, not yet contract text: the contract lists the cases the vectors must
-# cover but has no decoder event vocabulary for this path. It needs one before the
-# first freeze, in the same way the grid contract enumerates its events, or two
-# implementations will report the same case under different names and the
-# "complete multiset" rule will have nothing to bite on.
+# Normative as of draft-2026-08-11f: the contract's "Decoder events" section
+# enumerates these, and this list must stay identical to it. Two properties come
+# with them - alarms are edge triggered, so a persisting condition produces nothing
+# further, and draining the queue removes the events.
 
 EVENTS = [
     "MEASUREMENT_ACCEPTED",
@@ -424,8 +423,10 @@ CATALOGUE = [
       notes="T of the grace, and the first failing case under the frozen comparison rule"),
     S(id="H3", group="timeout", title="one tick past the grace stays FAULT without re-reporting",
       inputs=["node start", "advance_clock(T_startup_health_grace + 1)"],
-      events=["HEALTH_STALE"], publication="HEALTH_ONLY", params=["T_startup_health_grace"],
-      notes="T+1; the alarm is edge triggered, not per tick"),
+      events=[], allow_no_events=True, publication="HEALTH_ONLY",
+      params=["T_startup_health_grace"],
+      notes="T+1. Deliberately eventless: the alarm is edge triggered, so the condition persisting "
+            "produces nothing further, and the state stays FAULT on the health topic"),
     S(id="H4", group="timeout", title="health arriving after the grace fault clears it",
       inputs=["node start", "advance_clock(T_startup_health_grace)", HEALTH_OK, FOUR_VALID],
       events=["HEALTH_STALE", "HEALTH_RECOVERED", "HEALTH_ACCEPTED"] +

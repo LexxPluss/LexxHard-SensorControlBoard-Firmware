@@ -1,10 +1,10 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **draft-2026-08-11e**
+Contract version: **draft-2026-08-11f**
 Status: **provisional draft, NOT frozen.** The byte layouts, encodings and state rules below are
-written to be implementable as they stand, but four classes of content are deliberately unresolved and
-are listed in *Open decisions*: the health CAN identifier, the ROS message type for safety health, the
-validation column of the status classification, and every timing value. **No implementation may be
+written to be implementable as they stand, but three classes of content are deliberately unresolved and
+are listed in *Open decisions*: the health CAN identifier, the validation column of the status
+classification, and every timing value. **No implementation may be
 released against this version**, and no golden vectors exist yet.
 
 This document is the single source of truth shared by two repositories:
@@ -645,8 +645,9 @@ failure this contract exists to remove. The mapping is normative:
 
 The grace is its own required value rather than a reuse of `T_health_max_gap`,
 because the two bound different things: the grace covers node start, SCB boot and
-the first cycle, while `T_health_max_gap` bounds the interval between snapshots of
-a producer that is already running. The grid path keeps the same separation
+the worst-case arrival of the **first health heartbeat** — not the first acquisition
+cycle, since health does not wait for one — while `T_health_max_gap` bounds the
+interval between snapshots of a producer that is already running. The grid path keeps the same separation
 between its startup grace and its staleness threshold, for the same reason.
 
 ### Two kinds of fault, and only one of them latches
@@ -676,7 +677,7 @@ While not `READY`:
 - `DiagnosticArray` is for the operator. It MUST NOT be the transport of any safety handshake
 
 The ROS-facing interface is four `sensor_msgs/Range` topics under `/global/system/cliff_tof/`, named
-for the roles, plus `/global/system/cliff_tof/health` carrying `lexxauto_msgs/CliffTofSafetyHealth`. That
+for the roles, plus `/global/system/cliff_tof/health` carrying `scbdriver/CliffTofSafetyHealth`. That
 message carries the driver's own readiness decision, and the consumer may release the cliff stop only
 while it reads `READY`; its `reason_mask` explains a decision and must not be used to re-derive one.
 **Its heartbeat counter is judged new by inequality with the previous value, never by numeric increase**,
@@ -754,6 +755,28 @@ Six rules constrain the eventual numbers rather than the schedule:
 - **`N_cycle_miss_fault` is not tied to any period.** It is a cycle count with a fault outcome and no
   timing claim; `T_meas_max_gap` on a monotonic clock is the only bound the safety argument uses. Do not
   reintroduce a product of a count and a nominal period, because cycle periods stretch under load.
+
+## Decoder events
+
+Every scenario declares the **complete multiset** of events it must produce, so an implementation cannot
+pass by emitting the right event alongside wrong ones. That rule needs a fixed vocabulary, or two
+implementations will report the same case under different names and the completeness requirement will
+have nothing to bite on. These are the names, grouped by what they describe:
+
+| Group | Events |
+| --- | --- |
+| Measurement | `MEASUREMENT_ACCEPTED`, `MEASUREMENT_BUFFERED`, `MEASUREMENT_DROPPED_UNAUTHORISED`, `DUPLICATE_MEASUREMENT_IDENTICAL`, `CONFLICTING_MEASUREMENT` |
+| Health | `HEALTH_ACCEPTED`, `HEALTH_HEARTBEAT_ONLY`, `HEALTH_REPEAT_IGNORED`, `HEALTH_STALE`, `HEALTH_RECOVERED` |
+| Cycle | `CYCLE_COMPLETED`, `CYCLE_INCOMPLETE_BY_TIMEOUT`, `CYCLE_RETIRED_BY_NEWER`, `FRAME_FOR_RETIRED_CYCLE`, `IMPLAUSIBLE_CYCLE_ADVANCE` |
+| Mapping | `EPOCH_CHANGED`, `MAPPING_LOST`, `ROLE_PUBLICATION_SUPPRESSED` |
+| Rejection | `MALFORMED_FRAME`, `CONTRADICTION_STATUS_SENTINEL`, `CONTRADICTION_MASK_VS_MEASUREMENT`, `CONTRADICTION_POSITION_WITHOUT_FAULT`, `CONTRADICTION_TARGET_COUNT`, `VERSION_UNSUPPORTED` |
+| Fault state | `PROTOCOL_FAULT_RAISED`, `PROTOCOL_FAULT_CLEARED`, `CONFIG_ERROR` |
+| Source and readiness | `READY_ENTERED`, `READY_LOST`, `SOURCE_DEGRADED`, `SOURCE_STALE`, `SOURCE_RECOVERED`, `SAMPLE_MISS_FAULT` |
+
+Two properties are normative rather than incidental. Alarms are **edge triggered**: a condition that has
+not changed produces no further event, which is why a boundary scenario at `T+1` expects nothing rather
+than a repeat. And draining the event queue **removes** the events, so each is processed exactly once
+instead of the whole history replaying on every spin.
 
 ## Golden vectors
 
@@ -843,11 +866,6 @@ it is open.
 - **The health CAN identifier.** `0x217` is a *candidate only*. The 2026-08-06 sweep is stale — three
   rows were added to the table since — so allocation requires a fresh sweep of both repositories plus
   a live capture, then a self-assignment recorded here and in the team's CAN ID register.
-- **The decoder event vocabulary.** This contract requires each scenario to declare a *complete* event
-  multiset, but never enumerates the events, the way the grid contract does. The generator carries a
-  proposed vocabulary; it must be moved into this document before the first freeze, or two
-  implementations will report the same case under different names and the completeness rule will have
-  nothing to bite on.
 - **All timing values** above, and with them the consumer timeouts.
 - **The validation column of the status classification.** The rows are complete and traced to the
   vendored ULD's own code paths, but two are explicitly **provisional** and can only be settled on
