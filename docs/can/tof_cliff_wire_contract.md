@@ -732,7 +732,7 @@ measured on real hardware.
 | `N_cycle_miss_fault` | consecutive cycles without a sample from one source before it faults |
 | `N_cycle_advance_max` | largest plausible forward jump in `cycle_seq` before it is treated as implausible |
 
-Five rules constrain the eventual numbers rather than the schedule:
+Six rules constrain the eventual numbers rather than the schedule:
 
 - **The ROS-side timeouts are derived from these values, never guessed.** A consumer timeout chosen
   independently of the producer's real period is either a nuisance stop or a missed cliff.
@@ -744,18 +744,44 @@ Five rules constrain the eventual numbers rather than the schedule:
 - **`T_skew_max` + `T_health_delivery_max` < `T_cycle_assembly` < `T_meas_max_gap`.** Below the lower
   bound, cycles expire while their own frames are still legitimately in flight; above the upper bound, a
   slot outlives the freshness of the data in it.
-- **`T_startup_health_grace` must cover SCB boot plus the first acquisition cycle**, and is unrelated to
-  `T_health_max_gap`. It has no runnable default: unset means `CONFIG_ERROR`, like the other timeouts.
+- **`T_startup_health_grace` must cover node start, SCB boot and the worst-case arrival of the first
+  health heartbeat** — and nothing more. It must **not** wait for an acquisition cycle: health is
+  transmitted unconditionally once the subsystem is enabled, including with zero sensors enumerated and
+  `mapping_state == UNKNOWN`, so the first heartbeat does not depend on any measurement. Sizing the grace
+  around a cycle would lengthen the detection of a dead link for no reason. It is unrelated to
+  `T_health_max_gap`, and it has no runnable default: unset means `CONFIG_ERROR`, like the other
+  timeouts.
 - **`N_cycle_miss_fault` is not tied to any period.** It is a cycle count with a fault outcome and no
   timing claim; `T_meas_max_gap` on a monotonic clock is the only bound the safety argument uses. Do not
   reintroduce a product of a count and a nominal period, because cycle periods stretch under load.
 
 ## Golden vectors
 
-Vectors do **not** exist yet; generating them is the step after the first freeze. They will come from a
-sibling generator, `gen_cliff_golden_vectors.py`, emitting a JSON file and a dependency-free C++
-header, both carrying the SHA-256 of **this** file, pinned independently by the firmware packer test
-and the driver decoder test. The grid contract's generator, vectors and SHA are untouched.
+Vectors do **not** exist yet; generating them is the step after the first freeze. They will come from
+`gen_cliff_golden_vectors.py`, emitting a JSON file and a dependency-free C++ header, both carrying the
+SHA-256 of **this** file, pinned independently by the firmware packer test and the driver decoder test.
+The grid contract's generator, vectors and SHA are untouched.
+
+**The scenario catalogue is already written, and the generator refuses to emit.** `--list` renders every
+scenario with its input sequence, its complete expected event multiset, its publication outcome, the
+parameters it depends on and whether it is blocked on hardware; `--check` verifies the catalogue's
+self-consistency; and plain invocation fails while the contract version carries a `draft-` marker or any
+symbol is unresolved. Scenarios refer to identifiers and timings **by symbol**, never by number, so
+resolving a value is one edit rather than a sweep. Writing the catalogue before the numbers exist is
+what exposed the two boundary scenarios below.
+
+**One comparison rule is frozen now**, because it decides what a boundary case means and no measurement
+can change it:
+
+> An age strictly below its bound is fresh. An age equal to or above it has timed out.
+
+Every timing scenario therefore comes as a triple at `T-1`, `T` and `T+1`, where `T` is the **first
+failing** case rather than the last passing one.
+
+The catalogue's lower-bound case for `T_cycle_assembly` is the one the rules above imply but no earlier
+draft stated: measurements spread across `T_skew_max` inside one cycle, with that cycle's health frame
+arriving a further `T_health_delivery_max` later, must still complete. If a slot expired there, cycles
+would die while their own frames were still legitimately in flight.
 
 Beyond the happy path the vectors MUST cover at least:
 
@@ -817,9 +843,11 @@ it is open.
 - **The health CAN identifier.** `0x217` is a *candidate only*. The 2026-08-06 sweep is stale — three
   rows were added to the table since — so allocation requires a fresh sweep of both repositories plus
   a live capture, then a self-assignment recorded here and in the team's CAN ID register.
-- **The message type for the typed safety-health topic**, which does not exist yet. The topic names,
-  the four `Range` topics and the `+Inf` convention are settled above; the message definition and the
-  package it lives in are not.
+- **The decoder event vocabulary.** This contract requires each scenario to declare a *complete* event
+  multiset, but never enumerates the events, the way the grid contract does. The generator carries a
+  proposed vocabulary; it must be moved into this document before the first freeze, or two
+  implementations will report the same case under different names and the completeness rule will have
+  nothing to bite on.
 - **All timing values** above, and with them the consumer timeouts.
 - **The validation column of the status classification.** The rows are complete and traced to the
   vendored ULD's own code paths, but two are explicitly **provisional** and can only be settled on
