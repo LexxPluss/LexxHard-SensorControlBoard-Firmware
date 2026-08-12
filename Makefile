@@ -25,7 +25,7 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 # Absolute path to extra/ (custom -DBOARD_ROOT / -DZEPHYR_EXTRA_MODULES root).
 # Defaults to /workdir, matching the "volumes: .:/workdir" mount in docker-compose.yml.
 # When IN_HOST=1 (no container), override with the worktree's absolute path, e.g.
-# make IN_HOST=1 WORKDIR=$(pwd) firmware
+# make IN_HOST=1 WORKDIR=$PWD firmware
 WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
