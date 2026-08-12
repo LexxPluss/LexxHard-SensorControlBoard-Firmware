@@ -27,8 +27,8 @@
 /build/
 /build-bypass-safety-lidar/
 /build-mcuboot/
-/build-test**/
-/twister-out**/
+/build-test*/
+/twister-out*/
 /modules/
 /ros_msgs/
 /tools/
