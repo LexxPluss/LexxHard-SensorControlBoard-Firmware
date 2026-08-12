@@ -20,6 +20,11 @@
  *                       linked and not initialised. Measures the resident data cost
  *                       of the whole chain, which multiplication cannot be trusted
  *                       to predict.
+ *   TOF_CLIFF_BUDGET=6  the acquisition skeleton is reachable on top of B5: six
+ *                       descriptors (four real cliff, two explicit L7 stubs), the
+ *                       heartbeat timer and work item, and one full cycle. This is the
+ *                       point every later stage is measured against, because it is the
+ *                       first one that contains the scheduler.
  *   TOF_CLIFF_BUDGET=5  the full per-sensor chain is reachable for all four:
  *                       open, configure, start, read_once, stop. This is B5-L4, not
  *                       the six-sensor acceptance build - L7 is still absent, so the
@@ -81,12 +86,18 @@ static VL53L4CX_Object_t cliff_obj;
 static VL53L4CX_Object_t *volatile cliff_obj_ref = &cliff_obj;
 #endif
 
+#if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
+/* The scheduler is C++, so the probe reaches it through one C entry point. */
+int tof_cliff_budget_walk_scheduler(void *objs, void *scratch, int stride);
+#endif
+
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 5
 /* Sinks, so that nothing on the path can be proven unused and folded away. */
 static volatile int cliff_sink_rc;
 static volatile int16_t cliff_sink_mm;
 static volatile uint8_t cliff_sink_status;
 
+#if TOF_CLIFF_BUDGET < 6
 static void cliff_walk_one(int i)
 {
 	struct cliff_source *src = &cliff_sources_ref[i];
@@ -125,14 +136,23 @@ static void cliff_walk_one(int i)
 
 	cliff_sink_rc = tof_cliff_sensor_stop(obj, &src->status);
 }
+#endif
 
 static int tof_cliff_budget_walk(void)
 {
+#if TOF_CLIFF_BUDGET >= 6
+	/* B6: the real scheduler drives the same four objects, plus two stubbed grid
+	 * sources, so the measurement covers the sequential walk, the publication gate and
+	 * the heartbeat rather than a hand-rolled loop. */
+	(void)tof_cliff_budget_walk_scheduler(cliff_objs, &cliff_scratch,
+					      (int)sizeof(cliff_objs[0]));
+#else
 	/* Sequential, one sensor at a time, sharing one scratch - the shape the real
 	 * acquisition thread will use while holding chain_lock(). */
 	for (int i = 0; i < TOF_CLIFF_SENSORS; i++) {
 		cliff_walk_one(i);
 	}
+#endif
 
 	if (vl53l4cx_bus_io_placeholder_calls() != 0U) {
 		LOG_ERR("placeholder transport was used %u times",

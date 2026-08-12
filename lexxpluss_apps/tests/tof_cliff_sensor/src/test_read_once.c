@@ -515,6 +515,38 @@ ZTEST(tof_cliff_adapter, test_bus_io_failure_stops_before_any_device_step)
 	zassert_equal(strcmp(f.order, "I"), 0, "order was \"%s\"", f.order);
 }
 
+ZTEST(tof_cliff_adapter, test_an_address_outside_the_unicast_range_is_refused_at_open)
+{
+	/* 0x00-0x07 and 0x78-0x7F are reserved by I2C itself. Without the check the value
+	 * would be written into IO.Address and surface on the boot wait's first transfer,
+	 * reported as a BOOT failure - sending the reader to investigate the wrong thing. */
+	static const uint8_t bad[] = {0x00, 0x07, 0x78, 0x7F, 0xFF};
+
+	for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+		before(NULL);
+		zassert_equal(tof_cliff_sensor_open(&obj, bad[i], &st), -EINVAL,
+			      "address 0x%02x was accepted", bad[i]);
+		zassert_equal(st.stage, TOF_CLIFF_STAGE_BUS_IO);
+		zassert_equal(st.port_errno, -EINVAL);
+		zassert_equal(strlen(f.order), 0, "nothing may be called for a bad address");
+		zassert_equal(fake_i2c_count, 0);
+	}
+
+	/* Both ends of the valid range work. */
+	for (uint8_t good = 0x08; good <= 0x77; good += 0x6F) {
+		before(NULL);
+		zassert_equal(tof_cliff_sensor_open(&obj, good, &st), 0,
+			      "address 0x%02x was refused", good);
+	}
+}
+
+ZTEST(tof_cliff_adapter, test_copy_raw_checks_its_output_pointer_before_clearing_it)
+{
+	/* Clearing first would crash on exactly the input the check exists for. */
+	zassert_equal(tof_cliff_copy_raw(&f.canned, NULL), -EINVAL);
+	zassert_equal(tof_cliff_copy_raw(NULL, NULL), -EINVAL);
+}
+
 ZTEST(tof_cliff_adapter, test_configure_passes_mode_and_budget_through_untouched)
 {
 	/* Both are still unresolved symbols in the wire contract. They are arguments so

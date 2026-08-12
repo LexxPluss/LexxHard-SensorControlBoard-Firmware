@@ -159,7 +159,10 @@ struct tof_cliff_scratch {
 
 /* Registers the bus IO block and brings the device to a configured, not-yet-ranging
  * state. addr_7bit is the address the chain controller already assigned; this function
- * never changes an address and never touches enable. */
+ * never changes an address and never touches enable.
+ *
+ * Returns -EINVAL with stage BUS_IO for anything outside the 7-bit unicast range
+ * 0x08..0x77, before the address can reach the bus. */
 int tof_cliff_sensor_open(VL53L4CX_Object_t *obj, uint8_t addr_7bit,
 			  struct tof_cliff_read_status *st);
 

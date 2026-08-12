@@ -95,6 +95,17 @@ int tof_cliff_sensor_open(VL53L4CX_Object_t *obj, uint8_t addr_7bit,
 	}
 	tof_cliff_status_reset(st);
 
+	/* Reject the address here rather than let it reach the bus. Anything outside the
+	 * 7-bit unicast range is a caller error, and without this check it would be
+	 * written into IO.Address and only surface on the first transfer of the boot wait
+	 * - reported as a BOOT failure, which is the wrong thing to go and investigate.
+	 * The reserved ranges are I2C's own: 0x00-0x07 and 0x78-0x7F. */
+	if (addr_7bit < 0x08U || addr_7bit > 0x77U) {
+		st->stage = TOF_CLIFF_STAGE_BUS_IO;
+		st->port_errno = -EINVAL;
+		return -EINVAL;
+	}
+
 	vl53l4cx_bus_io_fill(&io, addr_7bit);
 
 	vl53l4cx_port_sticky_reset();
@@ -183,6 +194,11 @@ int tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sam
 	uint8_t entries;
 	uint8_t i;
 
+	/* Arguments first, then clear: memset on a null out would crash before the
+	 * validation it was meant to precede. */
+	if (out == NULL) {
+		return -EINVAL;
+	}
 	memset(out, 0, sizeof(*out));
 	if (in == NULL) {
 		return -EINVAL;
