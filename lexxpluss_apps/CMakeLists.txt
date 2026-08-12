@@ -58,6 +58,23 @@ if(ENABLE_TOF_CHAIN)
                     "verification is still pending.")
 endif()
 
+# Cliff ToF: the vendored VL53L4CX ULD and its Zephyr platform layer. Off by
+# default, so the production image is byte-identical until the acquisition path
+# is real. TOF_CLIFF_BUDGET selects a build point of the flash/RAM budget series.
+if(ENABLE_TOF_CLIFF_ULD)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l4cx_uld/vl53l4cx_sources.cmake)
+    target_sources(app PRIVATE ${VL53L4CX_ULD_PRODUCTION_SOURCES})
+    target_include_directories(app PRIVATE ${VL53L4CX_ULD_INCLUDE_DIRS})
+    # Third-party code, exempted narrowly rather than by deleting files or by a
+    # global -Wno-*. Only this target's compile options are affected.
+    set_source_files_properties(${VL53L4CX_ULD_PRODUCTION_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable;-Wno-missing-field-initializers")
+    if(TOF_CLIFF_BUDGET)
+        target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_budget_probe.c)
+        add_definitions(-DTOF_CLIFF_BUDGET=${TOF_CLIFF_BUDGET})
+    endif()
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
