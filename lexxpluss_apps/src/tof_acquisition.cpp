@@ -63,7 +63,7 @@ int cliff_start(void *dev, op_status *st)
     return tof_cliff_sensor_start(static_cast<VL53L4CX_Object_t *>(dev), st);
 }
 
-int cliff_read_once(void *dev, void *scratch, struct tof_cliff_sample *out, op_status *st)
+int cliff_read_sample(void *dev, void *scratch, struct tof_cliff_sample *out, op_status *st)
 {
     return tof_cliff_read_once(static_cast<VL53L4CX_Object_t *>(dev),
                                static_cast<struct tof_cliff_scratch *>(scratch), out, st);
@@ -75,7 +75,7 @@ int cliff_stop(void *dev, op_status *st)
 }
 
 const source_ops kCliffOps{
-    cliff_open, cliff_configure, cliff_start, cliff_read_once, cliff_stop,
+    cliff_open, cliff_configure, cliff_start, cliff_read_sample, cliff_stop,
 };
 
 /* -------------------------------------------------------------------- L7 stub ------ */
@@ -95,7 +95,7 @@ int l7_start(void *, op_status *st)
     memset(st, 0, sizeof(*st));
     return -ENOSYS;
 }
-int l7_read_once(void *, void *, struct tof_cliff_sample *out, op_status *st)
+int l7_read_cliff_sample(void *, void *, struct tof_cliff_sample *out, op_status *st)
 {
     memset(st, 0, sizeof(*st));
     if (out != nullptr) {
@@ -110,7 +110,7 @@ int l7_stop(void *, op_status *st)
 }
 
 const source_ops kL7StubOps{
-    l7_open, l7_configure, l7_start, l7_read_once, l7_stop,
+    l7_open, l7_configure, l7_start, l7_read_cliff_sample, l7_stop,
 };
 
 /* ------------------------------------------------------------------ internals ------ */
@@ -129,7 +129,11 @@ void publish_snapshot()
 
         if (f.sample_produced)
             word |= 1U << (kProducedShift + i);
-        if (f.transport_error || f.protocol_error)
+        // A fault bit, not an "anything went wrong" bit. usage_error belongs here
+        // because it is a real defect; unsupported does not, because a model with no
+        // implementation is a static property of this build rather than something that
+        // happened to a sensor this cycle.
+        if (f.transport_error || f.protocol_error || f.usage_error)
             word |= 1U << (kErrorShift + i);
         if (f.configured)
             word |= 1U << (kConfiguredShift + i);
@@ -154,7 +158,10 @@ void health_timer_handler(k_timer *)
 }
 
 // Records an operation's outcome as a neutral fact. The only interpretation performed
-// here is the mechanical one: which of the three shapes of failure occurred.
+// here is the mechanical one: which shape of failure occurred. The four are kept apart
+// because folding them together would decide health semantics by accident - a stubbed
+// model would arrive at the cliff health frame as a broken sensor, and a bug in our own
+// call would arrive as a bus fault.
 void record(source_facts &f, int rc, const op_status &st)
 {
     f.status = st;
@@ -162,6 +169,10 @@ void record(source_facts &f, int rc, const op_status &st)
         return;
     if (rc == -EPROTO)
         f.protocol_error = true;
+    else if (rc == -ENOSYS)
+        f.unsupported = true;
+    else if (rc == -EINVAL)
+        f.usage_error = true;
     else
         f.transport_error = true;
     f.rearm_failed = st.rearm_failed;
@@ -185,11 +196,15 @@ mapping_state effective_mapping_state()
                                      ? cfg_.mapping_state_provider()
                                      : mapping_state::not_ready};
 
-#ifndef TOF_ACQ_CHAIN_HW_FIXED
     if (reported == mapping_state::proven) {
         // Two boards' worth of enable chain cannot be enumerated end to end yet, so a
         // proven mapping is not something this firmware is entitled to claim. Reporting
         // NOT_READY keeps the consumer's own fail-safe path in charge.
+        //
+        // Unconditional, with no build flag to lift it. A conditional safety bypass is
+        // one careless -D away from shipping and would not show up in a diff of the code
+        // it disables; lifting this is an edit here, in its own commit, reviewed against
+        // the fixed hardware.
         static bool warned{false};
         if (!warned) {
             warned = true;
@@ -198,7 +213,6 @@ mapping_state effective_mapping_state()
         }
         return mapping_state::not_ready;
     }
-#endif
     return reported;
 }
 
@@ -214,7 +228,10 @@ uint32_t snapshot()
 
 bool is_idle()
 {
-    return !in_cycle_;
+    // Between two cycles the scheduler still owns the chain: it will take the lock again
+    // within one period, and commissioning cannot enumerate in that gap without
+    // re-addressing parts underneath the next read. Idle means stopped.
+    return !running_ && !in_cycle_;
 }
 
 void copy_facts(cycle_facts &out)
@@ -240,7 +257,7 @@ int init(const config &cfg)
     for (int i{0}; i < cfg.source_count; ++i) {
         const source_desc &d{cfg.sources[i]};
 
-        if (d.ops == nullptr || d.ops->open == nullptr || d.ops->read_once == nullptr)
+        if (d.ops == nullptr || d.ops->open == nullptr || d.ops->read_cliff_sample == nullptr)
             return -EINVAL;
         // The cliff path needs both a device object and a scratch; the stubbed grid
         // path is allowed to have neither yet.
@@ -346,7 +363,7 @@ void run_cycle()
         if (!f.started)
             continue;
 
-        rc = d.ops->read_once(d.dev, d.scratch, &sample, &st);
+        rc = d.ops->read_cliff_sample(d.dev, d.scratch, &sample, &st);
         record(f, rc, st);
         f.sample_produced = sample.fresh;
 

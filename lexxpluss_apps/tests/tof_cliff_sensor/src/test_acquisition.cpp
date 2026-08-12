@@ -278,7 +278,7 @@ ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
 
 /* ------------------------------------------------------------ publication gate ----- */
 
-ZTEST(tof_acquisition, test_proven_is_clamped_until_the_enable_chain_is_fixed)
+ZTEST(tof_acquisition, test_proven_is_unreachable_and_has_no_bypass_flag)
 {
     zassert_equal(acq::init(make_config(4)), 0);
 
@@ -293,6 +293,13 @@ ZTEST(tof_acquisition, test_proven_is_clamped_until_the_enable_chain_is_fixed)
     provider_state = acq::mapping_state::fault;
     zassert_true(acq::effective_mapping_state() == acq::mapping_state::fault);
     zassert_false(acq::publication_allowed());
+
+    // There is no build flag that lifts the clamp: a conditional safety bypass is one
+    // careless -D away from shipping, and it would not appear in a diff of the code it
+    // disables. Lifting it is an edit in its own commit against fixed hardware.
+    provider_state = acq::mapping_state::proven;
+    zassert_false(acq::publication_allowed(),
+                  "publication became possible - was a bypass reintroduced?");
 }
 
 ZTEST(tof_acquisition, test_health_is_sent_from_startup_before_any_sensor_is_open)
@@ -352,19 +359,72 @@ ZTEST(tof_acquisition, test_the_same_failure_produces_the_same_facts_for_both_mo
     zassert_false(cliff.protocol_error);
 }
 
-ZTEST(tof_acquisition, test_protocol_and_transport_errors_stay_distinguishable)
+ZTEST(tof_acquisition, test_the_four_failure_shapes_stay_distinguishable)
 {
-    zassert_equal(acq::init(make_config(2)), 0);
-    zassert_equal(acq::bring_up(), 0);
+    // Folding these together would decide health semantics by accident: the L7 stub's
+    // -ENOSYS would reach the cliff health frame as a broken sensor, and a bad call of
+    // our own would arrive as a bus fault.
+    struct {
+        int rc;
+        bool transport;
+        bool protocol;
+        bool unsupported;
+        bool usage;
+    } cases[] = {
+        {-EIO, true, false, false, false},
+        {-ETIMEDOUT, true, false, false, false},
+        {-EPROTO, false, true, false, false},
+        {-ENOSYS, false, false, true, false},
+        {-EINVAL, false, false, false, true},
+    };
 
-    devs[0].read_rc = -EPROTO;
-    devs[1].read_rc = -EIO;
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        before(nullptr);
+        zassert_equal(acq::init(make_config(1)), 0);
+        zassert_equal(acq::bring_up(), 0);
+        devs[0].read_rc = cases[i].rc;
+        acq::run_cycle();
+
+        const acq::source_facts &f{rec.last.sources[0]};
+
+        zassert_equal(f.transport_error, cases[i].transport, "rc %d", cases[i].rc);
+        zassert_equal(f.protocol_error, cases[i].protocol, "rc %d", cases[i].rc);
+        zassert_equal(f.unsupported, cases[i].unsupported, "rc %d", cases[i].rc);
+        zassert_equal(f.usage_error, cases[i].usage, "rc %d", cases[i].rc);
+    }
+}
+
+ZTEST(tof_acquisition, test_a_stubbed_model_is_not_reported_as_a_sensor_fault)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    for (auto &d : devs) {
+        d.read_rc = -ENOSYS;
+    }
     acq::run_cycle();
 
-    zassert_true(rec.last.sources[0].protocol_error);
-    zassert_false(rec.last.sources[0].transport_error);
-    zassert_true(rec.last.sources[1].transport_error);
-    zassert_false(rec.last.sources[1].protocol_error);
+    const int error_shift{2 + acq::kMaxSources};
+
+    // The fault bit feeds the cliff health frame. A model with no implementation is a
+    // static property of this build, not something that happened to a sensor.
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        zassert_true(rec.last.sources[i].unsupported);
+        zassert_false(rec.last.sources[i].transport_error);
+        zassert_equal(acq::snapshot() & (1U << (error_shift + i)), 0U,
+                      "source %d looks faulty because its driver is a stub", i);
+    }
+}
+
+ZTEST(tof_acquisition, test_a_usage_error_does_set_the_fault_bit)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    devs[0].read_rc = -EINVAL;
+    acq::run_cycle();
+
+    // Our own defect must be loud, unlike a stub.
+    zassert_true(rec.last.sources[0].usage_error);
+    zassert_not_equal(acq::snapshot() & (1U << (2 + acq::kMaxSources)), 0U);
 }
 
 ZTEST(tof_acquisition, test_a_missing_sample_is_recorded_and_not_interpreted)
@@ -498,6 +558,21 @@ ZTEST(tof_acquisition, test_every_device_operation_runs_under_the_chain_lock)
     zassert_false(lock_is_held(), "the lock must be released between cycles");
 }
 
+ZTEST(tof_acquisition, test_the_gap_between_cycles_is_not_an_idle_chain)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    // The scheduler will take the lock again within one period. Commissioning cannot
+    // enumerate in that gap without re-addressing parts underneath the next read, so a
+    // short window must not read as a safe one.
+    zassert_false(acq::is_idle(), "a running scheduler between cycles is not idle");
+
+    acq::stop();
+    zassert_true(acq::is_idle());
+}
+
 ZTEST(tof_acquisition, test_stop_quiesces_and_leaves_the_chain_free_for_commissioning)
 {
     zassert_equal(acq::init(make_config(3)), 0);
@@ -528,11 +603,14 @@ ZTEST(tof_acquisition, test_the_grid_ops_are_an_explicit_stub)
     struct tof_cliff_sample sample{};
 
     // A named stub rather than a null pointer or a copy of the cliff ops, so wiring L7
-    // to the wrong driver has to be deliberate.
+    // to the wrong driver has to be deliberate. Note what the refusal of
+    // read_cliff_sample actually says: the shared interface is still the shape of a point
+    // sensor, and an 8x8 zone frame cannot travel through it. That is prototype debt, and
+    // this assertion is where it is visible.
     zassert_equal(ops.open(nullptr, 0x30, &st), -ENOSYS);
     zassert_equal(ops.configure(nullptr, &st), -ENOSYS);
     zassert_equal(ops.start(nullptr, &st), -ENOSYS);
-    zassert_equal(ops.read_once(nullptr, nullptr, &sample, &st), -ENOSYS);
+    zassert_equal(ops.read_cliff_sample(nullptr, nullptr, &sample, &st), -ENOSYS);
     zassert_equal(ops.stop(nullptr, &st), -ENOSYS);
     zassert_false(sample.fresh);
 

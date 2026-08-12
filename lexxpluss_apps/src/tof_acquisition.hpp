@@ -7,6 +7,23 @@
 
 #pragma once
 
+// PROTOTYPE SKELETON - THE INTERFACE IS NOT FROZEN AND THIS IS NOT PRODUCTION READY.
+//
+// It exists to establish the boundaries and to make the budget measurable with a
+// scheduler in the image. Known and deliberate limitations, all of which will change:
+//
+//   - The data interface is still L4-shaped. read_cliff_sample() hands back a
+//     tof_cliff_sample and there is one payload sink, which suits four point sensors and
+//     does not suit an 8x8 grid. When the real L7 path lands, the ops table and the sinks
+//     both change shape; the grid stub refusing a cliff-shaped read is the visible marker
+//     of that debt, not a design.
+//   - Neutral facts are recorded, but nothing consumes them yet: no packer, no CAN glue,
+//     no periodic measurement frame.
+//   - No thread is created here. Something has to call bring_up() and run_cycle() on the
+//     single acquisition thread; the cycle period is carried but not yet used to pace it.
+//   - PROVEN is unreachable by construction, see effective_mapping_state().
+//   - Stack watermark and boot time are unmeasured; both need a run on the board.
+//
 // The six-sensor acquisition skeleton: one thread, one cycle at a time, sequential
 // over the configured sources. What it produces is a set of NEUTRAL FACTS about the
 // cycle. What it deliberately does not contain is any policy.
@@ -84,11 +101,17 @@ using op_status = struct tof_cliff_read_status;
 
 // One source's device operations. There is no enable, no address change and no reset:
 // the enable line is the chain's addressing mechanism and belongs to commissioning.
+//
+// read_cliff_sample is named for what it actually is. A generic name would hide that this
+// table is currently the shape of a point sensor, and the grid path cannot be expressed
+// through it: an 8x8 zone frame is not a tof_cliff_sample. The name is the reminder that
+// this signature has to change, rather than a claim that it is already general.
 struct source_ops {
     int (*open)(void *dev, uint8_t addr_7bit, op_status *st);
     int (*configure)(void *dev, op_status *st);
     int (*start)(void *dev, op_status *st);
-    int (*read_once)(void *dev, void *scratch, struct tof_cliff_sample *out, op_status *st);
+    int (*read_cliff_sample)(void *dev, void *scratch, struct tof_cliff_sample *out,
+                             op_status *st);
     int (*stop)(void *dev, op_status *st);
 };
 
@@ -119,8 +142,15 @@ struct source_facts {
     bool configured{false};      // a source occupies this slot
     bool started{false};         // start() succeeded during bring-up
     bool sample_produced{false}; // a fresh sample arrived in this cycle
-    bool transport_error{false}; // the read failed on the bus or in the driver
-    bool protocol_error{false};  // the device's own metadata was impossible
+
+    // Four distinct outcomes, because collapsing them would decide health semantics by
+    // accident: a stubbed model is not a broken sensor, and a bad call of our own is not
+    // a bus fault. At most one is set.
+    bool transport_error{false}; // -EIO and friends: the transfer or the driver failed
+    bool protocol_error{false};  // -EPROTO: the device's own metadata was impossible
+    bool unsupported{false};     // -ENOSYS: this model has no implementation yet
+    bool usage_error{false};     // -EINVAL: this firmware called it wrongly
+
     bool rearm_failed{false};    // this sample arrived but the next one will not
     op_status status{};
 };
@@ -175,6 +205,10 @@ int bring_up();
 void run_cycle();
 
 void stop();
+
+// True only when the chain is genuinely free: not mid-cycle AND not running. The
+// distinction matters because commissioning drops enable lines, which re-addresses parts;
+// the gap between two cycles is not a safe window, it is simply a short one.
 bool is_idle();
 
 // Copies the current facts out under the lock. Bring-up produces no cycle, so its
@@ -187,10 +221,14 @@ void copy_facts(cycle_facts &out);
 // sample_produced, transport or protocol error, configured and started.
 uint32_t snapshot();
 
-// The state the rest of the system should act on, which is not always what the provider
-// returns: PROVEN is clamped to NOT_READY until the two-board enable-chain defect is
-// fixed, because a chain that cannot be enumerated across both boards cannot have a
-// proven mapping. Defining TOF_ACQ_CHAIN_HW_FIXED removes the clamp.
+// The state the rest of the system should act on, which is not what the provider returns:
+// PROVEN is ALWAYS clamped to NOT_READY, because a chain that cannot be enumerated across
+// both boards cannot have a proven mapping.
+//
+// There is deliberately no build flag to lift this. A conditional bypass of a safety gate
+// is one careless -D away from shipping, and nothing about it would appear in a diff of
+// the code it disables. Re-enabling PROVEN is an edit to this function in a commit of its
+// own, reviewed against the fixed hardware.
 mapping_state effective_mapping_state();
 
 // True only when a role measurement may be published at all.
