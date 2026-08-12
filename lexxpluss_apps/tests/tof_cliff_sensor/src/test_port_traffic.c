@@ -257,6 +257,11 @@ ZTEST(tof_cliff_port, test_bus_io_block_has_real_callbacks_and_failing_placehold
 	 * DeInit with no null check at all, so neither may be omitted. */
 	zassert_not_null(io.Init);
 	zassert_not_null(io.DeInit);
+
+	/* Init is a real check, not an unconditional success: RegisterBusIO returns
+	 * whatever it returns, so a controller that never initialised must fail at open
+	 * with a stage attached rather than at the first transfer of the first read. */
+	zassert_true(vl53l4cx_port_bus_ready(), "the emulated controller must be ready");
 	zassert_equal(io.Init(), 0);
 	zassert_equal(io.DeInit(), 0);
 

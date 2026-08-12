@@ -16,6 +16,7 @@
  */
 
 #include "vl53l4cx_bus_io.h"
+#include "vl53l4cx_port.h"
 
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
@@ -27,8 +28,12 @@ static uint32_t placeholder_calls;
 
 static int32_t io_init(void)
 {
-	/* The bus, its speed and the enable chain belong to the chain controller. */
-	return 0;
+	/* The bus, its speed and the enable chain belong to the chain controller, so there
+	 * is nothing to bring up here. It is still a real check rather than an
+	 * unconditional success: RegisterBusIO returns whatever this returns, so a
+	 * controller that never initialised fails at open with a stage attached instead of
+	 * at the first transfer of the first read. */
+	return vl53l4cx_port_bus_ready() ? 0 : -1;
 }
 
 static int32_t io_deinit(void)

@@ -26,9 +26,16 @@
 #ifndef LEXXPLUSS_VL53L4CX_PORT_H_
 #define LEXXPLUSS_VL53L4CX_PORT_H_
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* True when the one I2C controller this port talks to is ready. The IO block's Init
+ * calls it so that a bus that never came up fails at open, with a stage, rather than at
+ * the first transfer of the first read. */
+bool vl53l4cx_port_bus_ready(void);
 
 /* Clear before each ULD operation. */
 void vl53l4cx_port_sticky_reset(void);

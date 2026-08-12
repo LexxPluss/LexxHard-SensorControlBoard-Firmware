@@ -69,6 +69,8 @@ const char *tof_cliff_stage_name(enum tof_cliff_stage stage)
 		return "timing_budget";
 	case TOF_CLIFF_STAGE_START:
 		return "start";
+	case TOF_CLIFF_STAGE_STOP:
+		return "stop";
 	case TOF_CLIFF_STAGE_READY_CHECK:
 		return "ready_check";
 	case TOF_CLIFF_STAGE_FETCH:
@@ -171,22 +173,30 @@ int tof_cliff_sensor_stop(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *
 	tof_cliff_status_reset(st);
 
 	vl53l4cx_port_sticky_reset();
-	return tof_cliff_finish(st, TOF_CLIFF_STAGE_START, VL53LX_StopMeasurement(obj));
+	return tof_cliff_finish(st, TOF_CLIFF_STAGE_STOP, VL53LX_StopMeasurement(obj));
 }
 
 /* ------------------------------------------------------------------- sample ------ */
 
-void tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sample *out)
+int tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sample *out)
 {
 	uint8_t entries;
 	uint8_t i;
 
 	memset(out, 0, sizeof(*out));
 	if (in == NULL) {
-		return;
+		return -EINVAL;
 	}
 
-	out->fresh = true;
+	/* A count the result array cannot hold is impossible metadata, not a large
+	 * reading, and truncating it would be the worst of the three options: it hands up
+	 * a target_count the entries do not support, and a caller iterating on
+	 * target_count then walks off the end of the array. Nothing here is salvageable,
+	 * so no sample is produced at all. */
+	if (in->NumberOfObjectsFound > TOF_CLIFF_MAX_TARGETS) {
+		return -EPROTO;
+	}
+
 	out->stream_count = in->StreamCount;
 
 	/* The true count, kept even when it is zero. */
@@ -194,13 +204,8 @@ void tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sa
 
 	/* SetMeasurementData writes RangeData[0] even with no targets: it forces
 	 * `iteration = 1` when active_results < 1. That entry is the only record of why
-	 * nothing was found, so copy it. A count above the array size can only come from
-	 * a corrupted read, and clamping here keeps the copy in bounds while leaving
-	 * target_count reporting what the ULD actually claimed. */
+	 * nothing was found, so copy it. */
 	entries = (out->target_count == 0U) ? 1U : out->target_count;
-	if (entries > TOF_CLIFF_MAX_TARGETS) {
-		entries = TOF_CLIFF_MAX_TARGETS;
-	}
 
 	for (i = 0; i < entries; i++) {
 		/* Raw on both fields. RangeMilliMeter stays int16_t and keeps its sign:
@@ -210,6 +215,8 @@ void tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sa
 		out->entries[i].range_status = in->RangeData[i].RangeStatus;
 	}
 	out->entry_count = entries;
+	out->fresh = true;
+	return 0;
 }
 
 int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratch,
@@ -231,6 +238,13 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 	if (ret != 0) {
 		return ret;
 	}
+	if (ready > 1U) {
+		/* The flag is a single bit's worth of meaning. Anything else means the
+		 * device or the transfer is confused, and calling that "not ready" would
+		 * let it look like a merely quiet sensor for as long as it kept happening. */
+		st->stage = TOF_CLIFF_STAGE_READY_CHECK;
+		return -EPROTO;
+	}
 	if (ready != 1U) {
 		/* Nothing yet. Not an error, and deliberately not a retry either: the
 		 * scheduler decides whether a missing sample this cycle matters, using
@@ -245,7 +259,15 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 		return ret;
 	}
 
-	tof_cliff_copy_raw(&scratch->data, sample);
+	ret = tof_cliff_copy_raw(&scratch->data, sample);
+	if (ret != 0) {
+		/* Impossible metadata. The fetch itself succeeded, so the stage stays
+		 * FETCH, but nothing is published: a corrupt count must not become a
+		 * fresh sample. */
+		st->stage = TOF_CLIFF_STAGE_FETCH;
+		memset(sample, 0, sizeof(*sample));
+		return ret;
+	}
 	st->sample_present = true;
 
 	/* Re-arm. Its failure is reported as an error so a caller that checks only the

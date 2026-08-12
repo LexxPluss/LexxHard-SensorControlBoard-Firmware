@@ -69,6 +69,9 @@ if(ENABLE_TOF_CLIFF_ULD)
     # global -Wno-*. Only this target's compile options are affected.
     set_source_files_properties(${VL53L4CX_ULD_PRODUCTION_SOURCES} PROPERTIES
         COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable;-Wno-missing-field-initializers")
+    # The sensor layer itself. Compiled whenever the ULD is, so the budget series
+    # measures the real production file rather than a probe-local copy of it.
+    target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_sensor.c)
     if(TOF_CLIFF_BUDGET)
         target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_budget_probe.c)
         add_definitions(-DTOF_CLIFF_BUDGET=${TOF_CLIFF_BUDGET})

@@ -50,6 +50,7 @@ static struct {
 	int fetch_calls;
 	int rearm_calls;
 	int stop_calls;
+	int stop_bus_xfers;
 	int start_calls;
 	/* lifecycle */
 	VL53LX_Error boot_rc;
@@ -152,9 +153,14 @@ VL53LX_Error VL53LX_StartMeasurement(VL53LX_DEV Dev)
 
 VL53LX_Error VL53LX_StopMeasurement(VL53LX_DEV Dev)
 {
-	ARG_UNUSED(Dev);
 	f.stop_calls++;
 	order_add('P');
+
+	/* Real traffic when asked for, so a stop can fail on the bus while the ULD still
+	 * reports success - the same masking shape as the fetch. */
+	for (int i = 0; i < f.stop_bus_xfers; i++) {
+		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0200 + i), 0x00);
+	}
 	return VL53LX_ERROR_NONE;
 }
 
@@ -281,19 +287,56 @@ ZTEST(tof_cliff_adapter, test_no_status_is_reclassified_or_reduced_here)
 	zassert_equal(sample.entries[2].range_mm, 750);
 }
 
-ZTEST(tof_cliff_adapter, test_count_above_the_array_is_clamped_for_the_copy_only)
+ZTEST(tof_cliff_adapter, test_count_above_the_array_is_a_protocol_error_not_a_truncated_sample)
 {
 	const int16_t mm[4] = {1, 2, 3, 4};
 	const uint8_t status[4] = {0, 0, 0, 0};
 
-	/* Only a corrupted read can produce this. The copy must stay in bounds while
-	 * target_count still reports what the ULD claimed, so the layer above can see
-	 * that the two disagree. */
+	/* Only a corrupted read can produce this, and truncation would be the worst
+	 * response: a caller that iterates on target_count would then walk off the end of
+	 * an array holding four. Nothing about the sample is trustworthy, so none of it is
+	 * published. */
 	canned_targets(9, mm, status, 4);
 
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), -EPROTO);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
+	zassert_false(st.sample_present);
+	zassert_false(sample.fresh);
+	zassert_equal(sample.target_count, 0, "no part of a corrupt sample may leak out");
+	zassert_equal(sample.entry_count, 0);
+
+	/* The rule cannot be bypassed by calling the pure copy step directly either. */
+	zassert_equal(tof_cliff_copy_raw(&f.canned, &sample), -EPROTO);
+	zassert_false(sample.fresh);
+
+	/* The largest count the array does hold is still accepted. */
+	before(NULL);
+	canned_targets(TOF_CLIFF_MAX_TARGETS, mm, status, 4);
 	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
-	zassert_equal(sample.target_count, 9);
-	zassert_equal(sample.entry_count, TOF_CLIFF_MAX_TARGETS);
+	zassert_equal(sample.target_count, TOF_CLIFF_MAX_TARGETS);
+}
+
+ZTEST(tof_cliff_adapter, test_a_ready_flag_outside_zero_and_one_is_a_protocol_error)
+{
+	/* Treating it as not-ready would let a confused device pass for a merely quiet one
+	 * indefinitely, and the scheduler would keep counting missed cycles instead of
+	 * faulting the source. */
+	for (uint8_t bogus = 2; bogus < 5; bogus++) {
+		before(NULL);
+		f.ready = bogus;
+
+		zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), -EPROTO,
+			      "ready = %u was accepted", bogus);
+		zassert_equal(st.stage, TOF_CLIFF_STAGE_READY_CHECK);
+		zassert_false(sample.fresh);
+		zassert_equal(f.fetch_calls, 0, "nothing may be fetched on a bogus flag");
+	}
+
+	/* 0 and 1 keep their ordinary meanings. */
+	before(NULL);
+	f.ready = 0;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_false(sample.fresh);
 }
 
 /* ------------------------------------------------------------- not ready --------- */
@@ -495,6 +538,24 @@ ZTEST(tof_cliff_adapter, test_configure_stops_at_the_failing_step)
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_TIMING_BUDGET);
 }
 
+ZTEST(tof_cliff_adapter, test_stop_reports_its_own_stage_not_the_start_stage)
+{
+	/* Sharing START's stage would send a reader of the log looking for a bring-up
+	 * failure while the device was in fact refusing to stop. */
+	zassert_equal(tof_cliff_sensor_stop(&obj, &st), 0);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_NONE);
+	zassert_equal(f.stop_calls, 1);
+
+	before(NULL);
+	fake_i2c_fail_on(1, -EIO);
+	f.stop_bus_xfers = 1;
+	zassert_not_equal(tof_cliff_sensor_stop(&obj, &st), 0);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_STOP);
+	zassert_equal(st.port_errno, -EIO);
+	zassert_not_equal(strcmp(tof_cliff_stage_name(st.stage), "start"), 0);
+	zassert_equal(strcmp(tof_cliff_stage_name(st.stage), "stop"), 0);
+}
+
 ZTEST(tof_cliff_adapter, test_reading_never_stops_or_restarts_the_device)
 {
 	const int16_t mm[1] = {500};
@@ -530,12 +591,12 @@ ZTEST(tof_cliff_adapter, test_copy_raw_is_pure_and_handles_a_null_input)
 	const uint8_t status[1] = {0};
 
 	canned_targets(1, mm, status, 1);
-	tof_cliff_copy_raw(&f.canned, &sample);
+	zassert_equal(tof_cliff_copy_raw(&f.canned, &sample), 0);
 	zassert_true(sample.fresh);
 	zassert_equal(sample.entries[0].range_mm, 123);
 	zassert_equal(fake_i2c_count, 0, "the copy step must not touch the bus");
 
-	tof_cliff_copy_raw(NULL, &sample);
+	zassert_equal(tof_cliff_copy_raw(NULL, &sample), -EINVAL);
 	zassert_false(sample.fresh);
 	zassert_equal(sample.entry_count, 0);
 }
@@ -565,9 +626,19 @@ ZTEST(tof_cliff_adapter, test_every_stage_has_a_name)
 		TOF_CLIFF_STAGE_BOOT,	       TOF_CLIFF_STAGE_DATA_INIT,
 		TOF_CLIFF_STAGE_REF_SPAD,      TOF_CLIFF_STAGE_DISTANCE_MODE,
 		TOF_CLIFF_STAGE_TIMING_BUDGET, TOF_CLIFF_STAGE_START,
-		TOF_CLIFF_STAGE_READY_CHECK,   TOF_CLIFF_STAGE_FETCH,
-		TOF_CLIFF_STAGE_REARM,
+		TOF_CLIFF_STAGE_STOP,	       TOF_CLIFF_STAGE_READY_CHECK,
+		TOF_CLIFF_STAGE_FETCH,	       TOF_CLIFF_STAGE_REARM,
 	};
+
+	/* Distinct names, so two stages cannot be confused in a log. */
+	for (size_t i = 0; i < ARRAY_SIZE(all); i++) {
+		for (size_t j = i + 1; j < ARRAY_SIZE(all); j++) {
+			zassert_not_equal(strcmp(tof_cliff_stage_name(all[i]),
+						 tof_cliff_stage_name(all[j])),
+					  0, "stages %d and %d share a name", (int)all[i],
+					  (int)all[j]);
+		}
+	}
 
 	/* A stage that reaches a log line as "unknown" is a stage nobody can triage. */
 	for (size_t i = 0; i < ARRAY_SIZE(all); i++) {

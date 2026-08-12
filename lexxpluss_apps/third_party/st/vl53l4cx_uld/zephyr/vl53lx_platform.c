@@ -25,6 +25,7 @@
  */
 
 #include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include <zephyr/device.h>
@@ -88,6 +89,13 @@ static const struct device *vl53lx_bus(void)
 		bus = DEVICE_DT_GET(VL53L4CX_I2C_NODE);
 	}
 	return bus;
+}
+
+/* Exposed so the IO block's Init can be a real check rather than an unconditional
+ * success. The bus handle lives here because the BSP IO callbacks carry no context. */
+bool vl53l4cx_port_bus_ready(void)
+{
+	return device_is_ready(vl53lx_bus());
 }
 
 /*

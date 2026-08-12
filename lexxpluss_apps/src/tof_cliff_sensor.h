@@ -70,6 +70,7 @@ enum tof_cliff_stage {
 	TOF_CLIFF_STAGE_DISTANCE_MODE,
 	TOF_CLIFF_STAGE_TIMING_BUDGET,
 	TOF_CLIFF_STAGE_START,
+	TOF_CLIFF_STAGE_STOP,
 	/* per sample */
 	TOF_CLIFF_STAGE_READY_CHECK,
 	TOF_CLIFF_STAGE_FETCH,
@@ -95,7 +96,11 @@ struct tof_cliff_sample {
 	 * `iteration = 1` when active_results < 1 - and that synthetic entry carries the
 	 * status explaining the absence. Dropping it would leave the layer above unable
 	 * to tell NO_TARGET from a sensor that never answered, so it is kept and
-	 * entry_count is 1 while target_count is 0. */
+	 * entry_count is 1 while target_count is 0.
+	 *
+	 * Where target_count is valid, entry_count is max(target_count, 1). A count above
+	 * TOF_CLIFF_MAX_TARGETS never reaches a caller at all: see the -EPROTO rule on
+	 * tof_cliff_read_once. */
 	uint8_t entry_count;
 
 	uint8_t stream_count;
@@ -123,10 +128,26 @@ struct tof_cliff_read_status {
 	bool rearm_failed;
 };
 
-/* Caller-owned scratch for one in-flight fetch. One per acquisition thread is enough
- * for sequential reads, because the sample is copied out before the next call - which
- * is exactly the property the ULD's function-level static violates. Never share one
- * across threads. */
+/*
+ * CONCURRENCY: NONE. Every function in this header must run on the single acquisition
+ * thread while it holds tof_chain_controller's chain_lock(), for the whole session.
+ *
+ * This is not merely a convention inherited from the chain controller. The port's sticky
+ * transport record is one file-scope variable - the BSP IO callbacks carry no per-device
+ * context, so it cannot be per device - and every operation clears it before starting.
+ * A second caller anywhere in these functions would clear or overwrite the record
+ * belonging to the first, and the failure mode is a transport error silently reported as
+ * a good sample. Giving each thread its own scratch does NOT make concurrent use safe;
+ * only the buffer would be separated, not the error record.
+ *
+ * PRECONDITION: the i2c2 controller is ready. The chain controller establishes this
+ * before any sensor is opened; IO.Init re-checks it, so a violation fails at open rather
+ * than at the first transfer.
+ */
+
+/* Caller-owned scratch for one in-flight fetch. One is enough for the whole chain,
+ * because each sample is copied out before the next sensor is read - which is exactly
+ * the property the ULD's function-level static violates. */
 struct tof_cliff_scratch {
 	VL53LX_MultiRangingData_t data;
 };
@@ -168,14 +189,24 @@ int tof_cliff_sensor_stop(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *
  * A re-arm failure returns non-zero while leaving sample_present true and the sample
  * intact: a caller that only checks the return code stops trusting this sensor, which
  * is the fail-safe direction, and a caller that reads st still gets the reading.
+ *
+ * Returns -EPROTO, with no sample, when the device's own metadata is impossible: a
+ * target count above TOF_CLIFF_MAX_TARGETS, or a data-ready flag that is neither 0 nor
+ * 1. Those cannot be repaired by truncation. Handing up a count the entries do not
+ * support invites the caller to iterate off the end of the array, and treating an
+ * out-of-range ready flag as "not ready" would let a confused device look like a quiet
+ * one indefinitely.
  */
 int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratch,
 			struct tof_cliff_sample *sample, struct tof_cliff_read_status *st);
 
 /* The copy step, exposed because it is where the three preservation rules live -
  * true zero count, synthetic entry kept, raw signed distance - and those are worth
- * testing without a device or an emulated register map. Pure: no ULD calls, no I2C. */
-void tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sample *out);
+ * testing without a device or an emulated register map. Pure: no ULD calls, no I2C.
+ *
+ * Returns -EPROTO and leaves *out zeroed when the count is impossible, so the rule
+ * cannot be bypassed by calling the copy step directly. */
+int tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sample *out);
 
 #ifdef __cplusplus
 }
