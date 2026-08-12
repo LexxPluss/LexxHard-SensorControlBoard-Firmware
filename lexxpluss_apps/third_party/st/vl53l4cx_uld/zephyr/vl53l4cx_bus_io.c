@@ -66,7 +66,10 @@ void vl53l4cx_bus_io_fill(VL53L4CX_IO_t *pIO, uint16_t address_7bit)
 {
 	pIO->Init = io_init;
 	pIO->DeInit = io_deinit;
-	pIO->Address = address_7bit;
+	/* ST's 8-bit wire convention, which is what the ULD itself stores here: see the
+	 * address note in vl53lx_platform.c. Taking a 7-bit argument and shifting once,
+	 * in one place, is what keeps the convention from being guessed at downstream. */
+	pIO->Address = (uint16_t)(address_7bit << 1);
 	pIO->WriteReg = io_write_reg_placeholder;
 	pIO->ReadReg = io_read_reg_placeholder;
 	pIO->GetTick = io_get_tick;
@@ -75,4 +78,9 @@ void vl53l4cx_bus_io_fill(VL53L4CX_IO_t *pIO, uint16_t address_7bit)
 uint32_t vl53l4cx_bus_io_placeholder_calls(void)
 {
 	return placeholder_calls;
+}
+
+void vl53l4cx_bus_io_reset_placeholder_calls(void)
+{
+	placeholder_calls = 0;
 }

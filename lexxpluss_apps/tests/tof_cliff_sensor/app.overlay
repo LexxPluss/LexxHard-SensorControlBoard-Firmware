@@ -1,0 +1,21 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * The port resolves its bus with DT_NODELABEL(i2c2), so the test provides an i2c2
+ * that is an emulated controller. The label has to match the production one exactly:
+ * a test that renamed the node would stop covering the production lookup.
+ */
+
+/ {
+	i2c2: i2c@11112222 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "zephyr,i2c-emul-controller";
+		reg = <0x11112222 0x1000>;
+		status = "okay";
+		clock-frequency = <400000>;
+	};
+};
