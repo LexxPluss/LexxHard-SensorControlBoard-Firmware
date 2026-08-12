@@ -28,6 +28,13 @@
 
 namespace lexxhard::bmu_lipy041 {
 
+// Bits considered abnormal in is_ok(). Named here so board_controller.cpp's
+// debug logging can reference the same definition instead of duplicating literals.
+inline constexpr uint8_t FAIL_STATUS1_ABNORMAL_MASK{0b10111111};  // excludes bit6 (full-charge info bit, checked separately by is_full_charge())
+inline constexpr uint8_t FAIL_STATUS2_ABNORMAL_MASK{0b11111111};  // no reserved bits
+inline constexpr uint8_t LEADER_ALARM1_ABNORMAL_MASK{0b00000111}; // bits 3-7 reserved
+inline constexpr uint8_t LEADER_ALARM2_ABNORMAL_MASK{0b00001111}; // bits 4-7 reserved
+
 struct extreme_pair_u16 {
     uint16_t value;
     uint8_t id;

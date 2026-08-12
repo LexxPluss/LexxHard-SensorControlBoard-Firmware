@@ -902,10 +902,10 @@ public:
         }
     }
     bool is_ok() const {
-        LOG_DBG("data100.fail_status1 %d", (data100.fail_status1 & 0b10111111) == 0);
-        LOG_DBG("data101.fail_status2 %d", (data101.fail_status2 & 0b11111111) == 0);
-        LOG_DBG("data113.leader_alarm1 %d", (data113.leader_alarm1 & 0b00000111) == 0);
-        LOG_DBG("data113.leader_alarm2 %d", (data113.leader_alarm2 & 0b00001111) == 0);
+        LOG_DBG("data100.fail_status1 %d", (data100.fail_status1 & lexxhard::bmu_lipy041::FAIL_STATUS1_ABNORMAL_MASK) == 0);
+        LOG_DBG("data101.fail_status2 %d", (data101.fail_status2 & lexxhard::bmu_lipy041::FAIL_STATUS2_ABNORMAL_MASK) == 0);
+        LOG_DBG("data113.leader_alarm1 %d", (data113.leader_alarm1 & lexxhard::bmu_lipy041::LEADER_ALARM1_ABNORMAL_MASK) == 0);
+        LOG_DBG("data113.leader_alarm2 %d", (data113.leader_alarm2 & lexxhard::bmu_lipy041::LEADER_ALARM2_ABNORMAL_MASK) == 0);
 
         return lexxhard::bmu_lipy041::is_ok(data100, data101, data113);
     }

@@ -223,6 +223,50 @@ ZTEST(bmu_lipy041_decode, test_0x110_max_min_voltage)
     zassert_equal(msg.min_voltage.id, 2);
 }
 
+ZTEST(bmu_lipy041_decode, test_0x111_max_min_temp_positive)
+{
+    uint8_t data[8] = {0x00, 0x19, 0x03, 0, 0x00, 0x0a, 0x04, 0};  // max=25, id=3; min=10, id=4
+    msg_0x111 msg{};
+    decode_0x111(data, msg);
+    zassert_equal(msg.max_temp.value, 25);
+    zassert_equal(msg.max_temp.id, 3);
+    zassert_equal(msg.min_temp.value, 10);
+    zassert_equal(msg.min_temp.id, 4);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x111_max_min_temp_negative)
+{
+    uint8_t data[8] = {0xff, 0xd8, 0x05, 0, 0xff, 0xc9, 0x06, 0};  // max=-40, id=5; min=-55, id=6
+    msg_0x111 msg{};
+    decode_0x111(data, msg);
+    zassert_equal(msg.max_temp.value, -40);
+    zassert_equal(msg.max_temp.id, 5);
+    zassert_equal(msg.min_temp.value, -55);
+    zassert_equal(msg.min_temp.id, 6);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x111_boundary_int16_min_max)
+{
+    uint8_t data[8] = {0x7f, 0xff, 0x07, 0, 0x80, 0x00, 0x08, 0};  // max=INT16_MAX(32767), id=7; min=INT16_MIN(-32768), id=8
+    msg_0x111 msg{};
+    decode_0x111(data, msg);
+    zassert_equal(msg.max_temp.value, 32767);
+    zassert_equal(msg.max_temp.id, 7);
+    zassert_equal(msg.min_temp.value, -32768);
+    zassert_equal(msg.min_temp.id, 8);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x111_boundary_zero_and_negative_one)
+{
+    uint8_t data[8] = {0x00, 0x00, 0x09, 0, 0xff, 0xff, 0x0a, 0};  // max=0, id=9; min=-1, id=10
+    msg_0x111 msg{};
+    decode_0x111(data, msg);
+    zassert_equal(msg.max_temp.value, 0);
+    zassert_equal(msg.max_temp.id, 9);
+    zassert_equal(msg.min_temp.value, -1);
+    zassert_equal(msg.min_temp.id, 10);
+}
+
 ZTEST(bmu_lipy041_decode, test_0x112_max_min_current_signed)
 {
     uint8_t data[8] = {0xff, 0x9c, 0x01, 0, 0x00, 0x64, 0x02, 0};

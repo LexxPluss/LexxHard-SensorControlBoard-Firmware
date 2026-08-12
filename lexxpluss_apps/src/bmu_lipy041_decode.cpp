@@ -105,10 +105,10 @@ bool is_ok(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113) 
     // implementation (board_controller.cpp:902-905) used OR, which is only false
     // when all four fields are abnormal simultaneously -- inconsistent with
     // !is_ok() being used as the power-shutdown trigger at 7 call sites. Fixed to AND.
-    return ((f100.fail_status1 & 0b10111111) == 0 &&
-            (f101.fail_status2 & 0b11111111) == 0 &&
-            (f113.leader_alarm1 & 0b00000111) == 0 &&
-            (f113.leader_alarm2 & 0b00001111) == 0);
+    return ((f100.fail_status1 & FAIL_STATUS1_ABNORMAL_MASK) == 0 &&
+            (f101.fail_status2 & FAIL_STATUS2_ABNORMAL_MASK) == 0 &&
+            (f113.leader_alarm1 & LEADER_ALARM1_ABNORMAL_MASK) == 0 &&
+            (f113.leader_alarm2 & LEADER_ALARM2_ABNORMAL_MASK) == 0);
 }
 
 bool is_full_charge(const msg_0x100 &f100) {
@@ -116,6 +116,9 @@ bool is_full_charge(const msg_0x100 &f100) {
 }
 
 bool is_chargable(const msg_0x100 &f100, const msg_0x101 &f101) {
+    // f101 (e.g. fail_status2 charge-overcurrent/overtemp/overcharge bits) is not
+    // consulted here: callers already gate on is_ok() before reaching is_chargable(),
+    // so those conditions are caught upstream. Signature kept for interface stability.
     (void)f101;
     return !is_full_charge(f100) && f100.rsoc_min < 95;
 }
