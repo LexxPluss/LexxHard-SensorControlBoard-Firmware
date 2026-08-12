@@ -42,7 +42,7 @@ struct msg_bmu {
     bmu_lipy041::msg_0x120 f120;
     bmu_lipy041::msg_0x130 f130;
     bmu_lipy041::msg_0x131 f131;
-};
+} __attribute__((aligned(4)));
 
 struct msg_rawframe_bmu {
     uint8_t frame[BMU_CAN_DATA_LENGTH];
