@@ -63,6 +63,7 @@ test:
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_controller -d build-test-shutter-controller -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/motor_driver -d build-test-motor-driver -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/gpio_fault_detector -d build-test-gpio-fault-detector -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: firmware
 firmware:

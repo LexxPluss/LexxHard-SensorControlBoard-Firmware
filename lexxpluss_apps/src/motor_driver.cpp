@@ -39,7 +39,7 @@ int driver::init(axis a)
         dev[1] = dev[0];
         pin[0] = 1;
         pin[1] = 2;
-        fail_dev = GET_GPIO(act_c_fail);
+        fail_gpio.bind(GET_GPIO(act_c_fail));
         current_adc = adc_reader::ACTUATOR_C;
         break;
     case axis::LEFT:
@@ -47,7 +47,7 @@ int driver::init(axis a)
         dev[1] = dev[0];
         pin[0] = 1;
         pin[1] = 2;
-        fail_dev = GET_GPIO(act_l_fail);
+        fail_gpio.bind(GET_GPIO(act_l_fail));
         current_adc = adc_reader::ACTUATOR_L;
         break;
     case axis::RIGHT:
@@ -55,7 +55,7 @@ int driver::init(axis a)
         dev[1] = dev[0];
         pin[0] = 3;
         pin[1] = 4;
-        fail_dev = GET_GPIO(act_r_fail);
+        fail_gpio.bind(GET_GPIO(act_r_fail));
         current_adc = adc_reader::ACTUATOR_R;
         break;
     }
@@ -65,7 +65,7 @@ int driver::init(axis a)
     if (!ready()) {
         return -1;
     }
-    gpio_pin_configure_dt(&fail_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    fail_gpio.configure_input();
     set_duty(0);
     return 0;
 }
@@ -87,12 +87,12 @@ std::tuple<int8_t, uint8_t> driver::get_duty() const
 
 bool driver::ready() const
 {
-    return gpio_is_ready_dt(&fail_dev);
+    return fail_gpio.ready();
 }
 
 bool driver::is_failed() const
 {
-    return ready() ? gpio_pin_get_dt(&fail_dev) == 0 : false;
+    return fail_gpio.is_failed();
 }
 
 int32_t driver::get_current() const

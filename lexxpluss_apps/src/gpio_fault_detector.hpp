@@ -25,37 +25,22 @@
 
 #pragma once
 
-#include <cstdint>
-#include <tuple>
-#include <zephyr/device.h>
-#include "gpio_fault_detector.hpp"
+#include <zephyr/drivers/gpio.h>
 
 namespace lexxhard::motor_driver {
 
-enum class axis { CENTER, LEFT, RIGHT };
-
-// PWM 2-pin H-bridge drive + ADC current sense + GPIO fault pin, shared by
-// every axis (Center/Left/Right). Each axis owns its own independent
-// instance -- Major loop (Left/Right) and Minor loop (Center) never share
-// one, so no cross-loop write conflict. See motor_driver_calc.hpp for the
-// stateless conversion formulas this delegates to.
-class driver {
+// Extracted from motor_driver::driver so the GPIO-read branching logic can
+// be ztest'd via gpio_emul without pulling in PWM devicetree nodes (see
+// TESTPLAN_shutter_controller_20260714.md section 4.2).
+class gpio_fault_detector {
 public:
-    int init(axis a);
-    void set_duty(int8_t direction, uint8_t duty = 0);
-    std::tuple<int8_t, uint8_t> get_duty() const;
-    bool ready() const;
-    bool is_failed() const;
-    int32_t get_current() const;
+    void bind(const gpio_dt_spec &d) { dev = d; }
+    bool ready() const { return gpio_is_ready_dt(&dev); }
+    // ACTIVE_HIGH config: pin reads LOW when the fault line is asserted.
+    bool is_failed() const { return ready() ? gpio_pin_get_dt(&dev) == 0 : false; }
+    void configure_input() { gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH); }
 private:
-    uint32_t pin[2]{0, 0};
-    int8_t direction{0};
-    uint8_t duty{0};
-    const device *dev[2]{nullptr, nullptr};
-    gpio_fault_detector fail_gpio{};
-    int32_t current_adc{-1};
-    static constexpr uint32_t CONTROL_HZ{10000};
-    static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
+    gpio_dt_spec dev{};
 };
 
 }

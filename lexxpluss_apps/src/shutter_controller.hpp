@@ -75,11 +75,11 @@ bool is_stalled(request driving_direction, state current_state, uint32_t elapsed
 // changes (target reached, or a different direction requested).
 class stall_guard {
 public:
+    static constexpr int MAX_RETRIES{2};
     drive_command poll(drive_command cmd, state current_state, uint32_t now_ms);
     int retry_count() const { return retries; }
     bool is_latched() const { return retries > MAX_RETRIES; }
 private:
-    static constexpr int MAX_RETRIES{2};
     request active_direction{request::stop};
     uint32_t direction_start_ms{0};
     int retries{0};
