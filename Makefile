@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer
 
 .PHONY: distclean
 distclean: clean
@@ -45,11 +45,14 @@ setup:
 	$(RUNNER) west init -l lexxpluss_apps
 	$(RUNNER) west update
 	$(RUNNER) west config --global zephyr.base-prefer configfile
+	./scripts/manage_zephyr_patches.sh apply
 	mkdir -p out
 
 .PHONY: update
 update:
+	./scripts/manage_zephyr_patches.sh unapply
 	$(RUNNER) west update
+	./scripts/manage_zephyr_patches.sh apply
 
 .PHONY: bootloader
 bootloader:
@@ -62,8 +65,29 @@ test:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the ToF grid packer, driven by the golden vectors in
+# docs/can/ and pinning the contract SHA-256 (the firmware half of the
+# cross-repository lock; SCBDriver pins the same SHA on the decoder side).
+# The generator check runs first: it fails loudly if the contract was edited
+# without regenerating the vectors, which the SHA pins alone cannot see.
+.PHONY: test_tof_packer
+test_tof_packer:
+	$(RUNNER) python3 docs/can/gen_golden_vectors.py --check
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the ToF enumeration layer: currently the production
+# guarded readdress (exact-traffic properties the enumerator fakes cannot
+# prove, above all zero-writes-after-transport-error); the enumeration state
+# machine suite joins here.
+.PHONY: test_tof_enumerator
+test_tof_enumerator:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: firmware
 firmware:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr.signed.bin
@@ -71,6 +95,7 @@ firmware:
 
 .PHONY: firmware_two_state_ksw
 firmware_two_state_ksw:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_two_state_ksw.signed.bin
@@ -78,6 +103,7 @@ firmware_two_state_ksw:
 
 .PHONY: firmware_interlock
 firmware_interlock:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
@@ -91,10 +117,26 @@ firmware_interlock:
 # silently emit a bypassed binary under the production filename out/zephyr.signed.bin.
 .PHONY: firmware_bypass_safety_lidar
 firmware_bypass_safety_lidar:
+	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.confirmed.bin out/zephyr_bypass_safety_lidar.signed.confirmed.bin
+
+# ToF chain enumeration build (AMRSW-2322 Phase 2): production firmware plus
+# the chain glue and the manual `tof enum` commissioning command. Requires
+# the NACK-classification patch (verified first) and stacks on the Dasher
+# safety-lidar bypass like the diagnostic build. Dedicated build directory
+# for the usual cache-leak reason.
+.PHONY: firmware_tof_chain
+firmware_tof_chain:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-chain -- -DENABLE_TOF_CHAIN=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-chain/zephyr/zephyr.signed.bin out/zephyr_tof_chain.signed.bin
+	mv build-tof-chain/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_chain.signed.confirmed.bin
+	cp out/zephyr_tof_chain.signed.confirmed.bin out/zephyr_tof_chain.test.bin
+	printf '\377' | dd of=out/zephyr_tof_chain.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_chain.test.bin) - 24)) conv=notrunc status=none
 
 .PHONY: firmware_initial
 firmware_initial:

@@ -48,6 +48,16 @@ if(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
                     "DO NOT flash to a robot allowed to drive.")
 endif()
 
+# ToF chain enumeration glue (AMRSW-2322 Phase 2). Owns i2c2: the tug
+# encoder polling thread is not started and resolves to "disconnected".
+# Mutually exclusive with the diagnostic build (enforced by #error).
+if(ENABLE_TOF_CHAIN)
+    add_definitions(-DENABLE_TOF_CHAIN)
+    message(WARNING "TOF CHAIN BUILD: tug encoder polling is disabled; "
+                    "the ToF chain owns i2c2. Driver return-code hardware "
+                    "verification is still pending.")
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()

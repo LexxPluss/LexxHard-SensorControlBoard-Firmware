@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, LexxPluss Inc.
+ * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,29 +22,29 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #pragma once
 
-#include <zephyr/kernel.h>
+// CAN identifiers for the ToF grid transport (AMRSW-2322).
+//
+// Self-assigned integration allocation, authorized by the team (2026-08-06)
+// and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
+// version 2026-08-02f): the SCB peripheral block 0x200-0x213 is contiguously
+// occupied across both repositories and a live bus capture agrees, 0x214+
+// extends that block, and all three values rank below every existing control
+// and safety identifier in CAN arbitration. The adjacency of the data and
+// health values carries no ordering meaning -- the contract guarantees no
+// ordering between the two frame kinds.
 
-namespace lexxhard::tug_encoder_controller {
+#include <stdint.h>
 
-#define TUG_ENCODER_CAN_DATA_LENGTH 2
+namespace lexxhard::tof_can_ids {
 
-struct msg {
-    uint16_t angle;
-} __attribute__((aligned(2)));
+inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
+inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
 
-void init();
+// Reserved for the four-channel drop-sense frame. Its payload contract does
+// not exist yet: no filter or handler may claim this value until it does.
+inline constexpr uint16_t TOF_DROP_SENSE_RESERVED_ID{0x216};
 
-// For ENABLE_TOF_CHAIN builds: the ToF chain owns i2c2, so the tug encoder
-// must not touch the bus, yet is_tug_connected() must still resolve --
-// with the optional left unset it blocks forever and takes the actuator
-// thread down at startup. Initialises the msgq and stores "disconnected"
-// without any bus access.
-void init_disconnected_for_tof();
-void run(void *p1, void *p2, void *p3);
-bool is_tug_connected();
-extern k_thread thread;
-extern k_msgq msgq;
-}
-
+}  // namespace lexxhard::tof_can_ids

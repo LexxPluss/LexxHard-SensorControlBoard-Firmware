@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, LexxPluss Inc.
+ * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,29 +22,35 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #pragma once
+
+// Zephyr glue for the ToF chain (AMRSW-2322 Phase 2): the real-bus
+// implementation of tof_enum::chain_ops plus the manual `tof enum`
+// commissioning shell command. Compiled only under ENABLE_TOF_CHAIN; see
+// tof_chain_controller.cpp for the ownership rules (i2c2, the tug encoder,
+// the chain mutex).
+//
+// HARDWARE VERIFICATION PENDING: the tri-state probe rests on the driver
+// patch's return codes, whose three-way check on the robot (empty address
+// -> nack, clamped SCL -> transport_error, live device -> ack) has not
+// been executed yet.
+
+#ifdef ENABLE_TOF_CHAIN
 
 #include <zephyr/kernel.h>
 
-namespace lexxhard::tug_encoder_controller {
-
-#define TUG_ENCODER_CAN_DATA_LENGTH 2
-
-struct msg {
-    uint16_t angle;
-} __attribute__((aligned(2)));
+namespace lexxhard::tof_chain_controller {
 
 void init();
 
-// For ENABLE_TOF_CHAIN builds: the ToF chain owns i2c2, so the tug encoder
-// must not touch the bus, yet is_tug_connected() must still resolve --
-// with the optional left unset it blocks forever and takes the actuator
-// thread down at startup. Initialises the msgq and stores "disconnected"
-// without any bus access.
-void init_disconnected_for_tof();
-void run(void *p1, void *p2, void *p3);
-bool is_tug_connected();
-extern k_thread thread;
-extern k_msgq msgq;
-}
+// The chain control lines and the bus are a single shared resource. The
+// shell command holds this mutex for the whole enumeration; the future
+// acquisition thread (Phase 3) must take it for its whole session too, so
+// manual commissioning and automatic acquisition can never drive the chain
+// concurrently.
+k_mutex &chain_lock();
 
+}  // namespace lexxhard::tof_chain_controller
+
+#endif  // ENABLE_TOF_CHAIN

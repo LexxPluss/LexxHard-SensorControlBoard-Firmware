@@ -41,6 +41,10 @@
 #include "gpio_controller.hpp"
 #include "shutter_limit_switch.hpp"
 #include "tug_encoder_controller.hpp"
+#ifdef ENABLE_TOF_CHAIN
+#include <zephyr/dfu/mcuboot.h>
+#include "tof_chain_controller.hpp"
+#endif
 
 namespace {
 
@@ -57,7 +61,9 @@ K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(gpio_controller_stack, 2048);
+#ifndef ENABLE_TOF_CHAIN
 K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
+#endif
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 
 #define RUN(name, prio) \
@@ -298,7 +304,15 @@ int main()
     lexxhard::uss_controller::init();
     lexxhard::shutter_limit_switch::init();
     lexxhard::gpio_controller::init();
+#ifdef ENABLE_TOF_CHAIN
+    // The ToF chain owns i2c2; the tug encoder must resolve to
+    // "disconnected" without ever touching the bus, and its polling thread
+    // is not started.
+    lexxhard::tug_encoder_controller::init_disconnected_for_tof();
+    lexxhard::tof_chain_controller::init();
+#else
     lexxhard::tug_encoder_controller::init();
+#endif
 
     RUN(actuator_controller, 2);
     RUN(actuator_service_controller, 2);
@@ -312,9 +326,34 @@ int main()
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
     RUN(gpio_controller, 2);
+#ifndef ENABLE_TOF_CHAIN
     RUN(tug_encoder_controller, 2);
+#endif
     RUN(runaway_detector, 4);
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
+
+#ifdef ENABLE_TOF_CHAIN
+    // Commissioning builds are delivered as padded *test* images over the
+    // CAN DFU (which writes raw bytes into slot1, so only the embedded
+    // trailer can request a swap), and the SCB reset that applies the swap
+    // power-cycles the whole machine -- without a runtime confirm the image
+    // reverts before anyone can interact with it.
+    //
+    // LIMITED GUARANTEE, stated precisely: RUN() creates threads with a
+    // 2-second start delay, so this confirm executes after thread CREATION
+    // but before any subsystem thread has actually run. Automatic rollback
+    // therefore covers crashes in main initialisation and thread creation
+    // only -- a fault once the threads start is already confirmed and
+    // stays. Deliberately kept immediate because of the verified CAN-DFU
+    // reboot cascade; do not delay the confirm past the thread start
+    // without first proving the cascade leaves it time to execute. A
+    // future dedicated ToF PRODUCTION target must decide its test-boot
+    // behaviour explicitly instead of inheriting this.
+    if (int rc = boot_write_img_confirmed(); rc == 0)
+        printk("tof_chain: image confirmed\n");
+    else
+        printk("tof_chain: image confirm failed (%d), will revert on next boot\n", rc);
+#endif
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
 

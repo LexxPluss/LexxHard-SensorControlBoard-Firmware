@@ -1,0 +1,32 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * ToF chain enumeration glue (AMRSW-2322 Phase 2, ENABLE_TOF_CHAIN builds).
+ *
+ * The control-line roles are the ones measured on DS20001 and pending the
+ * frozen J29 mapping document (Request C): SparePinGPIO1 (PI15) is the
+ * enable data line, wired directly to chain position 1, SparePinGPIO2 (PJ1)
+ * is the shared flip-flop clock.
+ *
+ * Both wait durations are DS20001 PROVISIONAL values, not product timing:
+ * the data line settles over seconds at the register end (measured
+ * behaviourally); the final numbers come from hardware documentation or a
+ * scope (Request B).
+ */
+
+/ {
+	tof_chain: tof_chain {
+		compatible = "lexxpluss,tof-chain";
+		data-gpios = <&gpioi 15 GPIO_ACTIVE_HIGH>;
+		clock-gpios = <&gpioj 1 GPIO_ACTIVE_HIGH>;
+		data-settle-ms = <2000>;
+		sensor-boot-ms = <2000>;
+	};
+};
+
+/* 400 kHz is the only speed with a feasible read schedule; provisional
+ * until Request B settles speed versus installed harness length. */
+&i2c2 {
+	clock-frequency = <I2C_BITRATE_FAST>;
+};
