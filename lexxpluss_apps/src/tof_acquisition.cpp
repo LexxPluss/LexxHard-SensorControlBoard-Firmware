@@ -157,6 +157,20 @@ void health_timer_handler(k_timer *)
     k_work_submit(&health_work_);
 }
 
+// One place clears the outcomes, because the previous version enumerated the fields by
+// hand at two call sites and the two outcomes added later were added to neither - so a
+// -EINVAL in one cycle stayed set, and its fault bit with it, for the life of the board.
+void clear_outcomes(source_facts &f)
+{
+    f.sample_produced = false;
+    f.transport_error = false;
+    f.protocol_error = false;
+    f.unsupported = false;
+    f.usage_error = false;
+    f.rearm_failed = false;
+    f.status = op_status{};
+}
+
 // Records an operation's outcome as a neutral fact. The only interpretation performed
 // here is the mechanical one: which shape of failure occurred. The four are kept apart
 // because folding them together would decide health semantics by accident - a stubbed
@@ -305,8 +319,7 @@ int bring_up()
         int rc;
 
         f.started = false;
-        f.transport_error = false;
-        f.protocol_error = false;
+        clear_outcomes(f);
 
         rc = d.ops->open(d.dev, d.addr_7bit, &st);
         if (rc != 0) {
@@ -356,12 +369,14 @@ void run_cycle()
         op_status st{};
         int rc;
 
-        f.sample_produced = false;
-        f.transport_error = false;
-        f.protocol_error = false;
-        f.rearm_failed = false;
+        // A source that never started has nothing happening this cycle, and its
+        // bring-up diagnosis is the only record of why. Clearing before this check -
+        // which is what the first version did - erased the reason on the first cycle and
+        // left nothing but started == false to go on.
         if (!f.started)
             continue;
+
+        clear_outcomes(f);
 
         rc = d.ops->read_cliff_sample(d.dev, d.scratch, &sample, &st);
         record(f, rc, st);

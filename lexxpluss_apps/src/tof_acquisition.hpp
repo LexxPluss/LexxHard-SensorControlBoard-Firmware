@@ -145,7 +145,8 @@ struct source_facts {
 
     // Four distinct outcomes, because collapsing them would decide health semantics by
     // accident: a stubbed model is not a broken sensor, and a bad call of our own is not
-    // a bus fault. At most one is set.
+    // a bus fault. At most one is set, all four are cleared together before each read of
+    // a started source, and none of them is cleared for a source that never started.
     bool transport_error{false}; // -EIO and friends: the transfer or the driver failed
     bool protocol_error{false};  // -EPROTO: the device's own metadata was impossible
     bool unsupported{false};     // -ENOSYS: this model has no implementation yet
@@ -216,9 +217,17 @@ bool is_idle();
 // needs to know which sensors came up - and why the others did not - reads it here.
 void copy_facts(cycle_facts &out);
 
-// The snapshot the heartbeat reads. Packed into one 32-bit word so it can be read
-// without the chain lock: mapping state in bits 0-1, then one bit per source for
-// sample_produced, transport or protocol error, configured and started.
+// The snapshot the heartbeat reads. Packed into one 32-bit word so it can be read without
+// the chain lock: mapping state in bits 0-1, then one bit per source for sample_produced,
+// fault, configured and started.
+//
+// The fault bit is transport_error, protocol_error OR usage_error - our own bad call is a
+// real defect and has to be loud. It deliberately excludes `unsupported`, because a model
+// with no implementation is a static property of this build rather than something that
+// happened to a sensor this cycle.
+//
+// A source that never started keeps the fault bit its bring-up produced: that source is
+// faulted, and the cycles do not clear the diagnosis of a source they never read.
 uint32_t snapshot();
 
 // The state the rest of the system should act on, which is not what the provider returns:

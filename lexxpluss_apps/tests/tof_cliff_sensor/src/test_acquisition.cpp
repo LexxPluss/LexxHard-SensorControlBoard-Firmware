@@ -415,6 +415,69 @@ ZTEST(tof_acquisition, test_a_stubbed_model_is_not_reported_as_a_sensor_fault)
     }
 }
 
+ZTEST(tof_acquisition, test_every_outcome_clears_when_the_next_cycle_succeeds)
+{
+    // The bug this pins: the clearing used to enumerate the fields by hand, so the two
+    // outcomes added later were cleared nowhere and a single bad cycle left usage_error -
+    // and its fault bit - set for the life of the board.
+    static const int transient[] = {-EINVAL, -ENOSYS, -EPROTO, -EIO};
+    const int error_shift{2 + acq::kMaxSources};
+
+    for (size_t i = 0; i < ARRAY_SIZE(transient); i++) {
+        before(nullptr);
+        zassert_equal(acq::init(make_config(1)), 0);
+        zassert_equal(acq::bring_up(), 0);
+
+        devs[0].read_rc = transient[i];
+        acq::run_cycle();
+        const acq::source_facts &bad{rec.last.sources[0]};
+
+        zassert_true(bad.transport_error || bad.protocol_error || bad.unsupported ||
+                         bad.usage_error,
+                     "rc %d recorded nothing", transient[i]);
+
+        devs[0].read_rc = 0;
+        devs[0].fresh = true;
+        acq::run_cycle();
+        const acq::source_facts &good{rec.last.sources[0]};
+
+        zassert_false(good.transport_error, "rc %d left transport set", transient[i]);
+        zassert_false(good.protocol_error, "rc %d left protocol set", transient[i]);
+        zassert_false(good.unsupported, "rc %d left unsupported set", transient[i]);
+        zassert_false(good.usage_error, "rc %d left usage set", transient[i]);
+        zassert_false(good.rearm_failed);
+        zassert_true(good.sample_produced);
+        zassert_equal(good.status.stage, TOF_CLIFF_STAGE_NONE,
+                      "rc %d left a stale stage behind", transient[i]);
+        zassert_equal(acq::snapshot() & (1U << error_shift), 0U,
+                      "rc %d left the fault bit set after a good cycle", transient[i]);
+    }
+}
+
+ZTEST(tof_acquisition, test_a_bring_up_failure_survives_the_cycles_that_follow)
+{
+    // The reason a source never started is durable, not per-cycle, and it is the only
+    // record of why. Clearing it at the top of every cycle - which the first version did -
+    // left nothing but started == false to go on.
+    zassert_equal(acq::init(make_config(2)), 0);
+    devs[0].open_rc = -EIO;
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[1].fresh = true;
+    acq::run_cycle();
+    acq::run_cycle();
+
+    acq::cycle_facts f{};
+
+    acq::copy_facts(f);
+    zassert_false(f.sources[0].started);
+    zassert_true(f.sources[0].transport_error, "the bring-up reason was erased");
+    zassert_equal(f.sources[0].status.stage, TOF_CLIFF_STAGE_BOOT);
+    zassert_not_equal(acq::snapshot() & (1U << (2 + acq::kMaxSources)), 0U,
+                      "a source that failed to come up must stay faulted");
+    zassert_true(f.sources[1].sample_produced);
+}
+
 ZTEST(tof_acquisition, test_a_usage_error_does_set_the_fault_bit)
 {
     zassert_equal(acq::init(make_config(1)), 0);
