@@ -4,6 +4,12 @@
 // Both LexxHard-SensorControlBoard-Firmware and LexxHard-SCBDriver include this
 // header and pin kContractSha256. A contract edit changes the SHA and fails both
 // pins until the vectors are regenerated and the pins updated deliberately.
+//
+// clang-format is disabled for the body below. SCBDriver's CI reformats every .h in
+// the repository with an explicitly named style file, which overrides any directory
+// .clang-format, so a generated file can only stay byte-identical across the two
+// repositories by opting out here, in the generator, rather than per checkout.
+// clang-format off
 #pragma once
 
 #include <cstddef>
@@ -1088,3 +1094,4 @@ inline constexpr size_t kGridVectorCount = 4;
 inline constexpr size_t kScenarioCount = 33;
 
 }  // namespace tof_contract
+// clang-format on
