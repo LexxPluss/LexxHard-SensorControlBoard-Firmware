@@ -34,7 +34,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar
+	rm -rf build-mcuboot build build-bypass-safety-lidar twister-out*
 
 .PHONY: distclean
 distclean: clean
