@@ -370,3 +370,83 @@ ZTEST(shutter_controller, test_stall_guard_latches_when_limit_switch_stays_unkno
         guard.poll({request::stop, 0}, state::unknown, i * ARRIVAL_TIMEOUT_MS);
     zassert_true(guard.is_latched());
 }
+
+// Recovering to a non-terminal state before ARRIVAL_TIMEOUT_MS elapses must
+// not spuriously trip a stall -- direction_start_ms was never reset during
+// the unknown window, so elapsed keeps accruing from the original start.
+ZTEST(shutter_controller, test_stall_guard_survives_unknown_recovery_before_timeout)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+
+    guard.poll({request::stop, 0}, state::unknown, 50000);
+
+    auto const cmd{guard.poll(requested, state::between, 170000)};
+    zassert_equal(cmd.direction, request::toward_open);
+    zassert_equal(guard.retry_count(), 0);
+}
+
+// Recovering straight to the terminal state (skipping state::between) must
+// clear history the same as any other target-reached transition.
+ZTEST(shutter_controller, test_stall_guard_clears_on_reach_after_unknown_recovery)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+
+    guard.poll({request::stop, 0}, state::unknown, 50000);
+
+    auto const cmd{guard.poll({request::stop, 0}, state::open, 170000)};
+    zassert_equal(cmd.direction, request::stop);
+    zassert_equal(guard.retry_count(), 0);
+    zassert_false(guard.is_latched());
+}
+
+// A fault that occurs before any drive was ever requested (active_direction
+// still request::stop) must never accumulate stall history, however long it
+// persists -- this is the known observability gap (DESIGN sec.7.10 #8), kept
+// safe rather than fixed.
+ZTEST(shutter_controller, test_stall_guard_unaffected_by_unknown_while_idle)
+{
+    stall_guard guard;
+    guard.poll({request::stop, 0}, state::unknown, 0);
+    guard.poll({request::stop, 0}, state::unknown, 200000);
+    guard.poll({request::stop, 0}, state::unknown, 400000);
+    zassert_equal(guard.retry_count(), 0);
+    zassert_false(guard.is_latched());
+}
+
+// decide_drive() returns {stop,0} for state::unknown regardless of the
+// requested direction, so a direction-change request never reaches
+// stall_guard while the Limit Switch fault persists -- retry history can
+// only clear once the sensor itself resolves to a valid state. This is
+// intentional (a faulted sensor can't validate any requested direction),
+// not a bug.
+ZTEST(shutter_controller, test_stall_guard_unknown_retries_persist_despite_direction_change)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    guard.poll({request::stop, 0}, state::unknown, ARRIVAL_TIMEOUT_MS + 10000);
+    zassert_equal(guard.retry_count(), 1);
+
+    // Host now wants toward_closed, but the fault masks it at decide_drive().
+    guard.poll({request::stop, 0}, state::unknown, ARRIVAL_TIMEOUT_MS + 20000);
+    zassert_equal(guard.retry_count(), 1);
+}
+
+// Same masking applies once latched: an attempted direction change can't
+// reach stall_guard while state::unknown persists, so the latch holds.
+ZTEST(shutter_controller, test_stall_guard_unknown_latch_persists_despite_direction_change)
+{
+    stall_guard guard;
+    drive_command const requested{request::toward_open, 30};
+    guard.poll(requested, state::between, 0);
+    for (int i = 1; i <= 11; ++i)
+        guard.poll({request::stop, 0}, state::unknown, i * ARRIVAL_TIMEOUT_MS);
+    zassert_true(guard.is_latched());
+
+    guard.poll({request::stop, 0}, state::unknown, 11 * ARRIVAL_TIMEOUT_MS + 1);
+    zassert_true(guard.is_latched());
+}
