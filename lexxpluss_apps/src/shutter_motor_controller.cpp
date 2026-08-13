@@ -111,6 +111,9 @@ public:
 
             auto const requested_direction{shutter_controller::request_from_raw_direction(last_request.direction)};
             auto const decided{shutter_controller::decide_drive(state, requested_direction, last_request.power)};
+            if (decided.direction == shutter_controller::request::stop) {
+                last_request = msg_request{};
+            }
             auto const cmd{stall.poll(decided, state, static_cast<uint32_t>(k_uptime_get()))};
             dev.direct(cmd.direction, cmd.duty);
 
