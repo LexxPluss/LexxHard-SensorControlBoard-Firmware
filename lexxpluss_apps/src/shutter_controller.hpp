@@ -79,7 +79,7 @@ public:
     int retry_count() const { return retries; }
     bool is_latched() const { return retries > MAX_RETRIES; }
 private:
-    static constexpr int MAX_RETRIES{10};  // provisional, mirrors fail_max
+    static constexpr int MAX_RETRIES{2};
     request active_direction{request::stop};
     uint32_t direction_start_ms{0};
     int retries{0};
