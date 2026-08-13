@@ -76,12 +76,16 @@ This is a **source** snapshot, not a complete release package. Omitted from
 `vl53l4cx_sources.cmake` holds two explicit lists and never globs:
 
 - **production** — the ranging path: BSP wrapper, ULD core, histogram algorithms,
-  register access, wait, NVM, crosstalk processing, the IPP shim, and our two local
-  files. This group is what the flash budget measures.
-- **optional** — `vl53lx_api_calibration.c`, `vl53lx_api_debug.c`,
-  `vl53lx_nvm_debug.c`. Present in the snapshot so provenance is complete and
-  enabling one is a single line, but not compiled today so the budget figures mean
-  what they say.
+  register access, wait, NVM, crosstalk processing, the IPP shim, **calibration**, and our
+  two local files. This group is what the flash budget measures.
+- **optional** — `vl53lx_api_debug.c` and `vl53lx_nvm_debug.c`. Present in the snapshot so
+  provenance is complete and enabling one is a single line, but not compiled today so the
+  budget figures mean what they say.
+
+`vl53lx_api_calibration.c` is in **production**, not optional, and that placement is a
+link-report finding rather than a judgement: `VL53LX_PerformRefSpadManagement` lives in
+`vl53lx_api.c`, is reachable from the BSP init path, and calls `VL53LX_run_ref_spad_char`
+inside the calibration unit. Excluding it by its name failed to link.
 
 Nothing is deleted from `upstream/` to shrink the build. Linker garbage collection
 already drops unreachable code, so removing an unreachable file would save nothing;
