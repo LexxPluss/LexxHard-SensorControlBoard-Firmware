@@ -590,6 +590,12 @@ def emit_header(v):
     a("// Both LexxHard-SensorControlBoard-Firmware and LexxHard-SCBDriver include this")
     a("// header and pin kContractSha256. A contract edit changes the SHA and fails both")
     a("// pins until the vectors are regenerated and the pins updated deliberately.")
+    a("//")
+    a("// clang-format is disabled for the body below. SCBDriver's CI reformats every .h in")
+    a("// the repository with an explicitly named style file, which overrides any directory")
+    a("// .clang-format, so a generated file can only stay byte-identical across the two")
+    a("// repositories by opting out here, in the generator, rather than per checkout.")
+    a("// clang-format off")
     a("#pragma once")
     a("")
     a("#include <cstddef>")
@@ -714,6 +720,7 @@ def emit_header(v):
     a("inline constexpr size_t kScenarioCount = %d;" % len(v["scenarios"]))
     a("")
     a("}  // namespace tof_contract")
+    a("// clang-format on")
     return "\n".join(L) + "\n"
 
 
