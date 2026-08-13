@@ -13,6 +13,14 @@
  * - Declares /tof_diag_spare_pinctrl: which of SparePinGPIO1..4 ends up as
  *   LPn/CLK is a bench decision (`lpn use`), so all four are raised to
  *   very-high-speed rather than picking one ahead of time.
+ *
+ * `output-low` is required on every one of the four states below, not just
+ * cosmetic: the STM32 pinctrl macro (Z_PINCTRL_STM32_PINCFG_INIT) only sets
+ * the MODER bits to GPIO_OUTPUT when `output-low`/`output-high` is present;
+ * without it MODER stays 0 (INPUT). Applying this state after
+ * gpio_pin_configure_dt() has already set OUTPUT mode would silently revert
+ * the pin to a floating input, and gpio_pin_set_dt()/clk_pulse() would then
+ * write ODR bits that never reach the physical pin.
  */
 
 #include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
@@ -25,18 +33,22 @@
     tof_diag_spare1_vhs: tof_diag_spare1_vhs {
         pinmux = <STM32_PINMUX('I', 15, GPIO)>;
         slew-rate = "very-high-speed";
+        output-low;
     };
     tof_diag_spare2_vhs: tof_diag_spare2_vhs {
         pinmux = <STM32_PINMUX('J', 1, GPIO)>;
         slew-rate = "very-high-speed";
+        output-low;
     };
     tof_diag_spare3_vhs: tof_diag_spare3_vhs {
         pinmux = <STM32_PINMUX('J', 2, GPIO)>;
         slew-rate = "very-high-speed";
+        output-low;
     };
     tof_diag_spare4_vhs: tof_diag_spare4_vhs {
         pinmux = <STM32_PINMUX('J', 3, GPIO)>;
         slew-rate = "very-high-speed";
+        output-low;
     };
 };
 
