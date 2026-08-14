@@ -48,9 +48,10 @@ no filter or handler may claim `0x216` either.
 `0x217` is the candidate for health. An offline sweep on 2026-08-11 found it unused in the firmware
 repository on `main` and on all three ToF branches, in `SCBDriver`, and in `LexxAuto` and
 `lexxauto_msgs`; the SCB block is contiguous `0x200`-`0x213` on `main` and extends to `0x216` with the
-grid allocation. **That is not an allocation.** A live bus capture is still required, because a device
-can transmit an identifier that appears in no source tree we hold, and the allocation must then be
-recorded here and in the team's CAN ID register.
+grid allocation. **That is not an allocation.** A source sweep cannot see a transmitter whose code we
+do not hold, and a live capture cannot see one that stays silent while the bus is recorded — a quiet
+identifier and an unused one look the same. **The team's CAN ID register is the deciding evidence**;
+the sweep and a capture are supporting, and the allocation must be recorded there and here.
 
 Two identifiers rather than one because measurement and health must **dispatch independently**.
 Measurement takes the lower identifier because there are four of it per cycle against one health
@@ -864,8 +865,10 @@ Nothing in this section may be resolved unilaterally, and the contract cannot be
 it is open.
 
 - **The health CAN identifier.** `0x217` is a *candidate only*. The 2026-08-06 sweep is stale — three
-  rows were added to the table since — so allocation requires a fresh sweep of both repositories plus
-  a live capture, then a self-assignment recorded here and in the team's CAN ID register.
+  rows were added to the table since — so allocation requires a fresh sweep of both repositories and
+  confirmation against the team's CAN ID register, which is the only evidence that settles it: a
+  silent device never appears in a live capture, so a capture can support the case but cannot close
+  it. Then self-assign and record it in both places.
 - **All timing values** above, and with them the consumer timeouts.
 - **The validation column of the status classification.** The rows are complete and traced to the
   vendored ULD's own code paths, but two are explicitly **provisional** and can only be settled on
