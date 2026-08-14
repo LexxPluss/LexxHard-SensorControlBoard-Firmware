@@ -76,6 +76,15 @@ test_tof_packer:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side scheduling model for the six-sensor chain: what a schedule would do at block
+# sizes and bus speeds we have not built yet. Test-only, never linked into firmware.
+# Prints a sweep; asserts only structure, never a product rate, because every input is
+# still a design-time figure.
+.PHONY: test_tof_schedule
+test_tof_schedule:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_schedule -d build-test-tof-schedule -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the ToF enumeration layer: currently the production
 # guarded readdress (exact-traffic properties the enumerator fakes cannot
 # prove, above all zero-writes-after-transport-error); the enumeration state
