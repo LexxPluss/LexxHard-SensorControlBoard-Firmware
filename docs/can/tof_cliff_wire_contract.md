@@ -1,11 +1,35 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **draft-2026-08-11f**
-Status: **provisional draft, NOT frozen.** The byte layouts, encodings and state rules below are
-written to be implementable as they stand, but three classes of content are deliberately unresolved and
-are listed in *Open decisions*: the health CAN identifier, the validation column of the status
-classification, and every timing value. **No implementation may be
-released against this version**, and no golden vectors exist yet.
+Contract version: **commissioning-2026-08-17**
+Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
+Release status: **RELEASE_FORBIDDEN.**
+
+This revision exists for one purpose: to let the commissioning end-to-end path be built against
+byte-exact, double-pinned vectors instead of against prose. It is **not** a product release and must
+never be treated as one.
+
+What this revision settles, and what it does not:
+
+- **Frame layouts, encodings and validation rules: settled.** Golden vectors for the *layout* are
+  generated from this document and pinned by both repositories.
+- **Health CAN identifier: settled** as `0x217`, by the same team-authorised self-assignment used for
+  `0x214`/`0x215`/`0x216`. Evidence: both repositories scanned — the highest assigned identifier is
+  `0x216`, and `0x217` is unclaimed in either tree; a live `can1` capture on DS20001 agrees. The source
+  scan is the evidence, not the capture: a capture cannot prove an identifier unused.
+- **Status classes 3 and 11: unchanged and `validation_pending`.** Class 3 stays `SENSOR_FAULT`, class
+  11 stays `NO_TARGET`, exactly as the classification table already specifies. Authorising them for
+  commissioning is **not** a statement that either has been validated on hardware; the validation column
+  still applies in full.
+- **Timing values: a named commissioning profile, not measurements.** They are model-derived and are
+  marked as such throughout. **A production configuration must not inherit them**; see
+  *Commissioning timing profile*.
+- **Decoder state-machine golden vectors: still absent.** The scenario catalogue in
+  `gen_cliff_golden_vectors.py` remains a catalogue, and the generator continues to refuse to emit
+  event-multiset vectors. This revision covers layout only.
+
+The release ban lifts only when the timing values come from the six-board schedule measurement and the
+status 3 / 11 rates and the multi-target scenarios have been validated on hardware. Doing either is a
+version bump and a re-pin on both sides.
 
 This document is the single source of truth shared by two repositories:
 
@@ -715,11 +739,63 @@ the established `/sensor_set/X -> /global/system/X` remap convention cannot conn
 transport MUST NOT feed or bridge into `safety_manager/downward`, which stays dead for this feature.
 Two decision paths would mean two threshold sources and two ways to command a stop.
 
-## Timing values — required, and not frozen
+## Commissioning timing profile — model-derived, NOT measured
 
-The following are **required fields of this contract that have no values yet**. They cannot be
-established offline: they are outputs of the L4 acquisition thread and of the six-board schedule
-measured on real hardware.
+**Profile name: `commissioning-cliff-only-400k`.** Every value below is arithmetic from the byte
+counts and the bus rate, or a stated design choice. **None of them is a measurement.** A production
+configuration MUST NOT inherit these defaults; it must carry its own profile, resolved from the
+six-board schedule measurement, under a later contract version.
+
+The profile is defined for one specific configuration and is void outside it: **four VL53L4CX
+measurement reads and no VL53L7CX reads on the bus, i2c2 at 400 kHz.** Adding real grid reads changes
+every number here — a trimmed 328-byte grid read is 7.45 ms of blocking and an untrimmed 1452-byte read
+is 32.7 ms — so a configuration with live L7 traffic requires re-derivation, not reuse.
+
+Arithmetic basis, at 400 kHz with 9 bits per byte and 3 bytes of address and register-index overhead
+per transfer: an L4 result read of 133 B is **3.06 ms**, its re-arm of 2 B is **0.11 ms**, so serving all
+four sensors once costs **12.7 ms** of bus time. The same arithmetic reproduces the independently known
+32.7 ms figure for an untrimmed grid read, which is what validates it.
+
+| Symbol | Profile value | Where it comes from |
+| --- | --- | --- |
+| `T_cycle_nominal` | 50 ms | 12.7 ms of bus work plus a 20 ms measurement timing budget, rounded up. The timing budget itself is not fixed yet, so this moves with it |
+| `T_skew_max` | 20 ms | worst spread of the four samples inside one cycle = the 12.7 ms needed to serve all four back to back, rounded up. Valid only because this profile has no grid reads interleaved |
+| `T_health_delivery_max` | 20 ms | analysis, not measurement: one frame on a 1 Mbit/s bus is sub-millisecond on the wire, and 20 ms covers queueing behind the existing control and safety traffic |
+| `T_health_nominal` | 100 ms | design choice, 10 Hz. Deliberately decoupled from the acquisition cycle, because health must not wait for one |
+| `T_health_max_gap` | 300 ms | 3 x `T_health_nominal`, and strictly greater than `T_health_delivery_max` as required |
+| `T_cycle_assembly` | 100 ms | satisfies `T_skew_max + T_health_delivery_max` (40 ms) `< T_cycle_assembly <` `T_meas_max_gap` with margin at both ends |
+| `T_startup_health_grace` | 10 s | covers ROS node start, SCB boot and the first heartbeat. Generous on purpose: it only delays the `NOT_READY` to `FAULT` transition, and `NOT_READY` already withholds motion |
+| `T_meas_max_gap` | 200 ms — **PLACEHOLDER** | **This one is not derived at all.** The contract requires it to come from the stopping distance, and this revision does not have the vehicle's speed and deceleration figures. 200 ms is a placeholder chosen to sit above `T_cycle_assembly` and below any plausible safety budget. **It must be replaced before any production use, and it must not be back-derived from the cycle period** — an earlier draft's `N x T_cycle_nominal <= T_meas_max_gap` was wrong in the unsafe direction |
+
+| Symbol | Profile value | Where it comes from |
+| --- | --- | --- |
+| `N_cycle_miss_fault` | 3 | design choice. **Auxiliary gate only.** It does not extend, weaken or substitute for `T_meas_max_gap`, which stays the hard limit on a monotonic clock and is the only bound the safety argument uses. One missed cycle must not fault a source, because a single retryable NACK on a six-device chain would otherwise stop the robot |
+| `N_cycle_advance_max` | 16 | design choice: large enough to ride out a burst of dropped cycles, small enough that a wrap-aliased or garbage value is rejected rather than accepted as a huge forward jump |
+
+### What proves `mapping_state == PROVEN` under this profile
+
+During commissioning, `PROVEN` may be asserted only on the evidence of the on-machine enable-chain
+gate, and only these three results count:
+
+- all six chain positions individually addressed, each verified by a **type-appropriate** identity read
+  (`VL53L7CX` at positions 1-2, `VL53L4CX` at 3-6) at six mutually distinct addresses
+- **nothing left at the default address** after enumeration
+- **tail isolation**: with only position 6 enabled, position 6 answers **its own** address. If it answers
+  position 5's address, two devices were written to one address — a silent merge, and the exact failure
+  this gate exists to catch
+
+A bus-wide address scan count is **not** admissible evidence. It was observed on DS20001 to
+intermittently miss the two grid sensors' addresses inside a 112-address sweep while those same devices
+passed 200/200 back-to-back probes and 100/100 register transfers with payload comparison. The cause is
+unexplained; two hypotheses — degradation of the transaction following a NACK, and a back-to-back rate
+effect — were each tested and disproved. An unexplained, intermittent measurement cannot gate a safety
+mapping claim.
+
+## Timing values — what the production release still has to resolve
+
+The values above are a commissioning profile. The following remain **required fields with no measured
+value**, and they cannot be established offline: they are outputs of the L4 acquisition thread and of the
+six-board schedule measured on real hardware.
 
 | Symbol | Meaning |
 | --- | --- |

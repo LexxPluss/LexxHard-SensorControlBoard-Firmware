@@ -25,6 +25,7 @@ Nothing here reads or writes the grid contract's artefacts.
 
 import argparse
 import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -46,8 +47,10 @@ COMPARISON_RULE = "age < T is fresh; age >= T has timed out"
 # Unresolved symbols. Scenarios refer to these by name and never to a number, so
 # that resolving one is an edit here rather than a sweep through the catalogue.
 
+# Still unresolved FOR RELEASE. The commissioning profile below supplies a value for
+# each so the layout artefacts can be emitted, but a value from a profile is not a
+# measurement and the release ban stays until these come from the six-board schedule.
 UNRESOLVED = {
-    "TOF_CLIFF_HEALTH_ID": "candidate 0x217; needs a live bus capture, then allocation",
     "T_cycle_nominal": "output of the six-board schedule measurement",
     "T_meas_max_gap": "derived from stopping distance, needs the schedule measurement",
     "T_cycle_assembly": "bounded by T_skew_max + T_health_delivery_max and T_meas_max_gap",
@@ -56,19 +59,60 @@ UNRESOLVED = {
     "T_health_delivery_max": "worst-case health latency, measured or analysed on the real bus",
     "T_startup_health_grace": "node start + SCB boot + worst-case first heartbeat arrival",
     "T_skew_max": "worst-case intra-cycle phase skew across the four sensors",
-    "N_cycle_miss_fault": "consecutive missed cycles before a source faults",
-    "N_cycle_advance_max": "largest plausible forward cycle_seq jump",
-    "STATUS_CLASS_3": "min-range-clipped: SENSOR_FAULT is provisional, needs occlusion injection",
-    "STATUS_CLASS_11": "merged-pulse: NO_TARGET is provisional, needs edge and floor rates",
 }
 
 RESOLVED = {
     "TOF_CLIFF_MEAS_ID": 0x216,
+    # Allocated 2026-08-17 by the same team-authorised self-assignment as 0x214/0x215/0x216.
+    # Evidence is the source scan of both repositories (highest assigned is 0x216, 0x217
+    # unclaimed in either tree); the live can1 capture only agrees with it. A capture cannot
+    # prove an identifier unused.
+    "TOF_CLIFF_HEALTH_ID": 0x217,
     "PROTOCOL_VERSION": 0x1,
     "SENTINEL_INVALID": 0xFFFF,
     "SOURCE_COUNT": 4,
     "CHAIN_POSITION_NONE": 0xFF,
+    # Decisions, not measurements. N_cycle_miss_fault is an AUXILIARY gate: it does not
+    # extend or substitute for T_meas_max_gap, which stays the hard limit on a monotonic clock.
+    "N_cycle_miss_fault": 3,
+    "N_cycle_advance_max": 16,
+    # The classification table already specifies both of these. Authorising them for
+    # commissioning is not a claim that either has been validated -- see VALIDATION_PENDING.
+    "STATUS_CLASS_3": "SENSOR_FAULT",
+    "STATUS_CLASS_11": "NO_TARGET",
 }
+
+# Values carried by this revision that have NOT been validated on hardware. Emitted into
+# every artefact so a consumer cannot mistake authorisation for validation.
+VALIDATION_PENDING = {
+    "STATUS_CLASS_3": "min-range-clipped as SENSOR_FAULT: needs the as-mounted floor distance, "
+                      "the rate over a normal floor, and an occlusion injection",
+    "STATUS_CLASS_11": "merged-pulse as NO_TARGET: needs the rate over a real edge and over "
+                       "plain floor. Frequent on plain floor is a configuration problem",
+    "T_meas_max_gap": "the profile value is a PLACEHOLDER, not derived from stopping distance",
+}
+
+# ---------------------------------------------------------------------------
+# Commissioning timing profile. Model-derived, NOT measured. A production
+# configuration must not inherit these; see the contract's profile section.
+
+PROFILE_NAME = "commissioning-cliff-only-400k"
+RELEASE_FORBIDDEN = True
+
+PROFILE = {
+    "T_cycle_nominal_ms": 50,
+    "T_skew_max_ms": 20,
+    "T_health_delivery_max_ms": 20,
+    "T_health_nominal_ms": 100,
+    "T_health_max_gap_ms": 300,
+    "T_cycle_assembly_ms": 100,
+    "T_startup_health_grace_ms": 10000,
+    "T_meas_max_gap_ms": 200,
+}
+
+PROFILE_PROVENANCE = "arithmetic from byte counts at 400 kHz (L4 read 133 B = 3.06 ms, re-arm " \
+                     "2 B = 0.11 ms, four sensors = 12.7 ms of bus time) plus stated design " \
+                     "choices. Valid ONLY for four L4 reads and no L7 reads on the bus."
 
 # ---------------------------------------------------------------------------
 # Event vocabulary.
@@ -544,6 +588,377 @@ CATALOGUE = [
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Layout vectors.
+#
+# These are the artefacts this revision actually emits: byte-exact encodings of the
+# two frames, plus the accept/reject verdict the contract's validation rules give for
+# each. They are what the packer and the decoder pin against, and they depend on NO
+# timing value -- which is why they can be released while the timing profile cannot.
+#
+# The decoder state machine (cycle assembly, retirement, staleness, event multisets)
+# is NOT covered here. That is the scenario catalogue above, and it still refuses.
+
+MEAS_FRAME_TYPE = 0x1
+HEALTH_FRAME_TYPE = 0x2
+
+REJECT_REASONS = (
+    "ACCEPT",
+    "FRAME_TYPE_MISMATCH",
+    "SOURCE_ID_OUT_OF_RANGE",
+    "RESERVED_FIELD_NONZERO",
+    "TARGET_COUNT_MALFORMED",
+    "NO_TARGET_ENCODING_INCONSISTENT",
+    "PROTOCOL_VERSION_ZERO",
+    "PROTOCOL_VERSION_UNSUPPORTED",
+    "MAPPING_STATE_MALFORMED",
+    "CHAIN_POSITION_MALFORMED",
+    "CYCLE_FIELDS_INCONSISTENT",
+    "CHAIN_POSITION_WITHOUT_FAULT",
+)
+
+CYCLE_VALID_BIT = 0x8
+CHAIN_FAULT_BITS = 0x7
+
+
+def meas_bytes(source_id, epoch, cycle, range_mm, status, targets,
+               frame_type=MEAS_FRAME_TYPE, reserved=0):
+    return [
+        ((frame_type & 0xF) << 4) | (source_id & 0xF),
+        epoch & 0xFF,
+        cycle & 0xFF,
+        (range_mm >> 8) & 0xFF,
+        range_mm & 0xFF,
+        status & 0xFF,
+        targets & 0xFF,
+        reserved & 0xFF,
+    ]
+
+
+def meas_verdict(b):
+    """The contract's measurement-frame validation rules, in the order they are stated."""
+    if (b[0] >> 4) != MEAS_FRAME_TYPE:
+        return "FRAME_TYPE_MISMATCH"
+    if (b[0] & 0x0F) > 3:
+        return "SOURCE_ID_OUT_OF_RANGE"
+    if b[7] != 0:
+        return "RESERVED_FIELD_NONZERO"
+    if b[6] > 4:
+        return "TARGET_COUNT_MALFORMED"
+    # "target_count == 0 if and only if the frame carries status 255 and range_mm == 0xFFFF"
+    no_target = (b[6] == 0)
+    encoded_none = (b[5] == 255 and ((b[3] << 8) | b[4]) == RESOLVED["SENTINEL_INVALID"])
+    if no_target != encoded_none:
+        return "NO_TARGET_ENCODING_INCONSISTENT"
+    return "ACCEPT"
+
+
+def health_bytes(epoch, health_seq, mapping_state, flags, enumerated, model_verified,
+                 sample_produced, sensor_fault, chain_position, cycle_seq,
+                 frame_type=HEALTH_FRAME_TYPE, protocol_version=None):
+    if protocol_version is None:
+        protocol_version = RESOLVED["PROTOCOL_VERSION"]
+    return [
+        ((frame_type & 0xF) << 4) | (protocol_version & 0xF),
+        epoch & 0xFF,
+        health_seq & 0xFF,
+        ((mapping_state & 0xF) << 4) | (flags & 0xF),
+        ((enumerated & 0xF) << 4) | (model_verified & 0xF),
+        ((sample_produced & 0xF) << 4) | (sensor_fault & 0xF),
+        chain_position & 0xFF,
+        cycle_seq & 0xFF,
+    ]
+
+
+def health_verdict(b):
+    """The contract's health-frame validation rules, in the order they are stated."""
+    if (b[0] >> 4) != HEALTH_FRAME_TYPE:
+        return "FRAME_TYPE_MISMATCH"
+    pv = b[0] & 0x0F
+    if pv == 0:
+        return "PROTOCOL_VERSION_ZERO"
+    if pv != RESOLVED["PROTOCOL_VERSION"]:
+        return "PROTOCOL_VERSION_UNSUPPORTED"
+    mapping_state = b[3] >> 4
+    if mapping_state > 0x3:
+        return "MAPPING_STATE_MALFORMED"
+    chain_position = b[6]
+    if chain_position != RESOLVED["CHAIN_POSITION_NONE"] and not 1 <= chain_position <= 6:
+        return "CHAIN_POSITION_MALFORMED"
+    flags = b[3] & 0xF
+    if not flags & CYCLE_VALID_BIT:
+        # With cycle_valid clear the frame describes no cycle, so the per-cycle fields
+        # must be empty. A non-zero one is a producer defect, not a heartbeat.
+        if b[7] != 0 or (b[5] >> 4) != 0:
+            return "CYCLE_FIELDS_INCONSISTENT"
+    if chain_position != RESOLVED["CHAIN_POSITION_NONE"] and not flags & CHAIN_FAULT_BITS:
+        return "CHAIN_POSITION_WITHOUT_FAULT"
+    return "ACCEPT"
+
+
+def V(name, kind, data, why=""):
+    verdict = meas_verdict(data) if kind == "meas" else health_verdict(data)
+    return {"name": name, "kind": kind, "bytes": data, "verdict": verdict, "why": why}
+
+
+def layout_vectors():
+    out = []
+    sentinel = RESOLVED["SENTINEL_INVALID"]
+
+    # -- measurement: the four roles ----------------------------------------
+    for src, role in enumerate(("front_left", "rear_left", "rear_right", "front_right")):
+        out.append(V(f"meas_role_{src}_{role}", "meas",
+                     meas_bytes(src, 1, 0, 1234, 0, 1),
+                     "source_id is a stable logical role, not a chain position"))
+
+    # -- measurement: every status class in the classification table --------
+    # target_count is 1 for every class except 255, which is the only encoding with 0.
+    for status in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+        rng = 1234 if status == 0 else sentinel
+        out.append(V(f"meas_status_{status}", "meas",
+                     meas_bytes(0, 1, 0, rng, status, 1),
+                     "raw ULD status is transmitted unchanged; the class is a decoder concern"))
+    out.append(V("meas_status_255_no_target", "meas",
+                 meas_bytes(0, 1, 0, sentinel, 255, 0),
+                 "the ULD forces 8191 mm when active_results == 0; the packer MUST send the "
+                 "sentinel instead and never forward 8191 as a finite range"))
+
+    # -- measurement: range boundaries --------------------------------------
+    for rng, note in ((0, "zero is encodable and is not the sentinel"),
+                      (1, "one millimetre"),
+                      (65534, "largest encodable non-sentinel value"),):
+        out.append(V(f"meas_range_{rng}", "meas", meas_bytes(0, 1, 0, rng, 0, 1), note))
+
+    # -- measurement: epoch and cycle wrap ----------------------------------
+    for epoch in (0, 1, 254, 255):
+        out.append(V(f"meas_epoch_{epoch}", "meas", meas_bytes(0, epoch, 0, 1234, 0, 1),
+                     "mapping_epoch wraps 255 -> 0"))
+    for cycle in (0, 1, 254, 255):
+        out.append(V(f"meas_cycle_{cycle}", "meas", meas_bytes(0, 1, cycle, 1234, 0, 1),
+                     "cycle_seq wraps 255 -> 0; equality, not ordering, prevents splicing"))
+    for targets in (1, 2, 3, 4):
+        out.append(V(f"meas_targets_{targets}", "meas", meas_bytes(0, 1, 0, 1234, 0, targets),
+                     "target_count is pre-reduction and diagnostic only"))
+
+    # -- measurement: rejections --------------------------------------------
+    out.append(V("meas_reject_frame_type", "meas",
+                 meas_bytes(0, 1, 0, 1234, 0, 1, frame_type=HEALTH_FRAME_TYPE),
+                 "a mis-routed filter is otherwise a silent mis-decode"))
+    for src in (4, 15):
+        out.append(V(f"meas_reject_source_id_{src}", "meas",
+                     meas_bytes(src, 1, 0, 1234, 0, 1), "source_id must be 0-3"))
+    out.append(V("meas_reject_reserved_nonzero", "meas",
+                 meas_bytes(0, 1, 0, 1234, 0, 1, reserved=1),
+                 "byte 7 is reserved for a future capture tick; using it is a version bump"))
+    out.append(V("meas_reject_target_count_5", "meas",
+                 meas_bytes(0, 1, 0, 1234, 0, 5), "target_count > 4 is malformed"))
+    out.append(V("meas_reject_none_with_finite_range", "meas",
+                 meas_bytes(0, 1, 0, 1234, 255, 0),
+                 "status 255 with a finite range breaks the no-target encoding"))
+    out.append(V("meas_reject_none_with_targets", "meas",
+                 meas_bytes(0, 1, 0, sentinel, 255, 1),
+                 "status 255 must carry target_count 0"))
+    out.append(V("meas_reject_zero_targets_with_valid_status", "meas",
+                 meas_bytes(0, 1, 0, 1234, 0, 0),
+                 "target_count 0 is only legal as the status-255 encoding"))
+
+    # -- health: accepted shapes -------------------------------------------
+    out.append(V("health_proven_cycle_valid", "health",
+                 health_bytes(1, 7, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 0),
+                 "the ready shape: PROVEN, no chain fault, all four enumerated and produced"))
+    out.append(V("health_heartbeat_unknown", "health",
+                 health_bytes(1, 8, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xFF, 0),
+                 "a heartbeat during UNKNOWN describes no cycle and depends on no measurement"))
+    for state, label in ((0x0, "unknown"), (0x1, "proven"), (0x2, "lost"), (0x3, "fault")):
+        out.append(V(f"health_mapping_state_{label}", "health",
+                     health_bytes(1, 9, state, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 3),
+                     "all four mapping states are encodable"))
+    for pos in (1, 2, 3, 4, 5, 6):
+        out.append(V(f"health_chain_position_{pos}", "health",
+                     health_bytes(1, 10, 0x3, CYCLE_VALID_BIT | 0x2, 0x7, 0x7, 0x0, 0x0, pos, 4),
+                     "a failing position is reported with the chain fault that found it"))
+    out.append(V("health_chain_position_none", "health",
+                 health_bytes(1, 11, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 5),
+                 "0xFF means no failing position"))
+    for seq in (0, 1, 254, 255):
+        out.append(V(f"health_seq_{seq}", "health",
+                     health_bytes(1, seq, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 1),
+                     "health_seq wraps 255 -> 0 and proves novelty, never age"))
+
+    # -- health: rejections -------------------------------------------------
+    out.append(V("health_reject_frame_type", "health",
+                 health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 0,
+                              frame_type=MEAS_FRAME_TYPE),
+                 "frame_type must match the identifier it arrived on"))
+    out.append(V("health_reject_protocol_version_zero", "health",
+                 health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 0,
+                              protocol_version=0),
+                 "zero is not a valid version, so an all-zero byte cannot pass as one"))
+    out.append(V("health_reject_protocol_version_2", "health",
+                 health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 0,
+                              protocol_version=2),
+                 "a decoder accepts only versions it implements"))
+    for state in (0x4, 0xF):
+        out.append(V(f"health_reject_mapping_state_{state:x}", "health",
+                     health_bytes(1, 1, state, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 0),
+                     "0x4-0xF are malformed mapping states"))
+    for pos in (0, 7, 0xFE):
+        out.append(V(f"health_reject_chain_position_{pos}", "health",
+                     health_bytes(1, 1, 0x3, CYCLE_VALID_BIT | 0x1, 0xF, 0xF, 0xF, 0x0, pos, 0),
+                     "a failing position is 1-6 or 0xFF"))
+    out.append(V("health_reject_cycle_seq_without_cycle_valid", "health",
+                 health_bytes(1, 1, 0x1, 0x0, 0xF, 0xF, 0x0, 0x0, 0xFF, 3),
+                 "with cycle_valid clear the frame describes no cycle"))
+    out.append(V("health_reject_produced_mask_without_cycle_valid", "health",
+                 health_bytes(1, 1, 0x1, 0x0, 0xF, 0xF, 0xF, 0x0, 0xFF, 0),
+                 "sample_produced_mask is a per-cycle field"))
+    out.append(V("health_reject_position_without_chain_fault", "health",
+                 health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 3, 1),
+                 "naming a failing position with no chain fault set is contradictory"))
+    return out
+
+
+def layout_self_check(vectors):
+    problems = []
+    seen = set()
+    for v in vectors:
+        if v["name"] in seen:
+            problems.append(f"{v['name']}: duplicate vector name")
+        seen.add(v["name"])
+        if len(v["bytes"]) != 8:
+            problems.append(f"{v['name']}: DLC is always 8, got {len(v['bytes'])}")
+        if any(not 0 <= b <= 0xFF for b in v["bytes"]):
+            problems.append(f"{v['name']}: byte out of range")
+        if v["verdict"] not in REJECT_REASONS:
+            problems.append(f"{v['name']}: unknown verdict {v['verdict']}")
+    # A suite with no rejections would not test the validation rules at all.
+    if not any(v["verdict"] != "ACCEPT" for v in vectors):
+        problems.append("the suite contains no rejection case")
+    if not any(v["verdict"] == "ACCEPT" for v in vectors):
+        problems.append("the suite contains no acceptance case")
+    return problems
+
+
+BANNER = "COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the " \
+         "six-board schedule measurement; status 3/11 remain unvalidated."
+
+
+def emit_json(vectors, version, sha, path):
+    doc = {
+        "contract_file": CONTRACT.name,
+        "contract_version": version,
+        "contract_sha256": sha,
+        "profile_name": PROFILE_NAME,
+        "release_forbidden": RELEASE_FORBIDDEN,
+        "banner": BANNER,
+        "scope": "frame layout and validation rules only; the decoder state machine is not covered",
+        "comparison_rule": COMPARISON_RULE,
+        "resolved": {k: v for k, v in RESOLVED.items()},
+        "validation_pending": VALIDATION_PENDING,
+        "commissioning_profile": PROFILE,
+        "profile_provenance": PROFILE_PROVENANCE,
+        "unresolved_for_release": UNRESOLVED,
+        "reject_reasons": list(REJECT_REASONS),
+        "vectors": vectors,
+    }
+    path.write_text(json.dumps(doc, indent=2, sort_keys=False) + "\n")
+    return path
+
+
+def emit_header(vectors, version, sha, path):
+    lines = [
+        "/*",
+        " * Copyright (c) 2026, LexxPluss Inc.",
+        " * All rights reserved.",
+        " *",
+        " * SPDX-License-Identifier: BSD-3-Clause",
+        " */",
+        "",
+        "/* GENERATED FILE -- do not edit. Regenerate with:",
+        " *     docs/can/gen_cliff_golden_vectors.py --emit",
+        " *",
+        f" * Contract : {CONTRACT.name}",
+        f" * Version  : {version}",
+        f" * SHA-256  : {sha}",
+        f" * Profile  : {PROFILE_NAME}",
+        " *",
+        f" * {BANNER}",
+        " *",
+        " * Scope: frame layout and validation verdicts only. The decoder state machine",
+        " * (cycle assembly, retirement, staleness, event multisets) is NOT covered here.",
+        " *",
+        " * Zero dependencies on purpose: the SCBDriver tests have no JSON parser.",
+        " */",
+        "",
+        "#pragma once",
+        "",
+        "#include <cstddef>",
+        "#include <cstdint>",
+        "",
+        "// clang-format off",
+        "",
+        "namespace tof_cliff_contract {",
+        "",
+        f'inline constexpr char kContractVersion[]{{"{version}"}};',
+        f'inline constexpr char kContractSha256[]{{"{sha}"}};',
+        f'inline constexpr char kProfileName[]{{"{PROFILE_NAME}"}};',
+        f"inline constexpr bool kReleaseForbidden{{{'true' if RELEASE_FORBIDDEN else 'false'}}};",
+        "",
+        f'inline constexpr uint16_t kMeasId{{0x{RESOLVED["TOF_CLIFF_MEAS_ID"]:03X}}};',
+        f'inline constexpr uint16_t kHealthId{{0x{RESOLVED["TOF_CLIFF_HEALTH_ID"]:03X}}};',
+        f'inline constexpr uint8_t kProtocolVersion{{0x{RESOLVED["PROTOCOL_VERSION"]:X}}};',
+        f'inline constexpr uint16_t kSentinelInvalid{{0x{RESOLVED["SENTINEL_INVALID"]:04X}}};',
+        f'inline constexpr uint8_t kSourceCount{{{RESOLVED["SOURCE_COUNT"]}}};',
+        f'inline constexpr uint8_t kChainPositionNone{{0x{RESOLVED["CHAIN_POSITION_NONE"]:02X}}};',
+        f'inline constexpr uint8_t kCycleMissFault{{{RESOLVED["N_cycle_miss_fault"]}}};',
+        f'inline constexpr uint8_t kCycleAdvanceMax{{{RESOLVED["N_cycle_advance_max"]}}};',
+        "",
+        "// Commissioning profile. Model-derived, NOT measured. A production build must not",
+        "// inherit these values.",
+    ]
+    for k, v in PROFILE.items():
+        lines.append(f"inline constexpr uint32_t k{''.join(p.capitalize() for p in k.split('_'))}{{{v}}};")
+    lines += [
+        "",
+        "enum class verdict : uint8_t {",
+    ]
+    for i, r in enumerate(REJECT_REASONS):
+        lines.append(f"    {r.lower()} = {i},")
+    lines += [
+        "};",
+        "",
+        "enum class frame_kind : uint8_t { measurement = 0, health = 1 };",
+        "",
+        "struct vector {",
+        "    const char *name;",
+        "    frame_kind kind;",
+        "    uint8_t bytes[8];",
+        "    verdict expected;",
+        "    const char *why;",
+        "};",
+        "",
+        f"inline constexpr size_t kVectorCount{{{len(vectors)}}};",
+        "",
+        "inline constexpr vector kVectors[kVectorCount]{",
+    ]
+    for v in vectors:
+        b = ", ".join(f"0x{x:02x}" for x in v["bytes"])
+        kind = "frame_kind::measurement" if v["kind"] == "meas" else "frame_kind::health"
+        why = v["why"].replace('"', '\\"')
+        lines.append(f'    {{"{v["name"]}", {kind}, {{{b}}}, verdict::{v["verdict"].lower()},')
+        lines.append(f'     "{why}"}},')
+    lines += [
+        "};",
+        "",
+        "}  // namespace tof_cliff_contract",
+        "",
+        "// clang-format on",
+        "",
+    ]
+    path.write_text("\n".join(lines))
+    return path
+
+
 def contract_identity():
     text = CONTRACT.read_text()
     version = re.search(r"^Contract version: \*\*(.+?)\*\*$", text, re.M)
@@ -614,26 +1029,43 @@ def render_list():
 
 
 def refuse_generation():
+    """Refuses the SCENARIO vectors. The layout artefacts are a separate, emittable thing.
+
+    The split is the point: the decoder state machine depends on every timing value, so it
+    cannot be pinned yet. The frame layout depends on none of them, so it can.
+    """
     version, _ = contract_identity()
-    print("refusing to generate vectors.", file=sys.stderr)
-    reasons = []
-    if version.startswith("draft-"):
-        reasons.append(f"the contract is a draft ({version}); nothing may be released against it")
-    reasons.append(f"{len(UNRESOLVED)} values are unresolved: {', '.join(sorted(UNRESOLVED))}")
+    print(f"refusing to generate decoder state-machine vectors (contract {version}).",
+          file=sys.stderr)
+    reasons = [
+        "the scenario catalogue's inputs are notation, not machine-readable structures; "
+        "emitting event-multiset vectors needs a parser for that notation first",
+        f"{len(UNRESOLVED)} timing values are unresolved for release: "
+        f"{', '.join(sorted(UNRESOLVED))}",
+    ]
     blocked = [sc["id"] for sc in CATALOGUE if sc["blocked"]]
     if blocked:
         reasons.append(f"{len(blocked)} scenarios are blocked on hardware validation: "
                        f"{', '.join(blocked)}")
+    if VALIDATION_PENDING:
+        reasons.append(f"{len(VALIDATION_PENDING)} values are authorised for commissioning but "
+                       f"unvalidated: {', '.join(sorted(VALIDATION_PENDING))}")
     for r in reasons:
         print(f"  - {r}", file=sys.stderr)
-    print("\nrun with --list to see the catalogue these will become.", file=sys.stderr)
+    print("\nrun --emit for the frame-layout artefacts, which depend on no timing value.",
+          file=sys.stderr)
+    print("run --list to see the catalogue these will become.", file=sys.stderr)
     return 1
 
 
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     ap.add_argument("--list", action="store_true", help="print the scenario catalogue")
-    ap.add_argument("--check", action="store_true", help="verify the catalogue's self-consistency")
+    ap.add_argument("--check", action="store_true",
+                    help="verify the catalogue and the layout vectors, and that committed "
+                         "artefacts match what would be emitted now")
+    ap.add_argument("--emit", action="store_true",
+                    help="write the layout artefacts (JSON + zero-dependency C++ header)")
     args = ap.parse_args(argv)
 
     problems = self_check()
@@ -642,11 +1074,52 @@ def main(argv):
             print(f"catalogue error: {p}", file=sys.stderr)
         return 2
 
+    vectors = layout_vectors()
+    problems = layout_self_check(vectors)
+    if problems:
+        for p in problems:
+            print(f"layout error: {p}", file=sys.stderr)
+        return 2
+
+    version, sha = contract_identity()
+    json_path = HERE / "tof_cliff_layout_vectors.json"
+    header_path = HERE / "tof_cliff_contract_vectors.h"
+
+    if args.emit:
+        if version.startswith("draft-"):
+            print(f"refusing to emit: the contract is a draft ({version})", file=sys.stderr)
+            return 1
+        emit_json(vectors, version, sha, json_path)
+        emit_header(vectors, version, sha, header_path)
+        accepts = len([v for v in vectors if v["verdict"] == "ACCEPT"])
+        print(f"emitted {len(vectors)} layout vectors "
+              f"({accepts} accept / {len(vectors) - accepts} reject)")
+        print(f"  {json_path.name}")
+        print(f"  {header_path.name}")
+        print(f"contract {version}  sha256 {sha}")
+        print(f"profile {PROFILE_NAME}  release_forbidden={RELEASE_FORBIDDEN}")
+        return 0
+
     if args.check:
         print(f"catalogue OK: {len(CATALOGUE)} scenarios, "
               f"{len([s for s in CATALOGUE if s['blocked']])} blocked, "
-              f"{len(UNRESOLVED)} unresolved symbols")
-        return 0
+              f"{len(UNRESOLVED)} symbols unresolved for release")
+        print(f"layout OK: {len(vectors)} vectors")
+        print(f"contract {version}  sha256 {sha}")
+        # Catch "the contract text was edited but the artefacts were not regenerated".
+        stale = []
+        for path, emit in ((json_path, emit_json), (header_path, emit_header)):
+            if not path.exists():
+                stale.append(f"{path.name} is missing")
+                continue
+            before = path.read_text()
+            emit(vectors, version, sha, path)
+            if path.read_text() != before:
+                stale.append(f"{path.name} was out of date and has been rewritten")
+        for s in stale:
+            print(f"artefact drift: {s}", file=sys.stderr)
+        return 1 if stale else 0
+
     if args.list:
         render_list()
         return 0
