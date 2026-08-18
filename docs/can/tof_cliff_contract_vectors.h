@@ -9,8 +9,8 @@
  *     docs/can/gen_cliff_golden_vectors.py --emit
  *
  * Contract : tof_cliff_wire_contract.md
- * Version  : commissioning-2026-08-17
- * SHA-256  : 26e0d8b709a25b887ab96fd7b7f3e4655ff6725c106d9be677a2d8d5db74891d
+ * Version  : commissioning-2026-08-18a
+ * SHA-256  : dbd347b551541d78562ca348ceecc7076fe2f93ebe446216b14640ced5f09070
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
@@ -30,8 +30,8 @@
 
 namespace tof_cliff_contract {
 
-inline constexpr char kContractVersion[]{"commissioning-2026-08-17"};
-inline constexpr char kContractSha256[]{"26e0d8b709a25b887ab96fd7b7f3e4655ff6725c106d9be677a2d8d5db74891d"};
+inline constexpr char kContractVersion[]{"commissioning-2026-08-18a"};
+inline constexpr char kContractSha256[]{"dbd347b551541d78562ca348ceecc7076fe2f93ebe446216b14640ced5f09070"};
 inline constexpr char kProfileName[]{"commissioning-cliff-only-400k"};
 inline constexpr bool kReleaseForbidden{true};
 

@@ -1,7 +1,7 @@
 {
   "contract_file": "tof_cliff_wire_contract.md",
-  "contract_version": "commissioning-2026-08-17",
-  "contract_sha256": "26e0d8b709a25b887ab96fd7b7f3e4655ff6725c106d9be677a2d8d5db74891d",
+  "contract_version": "commissioning-2026-08-18a",
+  "contract_sha256": "dbd347b551541d78562ca348ceecc7076fe2f93ebe446216b14640ced5f09070",
   "profile_name": "commissioning-cliff-only-400k",
   "release_forbidden": true,
   "banner": "COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.",
