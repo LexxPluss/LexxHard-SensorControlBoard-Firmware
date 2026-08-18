@@ -235,10 +235,13 @@ const source_ops &l4_cliff_ops()
 
 mapping_state effective_mapping_state()
 {
-    const mapping_state reported{cfg_.mapping_state_provider != nullptr
-                                     ? cfg_.mapping_state_provider()
-                                     : mapping_state::not_ready};
+    return clamp_mapping_state(cfg_.mapping_state_provider != nullptr
+                                   ? cfg_.mapping_state_provider()
+                                   : mapping_state::not_ready);
+}
 
+mapping_state clamp_mapping_state(mapping_state reported)
+{
     if (reported == mapping_state::proven) {
         // A proven mapping is not something this firmware is entitled to claim yet, so
         // reporting NOT_READY keeps the consumer's own fail-safe path in charge.
@@ -250,21 +253,23 @@ mapping_state effective_mapping_state()
         // condition was met. It is not, for four reasons that have nothing to do with that
         // resistor:
         //
-        //   - No mapping authority. tof_mapping_proof can evaluate the contract's
-        //     transaction and mint a token, but nothing owns the UNKNOWN/PROVEN/LOST/FAULT
-        //     state, and nothing consumes a token. There is no path from a proof to this
-        //     function's input.
-        //   - No role mapping. The four cliff positions in dasher_spec() carry
-        //     l4_role::unknown, and the masks the wire contract keys by source_id cannot be
-        //     filled from a position without it. The proof refuses on this today, by rule.
-        //   - No epoch. production_authorisation() reports epoch 0 because no epoch has
-        //     been issued; issuing one and resetting cycle_seq is one transaction that does
-        //     not exist yet, and under the commissioning profile the value comes from the
-        //     host.
-        //   - No cycle health. 0x217 is a state heartbeat only: cycle_valid is clear and
-        //     the masks are zero, so a measurement would have no authorising health frame
-        //     carrying its epoch and cycle, and a conforming decoder would reject every
-        //     frame it did send.
+        //   - No role/source table. The four cliff positions in dasher_spec() carry
+        //     l4_role::unknown, so tof_mapping_proof refuses to reach PROVEN at all today,
+        //     by rule: the masks the wire contract keys by source_id cannot be filled from a
+        //     position without that table, and electrical enumeration cannot prove which of
+        //     four identical carriers is mounted where.
+        //   - No cycle health. 0x217 is a state heartbeat only: cycle_valid is clear and the
+        //     per-cycle masks are zero, so a measurement would have no authorising health
+        //     frame carrying its epoch and cycle, and a conforming decoder would reject
+        //     every frame it did send.
+        //   - No production wiring. The authority and the epoch transaction exist now
+        //     (tof_mapping_authority), but only the B6 budget probe constructs them; nothing
+        //     in a shipping image calls acq::init(), so there is no acquisition thread and no
+        //     periodic health frame either.
+        //
+        // Two things that WERE on this list are now closed, which is exactly why the list
+        // has to be maintained: there is a mapping authority, and there is an epoch plus
+        // cycle-reset transaction. Neither of them lifts this clamp.
         //
         // Unconditional, with no build flag to lift it. A conditional safety bypass is
         // one careless -D away from shipping and would not show up in a diff of the code
@@ -296,7 +301,18 @@ bool is_idle()
     // Between two cycles the scheduler still owns the chain: it will take the lock again
     // within one period, and commissioning cannot enumerate in that gap without
     // re-addressing parts underneath the next read. Idle means stopped.
-    return !running_ && !in_cycle_;
+    //
+    // Under the lock, because the two flags are written by the acquisition context and read
+    // here by the commissioning one. A lock-free read can see running_ already false while
+    // in_cycle_ has not yet been cleared -- or the reverse -- and answer "idle" about a state
+    // that never existed. Blocking until the current cycle finishes is the correct behaviour
+    // for a commissioning caller and is exactly what it is asking about.
+    //
+    // Never call this from the health path: it can wait for a whole cycle.
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    const bool idle{!running_ && !in_cycle_};
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    return idle;
 }
 
 void copy_facts(cycle_facts &out)
@@ -361,15 +377,22 @@ int begin_epoch()
 {
     if (!configured_)
         return -EINVAL;
-    /* Idle only. A reset while cycles are being produced renumbers a sequence the consumer
-     * is half-way through assembling, and the contract's uniqueness guarantee is over
-     * (source_id, mapping_epoch, cycle_seq) -- the triple, not the cycle alone. The caller
-     * that owns the epoch is responsible for having stopped acquisition first, and gets an
-     * error rather than a silent renumber if it has not. */
-    if (running_)
-        return -EBUSY;
-    next_cycle_seq_ = 0;
-    return 0;
+
+    /* Idle only, and the check and the reset happen together under the chain lock.
+     *
+     * Both halves matter. `running_` alone is not idle: between two cycles the scheduler
+     * still owns the chain, so in_cycle_ has to be clear as well. And checking outside the
+     * lock would let a cycle start between the check and the reset, which renumbers a
+     * sequence the consumer is half-way through assembling -- the contract's uniqueness
+     * guarantee is over (source_id, mapping_epoch, cycle_seq), the triple rather than the
+     * cycle alone, so a renumber under a live epoch reissues triples already used. */
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    const bool idle{!running_ && !in_cycle_};
+    if (idle)
+        next_cycle_seq_ = 0;
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+
+    return idle ? 0 : -EBUSY;
 }
 
 int bring_up()

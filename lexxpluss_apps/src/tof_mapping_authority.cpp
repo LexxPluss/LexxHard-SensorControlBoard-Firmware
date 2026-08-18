@@ -65,8 +65,19 @@ const snapshot kUnknown{};
  * consumer correlating by (source_id, epoch, cycle_seq) cannot tell their frames apart.
  *
  * Thirty-two bytes, and when they run out the answer is a refusal, not a wrap. A machine
- * that has been re-proven 255 times in one power cycle has a problem that reusing an epoch
- * would hide. Bit 0 is set at init because epoch 0 is what "no epoch" reports on the wire.
+ * that has been re-proven 256 times in one power cycle has a problem that reusing an epoch
+ * would hide.
+ *
+ * All 256 values are legal, INCLUDING 0. An earlier version reserved 0 on the grounds that it
+ * is what the health frame carries while no epoch has been issued -- which was wrong twice
+ * over: mapping_state is in the same frame, so PROVEN with epoch 0 and UNKNOWN with epoch 0
+ * are not confusable, and the contract has the host increment modulo 256, so it WILL offer 0
+ * eventually and a firmware that refused it would stall commissioning.
+ *
+ * It SURVIVES init(), which is the whole point: the guarantee is "not reused since power-on",
+ * and clearing it on re-init would hand the entire space back -- init, epoch 7, init, epoch 7
+ * would pass while breaking the contract. Nothing here clears it; statics start zeroed and the
+ * only door is the CONFIG_ZTEST one.
  *
  * Power-on scope, stated plainly: this is RAM, so it is empty again after a reset. Under the
  * commissioning profile the host is the authority that persists epochs across restarts, and
@@ -144,7 +155,7 @@ bool matches_runtime(const pf::fingerprint &fp, const enm::chain_spec &spec)
 int init(const config &cfg)
 {
     if (cfg.runtime_spec == nullptr || cfg.begin_epoch == nullptr ||
-        cfg.runtime_spec->positions == 0) {
+        cfg.acquisition_idle == nullptr || cfg.runtime_spec->positions == 0) {
         /* A failed init leaves the authority unusable rather than quietly running on whatever
          * was configured before. That direction costs a proven mapping -- but the alternative
          * is a commit compared against a configuration nobody meant to be current, and of the
@@ -157,21 +168,35 @@ int init(const config &cfg)
     cfg_ = cfg;
     attempt_ = 0;
     installed_ = kNoMapping;
-    memset(used_epochs_, 0, sizeof used_epochs_);
-    /* Epoch 0 is spoken for: it is what the health frame carries while no epoch has been
-     * issued, so accepting it as a proven epoch would make "proven under epoch 0" and "never
-     * proven" indistinguishable to a consumer reading one frame. */
-    mark_epoch_used(0);
+    /* used_epochs_ is deliberately NOT cleared here -- see its definition. A re-init means a
+     * new configuration, not a new power cycle. */
 
     publish(kUnknown);
     initialised_ = true;
     return 0;
 }
 
-pf::challenge begin_proof()
+attempt begin_proof()
 {
-    if (!initialised_)
-        return pf::challenge{};
+    attempt a{};
+
+    if (!initialised_) {
+        a.reason = begin_refusal::not_initialised;
+        return a;
+    }
+
+    /* The idle check comes before the revocation, and before any challenge exists. A proof is
+     * two full enumerations, which drop enable lines and re-address parts; discovering at
+     * commit time that acquisition had been running means that already happened underneath a
+     * live reader. Refusing to start is the only refusal that helps.
+     *
+     * Nothing is revoked on this path either: a running acquisition under a proven mapping is
+     * the normal state, and tearing it down because someone asked at the wrong moment would
+     * turn a mistimed request into an outage. */
+    if (!cfg_.acquisition_idle()) {
+        a.reason = begin_refusal::acquisition_not_idle;
+        return a;
+    }
 
     /* Revoke BEFORE anything else, and before the caller touches an enable line. The
      * contract's order is normative: measurements stop first, then health reports the loss.
@@ -194,7 +219,9 @@ pf::challenge begin_proof()
      * revocation can no longer be committed. */
     const pf::challenge c{gate_.issue()};
     attempt_ = c.nonce();
-    return c;
+    a.challenge = c;
+    a.reason = begin_refusal::none;
+    return a;
 }
 
 pf::verdict evaluate(const pf::evidence &ev, const pf::challenge &c)
@@ -207,14 +234,21 @@ pf::verdict evaluate(const pf::evidence &ev, const pf::challenge &c)
     return gate_.evaluate(ev, c);
 }
 
-pf::bench_report evaluate_bench(const pf::evidence &ev)
+bench_result evaluate_bench(const pf::evidence &ev)
 {
-    if (!initialised_) {
-        pf::bench_report b{};
-        b.reason = pf::refusal::missing_evidence;
-        return b;
-    }
-    return gate_.evaluate_bench(ev);
+    bench_result r{};
+
+    if (!initialised_)
+        return r;
+    /* An open attempt means a product proof is in progress on this chain. Bench evidence can
+     * only have come from walking a chain, and walking it now would re-address the one that
+     * attempt is about. */
+    if (attempt_ != 0)
+        return r;
+
+    r.ran = true;
+    r.report = gate_.evaluate_bench(ev);
+    return r;
 }
 
 commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
@@ -241,8 +275,6 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
     if (!matches_runtime(held.proven(), *cfg_.runtime_spec))
         return commit_refusal::runtime_mapping_mismatch;
 
-    if (host_epoch == 0)
-        return commit_refusal::epoch_zero;
     if (all_epochs_used())
         return commit_refusal::epoch_space_exhausted;
     if (epoch_used(host_epoch))
@@ -332,6 +364,13 @@ uint32_t attempt_nonce()
 {
     return attempt_;
 }
+
+#ifdef CONFIG_ZTEST
+void reset_epoch_history_for_test()
+{
+    memset(used_epochs_, 0, sizeof used_epochs_);
+}
+#endif
 
 uint32_t epochs_used()
 {

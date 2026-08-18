@@ -31,11 +31,17 @@ constexpr enm::id_bytes kL4Id{0xeb, 0xaa};
 
 int begin_epoch_rc{0};
 int begin_epoch_calls{0};
+bool acquisition_is_idle{true};
 
 int fake_begin_epoch()
 {
     ++begin_epoch_calls;
     return begin_epoch_rc;
+}
+
+bool fake_is_idle()
+{
+    return acquisition_is_idle;
 }
 
 enm::chain_spec product_spec()
@@ -106,19 +112,27 @@ void fresh_authority()
 {
     begin_epoch_rc = 0;
     begin_epoch_calls = 0;
+    acquisition_is_idle = true;
     runtime_spec_storage = product_spec();
 
     au::config cfg{};
     cfg.runtime_spec = &runtime_spec_storage;
     cfg.begin_epoch = fake_begin_epoch;
+    cfg.acquisition_idle = fake_is_idle;
     zassert_equal(au::init(cfg), 0);
+    /* Explicitly, through the test-only door. init() deliberately does NOT clear the used-epoch
+     * bitmap -- the guarantee is per power cycle, not per configuration -- so a suite that
+     * relied on init() to reset it would be testing a product behaviour that must not exist. */
+    au::reset_epoch_history_for_test();
 }
 
 /* The whole happy path, since almost every test needs it up to some point. */
 au::commit_refusal prove(const transaction &t, uint8_t epoch)
 {
-    const pf::challenge c{au::begin_proof()};
-    pf::verdict v{au::evaluate(t.evidence(), c)};
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened(), "attempt refused: %d", static_cast<int>(a.reason));
+    zassert_equal(a.reason, au::begin_refusal::none);
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
     zassert_true(v.granted(), "evidence refused: %d", static_cast<int>(v.reason));
     return au::commit_proof(static_cast<pf::proof_token &&>(v.token), epoch);
 }
@@ -141,11 +155,20 @@ ZTEST(tof_mapping_authority, test_init_refuses_an_incomplete_configuration)
 {
     au::config no_spec{};
     no_spec.begin_epoch = fake_begin_epoch;
+    no_spec.acquisition_idle = fake_is_idle;
     zassert_equal(au::init(no_spec), -EINVAL);
 
-    au::config no_hook{};
-    no_hook.runtime_spec = &runtime_spec_storage;
-    zassert_equal(au::init(no_hook), -EINVAL);
+    au::config no_epoch_hook{};
+    no_epoch_hook.runtime_spec = &runtime_spec_storage;
+    no_epoch_hook.acquisition_idle = fake_is_idle;
+    zassert_equal(au::init(no_epoch_hook), -EINVAL);
+
+    /* The idle hook is not optional either: without it the authority cannot tell whether a
+     * proof is safe to start, and defaulting to "assume idle" is the unsafe direction. */
+    au::config no_idle_hook{};
+    no_idle_hook.runtime_spec = &runtime_spec_storage;
+    no_idle_hook.begin_epoch = fake_begin_epoch;
+    zassert_equal(au::init(no_idle_hook), -EINVAL);
 }
 
 ZTEST(tof_mapping_authority, test_a_committed_proof_publishes_proven_with_its_epoch)
@@ -209,7 +232,7 @@ ZTEST(tof_mapping_authority, test_a_token_from_a_superseded_attempt_cannot_be_co
     fresh_authority();
     const transaction t;
 
-    const pf::challenge first{au::begin_proof()};
+    const pf::challenge first{au::begin_proof().challenge};
     pf::verdict v{au::evaluate(t.evidence(), first)};
     zassert_true(v.granted());
 
@@ -243,7 +266,7 @@ ZTEST(tof_mapping_authority, test_a_committed_attempt_cannot_be_committed_again)
     fresh_authority();
     const transaction t;
 
-    const pf::challenge c{au::begin_proof()};
+    const pf::challenge c{au::begin_proof().challenge};
     pf::verdict v{au::evaluate(t.evidence(), c)};
     zassert_true(v.granted());
     pf::proof_token first{static_cast<pf::proof_token &&>(v.token)};
@@ -268,7 +291,7 @@ ZTEST(tof_mapping_authority, test_a_proof_of_a_different_chain_cannot_install_it
     t.walk2 = clean_walk(t.spec, true);
     t.isolation = clean_isolation(t.spec);
 
-    const pf::challenge c{au::begin_proof()};
+    const pf::challenge c{au::begin_proof().challenge};
     pf::verdict v{au::evaluate(t.evidence(), c)};
     zassert_true(v.granted(), "the proof itself is sound: %d", static_cast<int>(v.reason));
     zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 6),
@@ -289,21 +312,38 @@ ZTEST(tof_mapping_authority, test_a_role_table_that_differs_from_the_runtime_one
     t.walk2 = clean_walk(t.spec, true);
     t.isolation = clean_isolation(t.spec);
 
-    const pf::challenge c{au::begin_proof()};
+    const pf::challenge c{au::begin_proof().challenge};
     pf::verdict v{au::evaluate(t.evidence(), c)};
     zassert_true(v.granted());
     zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 6),
                   au::commit_refusal::runtime_mapping_mismatch);
 }
 
-ZTEST(tof_mapping_authority, test_epoch_zero_is_refused)
+ZTEST(tof_mapping_authority, test_epoch_zero_is_a_real_epoch)
 {
-    /* 0 is what the health frame carries while no epoch has been issued. If it were also a
-     * real epoch, "proven under 0" and "never proven" would read the same in one frame. */
+    /* It was refused for a while, on the theory that "PROVEN under epoch 0" and "never proven"
+     * would be confusable. They are not: mapping_state is in the same frame as the epoch, and
+     * cycle_valid separates "no cycle" from "cycle 0". Meanwhile the contract has the host
+     * increment modulo 256, so 0 comes round on every 256th proof and a firmware that refused
+     * it would stall commissioning on a machine that had done nothing wrong. */
     fresh_authority();
     const transaction t;
-    zassert_equal(prove(t, 0), au::commit_refusal::epoch_zero);
-    zassert_equal(au::current().state, acq::mapping_state::not_ready);
+    zassert_equal(prove(t, 0), au::commit_refusal::none);
+    const au::snapshot s{au::current()};
+    zassert_equal(s.state, acq::mapping_state::proven);
+    zassert_equal(s.epoch, 0);
+    /* And it is spent like any other value. */
+    zassert_equal(prove(t, 0), au::commit_refusal::epoch_reused);
+}
+
+ZTEST(tof_mapping_authority, test_the_host_may_wrap_255_to_zero)
+{
+    /* The host's documented behaviour, so it has to work rather than merely not crash. */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 255), au::commit_refusal::none);
+    zassert_equal(prove(t, 0), au::commit_refusal::none);
+    zassert_equal(au::current().epoch, 0);
 }
 
 ZTEST(tof_mapping_authority, test_an_epoch_used_this_power_cycle_is_refused)
@@ -331,14 +371,14 @@ ZTEST(tof_mapping_authority, test_reuse_is_checked_against_every_epoch_not_just_
 
 ZTEST(tof_mapping_authority, test_the_epoch_space_runs_out_rather_than_wrapping)
 {
-    /* 255 real epochs, then a refusal. A machine re-proven 255 times in one power cycle has a
+    /* All 256 values, then a refusal. A machine re-proven 256 times in one power cycle has a
      * problem that silently reusing an epoch would hide. */
     fresh_authority();
     const transaction t;
-    for (int e{1}; e <= 255; ++e)
+    for (int e{0}; e <= 255; ++e)
         zassert_equal(prove(t, static_cast<uint8_t>(e)), au::commit_refusal::none, "epoch %d", e);
 
-    zassert_equal(au::epochs_used(), 256u, "255 issued plus the reserved zero");
+    zassert_equal(au::epochs_used(), 256u, "all 256 values are real epochs");
     /* Every value is now used, so whatever the host offers is refused -- and the refusal is
      * the exhaustion, not a reuse, because there is no unused value left to ask for. */
     zassert_equal(prove(t, 200), au::commit_refusal::epoch_space_exhausted);
@@ -459,11 +499,22 @@ ZTEST(tof_mapping_authority, test_a_bench_chain_can_be_diagnosed_without_touchin
     bench.walk2 = clean_walk(bench.spec, true);
     bench.isolation = clean_isolation(bench.spec);
 
-    const pf::challenge c{au::begin_proof()};
-    zassert_true(au::evaluate_bench(bench.evidence()).clean());
-    /* The attempt is untouched, so a diagnostic run cannot burn the operator's attempt. */
+    /* With no attempt open, a bench evaluation runs and gives a real answer. */
+    const au::bench_result idle_run{au::evaluate_bench(bench.evidence())};
+    zassert_true(idle_run.ran);
+    zassert_true(idle_run.report.clean(), "reason %d", static_cast<int>(idle_run.report.reason));
+
+    /* With one open, it refuses. Bench evidence can only have come from walking a chain, and
+     * walking it now would re-address the very chain the attempt is about -- so the authority
+     * refuses rather than trusting the commissioning command to remember. */
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    const au::bench_result during{au::evaluate_bench(bench.evidence())};
+    zassert_false(during.ran, "a bench run was allowed during a product attempt");
+
+    /* And refusing left the attempt intact. */
     const transaction product;
-    zassert_true(au::evaluate(product.evidence(), c).granted());
+    zassert_true(au::evaluate(product.evidence(), a.challenge).granted());
 }
 
 ZTEST(tof_mapping_authority, test_nothing_works_before_init)
@@ -474,9 +525,87 @@ ZTEST(tof_mapping_authority, test_nothing_works_before_init)
     (void)au::init(bad); // leaves the authority uninitialised
 
     const transaction t;
-    zassert_false(au::begin_proof().valid());
+    const au::attempt a{au::begin_proof()};
+    zassert_false(a.opened());
+    zassert_equal(a.reason, au::begin_refusal::not_initialised);
     zassert_false(au::evaluate(t.evidence(), pf::challenge{}).granted());
     pf::proof_token forged{};
     zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(forged), 3),
                   au::commit_refusal::not_initialised);
+}
+
+ZTEST(tof_mapping_authority, test_no_attempt_is_opened_while_acquisition_is_running)
+{
+    /* The check that has to happen at the START. A proof is two full enumerations, which drop
+     * enable lines and re-address parts; finding out at commit time that acquisition was
+     * running means that already happened underneath a live reader, and no refusal can undo
+     * it. */
+    fresh_authority();
+    acquisition_is_idle = false;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_false(a.opened());
+    zassert_equal(a.reason, au::begin_refusal::acquisition_not_idle);
+    zassert_false(a.challenge.valid());
+    zassert_equal(au::attempt_nonce(), 0u, "no attempt may be left half-open");
+}
+
+ZTEST(tof_mapping_authority, test_a_mistimed_request_does_not_revoke_a_working_mapping)
+{
+    /* Deliberate: the refusal above must not be a punishment. A running acquisition under a
+     * proven mapping is the normal state, and revoking it because someone asked to re-prove at
+     * the wrong moment would turn a mistimed request into an outage. */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 20), au::commit_refusal::none);
+
+    acquisition_is_idle = false;
+    zassert_false(au::begin_proof().opened());
+
+    const au::snapshot s{au::current()};
+    zassert_equal(s.state, acq::mapping_state::proven, "a refused request revoked the mapping");
+    zassert_equal(s.epoch, 20);
+}
+
+ZTEST(tof_mapping_authority, test_re_initialising_does_not_hand_the_epoch_space_back)
+{
+    /* The bug this test exists for: init() used to clear the used-epoch bitmap, so
+     * init -> epoch 7 -> init -> epoch 7 passed while breaking the contract outright. Every
+     * test re-initialising was what hid it -- the suite's own harness was the alibi. */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 7), au::commit_refusal::none);
+
+    au::config cfg{};
+    cfg.runtime_spec = &runtime_spec_storage;
+    cfg.begin_epoch = fake_begin_epoch;
+    cfg.acquisition_idle = fake_is_idle;
+    zassert_equal(au::init(cfg), 0);
+    /* Note: no reset_epoch_history_for_test() here. That is the point. */
+
+    zassert_equal(prove(t, 7), au::commit_refusal::epoch_reused,
+                  "a re-init handed epoch 7 back");
+    zassert_equal(prove(t, 8), au::commit_refusal::none, "unused values are still available");
+}
+
+ZTEST(tof_mapping_authority, test_re_initialising_does_close_any_open_attempt)
+{
+    /* The other side of the same question. The bitmap survives a re-init because it is about
+     * the power cycle; an open attempt does not, because it is about a configuration that has
+     * just been replaced. */
+    fresh_authority();
+    const transaction t;
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted());
+
+    au::config cfg{};
+    cfg.runtime_spec = &runtime_spec_storage;
+    cfg.begin_epoch = fake_begin_epoch;
+    cfg.acquisition_idle = fake_is_idle;
+    zassert_equal(au::init(cfg), 0);
+
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 30),
+                  au::commit_refusal::no_attempt);
 }

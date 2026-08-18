@@ -83,6 +83,7 @@ extern "C" int tof_cliff_budget_walk_scheduler(void *objs, void *scratch, int st
     au::config acfg{};
     acfg.runtime_spec = &runtime_spec;
     acfg.begin_epoch = acq::begin_epoch;
+    acfg.acquisition_idle = acq::is_idle;
     if (const int arc{au::init(acfg)}; arc != 0)
         return arc;
 

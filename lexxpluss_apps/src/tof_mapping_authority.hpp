@@ -75,7 +75,6 @@ enum class commit_refusal : uint8_t {
     // this reachable must come with a test that reaches it.
     not_commissioning_profile,
     runtime_mapping_mismatch,  // the proven chain is not the chain acquisition is configured for
-    epoch_zero,                // 0 is what "no epoch" reports; it may not also be a real one
     epoch_reused,              // used since power-on, so triples could alias
     epoch_space_exhausted,     // all 256 used this power cycle; wrapping would reuse
     acquisition_busy,          // begin_epoch() refused: cycles are still being produced
@@ -94,6 +93,21 @@ struct snapshot {
     uint8_t failing_position{0xFF}; // 1-6, or 0xFF for none
 };
 
+// Why an attempt could not be opened.
+enum class begin_refusal : uint8_t {
+    none = 0,
+    not_initialised,
+    acquisition_not_idle, // a proof moves enable lines; cycles must have stopped first
+};
+
+// What begin_proof() returns. The challenge is worthless unless `reason` is none, and pairing
+// them means a caller cannot read the challenge without having been handed the reason.
+struct attempt {
+    pf::challenge challenge{};
+    begin_refusal reason{begin_refusal::not_initialised};
+    bool opened() const { return reason == begin_refusal::none && challenge.valid(); }
+};
+
 struct config {
     // The chain acquisition is configured for. A commit compares the proven fingerprint
     // against THIS, position by position, so a proof of some other chain cannot install
@@ -102,6 +116,10 @@ struct config {
     // tof_acq::begin_epoch in production. Injected so the authority stays host-testable
     // without a bus, and so a test can make the cycle reset fail on demand.
     int (*begin_epoch)(){nullptr};
+    // tof_acq::is_idle in production. Checked BEFORE a challenge is issued: a proof is about
+    // to move enable lines, and discovering at commit time that acquisition was running means
+    // the chain has already been re-addressed underneath a live reader.
+    bool (*acquisition_idle)(){nullptr};
 };
 
 int init(const config &cfg);
@@ -114,8 +132,12 @@ int init(const config &cfg);
 // becomes LOST, which is not the same as UNKNOWN and must not be reported as it -- the
 // consumer's recovery path differs.
 //
+// Refuses outright unless acquisition is idle. Checking here rather than at commit time is
+// the difference between refusing to start and discovering the problem after two walks have
+// already re-addressed the chain underneath a running reader.
+//
 // Any previously issued challenge and any token minted from it stop being committable here.
-pf::challenge begin_proof();
+attempt begin_proof();
 
 // Evaluates evidence against an attempt's challenge. A proxy, because the gate must not
 // leave this module: a caller holding its own gate could issue a challenge that no
@@ -128,9 +150,19 @@ pf::challenge begin_proof();
 // already revoked, and commit_proof() empties it whether it accepts it or not.
 pf::verdict evaluate(const pf::evidence &ev, const pf::challenge &c);
 
-// Diagnostic evaluation of a chain that is not the commissioning profile. Mints nothing and
-// leaves the attempt alone.
-pf::bench_report evaluate_bench(const pf::evidence &ev);
+// Diagnostic evaluation of a chain that is not the commissioning profile. Mints nothing.
+//
+// REFUSED while an attempt is open, and `ran` is how that is reported. The evaluation itself is
+// pure -- it reads evidence and touches no hardware -- but evidence for a bench chain can only
+// have been collected by real walks, and walking a bench chain during a product attempt
+// re-addresses the very chain that attempt is about. Rather than document a rule for the
+// commissioning command to respect, the authority refuses: it can see whether an attempt is
+// open and the command cannot forget to ask.
+struct bench_result {
+    bool ran{false};
+    pf::bench_report report{};
+};
+bench_result evaluate_bench(const pf::evidence &ev);
 
 // The only path to PROVEN. Takes the token by rvalue reference and empties it: a token is
 // one attempt's worth of authority, and after this call the caller holds nothing.
@@ -160,6 +192,17 @@ const pf::fingerprint &installed_mapping();
 // Diagnostics only. Never an authorisation path.
 uint32_t attempt_nonce();
 uint32_t epochs_used();
+
+#ifdef CONFIG_ZTEST
+// Clears the used-epoch bitmap.
+//
+// Test-only, and behind CONFIG_ZTEST so it cannot exist in a firmware image. It is here
+// because the bitmap deliberately SURVIVES init(): "no epoch reused since power-on" has to
+// mean the power cycle, not the last configuration, or a re-init would hand the whole space
+// back. Tests need each case to start empty, and the honest way to give them that is an
+// explicit test-only door rather than weakening what init() means in production.
+void reset_epoch_history_for_test();
+#endif
 
 } // namespace lexxhard::tof_authority
 

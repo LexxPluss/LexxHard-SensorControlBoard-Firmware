@@ -88,14 +88,18 @@ struct tof_cliff_pub::can_sink sink()
 
 struct tof_cliff_pub::authorisation production_authorisation()
 {
-    /* The state and the epoch as one value. effective_mapping_state() clamps PROVEN
-     * unconditionally, so `allowed` is false and no measurement frame is authorised; health
-     * still reports the state, which is the whole point of it running on its own timer.
+    /* ONE read of the authority, then the clamp applied to that snapshot.
      *
-     * The epoch comes from the authority and is read here, once, alongside the state -- the
-     * publisher latches this pair per cycle, so a proof committing mid-cycle cannot leave a
-     * frame carrying one epoch in a cycle authorised under another. */
-    return {tof_acq::effective_mapping_state(), tof_authority::current().epoch};
+     * Not effective_mapping_state() plus current().epoch: that reads the authority twice, and
+     * a proof committing between the two reads yields a pair that never existed -- LOST with
+     * the new epoch, say. The publisher latches this pair per cycle and re-checks it before
+     * flushing, so a pair that never existed would be latched as though it had.
+     *
+     * The clamp still applies, and still lives in the acquisition layer. Taking the state
+     * straight from the snapshot would bypass it, which is the shape of the safety backdoor
+     * this project deleted once. */
+    const tof_authority::snapshot now{tof_authority::current()};
+    return {tof_acq::clamp_mapping_state(now.state), now.epoch};
 }
 
 } // namespace lexxhard::tof_cliff_can

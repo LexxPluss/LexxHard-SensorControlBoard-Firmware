@@ -207,10 +207,10 @@ int bring_up();
 
 // Starts a new mapping epoch's cycle numbering: resets cycle_seq to 0.
 //
-// Only legal while acquisition is stopped -- -EBUSY otherwise. The contract requires the
-// epoch advance and the cycle reset to be one transaction, and a reset while cycles are
-// being produced would renumber a sequence the consumer is mid-way through assembling.
-// Returns -EINVAL before init().
+// Only legal while acquisition is idle -- -EBUSY otherwise, and idle means BOTH stopped and
+// not mid-cycle. The check and the reset happen together under the chain lock, so a cycle
+// cannot start in between: a renumber under a live epoch reissues (source_id, mapping_epoch,
+// cycle_seq) triples that have already been used. Returns -EINVAL before init().
 //
 // The epoch VALUE does not live here. This layer owns the cycle counter and nothing else;
 // the authority owns the epoch and calls this as one step of its commit.
@@ -254,6 +254,13 @@ uint32_t snapshot();
 // the code it disables. Re-enabling PROVEN is an edit to this function in a commit of its
 // own, reviewed against the fixed hardware.
 mapping_state effective_mapping_state();
+
+// The clamp on its own, for a caller that already holds a state and must not read a second
+// one. production_authorisation() needs exactly this: it takes the state and the epoch from
+// ONE authority snapshot, and going back through effective_mapping_state() for the state
+// would read the authority twice and could pair a state with an epoch that never existed
+// together. Clamping here rather than at the caller keeps the clamp in one place.
+mapping_state clamp_mapping_state(mapping_state reported);
 
 // True only when a role measurement may be published at all.
 bool publication_allowed();
