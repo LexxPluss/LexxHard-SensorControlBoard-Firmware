@@ -85,8 +85,10 @@ enum class commit_refusal : uint8_t {
 struct snapshot {
     tof_acq::mapping_state state{tof_acq::mapping_state::not_ready};
     uint8_t epoch{0};
-    // Both stay 0 until the position-to-role table is frozen. The contract keys them by
-    // source_id, and this firmware has no honest source_id for a cliff position yet.
+    // Keyed by source_id, from the chain a committed proof proved. Zero while non-PROVEN,
+    // because nothing has proved a role; 0xF after a commit, because a proof cannot be granted
+    // unless all four cliff positions enumerated to their own addresses with the expected model
+    // ids and known, distinct roles.
     uint8_t enumerated_mask{0};
     uint8_t model_verified_mask{0};
     uint8_t chain_flags{0};        // contract flags bits 0-2

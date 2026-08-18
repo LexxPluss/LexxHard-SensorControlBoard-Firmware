@@ -99,7 +99,15 @@ struct tof_cliff_pub::authorisation production_authorisation()
      * straight from the snapshot would bypass it, which is the shape of the safety backdoor
      * this project deleted once. */
     const tof_authority::snapshot now{tof_authority::current()};
-    return {tof_acq::clamp_mapping_state(now.state), now.epoch};
+
+    struct tof_cliff_pub::authorisation a{};
+    a.state = tof_acq::clamp_mapping_state(now.state);
+    a.epoch = now.epoch;
+    a.enumerated_mask = now.enumerated_mask;
+    a.model_verified_mask = now.model_verified_mask;
+    a.chain_flags = now.chain_flags;
+    a.failing_position = now.failing_position;
+    return a;
 }
 
 } // namespace lexxhard::tof_cliff_can

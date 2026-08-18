@@ -870,3 +870,33 @@ ZTEST(tof_acquisition, test_begin_epoch_refuses_while_cycles_are_being_produced)
 
     acq::stop();
 }
+
+ZTEST(tof_acquisition, test_stopping_acquisition_does_not_stop_the_heartbeat)
+{
+    /* stop() means "stop reading sensors". The contract requires health to keep flowing while no
+     * acquisition runs, which is exactly when a consumer needs to know the subsystem is alive
+     * and why it is idle -- a commissioning pause must not look like a crashed producer, or the
+     * consumer's own timeout raises a fault for a machine behaving as asked. */
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::stop();
+
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 3);
+    zassert_true(rec.health_beats >= before + 2,
+                 "the heartbeat stopped with acquisition: %d -> %d", before, rec.health_beats);
+}
+
+ZTEST(tof_acquisition, test_teardown_is_what_stops_the_heartbeat)
+{
+    /* The other half. Retiring the subsystem is a separate, deliberate act from pausing it, and
+     * having only one call for both is how the heartbeat got stopped by a pause in the first
+     * place. */
+    zassert_equal(acq::init(make_config(4)), 0);
+    k_msleep(kHealthPeriodMs * 2);
+    acq::teardown();
+
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 3);
+    zassert_equal(rec.health_beats, before, "the heartbeat survived teardown");
+}

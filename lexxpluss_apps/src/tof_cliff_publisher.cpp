@@ -63,6 +63,11 @@ struct pending_frame {
     uint16_t can_id;
     uint8_t dlc;
     uint8_t data[8];
+    /* What this frame will claim in the cycle health masks, carried with the frame rather
+     * than recomputed later. The bit is only ever set from a send that succeeded, because
+     * sample_produced_mask asserts a frame EXISTS for that source in that cycle. */
+    uint8_t source_id;
+    bool sensor_fault;
 };
 pending_frame queue_[tof_acq::kMaxSources]{};
 int queued_{0};
@@ -72,12 +77,32 @@ bool latched_{false};
 uint32_t latched_cycle_{0};
 authorisation latched_auth_{};
 
+/* The health sequence counter.
+ *
+ * Its own counter, deliberately NOT derived from health_sent. Two reasons, and both are
+ * contract requirements rather than preferences. The contract makes health_seq the liveness
+ * signal -- a NEW snapshot must carry a new number -- so a snapshot whose CAN send failed must
+ * still advance it, or the next successful frame would repeat a number and read as a
+ * retransmission of a stale snapshot. And the timer heartbeat and the cycle health frame are
+ * two producers of snapshots; deriving from a success counter would let them collide on one
+ * number. Allocation happens under the lock, so the two can never take the same one.
+ *
+ * A gap in the sequence therefore means "a snapshot was formed and did not reach the bus",
+ * which is exactly what happened and exactly what the consumer should see. */
+uint8_t next_health_seq_{0};
+
+uint8_t take_health_seq()
+{
+    return next_health_seq_++;
+}
+
 bool allowed(const authorisation &a)
 {
     return a.state == tof_acq::mapping_state::proven;
 }
 
-bool enqueue(uint32_t cycle_seq, uint16_t can_id, const uint8_t *data, uint8_t dlc)
+bool enqueue(uint32_t cycle_seq, uint16_t can_id, const uint8_t *data, uint8_t dlc,
+             uint8_t source_id, bool sensor_fault)
 {
     if (queued_ >= static_cast<int>(sizeof queue_ / sizeof queue_[0]))
         return false;
@@ -87,6 +112,8 @@ bool enqueue(uint32_t cycle_seq, uint16_t can_id, const uint8_t *data, uint8_t d
     f.dlc = dlc;
     for (int i = 0; i < 8; ++i)
         f.data[i] = data[i];
+    f.source_id = source_id;
+    f.sensor_fault = sensor_fault;
     return true;
 }
 
@@ -136,6 +163,10 @@ int init(const struct config &cfg)
     latched_ = false;
     latched_cycle_ = 0;
     latched_auth_ = authorisation{};
+    /* Reset with the rest of the state. It is the liveness counter for THIS configuration, and
+     * a consumer that reconnects after a re-init must not be handed a number that looks like a
+     * continuation of a stream it never saw. */
+    next_health_seq_ = 0;
     ready_ = true;
     return 0;
 }
@@ -215,7 +246,12 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
 
     /* Queued, not sent. This runs under the chain lock; touching the bus here would let
      * CAN backpressure stall every sensor's next read. */
-    if (!enqueue(cycle_seq, ctr::kMeasId, frame, ctr::kDlc))
+    /* SENSOR_FAULT is the one class that sets both mask bits: a sample exists -- that is what
+     * makes the frame owed at all -- and the sensor reports it as unusable. NO_SAMPLE never
+     * gets here, because reduce() returns no_frame for it, so its bit stays clear by
+     * construction rather than by a rule someone has to remember. */
+    if (!enqueue(cycle_seq, ctr::kMeasId, frame, ctr::kDlc, facts.role_id,
+                 r.cls == ctr::status_class::sensor_fault))
         counters_.queue_full++;
 }
 
@@ -228,6 +264,7 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
     int count{0};
     struct can_sink sink{};
     uint32_t stale{0};
+    authorisation cycle_auth{};
 
     {
         const guard held;
@@ -264,22 +301,88 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
         queued_ = 0;
         latched_ = false;
         sink = cfg_.sink;
+        /* Carried out of the lock as a VALUE. The cycle health frame is built from what was
+         * latched for this cycle and never from a fresh read -- that is what lets it arrive
+         * after a newer heartbeat reporting LOST and still legitimately authorise its own
+         * cycle, because the consumer correlates on (epoch, cycle_seq) rather than on arrival
+         * order. Re-reading here would make the frame describe a mapping that is not the one
+         * its measurements were authorised under. */
+        cycle_auth = latched_auth_;
     }
 
     /* Each frame is offered exactly once and then dropped whatever happens: carrying a
      * failed range into the next cycle would put a stale distance on the wire. */
     uint32_t sent{0}, failed{0};
+    uint8_t produced_mask{0}, fault_mask{0};
     for (int i = 0; i < count; ++i) {
         const pending_frame &f{outgoing[i]};
-        if (sink.send(f.can_id, f.data, f.dlc) != 0)
+        if (sink.send(f.can_id, f.data, f.dlc) != 0) {
             ++failed;
-        else
-            ++sent;
+            continue;
+        }
+        ++sent;
+        /* Only a send that succeeded may set a bit. sample_produced_mask asserts that a
+         * measurement frame for that source EXISTS in this cycle, and the consumer checks both
+         * directions of that. */
+        produced_mask |= static_cast<uint8_t>(1U << (f.source_id & 0x3));
+        if (f.sensor_fault)
+            fault_mask |= static_cast<uint8_t>(1U << (f.source_id & 0x3));
     }
 
+    {
+        const guard held;
+        counters_.measurements_sent += sent;
+        counters_.send_failed_measurement += failed;
+    }
+
+    /* THE CYCLE HEALTH FRAME, AND WHY IT IS WITHHELD ON ANY FAILURE
+     *
+     * A measurement that did not reach the bus must not be claimed by a mask. The alternative
+     * to withholding would be a frame asserting four samples with three on the wire, which is
+     * the contradiction the contract forbids outright -- and a consumer that trusted it would
+     * wait for a frame that is never coming.
+     *
+     * Withholding is the safe direction rather than merely the honest one: the measurements
+     * that DID go out are left without their authorising health frame, and a conforming
+     * consumer accepts no measurement whose cycle has no cycle_valid health. So the cycle is
+     * dropped as a unit, which is the same rule the revocation path uses. */
+    if (count == 0 || failed != 0) {
+        if (failed != 0)
+            counters_.cycle_health_withheld++;
+        return;
+    }
+
+    uint8_t health[8]{};
+    {
+        const guard held;
+        if (!ready_)
+            return;
+
+        pk::health_fields h{};
+        h.mapping_epoch = cycle_auth.epoch;
+        h.health_seq = take_health_seq();
+        h.mapping_state = wire_mapping_state(cycle_auth.state);
+        h.flags = static_cast<uint8_t>((cycle_auth.chain_flags & 0x7) | ctr::kCycleValidBit);
+        h.enumerated_mask = cycle_auth.enumerated_mask;
+        h.model_verified_mask = cycle_auth.model_verified_mask;
+        h.sample_produced_mask = produced_mask;
+        h.sensor_fault_mask = fault_mask;
+        h.failing_chain_position = cycle_auth.failing_position;
+        h.cycle_seq = static_cast<uint8_t>(facts.cycle_seq & 0xFF);
+
+        if (!pk::encode_health(h, health)) {
+            counters_.health_encode_refused++;
+            return;
+        }
+    }
+
+    const int rc{sink.send(ctr::kHealthId, health, ctr::kDlc)};
+
     const guard held;
-    counters_.measurements_sent += sent;
-    counters_.send_failed_measurement += failed;
+    if (rc != 0)
+        counters_.send_failed_health++;
+    else
+        counters_.cycle_health_sent++;
 }
 
 void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
@@ -301,20 +404,28 @@ void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
 
     pk::health_fields h{};
     h.mapping_epoch = auth.epoch;
-    h.health_seq = static_cast<uint8_t>(counters_.health_sent & 0xFF);
+    /* Its own counter, shared with the cycle health frame and allocated under this lock, so the
+     * two producers can never take the same number. Advanced by forming the snapshot, not by
+     * sending it: a failed send must still consume a number or the next successful frame would
+     * repeat one and read as a retransmission of something stale. */
+    h.health_seq = take_health_seq();
     h.mapping_state = wire_mapping_state(auth.state);
-    h.failing_chain_position = ctr::kChainPositionNone;
+    /* From the mapping authority, and from the SAME snapshot as the state and the epoch. These
+     * describe the last enumeration attempt rather than a cycle, which is what keeps a
+     * heartbeat useful while UNKNOWN. */
+    h.enumerated_mask = auth.enumerated_mask;
+    h.model_verified_mask = auth.model_verified_mask;
+    h.failing_chain_position = auth.failing_position;
+    h.flags = static_cast<uint8_t>(auth.chain_flags & 0x7); // no cycle_valid: describes no cycle
 
-    /* Everything below stays zero, and the header says why for each. In short: the
-     * enumeration masks are not on this path, the per-cycle masks may not be set while
-     * cycle_valid is clear, and the snapshot cannot substantiate the contract's
-     * specifically-transport fault bit. The snapshot is therefore unused -- named in the
-     * signature because the sink's shape is the acquisition layer's, and because the
-     * commit that fills these fields will need it. */
+    /* The per-cycle fields stay zero here, and the contract requires exactly that while
+     * cycle_valid is clear -- encode_health() refuses the combination, so this is enforced
+     * rather than remembered. The completed-cycle frame is produced by on_cycle_complete().
+     *
+     * The acquisition snapshot is still unused: its per-source error bit is transport OR
+     * protocol OR usage, so it cannot substantiate the contract's specifically-transport flag,
+     * and its produced bits describe the cycle this frame explicitly does not describe. */
     (void)snapshot;
-    h.flags = 0; // no cycle_valid: this frame describes no cycle
-    h.enumerated_mask = 0;
-    h.model_verified_mask = 0;
     h.sample_produced_mask = 0;
     h.sensor_fault_mask = 0;
     h.cycle_seq = 0;

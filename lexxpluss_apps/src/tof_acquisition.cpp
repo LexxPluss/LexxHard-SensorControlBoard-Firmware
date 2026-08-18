@@ -60,6 +60,7 @@ cycle_facts facts_;
 uint32_t next_cycle_seq_{0};
 atomic_t snapshot_{ATOMIC_INIT(0)};
 k_timer health_timer_;
+bool health_timer_inited_{false};
 k_work health_work_;
 
 // Bit layout of the snapshot. One word, so the heartbeat reads it without the lock.
@@ -250,7 +251,7 @@ mapping_state clamp_mapping_state(mapping_state reported)
         // already: it used to say "until the two-board enable chain is fixed", and the
         // hardware was fixed on 08-17 -- a 50 ohm series resistor on the data line, gate
         // passed 5/5 on DS20001. Anyone reading the stale reason would have concluded the
-        // condition was met. It is not, for four reasons that have nothing to do with that
+        // condition was met. It is not, for two reasons that have nothing to do with that
         // resistor:
         //
         //   - No role/source table. The four cliff positions in dasher_spec() carry
@@ -258,18 +259,21 @@ mapping_state clamp_mapping_state(mapping_state reported)
         //     by rule: the masks the wire contract keys by source_id cannot be filled from a
         //     position without that table, and electrical enumeration cannot prove which of
         //     four identical carriers is mounted where.
-        //   - No cycle health. 0x217 is a state heartbeat only: cycle_valid is clear and the
-        //     per-cycle masks are zero, so a measurement would have no authorising health
-        //     frame carrying its epoch and cycle, and a conforming decoder would reject
-        //     every frame it did send.
-        //   - No production wiring. The authority and the epoch transaction exist now
-        //     (tof_mapping_authority), but only the B6 budget probe constructs them; nothing
-        //     in a shipping image calls acq::init(), so there is no acquisition thread and no
-        //     periodic health frame either.
+        //   - No production wiring. The authority, the epoch transaction and both health
+        //     frames exist now, but only the B6 budget probe constructs any of it; nothing in
+        //     a shipping image calls acq::init(), so there is no acquisition thread and no
+        //     heartbeat either. That wiring also owes one thing this code cannot check for
+        //     itself: source_desc::role_id must be BUILT FROM the authority's installed
+        //     mapping. Today the probe sets it to the descriptor index, and it is what both
+        //     the measurement frames' source_id and the per-cycle health masks are keyed by,
+        //     while the enumeration masks are keyed by the proven role. They agree only as
+        //     long as nobody reorders the descriptor table.
         //
-        // Two things that WERE on this list are now closed, which is exactly why the list
-        // has to be maintained: there is a mapping authority, and there is an epoch plus
-        // cycle-reset transaction. Neither of them lifts this clamp.
+        // Three things that WERE on this list are now closed, which is exactly why the list
+        // has to be maintained: there is a mapping authority, there is an epoch plus
+        // cycle-reset transaction, and the cycle health frame exists. None of them lifts this
+        // clamp, and the log line above has to keep naming what is actually left -- a stale
+        // diagnostic sends whoever reads it to the wrong place.
         //
         // Unconditional, with no build flag to lift it. A conditional safety bypass is
         // one careless -D away from shipping and would not show up in a diff of the code
@@ -278,8 +282,8 @@ mapping_state clamp_mapping_state(mapping_state reported)
         static bool warned{false};
         if (!warned) {
             warned = true;
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no mapping "
-                    "authority, role table, epoch or cycle health yet");
+            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role "
+                    "table and no production wiring yet");
         }
         return mapping_state::not_ready;
     }
@@ -367,7 +371,21 @@ int init(const config &cfg)
     // still being opened. That is the whole point: NOT_READY has to be audible during
     // exactly the window where something might hang.
     k_work_init(&health_work_, health_work_handler);
-    k_timer_init(&health_timer_, health_timer_handler, nullptr);
+    /* Initialised ONCE, and never again while it may be running.
+     *
+     * This used to be an unconditional k_timer_init() on every init(), which worked only
+     * because stop() also stopped the timer -- so the next init() always found it dead.
+     * The moment stop() correctly stopped killing the heartbeat, a second init() was
+     * re-initialising a timer that was still in the kernel's timeout list, which k_timer_init
+     * does not permit (it is documented for use "prior to its first use"). The observable was
+     * the whole host suite spinning at 100% CPU inside the first test that slept, with no
+     * output and no crash -- and it would do the same on the board, where nothing would print
+     * at all. k_timer_start below restarts a running timer on its own, which is all a re-init
+     * of this subsystem actually needs. */
+    if (!health_timer_inited_) {
+        k_timer_init(&health_timer_, health_timer_handler, nullptr);
+        health_timer_inited_ = true;
+    }
     k_timer_start(&health_timer_, K_MSEC(cfg.periods.health_period_ms),
                   K_MSEC(cfg.periods.health_period_ms));
     return 0;
@@ -494,6 +512,17 @@ void run_cycle()
     ++next_cycle_seq_;
 }
 
+void teardown()
+{
+    /* The real shutdown: quiesce acquisition AND stop the heartbeat. Separate from stop()
+     * because they answer different questions -- "pause reading" versus "this subsystem is
+     * going away" -- and because a consumer must be able to tell a pause from a silence. */
+    if (!configured_)
+        return;
+    stop();
+    k_timer_stop(&health_timer_);
+}
+
 void stop()
 {
     if (!configured_)
@@ -516,7 +545,17 @@ void stop()
     }
 
     in_cycle_ = false;
-    k_timer_stop(&health_timer_);
+    /* The health timer is deliberately NOT stopped here.
+     *
+     * stop() means "stop reading sensors", and the contract requires health to keep flowing
+     * while no acquisition runs -- that is precisely when a consumer most needs to know the
+     * subsystem is alive and why it is not producing. Stopping the heartbeat because
+     * commissioning quiesced the chain would turn a controlled pause into a silence
+     * indistinguishable from a crashed producer, and the consumer's own timeout would raise a
+     * fault for a machine that is behaving exactly as asked.
+     *
+     * teardown() is what stops the heartbeat, and it exists so that shutting the subsystem down
+     * is a separate, deliberate act. */
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     publish_snapshot();
 }

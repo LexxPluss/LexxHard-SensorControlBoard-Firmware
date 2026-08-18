@@ -150,6 +150,58 @@ bool matches_runtime(const pf::fingerprint &fp, const enm::chain_spec &spec)
     return true;
 }
 
+/* The contract's own table, as an explicit switch.
+ *
+ *   source_id 0 cliff_front_left / 1 cliff_rear_left / 2 cliff_rear_right / 3 cliff_front_right
+ *
+ * Not `static_cast<int>(role) - 1`, even though l4_role happens to be declared in that order
+ * today. The mapping is owned by the wire contract, and an arithmetic shortcut would silently
+ * follow any future reordering of an enumeration that has nothing to do with the contract --
+ * producing frames whose source_id names the wrong corner of the robot, which is the one error
+ * class this whole subsystem exists to prevent. Returns -1 for a role that has no source. */
+int8_t source_of(enm::l4_role role)
+{
+    switch (role) {
+    case enm::l4_role::front_left:
+        return 0;
+    case enm::l4_role::rear_left:
+        return 1;
+    case enm::l4_role::rear_right:
+        return 2;
+    case enm::l4_role::front_right:
+        return 3;
+    case enm::l4_role::unknown:
+    default:
+        return -1;
+    }
+}
+
+/* The two enumeration masks, from the chain a proof actually proved.
+ *
+ * Both are 0xF for a committed proof, and that is not a shortcut: the proof cannot be granted
+ * unless every cliff position enumerated to its own address AND returned the expected model id
+ * AND carries a known, distinct role. So the four bits are exactly the four positions the
+ * fingerprint describes. Deriving them from the fingerprint rather than writing 0xF keeps the
+ * derivation honest if the profile ever admits a chain with fewer cliff sources. */
+void masks_from(const pf::fingerprint &fp, uint8_t &enumerated, uint8_t &model_verified)
+{
+    enumerated = 0;
+    model_verified = 0;
+    for (size_t i{0}; i < fp.positions; ++i) {
+        const int8_t src{source_of(fp.at[i].role)};
+        if (src < 0 || !fp.at[i].verified)
+            continue;
+        const uint8_t bit{static_cast<uint8_t>(1U << src)};
+        enumerated |= bit;
+        /* One flag, two masks, and they are not redundant on the wire: the contract keeps
+         * "enumerated to its own address" and "returned the expected model id" as separate
+         * bits. This layer cannot separate them because the proof refuses unless BOTH hold --
+         * a position that failed either one never reaches a fingerprint. So they agree here by
+         * construction, and the day the proof admits a partial chain is the day they diverge. */
+        model_verified |= bit;
+    }
+}
+
 } // namespace
 
 int init(const config &cfg)
@@ -211,6 +263,13 @@ attempt begin_proof()
     next.epoch = now.epoch;
     next.chain_flags = now.chain_flags;
     next.failing_position = now.failing_position;
+    /* The enumeration masks are deliberately NOT carried over, and this is the one place they
+     * are cleared. The contract defines them as the last enumeration ATTEMPT, so state carries
+     * the trust and the masks carry the observation -- which is why a runtime loss keeps them
+     * (the previous enumeration really did enumerate all four) and this path does not: from
+     * here the enable lines are about to move, so no completed enumeration describes the chain
+     * that will exist a moment from now. Left as the default zero rather than assigned, and
+     * said out loud because "it happens to be default-constructed" is not a rule. */
     publish(next);
 
     installed_ = kNoMapping;
@@ -301,12 +360,10 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
     snapshot proven{};
     proven.state = tof_acq::mapping_state::proven;
     proven.epoch = host_epoch;
-    /* Still zero, and the header says why: the contract keys these by source_id and this
-     * firmware has no honest source_id for a cliff position until the role table is frozen.
-     * The installed fingerprint carries the roles, so filling them is a small edit in the
-     * commit that freezes the table -- not a redesign. */
-    proven.enumerated_mask = 0;
-    proven.model_verified_mask = 0;
+    /* Filled from the proven chain. A proof carries four known, distinct roles by rule, so the
+     * masks a consumer reads are now derived from evidence rather than left at zero -- which
+     * they were only for as long as nothing had proved a role at all. */
+    masks_from(installed_, proven.enumerated_mask, proven.model_verified_mask);
     proven.failing_position = 0xFF;
     publish(proven);
 

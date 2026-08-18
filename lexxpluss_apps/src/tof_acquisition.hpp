@@ -17,8 +17,10 @@
 //     does not suit an 8x8 grid. When the real L7 path lands, the ops table and the sinks
 //     both change shape; the grid stub refusing a cliff-shaped read is the visible marker
 //     of that debt, not a design.
-//   - Neutral facts are recorded, but nothing consumes them yet: no packer, no CAN glue,
-//     no periodic measurement frame.
+//   - The packer, the publisher and the CAN glue all exist and are wired: a cycle produces
+//     measurement frames and a cycle health frame, and a timer produces the heartbeat. What
+//     is missing is a PRODUCTION caller -- only the B6 budget probe constructs any of it, so
+//     no shipping image runs a cycle or a heartbeat.
 //   - No thread is created here. Something has to call bring_up() and run_cycle() on the
 //     single acquisition thread; the cycle period is carried but not yet used to pace it.
 //   - PROVEN is unreachable by construction, see effective_mapping_state().
@@ -220,7 +222,16 @@ int begin_epoch();
 // on a source; a source with nothing ready simply has sample_produced false.
 void run_cycle();
 
+// Quiesces acquisition and RELEASES THE CHAIN. Deliberately leaves the health timer running:
+// the contract requires health to keep flowing while no acquisition runs, which is exactly when
+// a consumer needs to know the subsystem is alive and why it is idle. Use teardown() to stop the
+// heartbeat as well.
 void stop();
+
+// The real shutdown: stop() plus the heartbeat. Separate so that pausing acquisition and
+// retiring the subsystem cannot be confused -- a consumer must be able to tell a controlled
+// pause from a silence that looks like a crashed producer.
+void teardown();
 
 // True only when the chain is genuinely free: not mid-cycle AND not running. The
 // distinction matters because commissioning drops enable lines, which re-addresses parts;

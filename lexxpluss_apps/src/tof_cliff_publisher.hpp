@@ -77,19 +77,38 @@
  * Most of the contract's health fields cannot be filled truthfully from what the
  * acquisition layer knows, and a fabricated field is worse than a zero one:
  *
- *   - enumerated_mask, model_verified_mask: enumeration is not on this path at all. Zero
- *     is what UNKNOWN means, and is consistent with it.
- *   - sample_produced_mask, sensor_fault_mask: per-cycle fields, and the contract forbids
- *     them being non-zero while cycle_valid is clear. Setting cycle_valid needs the cycle
- *     correlation this layer does not do.
- *   - flags bit 2, "a transport-level bus fault was seen": the snapshot's error bit is
- *     transport OR protocol OR usage, so it cannot substantiate a specifically transport
- *     claim.
- *   - failing_chain_position: NONE, for the same reason as the enumeration masks.
+ * TWO KINDS OF HEALTH FRAME, AND THE DIFFERENCE IS NORMATIVE
  *
- * So health is an honest UNKNOWN heartbeat. It keeps flowing from startup and through
- * bring-up failure, which is what the contract requires of it; it does not yet describe a
- * cycle, and does not pretend to.
+ * The timer heartbeat describes NO cycle: cycle_valid clear, cycle_seq zero, both per-cycle
+ * masks zero. It carries the mapping state, the chain flags, the failing position and the
+ * enumeration masks, and it keeps flowing from startup, through bring-up failure, and while no
+ * acquisition runs at all -- which is what makes it useful during UNKNOWN.
+ *
+ * The cycle health frame describes exactly one completed cycle: cycle_valid set, cycle_seq
+ * naming that cycle, and the per-cycle masks describing it. It is built from the values
+ * LATCHED for that cycle, never from a fresh read of the mapping at send time. That is what
+ * lets it arrive after a newer heartbeat reporting LOST and still legitimately authorise its
+ * own cycle -- the consumer correlates on (epoch, cycle_seq), not on arrival order.
+ *
+ * TWO FIELDS STILL CANNOT BE FILLED HONESTLY
+ *
+ *   - flags bit 2, "a transport-level bus fault was seen": the acquisition snapshot's error
+ *     bit is transport OR protocol OR usage, so it cannot substantiate a specifically
+ *     transport claim. It comes from the authority's chain flags instead, and the authority
+ *     only sets it from an enumeration result.
+ *   - the per-source distinction between an I2C failure and a no-update, which the contract
+ *     itself does not carry: it is separated only at chain level by flags bit 2.
+ *
+ * MEASUREMENTS FIRST, AND A FAILED SEND CANCELS THE CYCLE HEALTH
+ *
+ * sample_produced_mask asserts that a measurement frame for that source exists in that cycle,
+ * and the consumer cross-checks both directions of it. So the mask can only be built from
+ * sends that actually succeeded, and if ANY measurement of the cycle failed to reach the bus,
+ * the cycle health frame is not sent at all. Withholding it is the safe direction: the
+ * measurements that did go out are left without their authorising health frame and a
+ * conforming consumer will not accept them, which is exactly right -- the alternative is a
+ * frame claiming four samples when three are on the wire, a contradiction the contract forbids
+ * outright.
  */
 
 #include <cstdint>
@@ -110,12 +129,24 @@ struct can_sink {
     int (*send)(uint16_t can_id, const uint8_t *data, uint8_t dlc);
 };
 
-/* Read once per cycle, so no two frames of one cycle can disagree about either half.
- * Carries the state rather than a bool, because health needs the state and the epoch to
- * come from the same read. */
+/* Read ONCE per cycle, and carrying every health field that comes from the mapping, not just
+ * the two the gate needs.
+ *
+ * The reason it grew: the authority publishes state, epoch, the enumeration masks, the chain
+ * flags and the failing position as one atomic snapshot precisely so a reader cannot pair
+ * fields that were never true together. A publisher that took the state from here and then
+ * asked for the masks separately would reintroduce the tear at the consumer's end -- LOST with
+ * a new epoch, or an enumeration mask from after a revocation attached to a state from before
+ * it. So the whole snapshot travels as one value. */
 struct authorisation {
     tof_acq::mapping_state state{tof_acq::mapping_state::not_ready};
     uint8_t epoch{0};
+    /* Last enumeration attempt, keyed by source_id. Meaningful with cycle_valid clear, which
+     * is what makes an UNKNOWN heartbeat worth sending. */
+    uint8_t enumerated_mask{0};
+    uint8_t model_verified_mask{0};
+    uint8_t chain_flags{0}; // contract flags bits 0-2; bit 3 is cycle_valid and not from here
+    uint8_t failing_position{tof_cliff_contract::kChainPositionNone};
 };
 
 struct config {
@@ -126,9 +157,9 @@ struct config {
      * belong together, which is a wiring defect and not something a sensor can cause. */
     const tof_acq::source_desc *sources{nullptr};
     int source_count{0};
-    /* Production MUST return {tof_acq::effective_mapping_state(), <the proving epoch>}
-     * read together. Publication is allowed only for PROVEN, which that function clamps
-     * away unconditionally. See the notes above. */
+    /* Production MUST build this from ONE tof_authority::current() with the clamp applied to
+     * its state. Publication is allowed only for PROVEN, which the clamp removes
+     * unconditionally. See the notes above. */
     struct authorisation (*authorise)(){nullptr};
 };
 
@@ -136,7 +167,16 @@ struct config {
  * measurement was not sent distinct from the one reason a send failed. */
 struct counters {
     uint32_t measurements_sent{0};
+    /* Timer heartbeats and cycle health frames are counted apart. They answer different
+     * questions -- "is the producer alive" and "did that cycle complete on the wire" -- and one
+     * number for both would hide a subsystem whose heartbeat runs while no cycle ever
+     * completes. */
     uint32_t health_sent{0};
+    uint32_t cycle_health_sent{0};
+    /* A cycle whose measurements were sent but whose health frame was deliberately withheld
+     * because at least one of those sends failed. Not an error of this layer: it is the safe
+     * outcome, and it is counted so it cannot be silent. */
+    uint32_t cycle_health_withheld{0};
     /* Suppressed before the packer ran. */
     uint32_t suppressed_not_proven{0};
     uint32_t suppressed_wrong_model{0};

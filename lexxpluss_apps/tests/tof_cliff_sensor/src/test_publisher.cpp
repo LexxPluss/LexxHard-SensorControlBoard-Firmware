@@ -92,6 +92,21 @@ int count_id(uint16_t id)
     return n;
 }
 
+/* The n-th frame carrying this identifier. Positional indexing into bus.frames stopped being
+ * usable once a completed cycle also emits a health frame: [meas, health, meas, health, ...]. A
+ * test that means "the second measurement" has to say so. */
+const sent_frame *nth_of(uint16_t id, int n)
+{
+    int seen{0};
+    for (int i = 0; i < bus.count; ++i) {
+        if (bus.frames[i].can_id != id)
+            continue;
+        if (seen++ == n)
+            return &bus.frames[i];
+    }
+    return nullptr;
+}
+
 const sent_frame *last_of(uint16_t id)
 {
     for (int i = bus.count - 1; i >= 0; --i)
@@ -114,11 +129,22 @@ const ctr::vector *find_vector(const char *name)
 bool gate_open{false};
 uint8_t epoch_value{kEpoch};
 acq::mapping_state state_value{acq::mapping_state::not_ready};
+uint8_t enumerated_value{0};
+uint8_t model_verified_value{0};
+uint8_t chain_flags_value{0};
+uint8_t failing_position_value{ctr::kChainPositionNone};
 int authorise_calls{0};
 pub::authorisation test_authorise()
 {
     ++authorise_calls;
-    return {gate_open ? acq::mapping_state::proven : state_value, epoch_value};
+    pub::authorisation a{};
+    a.state = gate_open ? acq::mapping_state::proven : state_value;
+    a.epoch = epoch_value;
+    a.enumerated_mask = enumerated_value;
+    a.model_verified_mask = model_verified_value;
+    a.chain_flags = chain_flags_value;
+    a.failing_position = failing_position_value;
+    return a;
 }
 
 /* The publisher needs the descriptor table for kind and role_id. Same shape the
@@ -187,6 +213,10 @@ void before(void *)
     gate_open = false;
     epoch_value = kEpoch;
     state_value = acq::mapping_state::not_ready;
+    enumerated_value = 0;
+    model_verified_value = 0;
+    chain_flags_value = 0;
+    failing_position_value = ctr::kChainPositionNone;
     authorise_calls = 0;
     build_descs();
     zassert_equal(pub::init(make_pub_config()), 0);
@@ -348,9 +378,14 @@ ZTEST(tof_cliff_publisher, test_the_cycle_the_sample_belongs_to_reaches_the_wire
     flush(258);
 
     zassert_equal(count_id(ctr::kMeasId), 3);
-    zassert_equal(bus.frames[0].data[2], 0);
-    zassert_equal(bus.frames[1].data[2], 1);
-    zassert_equal(bus.frames[2].data[2], 2, "cycle_seq wraps 255 -> 0 on the wire");
+    /* By identifier, not by position: each completed cycle also emits its health frame now. */
+    zassert_equal(nth_of(ctr::kMeasId, 0)->data[2], 0);
+    zassert_equal(nth_of(ctr::kMeasId, 1)->data[2], 1);
+    zassert_equal(nth_of(ctr::kMeasId, 2)->data[2], 2, "cycle_seq wraps 255 -> 0 on the wire");
+    /* And each of those cycles produced exactly one cycle health frame carrying the same
+     * number, which is the correlation the consumer actually uses. */
+    zassert_equal(count_id(ctr::kHealthId), 3);
+    zassert_equal(nth_of(ctr::kHealthId, 2)->data[7], 2);
 }
 
 ZTEST(tof_cliff_publisher, test_a_stale_sample_is_not_published)
@@ -849,4 +884,201 @@ ZTEST(tof_cliff_publisher, test_a_stalled_measurement_send_does_not_hold_the_hea
     bus.block_measurements = false;
     flush(22);
     zassert_equal(count_id(ctr::kMeasId), kCliffSources + 1);
+}
+
+/* --------------------------------------------------- the cycle health frame -------- */
+
+namespace {
+
+/* A sample the packer classifies as SENSOR_FAULT: a frame IS owed -- that is what makes the
+ * fault reportable -- and the range is the far sentinel. */
+struct tof_cliff_sample one_faulted_target()
+{
+    struct tof_cliff_sample s{};
+    s.fresh = true;
+    s.target_count = 1;
+    s.entry_count = 1;
+    s.entries[0].range_mm = 300;
+    s.entries[0].range_status = 3; // SENSOR_FAULT in the contract's table
+    return s;
+}
+
+/* A read that completed without producing a sample. The packer owes no frame for it, so the
+ * produced bit must stay clear by construction rather than by a rule someone remembers. */
+struct tof_cliff_sample one_no_sample()
+{
+    struct tof_cliff_sample s{};
+    s.fresh = true;
+    s.target_count = 1;
+    s.entry_count = 1;
+    s.entries[0].range_mm = 0;
+    s.entries[0].range_status = 10; // SYNCRONISATION_INT -> NO_SAMPLE
+    return s;
+}
+
+uint8_t health_flags(const sent_frame *f) { return static_cast<uint8_t>(f->data[3] & 0xF); }
+uint8_t health_produced(const sent_frame *f) { return static_cast<uint8_t>(f->data[5] >> 4); }
+uint8_t health_fault(const sent_frame *f) { return static_cast<uint8_t>(f->data[5] & 0xF); }
+uint8_t health_enumerated(const sent_frame *f) { return static_cast<uint8_t>(f->data[4] >> 4); }
+
+} // namespace
+
+ZTEST(tof_cliff_publisher, test_a_completed_cycle_publishes_a_cycle_valid_health_frame)
+{
+    gate_open = true;
+    for (int i = 0; i < kCliffSources; ++i)
+        pub::on_cliff_sample(i, 5, cliff_facts(static_cast<uint8_t>(i)), one_valid_target(400));
+    flush(5);
+
+    zassert_equal(count_id(ctr::kMeasId), 4);
+    zassert_equal(count_id(ctr::kHealthId), 1, "the cycle owes exactly one health frame");
+
+    /* Order is intent, not a wire guarantee -- but the producer must still put the
+     * measurements first, because the mask it publishes describes sends that already happened. */
+    zassert_equal(bus.frames[4].can_id, ctr::kHealthId, "health must follow its measurements");
+
+    const sent_frame *h{last_of(ctr::kHealthId)};
+    zassert_not_null(h);
+    zassert_true((health_flags(h) & ctr::kCycleValidBit) != 0, "cycle_valid must be set");
+    zassert_equal(h->data[7], 5, "cycle_seq must name the cycle just completed");
+    zassert_equal(h->data[1], kEpoch);
+    zassert_equal(health_produced(h), 0xF, "all four measurements reached the bus");
+    zassert_equal(health_fault(h), 0x0);
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.cycle_health_sent, 1);
+    zassert_equal(c.cycle_health_withheld, 0);
+}
+
+ZTEST(tof_cliff_publisher, test_the_masks_come_from_the_reduction_not_from_the_sample)
+{
+    /* Source 0 valid, source 1 faulted, source 2 produced no sample at all, source 3 valid. All
+     * four samples are `fresh`, so anything keyed off freshness would report 0xF produced -- the
+     * mask has to follow what the packer decided a frame was owed for. */
+    gate_open = true;
+    pub::on_cliff_sample(0, 9, cliff_facts(0), one_valid_target(400));
+    pub::on_cliff_sample(1, 9, cliff_facts(1), one_faulted_target());
+    pub::on_cliff_sample(2, 9, cliff_facts(2), one_no_sample());
+    pub::on_cliff_sample(3, 9, cliff_facts(3), one_valid_target(900));
+    flush(9);
+
+    zassert_equal(count_id(ctr::kMeasId), 3, "NO_SAMPLE owes no measurement frame");
+
+    const sent_frame *h{last_of(ctr::kHealthId)};
+    zassert_not_null(h);
+    /* Bits 0, 1 and 3: source 2 produced nothing. */
+    zassert_equal(health_produced(h), 0xB, "produced mask %02x", health_produced(h));
+    /* A SENSOR_FAULT is in BOTH masks: a sample exists, and the sensor says it is unusable. */
+    zassert_equal(health_fault(h), 0x2, "fault mask %02x", health_fault(h));
+}
+
+ZTEST(tof_cliff_publisher, test_a_failed_measurement_send_withholds_the_cycle_health)
+{
+    /* The contradiction this prevents: a mask claiming four samples with three on the wire. The
+     * measurements that did go out are then left without an authorising health frame, so a
+     * conforming consumer accepts none of them -- the whole cycle is dropped, which is the safe
+     * direction and the same rule the revocation path uses. */
+    gate_open = true;
+    bus.fail_after = 2; // the third send onwards fails
+    for (int i = 0; i < kCliffSources; ++i)
+        pub::on_cliff_sample(i, 3, cliff_facts(static_cast<uint8_t>(i)), one_valid_target(400));
+    flush(3);
+
+    zassert_equal(count_id(ctr::kHealthId), 0, "a health frame claimed sends that failed");
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.cycle_health_withheld, 1, "withholding must be counted, not silent");
+    zassert_true(c.send_failed_measurement > 0);
+    zassert_equal(c.cycle_health_sent, 0);
+}
+
+ZTEST(tof_cliff_publisher, test_the_cycle_health_uses_the_values_latched_for_that_cycle)
+{
+    /* Not a fresh read at send time. This is what lets a cycle's health frame arrive after a
+     * newer heartbeat reporting LOST and still legitimately authorise its own cycle -- the
+     * consumer correlates on (epoch, cycle_seq), never on arrival order. The enumeration mask is
+     * the observable: it changes between the latch and the flush, and the frame must carry the
+     * value that was true for the cycle it describes. */
+    gate_open = true;
+    enumerated_value = 0xF;
+    model_verified_value = 0xF;
+    pub::on_cliff_sample(0, 11, cliff_facts(0), one_valid_target(400));
+
+    enumerated_value = 0x3; // the authority moved on mid-cycle
+    flush(11);
+
+    const sent_frame *h{last_of(ctr::kHealthId)};
+    zassert_not_null(h);
+    zassert_equal(health_enumerated(h), 0xF, "the frame re-read the authority at send time");
+}
+
+ZTEST(tof_cliff_publisher, test_the_heartbeat_describes_no_cycle_but_does_describe_the_chain)
+{
+    /* The division of labour: the heartbeat carries the mapping and the last enumeration
+     * attempt, and never a cycle. The per-cycle masks must be zero with cycle_valid clear --
+     * encode_health refuses otherwise, so this is enforced rather than remembered. */
+    enumerated_value = 0xF;
+    model_verified_value = 0x7;
+    chain_flags_value = 0x4;
+    failing_position_value = 6;
+
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+
+    const sent_frame *h{last_of(ctr::kHealthId)};
+    zassert_not_null(h);
+    zassert_equal(health_flags(h) & ctr::kCycleValidBit, 0, "a heartbeat must not claim a cycle");
+    zassert_equal(h->data[7], 0, "cycle_seq must be zero with cycle_valid clear");
+    zassert_equal(health_produced(h), 0);
+    zassert_equal(health_fault(h), 0);
+    zassert_equal(health_enumerated(h), 0xF);
+    zassert_equal(static_cast<uint8_t>(h->data[4] & 0xF), 0x7);
+    zassert_equal(static_cast<uint8_t>(health_flags(h) & 0x7), 0x4);
+    zassert_equal(h->data[6], 6, "the failing position travels with the snapshot");
+}
+
+ZTEST(tof_cliff_publisher, test_health_seq_advances_even_when_the_send_fails)
+{
+    /* health_seq is the liveness signal: a NEW snapshot must carry a new number. Deriving it
+     * from a success counter -- which it used to be -- makes the frame after a failure repeat a
+     * number, and a repeated health_seq reads as a retransmission of something stale rather than
+     * as fresh evidence that the producer is alive. */
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+    const sent_frame *first{last_of(ctr::kHealthId)};
+    zassert_not_null(first);
+    const uint8_t seq_before{first->data[2]};
+
+    bus.fail_after = bus.send_calls; // the next send fails
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+    bus.fail_after = -1;
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+
+    const sent_frame *third{last_of(ctr::kHealthId)};
+    zassert_not_null(third);
+    zassert_equal(static_cast<uint8_t>(third->data[2]),
+                  static_cast<uint8_t>(seq_before + 2),
+                  "the failed snapshot did not consume a sequence number");
+}
+
+ZTEST(tof_cliff_publisher, test_the_two_health_producers_never_share_a_sequence_number)
+{
+    /* One counter, allocated under the lock, so a heartbeat and a cycle health frame cannot take
+     * the same number. Two producers deriving from one success counter would have. */
+    gate_open = true;
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+    for (int i = 0; i < kCliffSources; ++i)
+        pub::on_cliff_sample(i, 2, cliff_facts(static_cast<uint8_t>(i)), one_valid_target(400));
+    flush(2);
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+
+    uint8_t seqs[8]{};
+    int n{0};
+    for (int i = 0; i < bus.count; ++i)
+        if (bus.frames[i].can_id == ctr::kHealthId && n < 8)
+            seqs[n++] = bus.frames[i].data[2];
+    zassert_equal(n, 3, "expected heartbeat, cycle health, heartbeat");
+    zassert_not_equal(seqs[0], seqs[1]);
+    zassert_not_equal(seqs[1], seqs[2]);
+    zassert_not_equal(seqs[0], seqs[2]);
 }

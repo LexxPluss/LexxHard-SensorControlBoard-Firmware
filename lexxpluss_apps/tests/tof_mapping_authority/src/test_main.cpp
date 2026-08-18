@@ -186,17 +186,78 @@ ZTEST(tof_mapping_authority, test_a_committed_proof_publishes_proven_with_its_ep
     zassert_equal(begin_epoch_calls, 1);
 }
 
-ZTEST(tof_mapping_authority, test_the_enumeration_masks_stay_zero_until_the_role_table_is_frozen)
+ZTEST(tof_mapping_authority, test_a_committed_proof_fills_both_enumeration_masks)
 {
-    /* Not an oversight, and pinned so it cannot become one silently: the contract keys these
-     * by source_id and this firmware has no honest source_id for a cliff position yet. */
+    /* This test used to assert the masks stayed 0 after a commit, which was wrong: I had
+     * stretched "the role table is not frozen" -- a reason PROVEN is unreachable at all -- into
+     * "even a proof cannot fill the masks". A granted proof has four known, distinct roles by
+     * rule, so the four source bits are exactly what it proved. */
     fresh_authority();
     const transaction t;
     zassert_equal(prove(t, 3), au::commit_refusal::none);
 
     const au::snapshot s{au::current()};
+    zassert_equal(s.enumerated_mask, 0xF);
+    zassert_equal(s.model_verified_mask, 0xF);
+}
+
+ZTEST(tof_mapping_authority, test_the_masks_are_keyed_by_the_contracts_role_table)
+{
+    /* Not the position index and not an arithmetic cast of the enum. The bit for a role is the
+     * source_id the wire contract assigns it, so a chain whose roles are mounted in a different
+     * order still produces the same four bits -- and if the mapping were derived from the
+     * position instead, this test would pass while the frames named the wrong corners. */
+    fresh_authority();
+    transaction t;
+    t.spec.at[2].role = enm::l4_role::front_right; // source 3
+    t.spec.at[3].role = enm::l4_role::rear_right;  // source 2
+    t.spec.at[4].role = enm::l4_role::rear_left;   // source 1
+    t.spec.at[5].role = enm::l4_role::front_left;  // source 0
+    runtime_spec_storage = t.spec;
+    t.walk1 = clean_walk(t.spec, false);
+    t.walk2 = clean_walk(t.spec, true);
+    t.isolation = clean_isolation(t.spec);
+
+    zassert_equal(prove(t, 4), au::commit_refusal::none);
+    zassert_equal(au::current().enumerated_mask, 0xF);
+    zassert_equal(au::installed_mapping().at[2].role, enm::l4_role::front_right);
+}
+
+ZTEST(tof_mapping_authority, test_a_runtime_loss_keeps_the_enumeration_masks)
+{
+    /* The contract defines these as the last enumeration ATTEMPT, not as current trust: state
+     * carries the trust. A sensor vanishing at runtime does not change the fact that the last
+     * enumeration enumerated all four, and zeroing them would misreport the field's own
+     * meaning -- and throw away the diagnostic distinction between "lost after a clean
+     * enumeration" and "never enumerated cleanly at all". */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 5), au::commit_refusal::none);
+    zassert_equal(au::current().enumerated_mask, 0xF);
+
+    au::note_mapping_lost();
+    const au::snapshot lost{au::current()};
+    zassert_equal(lost.state, acq::mapping_state::lost);
+    zassert_equal(lost.enumerated_mask, 0xF);
+    zassert_equal(lost.model_verified_mask, 0xF);
+}
+
+ZTEST(tof_mapping_authority, test_starting_a_new_proof_clears_the_enumeration_masks)
+{
+    /* The other half of the same rule, and the only place they are cleared. From here the enable
+     * lines are about to move, so no completed enumeration describes the chain that is about to
+     * exist -- reporting the old one would describe a machine that is being taken apart. */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 6), au::commit_refusal::none);
+    zassert_equal(au::current().enumerated_mask, 0xF);
+
+    (void)au::begin_proof();
+    const au::snapshot s{au::current()};
+    zassert_equal(s.state, acq::mapping_state::lost);
     zassert_equal(s.enumerated_mask, 0);
     zassert_equal(s.model_verified_mask, 0);
+    zassert_equal(s.epoch, 6, "the epoch still survives");
 }
 
 ZTEST(tof_mapping_authority, test_beginning_a_proof_revokes_a_proven_mapping_as_lost)
