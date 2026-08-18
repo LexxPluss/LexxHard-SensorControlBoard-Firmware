@@ -1108,6 +1108,17 @@ def render_prod_header(vectors, version, sha):
         "    status_class::valid_range,",
         "};",
         "",
+        "// The validation vocabulary, shared by the producer and the consumer. A decoder",
+        "// returns one of these; the layout vectors state which one each frame must get.",
+        "// Production-visible on purpose: the decoder's return type belongs to the",
+        "// contract, not to the test suite that happens to exercise it.",
+        "enum class verdict : uint8_t {",
+    ]
+    for i, r in enumerate(REJECT_REASONS):
+        lines.append(f"    {r.lower()} = {i},")
+    lines += [
+        "};",
+        "",
         "}  // namespace tof_cliff_contract",
         "",
         "// clang-format on",
@@ -1138,13 +1149,7 @@ def render_header(vectors, version, sha):
         "",
         "namespace tof_cliff_contract {",
         "",
-        "enum class verdict : uint8_t {",
-    ]
-    for i, r in enumerate(REJECT_REASONS):
-        lines.append(f"    {r.lower()} = {i},")
-    lines += [
-        "};",
-        "",
+        "// verdict comes from the production header: one definition, both sides.",
         "enum class frame_kind : uint8_t { measurement = 0, health = 1 };",
         "",
         "struct vector {",

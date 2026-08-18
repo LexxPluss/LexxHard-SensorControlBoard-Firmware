@@ -95,6 +95,30 @@ inline constexpr status_class kReductionPriority[]{
     status_class::valid_range,
 };
 
+// The validation vocabulary, shared by the producer and the consumer. A decoder
+// returns one of these; the layout vectors state which one each frame must get.
+// Production-visible on purpose: the decoder's return type belongs to the
+// contract, not to the test suite that happens to exercise it.
+enum class verdict : uint8_t {
+    accept = 0,
+    dlc_not_8 = 1,
+    frame_type_mismatch = 2,
+    source_id_out_of_range = 3,
+    reserved_field_nonzero = 4,
+    target_count_malformed = 5,
+    status_undefined = 6,
+    status_not_transmissible = 7,
+    range_contradicts_status = 8,
+    no_target_encoding_inconsistent = 9,
+    protocol_version_zero = 10,
+    protocol_version_unsupported = 11,
+    mapping_state_malformed = 12,
+    chain_position_malformed = 13,
+    cycle_fields_inconsistent = 14,
+    mask_fault_without_sample = 15,
+    chain_position_without_fault = 16,
+};
+
 }  // namespace tof_cliff_contract
 
 // clang-format on
