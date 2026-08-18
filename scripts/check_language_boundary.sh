@@ -72,11 +72,38 @@ if [ -n "$app_files" ]; then
     done <<< "$app_files"
 fi
 
+# ---------------------------------------------------------------- rule 4 -----
+# Production sources may include the contract's production header, but not its test
+# artefacts.
+#
+# lexxpluss_apps/CMakeLists.txt puts the whole of docs/can on the application include
+# path, because that is how production code reaches tof_cliff_contract.h without a
+# vendored copy that could drift. The side effect is that the vector header is reachable
+# too -- one #include away from a product build carrying 87 test vectors and a
+# RELEASE_FORBIDDEN banner. "Production only uses contract.h" was a comment; this makes
+# it a rule.
+TEST_ONLY_ARTEFACTS='tof_cliff_contract_vectors\.h|tof_contract_vectors\.h'
+src_files=$(git ls-files 'lexxpluss_apps/src' || true)
+if [ -n "$src_files" ]; then
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        [ -f "$f" ] || continue
+        if grep -IqE "^[[:space:]]*#[[:space:]]*include.*($TEST_ONLY_ARTEFACTS)" "$f" 2>/dev/null; then
+            fail "$f includes a test-vector header from production source"
+            grep -InE "^[[:space:]]*#[[:space:]]*include.*($TEST_ONLY_ARTEFACTS)" "$f" |
+                sed 's/^/    /' >&2 || true
+        fi
+    done <<< "$src_files"
+fi
+
 if [ "$failed" -ne 0 ]; then
     note ""
     note "Python is offline tooling under $TOOLING_DIR/ only. It must not participate in"
     note "a Zephyr build or run on a robot. Move the logic to C/C++, or invoke the tool"
     note "from a Makefile target that is not part of any firmware build."
+    note ""
+    note "Production sources take the contract's production header (tof_cliff_contract.h)"
+    note "and never its test vectors, even though docs/can is on the include path."
     exit 1
 fi
 
