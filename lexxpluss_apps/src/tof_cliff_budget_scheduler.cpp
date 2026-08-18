@@ -12,31 +12,22 @@
 #if defined(ENABLE_TOF_CHAIN) && defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
 
 #include "tof_acquisition.hpp"
+#include "tof_cliff_can.hpp"
+#include "tof_cliff_publisher.hpp"
 
 #include <zephyr/kernel.h>
 
 namespace {
 
 namespace acq = lexxhard::tof_acq;
+namespace can = lexxhard::tof_cliff_can;
+namespace pub = lexxhard::tof_cliff_pub;
 
-volatile uint32_t sink_cycles;
-volatile int16_t sink_mm;
-volatile uint32_t sink_health;
-
-void on_cycle(const acq::cycle_facts &f)
-{
-    sink_cycles = f.cycle_seq;
-}
-
-void on_cliff_sample(int, uint32_t, const acq::source_facts &, const struct tof_cliff_sample &s)
-{
-    sink_mm = s.entries[0].range_mm;
-}
-
-void on_cliff_health(uint32_t snapshot, acq::mapping_state)
-{
-    sink_health = snapshot;
-}
+/* The sinks are now the real publisher's, not local stubs. That is the point of this build
+ * point: the whole path -- acquisition, publisher, packer, CAN glue -- has to be reachable
+ * for the signed image to measure what it actually costs. Local stubs measured the
+ * acquisition layer and nothing downstream of it. */
+volatile uint32_t sink_counters;
 
 acq::mapping_state mapping_provider()
 {
@@ -77,11 +68,27 @@ extern "C" int tof_cliff_budget_walk_scheduler(void *objs, void *scratch, int st
     // Both remain unresolved symbols in the wire contract.
     cfg.periods.cycle_period_ms = 50;
     cfg.periods.health_period_ms = 100;
-    cfg.hooks.on_cycle = on_cycle;
-    cfg.hooks.on_cliff_sample = on_cliff_sample;
-    cfg.hooks.on_cliff_health = on_cliff_health;
+    cfg.hooks.on_cycle = pub::on_cycle_complete;
+    cfg.hooks.on_cliff_sample = pub::on_cliff_sample;
+    cfg.hooks.on_cliff_health = pub::on_cliff_health;
     cfg.mapping_state_provider = mapping_provider;
     cfg.now_ms = now_ms;
+
+    /* The glue is allowed to fail here: on a board where can2 is not ready the measurement
+     * still has to include the code, and the publisher will simply count send failures. */
+    (void)can::init();
+
+    pub::config pcfg{};
+    pcfg.sink = can::sink();
+    pcfg.sources = descs;
+    pcfg.source_count = acq::kMaxSources;
+    /* The production wiring, not a probe-local one. A permissive gate here would make the
+     * measurement cover a path production cannot take. */
+    pcfg.authorise = can::production_authorisation;
+    const int prc{pub::init(pcfg)};
+
+    if (prc != 0)
+        return prc;
 
     const int rc{acq::init(cfg)};
 
@@ -90,6 +97,11 @@ extern "C" int tof_cliff_budget_walk_scheduler(void *objs, void *scratch, int st
     (void)acq::bring_up();
     acq::run_cycle();
     acq::stop();
+
+    /* Read the counters through a volatile so nothing above can be collected. */
+    pub::counters c{};
+    pub::copy_counters(c);
+    sink_counters = c.suppressed_not_proven + c.health_sent + c.send_failed_measurement;
     return 0;
 }
 

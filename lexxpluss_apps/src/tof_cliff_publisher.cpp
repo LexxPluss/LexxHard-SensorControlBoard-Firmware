@@ -12,6 +12,8 @@
 #include <errno.h>
 #include <string.h>
 
+#include <zephyr/kernel.h>
+
 namespace lexxhard::tof_cliff_pub {
 
 namespace {
@@ -22,6 +24,28 @@ namespace pk = tof_cliff_packer;
 config cfg_{};
 counters counters_{};
 bool ready_{false};
+
+/* Two contexts reach this layer: the acquisition cycle, and the health work item on its own
+ * timer. They share the queue, the latched authorisation and the counters, so all of it is
+ * behind one mutex.
+ *
+ * Lock order is always chain_lock -> this, never the reverse: on_cliff_sample is called with
+ * the chain lock held and takes this one, while the health work item and copy_counters take
+ * only this one. Nothing here ever reaches for the chain lock.
+ *
+ * The bus is NOT touched while this is held. A can_send can block for as long as its
+ * timeout, and holding a shared mutex across it would let a slow arbitration on the
+ * measurement path stall the heartbeat -- which is the one thing that must keep flowing. So
+ * the state is snapshotted under the lock, the sends happen outside it, and the counters are
+ * updated under it again. */
+K_MUTEX_DEFINE(lock_);
+
+struct guard {
+    guard() { k_mutex_lock(&lock_, K_FOREVER); }
+    ~guard() { k_mutex_unlock(&lock_); }
+    guard(const guard &) = delete;
+    guard &operator=(const guard &) = delete;
+};
 
 /* One slot per source is enough by construction: at most one measurement per source per
  * cycle, and the queue is drained at the end of every cycle. Sized to kMaxSources rather
@@ -99,6 +123,7 @@ int init(const struct config &cfg)
     if (cfg.source_count <= 0 || cfg.source_count > tof_acq::kMaxSources)
         return -EINVAL;
 
+    const guard held;
     cfg_ = cfg;
     counters_ = counters{};
     queued_ = 0;
@@ -112,6 +137,7 @@ int init(const struct config &cfg)
 void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts &facts,
                      const struct tof_cliff_sample &sample)
 {
+    const guard held;
     if (!ready_)
         return;
     if (index < 0 || index >= cfg_.source_count)
@@ -189,52 +215,76 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
 
 void on_cycle_complete(const tof_acq::cycle_facts &facts)
 {
-    if (!ready_)
-        return;
-    if (queued_ == 0) {
-        latched_ = false;
-        return;
-    }
+    /* Snapshot under the lock, send outside it. Holding a mutex the health work item also
+     * needs, across a can_send that can block for its whole timeout, would let a slow
+     * arbitration on the measurement path stall the heartbeat. */
+    pending_frame outgoing[tof_acq::kMaxSources];
+    int count{0};
+    struct can_sink sink{};
+    uint32_t stale{0};
 
-    /* Re-read the authorisation. Encoding happened under the lock and this runs after it,
-     * so the mapping may have been lost in between -- and an already-encoded frame would
-     * otherwise go out authorised under a mapping that no longer holds. If it was revoked,
-     * or the epoch moved, the WHOLE cycle goes: a partially published cycle is a broken
-     * correlation the consumer has no way to detect. */
-    const authorisation now{cfg_.authorise()};
-    if (!allowed(now) || now.epoch != latched_auth_.epoch) {
-        counters_.cycles_discarded_unauthorised++;
+    {
+        const guard held;
+        if (!ready_)
+            return;
+        if (queued_ == 0) {
+            latched_ = false;
+            return;
+        }
+
+        /* Re-read the authorisation. Encoding happened under the chain lock and this runs
+         * after it, so the mapping may have been lost in between -- and an already-encoded
+         * frame would otherwise go out authorised under a mapping that no longer holds. If it
+         * was revoked, or the epoch moved, the WHOLE cycle goes: a partially published cycle
+         * is a broken correlation the consumer has no way to detect. */
+        const authorisation now{cfg_.authorise()};
+        if (!allowed(now) || now.epoch != latched_auth_.epoch) {
+            counters_.cycles_discarded_unauthorised++;
+            queued_ = 0;
+            latched_ = false;
+            return;
+        }
+
+        for (int i = 0; i < queued_; ++i) {
+            /* The queue is per cycle by construction, so a frame from another cycle is a
+             * defect rather than something to publish late. */
+            if (queue_[i].cycle_seq != facts.cycle_seq) {
+                ++stale;
+                continue;
+            }
+            outgoing[count++] = queue_[i];
+        }
+        counters_.discarded_stale_cycle += stale;
         queued_ = 0;
         latched_ = false;
-        return;
+        sink = cfg_.sink;
     }
 
-    /* The lock is released by the time this runs, so blocking here costs a late cycle rather
-     * than a stalled I2C schedule. Each frame is offered exactly once and then dropped
-     * whatever happens: carrying a failed range into the next cycle would put a stale
-     * distance on the wire, which the contract forbids outright. */
-    for (int i = 0; i < queued_; ++i) {
-        const pending_frame &f{queue_[i]};
-        /* The queue is per cycle by construction, so a frame from another cycle is a defect
-         * rather than something to publish late. */
-        if (f.cycle_seq != facts.cycle_seq) {
-            counters_.discarded_stale_cycle++;
-            continue;
-        }
-        if (cfg_.sink.send(f.can_id, f.data, f.dlc) != 0) {
-            counters_.send_failed_measurement++;
-            continue;
-        }
-        counters_.measurements_sent++;
+    /* Each frame is offered exactly once and then dropped whatever happens: carrying a
+     * failed range into the next cycle would put a stale distance on the wire. */
+    uint32_t sent{0}, failed{0};
+    for (int i = 0; i < count; ++i) {
+        const pending_frame &f{outgoing[i]};
+        if (sink.send(f.can_id, f.data, f.dlc) != 0)
+            ++failed;
+        else
+            ++sent;
     }
-    queued_ = 0;
-    latched_ = false;
+
+    const guard held;
+    counters_.measurements_sent += sent;
+    counters_.send_failed_measurement += failed;
 }
 
 void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
 {
-    if (!ready_)
-        return;
+    uint8_t frame[8]{};
+    struct can_sink sink{};
+
+    {
+        const guard held;
+        if (!ready_)
+            return;
 
     /* Both halves from one read. The `state` parameter is deliberately unused: taking the
      * state from one source and the epoch from another is exactly the disagreement this
@@ -263,22 +313,29 @@ void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
     h.sensor_fault_mask = 0;
     h.cycle_seq = 0;
 
-    uint8_t frame[8]{};
-    if (!pk::encode_health(h, frame)) {
-        /* A defect in the fields assembled just above, not the bus refusing a correct
-         * frame. Counted apart from send_failed_health for exactly that reason. */
-        counters_.health_encode_refused++;
-        return;
+        if (!pk::encode_health(h, frame)) {
+            /* A defect in the fields assembled just above, not the bus refusing a correct
+             * frame. Counted apart from send_failed_health for exactly that reason. */
+            counters_.health_encode_refused++;
+            return;
+        }
+        sink = cfg_.sink;
     }
-    if (cfg_.sink.send(ctr::kHealthId, frame, ctr::kDlc) != 0) {
+
+    const int rc{sink.send(ctr::kHealthId, frame, ctr::kDlc)};
+
+    const guard held;
+    if (rc != 0)
         counters_.send_failed_health++;
-        return;
-    }
-    counters_.health_sent++;
+    else
+        counters_.health_sent++;
 }
 
 void copy_counters(struct counters &out)
 {
+    /* Not a bare copy: two contexts write these, so an unsynchronised read could tear a
+     * multi-word struct and report a state that never existed. */
+    const guard held;
     out = counters_;
 }
 
