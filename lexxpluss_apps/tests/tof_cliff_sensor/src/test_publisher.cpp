@@ -260,9 +260,30 @@ ZTEST(tof_cliff_publisher, test_the_two_mapping_state_enumerations_are_translate
     zassert_equal(pub::wire_mapping_state(acq::mapping_state::not_ready), 0x0); // UNKNOWN
     zassert_equal(pub::wire_mapping_state(acq::mapping_state::proven), 0x1);    // PROVEN
     zassert_equal(pub::wire_mapping_state(acq::mapping_state::fault), 0x3);     // FAULT
+    /* LOST arrived with the mapping authority. Its own trap: tof_acq numbers it 3 and the
+     * contract numbers FAULT 3, so a cast reports a fault where the mapping was merely lost,
+     * and the consumer's recovery path is not the same in the two cases. */
+    zassert_equal(pub::wire_mapping_state(acq::mapping_state::lost), 0x2);      // LOST
     /* And the values really do differ, which is why the switch exists. */
     zassert_not_equal(pub::wire_mapping_state(acq::mapping_state::fault),
                       static_cast<uint8_t>(acq::mapping_state::fault));
+    zassert_not_equal(pub::wire_mapping_state(acq::mapping_state::lost),
+                      static_cast<uint8_t>(acq::mapping_state::lost));
+}
+
+ZTEST(tof_cliff_publisher, test_a_lost_mapping_authorises_no_measurement)
+{
+    /* LOST is not a softer PROVEN. The contract forbids a measurement frame while UNKNOWN,
+     * LOST or FAULT, and the reason is the same in all three: source_id outside PROVEN is
+     * the firmware's guess rather than a physical position. */
+    state_value = acq::mapping_state::lost;
+    pub::on_cliff_sample(0, 0, cliff_facts(0), one_valid_target(400));
+    flush(0);
+    zassert_equal(bus.count, 0, "a measurement went out under LOST");
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_true(c.suppressed_not_proven > 0, "the suppression must be counted, not silent");
 }
 
 ZTEST(tof_cliff_publisher, test_health_bytes_match_the_named_vector)

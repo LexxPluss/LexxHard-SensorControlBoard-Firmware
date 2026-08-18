@@ -102,18 +102,18 @@ uint8_t wire_mapping_state(tof_acq::mapping_state state)
 {
     /* Explicit, never a cast. The two enumerations agree on nothing but zero:
      *
-     *   tof_acq   not_ready = 0   fault = 1   proven = 2
-     *   contract  UNKNOWN   = 0   PROVEN = 1  LOST  = 2   FAULT = 3
+     *   tof_acq   not_ready = 0   fault = 1   proven = 2   lost = 3
+     *   contract  UNKNOWN   = 0   PROVEN = 1  LOST  = 2    FAULT = 3
      *
-     * so casting `fault` would put PROVEN on the wire, and casting `proven` would put
-     * LOST. That is a silent mis-report of the one field the consumer gates on.
-     *
-     * LOST has no acquisition equivalent: it means "was proven, then a sensor was lost at
-     * runtime", which needs the state machine this layer does not have. Nothing here can
-     * produce it, and inventing a mapping to it would be a guess. */
+     * so casting `fault` would put PROVEN on the wire, casting `proven` would put LOST, and
+     * casting `lost` would put FAULT. That is a silent mis-report of the one field the
+     * consumer gates on -- and note that every one of those three mistakes is wrong in a
+     * direction the consumer acts on. */
     switch (state) {
     case tof_acq::mapping_state::proven:
         return 0x1; // PROVEN
+    case tof_acq::mapping_state::lost:
+        return 0x2; // LOST
     case tof_acq::mapping_state::fault:
         return 0x3; // FAULT
     case tof_acq::mapping_state::not_ready:

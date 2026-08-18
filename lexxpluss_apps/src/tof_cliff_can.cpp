@@ -19,6 +19,7 @@
 
 #include "tof_acquisition.hpp"
 #include "tof_cliff_contract.h"
+#include "tof_mapping_authority.hpp"
 
 namespace lexxhard::tof_cliff_can {
 
@@ -89,8 +90,12 @@ struct tof_cliff_pub::authorisation production_authorisation()
 {
     /* The state and the epoch as one value. effective_mapping_state() clamps PROVEN
      * unconditionally, so `allowed` is false and no measurement frame is authorised; health
-     * still reports the state, which is the whole point of it running on its own timer. */
-    return {tof_acq::effective_mapping_state(), 0};
+     * still reports the state, which is the whole point of it running on its own timer.
+     *
+     * The epoch comes from the authority and is read here, once, alongside the state -- the
+     * publisher latches this pair per cycle, so a proof committing mid-cycle cannot leave a
+     * frame carrying one epoch in a cycle authorised under another. */
+    return {tof_acq::effective_mapping_state(), tof_authority::current().epoch};
 }
 
 } // namespace lexxhard::tof_cliff_can

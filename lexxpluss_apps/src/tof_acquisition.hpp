@@ -77,6 +77,7 @@
 #include <zephyr/kernel.h>
 
 #include "tof_cliff_sensor.h"
+#include "tof_mapping_state.h"
 
 namespace lexxhard::tof_acq {
 
@@ -88,11 +89,8 @@ enum class model : uint8_t {
     l7_grid,
 };
 
-enum class mapping_state : uint8_t {
-    not_ready = 0,
-    fault,
-    proven,
-};
+// mapping_state now lives in tof_mapping_state.h, included above: the authority needs the
+// enum without the vendor ULD this header drags in.
 
 // The diagnostic record is shared between models; the POLICY is not. Reusing one struct
 // for "where did it fail and with which errno" costs nothing and keeps one triage
@@ -206,6 +204,17 @@ int init(const config &cfg);
 // Failures are recorded per source and do not stop the others - one dead cliff sensor
 // must not prevent the other three from ranging.
 int bring_up();
+
+// Starts a new mapping epoch's cycle numbering: resets cycle_seq to 0.
+//
+// Only legal while acquisition is stopped -- -EBUSY otherwise. The contract requires the
+// epoch advance and the cycle reset to be one transaction, and a reset while cycles are
+// being produced would renumber a sequence the consumer is mid-way through assembling.
+// Returns -EINVAL before init().
+//
+// The epoch VALUE does not live here. This layer owns the cycle counter and nothing else;
+// the authority owns the epoch and calls this as one step of its commit.
+int begin_epoch();
 
 // One cycle: read every started source once, sequentially, under the lock. Never waits
 // on a source; a source with nothing ready simply has sample_produced false.

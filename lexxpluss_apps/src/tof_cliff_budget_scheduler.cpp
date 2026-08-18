@@ -12,16 +12,23 @@
 #if defined(ENABLE_TOF_CHAIN) && defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
 
 #include "tof_acquisition.hpp"
+#include "tof_chain_spec.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
+#include "tof_mapping_authority.hpp"
 
 #include <zephyr/kernel.h>
 
 namespace {
 
 namespace acq = lexxhard::tof_acq;
+namespace au = lexxhard::tof_authority;
 namespace can = lexxhard::tof_cliff_can;
 namespace pub = lexxhard::tof_cliff_pub;
+
+/* The chain the authority compares a proof against. Static because the authority keeps the
+ * pointer: a stack copy would dangle the moment this function returned. */
+lexxhard::tof_enum::chain_spec runtime_spec{lexxhard::tof_chain::dasher_spec()};
 
 /* The sinks are now the real publisher's, not local stubs. That is the point of this build
  * point: the whole path -- acquisition, publisher, packer, CAN glue -- has to be reachable
@@ -29,12 +36,7 @@ namespace pub = lexxhard::tof_cliff_pub;
  * acquisition layer and nothing downstream of it. */
 volatile uint32_t sink_counters;
 
-acq::mapping_state mapping_provider()
-{
-    // Never PROVEN from a probe: the clamp would refuse it anyway, and pretending
-    // otherwise would make the measurement cover a path production cannot take.
-    return acq::mapping_state::not_ready;
-}
+
 
 uint32_t now_ms()
 {
@@ -71,8 +73,18 @@ extern "C" int tof_cliff_budget_walk_scheduler(void *objs, void *scratch, int st
     cfg.hooks.on_cycle = pub::on_cycle_complete;
     cfg.hooks.on_cliff_sample = pub::on_cliff_sample;
     cfg.hooks.on_cliff_health = pub::on_cliff_health;
-    cfg.mapping_state_provider = mapping_provider;
+    cfg.mapping_state_provider = au::state_provider;
     cfg.now_ms = now_ms;
+
+    /* The authority before the publisher: production_authorisation() reads its epoch, and an
+     * uninitialised authority would report one that no proof issued. It reports UNKNOWN until
+     * a proof commits, and nothing in this probe commits one -- there is no path to PROVEN
+     * from here, which is the point. */
+    au::config acfg{};
+    acfg.runtime_spec = &runtime_spec;
+    acfg.begin_epoch = acq::begin_epoch;
+    if (const int arc{au::init(acfg)}; arc != 0)
+        return arc;
 
     /* The glue is allowed to fail here: on a board where can2 is not ready the measurement
      * still has to include the code, and the publisher will simply count send failures. */

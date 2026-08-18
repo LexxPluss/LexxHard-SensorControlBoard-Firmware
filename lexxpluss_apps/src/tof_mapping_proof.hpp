@@ -132,6 +132,15 @@ struct fingerprint {
 
 bool same(const fingerprint &a, const fingerprint &b);
 
+// Does this fingerprint describe the commissioning profile -- six positions, two grid
+// sensors then four cliff sensors, each cliff role used exactly once?
+//
+// Exported because the authority must re-check it on the token it is handed rather than
+// trust that whoever produced the token checked. The definition of the profile lives in
+// this module, so the check belongs here too; a second copy in the authority is exactly how
+// the two drift.
+bool is_commissioning_profile(const fingerprint &fp);
+
 // What was observed with only the tail position enabled. Raw observations, not verdicts:
 // the evaluator decides what they mean.
 struct isolation_observation {

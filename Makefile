@@ -104,6 +104,14 @@ test_tof_cliff_sensor:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_cliff_sensor -d build-test-tof-cliff-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the mapping authority: the commit transaction, the epoch bitmap and the
+# UNKNOWN/PROVEN/LOST/FAULT publication. begin_epoch is injected, which is the only way to
+# test that a failed cycle reset leaves the state non-PROVEN.
+.PHONY: test_tof_mapping_authority
+test_tof_mapping_authority:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the cliff mapping proof: the contract's walk/isolation/walk
 # transaction, the semantic fingerprint and its L7 normalisation, and the one-shot
 # challenge/token pair. Pure decision logic -- neither the enumerator's object file nor any

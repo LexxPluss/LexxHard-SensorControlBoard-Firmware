@@ -357,6 +357,21 @@ int init(const config &cfg)
     return 0;
 }
 
+int begin_epoch()
+{
+    if (!configured_)
+        return -EINVAL;
+    /* Idle only. A reset while cycles are being produced renumbers a sequence the consumer
+     * is half-way through assembling, and the contract's uniqueness guarantee is over
+     * (source_id, mapping_epoch, cycle_seq) -- the triple, not the cycle alone. The caller
+     * that owns the epoch is responsible for having stopped acquisition first, and gets an
+     * error rather than a silent renumber if it has not. */
+    if (running_)
+        return -EBUSY;
+    next_cycle_seq_ = 0;
+    return 0;
+}
+
 int bring_up()
 {
     if (!configured_)

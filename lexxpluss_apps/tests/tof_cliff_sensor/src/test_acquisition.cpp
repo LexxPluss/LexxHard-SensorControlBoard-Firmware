@@ -776,8 +776,8 @@ ZTEST(tof_acquisition, test_the_same_epoch_never_reuses_a_cycle_number)
      * that, and a test asserted it as correct.
      *
      * Advancing the epoch and restarting the count are two halves of one operation that
-     * belongs to whatever owns the mapping. Until that API exists, the numbering simply
-     * continues. */
+     * belongs to whatever owns the mapping. begin_epoch() is now that half, and a bring-up on
+     * its own still must not renumber -- which is what this test holds. */
     zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
     for (int i = 0; i < acq::kMaxSources; ++i)
         devs[i].fresh = true;
@@ -816,6 +816,57 @@ ZTEST(tof_acquisition, test_the_wire_byte_wraps_255_to_zero)
     zassert_equal(sample_cycles[0], 256, "the internal counter does not wrap");
     zassert_equal(static_cast<uint8_t>(sample_cycles[0] & 0xFF), 0,
                   "the wire byte must wrap 255 -> 0");
+
+    acq::stop();
+}
+
+ZTEST(tof_acquisition, test_begin_epoch_restarts_the_numbering_when_acquisition_is_idle)
+{
+    /* The other half of the epoch transaction, and the real one -- the authority's own tests
+     * inject a fake begin_epoch so they can make it fail, which proves nothing about this. */
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    for (int i = 0; i < acq::kMaxSources; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    acq::run_cycle();
+    zassert_true(sample_cycle_count >= 2);
+    zassert_true(sample_cycles[sample_cycle_count - 1] > 0);
+
+    acq::stop();
+    zassert_equal(acq::begin_epoch(), 0, "idle is exactly when this is legal");
+
+    for (int i = 0; i < acq::kMaxSources; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    zassert_equal(sample_cycles[0], 0, "the first cycle of the new epoch must be 0 again");
+
+    acq::stop();
+}
+
+ZTEST(tof_acquisition, test_begin_epoch_refuses_while_cycles_are_being_produced)
+{
+    /* A reset mid-flight renumbers a sequence the consumer is half-way through assembling,
+     * and the uniqueness the contract guarantees is over the triple rather than the cycle
+     * alone. Refusing is the whole reason this returns an errno instead of void. */
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    for (int i = 0; i < acq::kMaxSources; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    const uint32_t before{sample_cycles[0]};
+
+    zassert_equal(acq::begin_epoch(), -EBUSY);
+
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    zassert_true(sample_cycles[0] > before, "a refused begin_epoch must not have reset anything");
 
     acq::stop();
 }

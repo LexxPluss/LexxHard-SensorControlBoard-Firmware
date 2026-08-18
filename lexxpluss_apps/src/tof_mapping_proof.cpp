@@ -41,6 +41,34 @@ bool same_position(const position_fingerprint &a, const position_fingerprint &b)
 
 } // namespace
 
+bool is_commissioning_profile(const fingerprint &fp)
+{
+    constexpr size_t kPositions{6};
+    if (fp.positions != kPositions)
+        return false;
+    for (size_t i{0}; i < kPositions; ++i) {
+        const enm::model want{i < 2 ? enm::model::l7cx : enm::model::l4cx};
+        if (fp.at[i].expected != want || !fp.at[i].verified)
+            return false;
+    }
+
+    /* Same set check as the spec-side one, over the other type. Two small loops rather than
+     * one generic helper: the alternative was a template over two unrelated structs, which
+     * costs more to read than it saves. */
+    const enm::l4_role required[4]{enm::l4_role::front_left, enm::l4_role::rear_left,
+                                   enm::l4_role::rear_right, enm::l4_role::front_right};
+    for (const enm::l4_role want : required) {
+        size_t seen{0};
+        for (size_t i{2}; i < kPositions; ++i) {
+            if (fp.at[i].role == want)
+                ++seen;
+        }
+        if (seen != 1)
+            return false;
+    }
+    return true;
+}
+
 bool same(const fingerprint &a, const fingerprint &b)
 {
     if (a.positions != b.positions)

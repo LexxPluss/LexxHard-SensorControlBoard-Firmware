@@ -56,15 +56,16 @@ int init();
 /* The sink to hand tof_cliff_pub::config. Valid only after a successful init(). */
 struct tof_cliff_pub::can_sink sink();
 
-/* The authorisation production uses: the acquisition layer's effective mapping state, read
- * together with the epoch.
+/* The authorisation production uses: the acquisition layer's effective mapping state read
+ * together with the mapping authority's epoch.
  *
- * The epoch is 0 and will stay 0 until something owns the mapping proof. That is not a
- * placeholder standing in for a real value -- no epoch has been established, and 0 is what
- * "none" looks like. It costs nothing today because effective_mapping_state() clamps PROVEN
- * away, so no measurement frame is ever authorised to carry it; health carries 0, which is
- * consistent with UNKNOWN. The commit that lifts the clamp owns the epoch and its cycle
- * reset together. */
+ * The two halves come from two places on purpose, and it is not the disagreement the
+ * publisher exists to avoid. The authority owns the epoch, and it is now a real value -- 0
+ * until a proof commits, then whatever the host issued. The STATE is deliberately taken
+ * through effective_mapping_state() rather than from the authority directly, because that is
+ * where the clamp lives: the authority may well believe PROVEN, and until the clamp is lifted
+ * nothing may act on that belief. Reading the state from the authority here would bypass the
+ * clamp, which is exactly the shape of the safety backdoor this project deleted once. */
 struct tof_cliff_pub::authorisation production_authorisation();
 
 }  // namespace lexxhard::tof_cliff_can
