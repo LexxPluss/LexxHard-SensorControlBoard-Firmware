@@ -24,7 +24,6 @@
  */
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 
 namespace lexxhard::bmu_lipy041 {
@@ -142,15 +141,6 @@ bool decode_0x131(const uint8_t data[8], uint8_t dlc, msg_0x131 &msg);
 bool decode_frame_bmu_info(uint32_t id, const uint8_t data[8], uint8_t dlc, msg_bmu &msg);
 bool decode_frame_power_sequence(uint32_t id, const uint8_t data[8], uint8_t dlc,
                                   msg_0x100 &f100, msg_0x101 &f101, msg_0x113 &f113);
-
-// Formats one line of the bmu_info shell display (line in [0, BMU_INFO_LINE_COUNT)).
-// Building one line at a time keeps the caller's stack buffer small (~single line,
-// not the whole ~12-line message) -- bmu_info() is called from the shell thread's
-// stack, which is not sized to hold the full message in one buffer.
-// Same semantics as snprintf: returns the number of characters that would have been
-// written, excluding the null terminator; a return >= buf_size means truncation.
-inline constexpr size_t BMU_INFO_LINE_COUNT{12};
-int format_bmu_info_line(const msg_bmu &msg, size_t line, char *buf, size_t buf_size);
 
 bool is_ok(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113);
 bool is_full_charge(const msg_0x100 &f100);

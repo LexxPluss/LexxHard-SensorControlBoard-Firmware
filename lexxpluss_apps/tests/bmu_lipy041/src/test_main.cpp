@@ -23,7 +23,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <string.h>
 #include <zephyr/ztest.h>
 #include "bmu_lipy041_decode.hpp"
 
@@ -672,71 +671,9 @@ ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_unknown_id_passthroug
     zassert_equal(f113.fail_status3, 0x33);
 }
 
-// ---- format_bmu_info_line(): pure formatting, closes the previously-untested gap ----
-// Built one line at a time (not one big buffer) to keep bmu_info()'s shell-thread
-// stack usage small.
-
-ZTEST(bmu_lipy041_decode, test_format_bmu_info_line_matches_expected_lines)
-{
-    msg_bmu msg{};
-    msg.f100.fail_status1 = 0x00;
-    msg.f100.leader_battery_status = 0x01;
-    msg.f100.asoc_min = 76;
-    msg.f100.rsoc_min = 76;
-    msg.f100.soh_min = 100;
-    msg.f100.max_fet_temp = 237;
-    msg.f101.average_current = -115;
-    msg.f101.max_charging_current = 4200;
-    msg.f101.bm_voltage_max = 26261;
-    msg.f101.fail_status2 = 0x00;
-    msg.f103.design_capacity = 2100;
-    msg.f103.fcc_min = 2100;
-    msg.f103.rc_min = 1607;
-    msg.f103.fet_status = 0x03;
-    msg.f110.max_voltage = {26261, 1};
-    msg.f110.min_voltage = {26261, 1};
-    msg.f111.max_temp = {241, 1};
-    msg.f111.min_temp = {234, 1};
-    msg.f112.max_current = {-115, 1};
-    msg.f112.min_current = {-115, 1};
-    msg.f113.fw_ver = 0x14;
-    msg.f113.data_ver = 0x10;
-    msg.f113.connected_bm_count = 0x01;
-    msg.f113.leader_alarm1 = 0x00;
-    msg.f113.leader_alarm2 = 0x00;
-    msg.f113.fail_status3 = 0x00;
-    msg.f120.max_cell_voltage = {3285, 1};
-    msg.f120.min_cell_voltage = {3278, 1};
-    msg.f130.manufacturing = 23078;
-    msg.f130.inspection = 21088;
-    msg.f130.serial = 80;
-    msg.f131.accumulated_capacity = 3;
-
-    const char *expected_lines[BMU_INFO_LINE_COUNT] = {
-        "FailStatus1:0x00/0x00 LeaderBMStatus:0x01",
-        "ASOCmin:76 RSOCmin:76 SOHmin:100",
-        "MaxFETTemp:237 AvgCurrent:-115 MaxChgCurrent:4200",
-        "BMVoltageMax:26261 Capacity(design):2100 Capacity(FCCmin):2100 Capacity(RCmin):1607 FETStatus:0x03",
-        "Max Voltage:26261/1 Min Voltage:26261/1",
-        "Max Temp:241/1 Min Temp:234/1",
-        "Max Current:-115/1 Min Current:-115/1",
-        "FWVer:0x14 DataVer:0x10 ConnectedBMNum:0x01",
-        "LeaderAlarm1:0x00 LeaderAlarm2:0x00 FailStatus3:0x00",
-        "Max Cell Voltage:3285/1 Min Cell Voltage:3278/1",
-        "Manufacture:23078 Inspection:21088 Serial:80",
-        "AccumulatedCapacity:3",
-    };
-    for (size_t line = 0; line < BMU_INFO_LINE_COUNT; ++line) {
-        char buf[160];
-        int written = format_bmu_info_line(msg, line, buf, sizeof buf);
-        zassert_true(written > 0 && static_cast<size_t>(written) < sizeof buf);
-        zassert_true(strcmp(buf, expected_lines[line]) == 0, "line %zu: got \"%s\"", line, buf);
-    }
-}
-
-ZTEST(bmu_lipy041_decode, test_format_bmu_info_line_out_of_range_returns_negative)
-{
-    msg_bmu msg{};
-    char buf[160];
-    zassert_true(format_bmu_info_line(msg, BMU_INFO_LINE_COUNT, buf, sizeof buf) < 0);
-}
+// bmu_info()'s output formatting is not unit-tested: it calls shell_print() with the
+// full multi-line format string directly (same as the pre-AMRSW-3186 design), with no
+// intermediate buffer, to avoid adding stack usage that didn't exist before. Field
+// name correctness is covered indirectly by the decode tests above (#1-24 etc.);
+// verifying the exact shell_print() format string requires a real/fake shell context,
+// which is out of scope here (matches the pre-existing untested state).

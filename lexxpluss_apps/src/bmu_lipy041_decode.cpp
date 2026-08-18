@@ -22,7 +22,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#include <stdio.h>
 #include "bmu_lipy041_decode.hpp"
 
 namespace lexxhard::bmu_lipy041 {
@@ -182,48 +181,6 @@ bool decode_frame_power_sequence(uint32_t id, const uint8_t data[8], uint8_t dlc
         return decode_0x113(data, dlc, f113);
     }
     return true;  // unrecognized id: nothing to decode, not an error
-}
-
-int format_bmu_info_line(const msg_bmu &msg, size_t line, char *buf, size_t buf_size) {
-    if (line == 0) {
-        return snprintf(buf, buf_size, "FailStatus1:0x%02x/0x%02x LeaderBMStatus:0x%02x",
-                         msg.f100.fail_status1, msg.f101.fail_status2, msg.f100.leader_battery_status);
-    } else if (line == 1) {
-        return snprintf(buf, buf_size, "ASOCmin:%u RSOCmin:%u SOHmin:%u",
-                         msg.f100.asoc_min, msg.f100.rsoc_min, msg.f100.soh_min);
-    } else if (line == 2) {
-        return snprintf(buf, buf_size, "MaxFETTemp:%d AvgCurrent:%d MaxChgCurrent:%u",
-                         msg.f100.max_fet_temp, msg.f101.average_current, msg.f101.max_charging_current);
-    } else if (line == 3) {
-        return snprintf(buf, buf_size,
-                         "BMVoltageMax:%u Capacity(design):%u Capacity(FCCmin):%u Capacity(RCmin):%u FETStatus:0x%02x",
-                         msg.f101.bm_voltage_max, msg.f103.design_capacity, msg.f103.fcc_min, msg.f103.rc_min, msg.f103.fet_status);
-    } else if (line == 4) {
-        return snprintf(buf, buf_size, "Max Voltage:%u/%u Min Voltage:%u/%u",
-                         msg.f110.max_voltage.value, msg.f110.max_voltage.id, msg.f110.min_voltage.value, msg.f110.min_voltage.id);
-    } else if (line == 5) {
-        return snprintf(buf, buf_size, "Max Temp:%d/%u Min Temp:%d/%u",
-                         msg.f111.max_temp.value, msg.f111.max_temp.id, msg.f111.min_temp.value, msg.f111.min_temp.id);
-    } else if (line == 6) {
-        return snprintf(buf, buf_size, "Max Current:%d/%u Min Current:%d/%u",
-                         msg.f112.max_current.value, msg.f112.max_current.id, msg.f112.min_current.value, msg.f112.min_current.id);
-    } else if (line == 7) {
-        return snprintf(buf, buf_size, "FWVer:0x%02x DataVer:0x%02x ConnectedBMNum:0x%02x",
-                         msg.f113.fw_ver, msg.f113.data_ver, msg.f113.connected_bm_count);
-    } else if (line == 8) {
-        return snprintf(buf, buf_size, "LeaderAlarm1:0x%02x LeaderAlarm2:0x%02x FailStatus3:0x%02x",
-                         msg.f113.leader_alarm1, msg.f113.leader_alarm2, msg.f113.fail_status3);
-    } else if (line == 9) {
-        return snprintf(buf, buf_size, "Max Cell Voltage:%u/%u Min Cell Voltage:%u/%u",
-                         msg.f120.max_cell_voltage.value, msg.f120.max_cell_voltage.id,
-                         msg.f120.min_cell_voltage.value, msg.f120.min_cell_voltage.id);
-    } else if (line == 10) {
-        return snprintf(buf, buf_size, "Manufacture:%u Inspection:%u Serial:%u",
-                         msg.f130.manufacturing, msg.f130.inspection, msg.f130.serial);
-    } else if (line == 11) {
-        return snprintf(buf, buf_size, "AccumulatedCapacity:%u", msg.f131.accumulated_capacity);
-    }
-    return -1;
 }
 
 bool is_ok(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113) {
