@@ -766,22 +766,35 @@ ZTEST(tof_acquisition, test_the_first_cycle_of_an_epoch_is_zero)
     acq::stop();
 }
 
-ZTEST(tof_acquisition, test_a_bring_up_restarts_the_epoch_at_zero)
+ZTEST(tof_acquisition, test_the_same_epoch_never_reuses_a_cycle_number)
 {
-    /* A bring-up is a fresh enumeration attempt, so it is a fresh epoch and the numbering
-     * starts over. Otherwise measurements would be correlated against health frames from a
-     * different epoch. */
+    /* The contract allows at most one measurement frame per
+     * (source_id, mapping_epoch, cycle_seq), and calls a second one a conflict rather than
+     * a retransmission to tolerate. This layer does not own the epoch -- it is injected on
+     * the publishing side and nothing here advances it -- so restarting the cycle count on
+     * a second bring-up would reissue triples already used. An earlier version did exactly
+     * that, and a test asserted it as correct.
+     *
+     * Advancing the epoch and restarting the count are two halves of one operation that
+     * belongs to whatever owns the mapping. Until that API exists, the numbering simply
+     * continues. */
     zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
     for (int i = 0; i < acq::kMaxSources; ++i)
         devs[i].fresh = true;
     zassert_equal(acq::bring_up(), 0);
+
+    sample_cycle_count = 0;
     acq::run_cycle();
     acq::run_cycle();
+    zassert_true(sample_cycle_count >= 2);
+    const uint32_t before_second_bring_up{sample_cycles[sample_cycle_count - 1]};
 
     zassert_equal(acq::bring_up(), 0);
     sample_cycle_count = 0;
     acq::run_cycle();
-    zassert_equal(sample_cycles[0], 0, "a new epoch numbers from 0 again");
+
+    zassert_true(sample_cycles[0] > before_second_bring_up,
+                 "a second bring-up reused a cycle number under the same epoch");
 
     acq::stop();
 }

@@ -42,12 +42,21 @@ cycle_facts facts_;
  * wire, which produces the required 255 -> 0 wrap, while the untruncated value is what
  * lets a pending frame be matched to its own cycle without aliasing every 256th one.
  *
- * MUST be reset to 0 whenever the mapping epoch changes. The acquisition layer does not
- * own the epoch -- it is injected on the publishing side -- so it cannot detect that on
- * its own. It resets here on init() and on bring_up(), because a bring-up is a fresh
- * enumeration attempt and therefore a fresh epoch. Whatever eventually issues a new epoch
- * WITHOUT re-running bring-up has to reset this too, or measurements will be correlated
- * against health frames from a different epoch. */
+ * Reset to 0 in init() and NOWHERE ELSE.
+ *
+ * It is tempting to reset it in bring_up() as well, on the grounds that a bring-up is a
+ * fresh enumeration attempt. That is wrong, and was briefly implemented and even pinned by
+ * a test: the contract requires at most one measurement frame per
+ * (source_id, mapping_epoch, cycle_seq), and this layer does not own the epoch -- it is
+ * injected on the publishing side and nothing here advances it. Resetting the cycle while
+ * the epoch stands still reissues triples that have already been used, which the contract
+ * calls a conflict rather than a retransmission to be tolerated. So a second bring-up
+ * continues the numbering.
+ *
+ * Advancing the epoch and restarting the cycle count are two halves of one operation, and
+ * they belong to whatever owns the mapping. Implementing either half here would be
+ * simulating a transition that has no API yet. The commit that lifts the PROVEN clamp is
+ * where both halves land together. */
 uint32_t next_cycle_seq_{0};
 atomic_t snapshot_{ATOMIC_INIT(0)};
 k_timer health_timer_;
@@ -334,10 +343,10 @@ int bring_up()
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
     in_cycle_ = true;
 
-    /* A bring-up is a fresh enumeration attempt and therefore a fresh epoch, so the next
-     * cycle is again the epoch's first and carries 0. The acquisition layer cannot see an
-     * epoch change that happens WITHOUT a bring-up -- see the note on next_cycle_seq_. */
-    next_cycle_seq_ = 0;
+    /* Deliberately NOT resetting next_cycle_seq_ here. Restarting the cycle count without
+     * advancing the epoch reissues (source_id, epoch, cycle_seq) triples that have already
+     * been used, and the contract calls that a conflict. See the note on next_cycle_seq_.
+     */
 
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
