@@ -39,13 +39,23 @@
  * testable without Zephyr's CAN driver. The real glue is a separate commit and a separate
  * file, which is also what lets the flash cost of the glue be measured on its own.
  *
- * ONE AUTHORISATION READ, NOT TWO CALLBACKS
+ * ONE AUTHORISATION PER CYCLE, RE-CHECKED BEFORE ANYTHING IS SENT
  *
- * Whether publication is allowed and which epoch the frames carry are read together, once
- * per operation, as a single value. Two independent callbacks could disagree: the mapping
- * could be lost between them, and the frame would go out authorised under a mapping that no
- * longer holds, or carry the wrong epoch. Neither is acceptable once PROVEN is reachable,
- * and it is cheaper to get right now than to remember later.
+ * The mapping state and the epoch are one value, read once at the start of a cycle and
+ * shared by every frame that cycle produces. Reading per sensor would let four frames from
+ * one cycle carry different epochs, which is a correlation the consumer is entitled to rely
+ * on.
+ *
+ * That is still not enough on its own: encoding happens under the lock and sending happens
+ * after it, so the mapping can be lost in between and an already-encoded frame would go out
+ * authorised under a mapping that no longer holds. So the authorisation is read again before
+ * the flush, and if it was revoked or the epoch moved, the WHOLE cycle is discarded. Not the
+ * offending frame -- the cycle, because a partially published cycle is a correlation the
+ * consumer cannot detect as broken.
+ *
+ * Health reads the same value and takes both halves from it. The state the sink passes in is
+ * deliberately not used: taking the state from one source and the epoch from another is the
+ * bug this exists to remove.
  *
  * THE PUBLICATION GATE, AND WHY IT IS INJECTED
  *
@@ -100,9 +110,11 @@ struct can_sink {
     int (*send)(uint16_t can_id, const uint8_t *data, uint8_t dlc);
 };
 
-/* Read once per operation, so the gate and the epoch cannot disagree. */
+/* Read once per cycle, so no two frames of one cycle can disagree about either half.
+ * Carries the state rather than a bool, because health needs the state and the epoch to
+ * come from the same read. */
 struct authorisation {
-    bool allowed{false};
+    tof_acq::mapping_state state{tof_acq::mapping_state::not_ready};
     uint8_t epoch{0};
 };
 
@@ -114,8 +126,9 @@ struct config {
      * belong together, which is a wiring defect and not something a sensor can cause. */
     const tof_acq::source_desc *sources{nullptr};
     int source_count{0};
-    /* Production MUST return {tof_acq::publication_allowed(), <the proving epoch>} read
-     * together. See the notes above. */
+    /* Production MUST return {tof_acq::effective_mapping_state(), <the proving epoch>}
+     * read together. Publication is allowed only for PROVEN, which that function clamps
+     * away unconditionally. See the notes above. */
     struct authorisation (*authorise)(){nullptr};
 };
 
@@ -135,6 +148,13 @@ struct counters {
     /* The frame was encoded and there was no room to queue it. Cannot happen while the
      * queue is drained every cycle and holds one slot per source, so this counts a defect. */
     uint32_t queue_full{0};
+    /* Whole cycles thrown away at the flush, because the authorisation was revoked or its
+     * epoch moved between encoding and sending. Counted in cycles, not frames: the unit
+     * that was discarded is the cycle. */
+    uint32_t cycles_discarded_unauthorised{0};
+    /* Frames found queued from a cycle other than the one being flushed. The queue is
+     * per cycle by construction, so this counts a defect. */
+    uint32_t discarded_stale_cycle{0};
     /* The frame was built and the transport rejected it. Deliberately separate from every
      * counter above: "the sensor said something we will not send" and "the bus would not
      * take it" have nothing to do with each other. */

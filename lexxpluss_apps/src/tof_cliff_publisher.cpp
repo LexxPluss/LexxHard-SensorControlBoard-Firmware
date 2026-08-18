@@ -27,6 +27,9 @@ bool ready_{false};
  * cycle, and the queue is drained at the end of every cycle. Sized to kMaxSources rather
  * than to the cliff count so a table with more cliff sources cannot silently overflow it. */
 struct pending_frame {
+    /* The FULL cycle number, not the wire byte. The flush accepts only frames from the
+     * cycle it was called for, and a truncated value would alias every 256th cycle. */
+    uint32_t cycle_seq;
     uint16_t can_id;
     uint8_t dlc;
     uint8_t data[8];
@@ -34,11 +37,22 @@ struct pending_frame {
 pending_frame queue_[tof_acq::kMaxSources]{};
 int queued_{0};
 
-bool enqueue(uint16_t can_id, const uint8_t *data, uint8_t dlc)
+/* Latched once per cycle and shared by every frame it produces. */
+bool latched_{false};
+uint32_t latched_cycle_{0};
+authorisation latched_auth_{};
+
+bool allowed(const authorisation &a)
+{
+    return a.state == tof_acq::mapping_state::proven;
+}
+
+bool enqueue(uint32_t cycle_seq, uint16_t can_id, const uint8_t *data, uint8_t dlc)
 {
     if (queued_ >= static_cast<int>(sizeof queue_ / sizeof queue_[0]))
         return false;
     pending_frame &f{queue_[queued_++]};
+    f.cycle_seq = cycle_seq;
     f.can_id = can_id;
     f.dlc = dlc;
     for (int i = 0; i < 8; ++i)
@@ -88,6 +102,9 @@ int init(const struct config &cfg)
     cfg_ = cfg;
     counters_ = counters{};
     queued_ = 0;
+    latched_ = false;
+    latched_cycle_ = 0;
+    latched_auth_ = authorisation{};
     ready_ = true;
     return 0;
 }
@@ -119,10 +136,23 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
         return;
     }
 
-    /* Gate and epoch read together, once. Two separate reads could straddle a mapping
-     * change and authorise a frame under a mapping that no longer holds. */
-    const authorisation auth{cfg_.authorise()};
-    if (!auth.allowed) {
+    /* One authorisation for the whole cycle. Reading it per sensor would let four frames of
+     * one cycle carry different epochs, and the consumer correlates on exactly that. A new
+     * cycle number is the only signal available for "the cycle changed", because the
+     * acquisition layer has no begin-of-cycle hook. */
+    if (!latched_ || latched_cycle_ != cycle_seq) {
+        /* Anything still queued belongs to a cycle that never got flushed. Dropping it is
+         * the same rule as everywhere else: an unsent range is a stale range. */
+        if (queued_ > 0) {
+            counters_.discarded_stale_cycle += static_cast<uint32_t>(queued_);
+            queued_ = 0;
+        }
+        latched_ = true;
+        latched_cycle_ = cycle_seq;
+        latched_auth_ = cfg_.authorise();
+    }
+    const authorisation auth{latched_auth_};
+    if (!allowed(auth)) {
         /* Outside PROVEN a measurement frame carries a source_id that is this firmware's
          * unproven guess rather than a physical position, so there is no such thing as
          * trustworthy position-numbered production data. */
@@ -153,22 +183,44 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
 
     /* Queued, not sent. This runs under the chain lock; touching the bus here would let
      * CAN backpressure stall every sensor's next read. */
-    if (!enqueue(ctr::kMeasId, frame, ctr::kDlc))
+    if (!enqueue(cycle_seq, ctr::kMeasId, frame, ctr::kDlc))
         counters_.queue_full++;
 }
 
 void on_cycle_complete(const tof_acq::cycle_facts &facts)
 {
-    (void)facts;
     if (!ready_)
         return;
+    if (queued_ == 0) {
+        latched_ = false;
+        return;
+    }
 
-    /* The lock is released by the time this runs, so blocking here costs a late cycle
-     * rather than a stalled I2C schedule. Each frame is offered exactly once and then
-     * dropped whatever happens: carrying a failed range into the next cycle would put a
-     * stale distance on the wire, which the contract forbids outright. */
+    /* Re-read the authorisation. Encoding happened under the lock and this runs after it,
+     * so the mapping may have been lost in between -- and an already-encoded frame would
+     * otherwise go out authorised under a mapping that no longer holds. If it was revoked,
+     * or the epoch moved, the WHOLE cycle goes: a partially published cycle is a broken
+     * correlation the consumer has no way to detect. */
+    const authorisation now{cfg_.authorise()};
+    if (!allowed(now) || now.epoch != latched_auth_.epoch) {
+        counters_.cycles_discarded_unauthorised++;
+        queued_ = 0;
+        latched_ = false;
+        return;
+    }
+
+    /* The lock is released by the time this runs, so blocking here costs a late cycle rather
+     * than a stalled I2C schedule. Each frame is offered exactly once and then dropped
+     * whatever happens: carrying a failed range into the next cycle would put a stale
+     * distance on the wire, which the contract forbids outright. */
     for (int i = 0; i < queued_; ++i) {
         const pending_frame &f{queue_[i]};
+        /* The queue is per cycle by construction, so a frame from another cycle is a defect
+         * rather than something to publish late. */
+        if (f.cycle_seq != facts.cycle_seq) {
+            counters_.discarded_stale_cycle++;
+            continue;
+        }
         if (cfg_.sink.send(f.can_id, f.data, f.dlc) != 0) {
             counters_.send_failed_measurement++;
             continue;
@@ -176,6 +228,7 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
         counters_.measurements_sent++;
     }
     queued_ = 0;
+    latched_ = false;
 }
 
 void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
@@ -183,12 +236,17 @@ void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
     if (!ready_)
         return;
 
+    /* Both halves from one read. The `state` parameter is deliberately unused: taking the
+     * state from one source and the epoch from another is exactly the disagreement this
+     * layer exists to avoid, and the sink's shape is the acquisition layer's rather than a
+     * second authority. */
+    (void)state;
+    const authorisation auth{cfg_.authorise()};
+
     pk::health_fields h{};
-    /* The epoch comes from the same authorisation read as the gate would; health is sent
-     * whether or not publication is allowed, so only the epoch half is used here. */
-    h.mapping_epoch = cfg_.authorise().epoch;
+    h.mapping_epoch = auth.epoch;
     h.health_seq = static_cast<uint8_t>(counters_.health_sent & 0xFF);
-    h.mapping_state = wire_mapping_state(state);
+    h.mapping_state = wire_mapping_state(auth.state);
     h.failing_chain_position = ctr::kChainPositionNone;
 
     /* Everything below stays zero, and the header says why for each. In short: the
