@@ -41,6 +41,19 @@
 #include "tof_cliff_contract.h"
 #include "tof_cliff_sample.h" // deliberately not tof_cliff_sensor.h: no ULD here
 
+/* The same four, defined in three places that must agree: the vendor's
+ * VL53LX_MAX_RANGE_RESULTS, our TOF_CLIFF_MAX_TARGETS, and the wire contract's
+ * kMaxTargets. tof_cliff_sensor.h checks the first pair where the vendor header is
+ * visible; this checks the second, here, because this is the first translation unit that
+ * sees our constant and the contract's together. Chained, they pin all three -- without
+ * making every includer of the sensor header depend on the contract.
+ *
+ * kMaxTargets is NOT kSourceCount. One is how many returns a sensor can find, the other
+ * how many sensors the chain carries. Both are 4 and neither implies the other, which is
+ * exactly why using one for the other survives review. */
+static_assert(TOF_CLIFF_MAX_TARGETS == tof_cliff_contract::kMaxTargets,
+              "the wire contract's kMaxTargets and the ULD's target array have drifted");
+
 namespace tof_cliff_packer {
 
 enum class result : uint8_t {

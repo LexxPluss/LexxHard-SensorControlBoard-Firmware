@@ -68,6 +68,11 @@ ZTEST(tof_cliff_packer, test_contract_sha_pin)
     zassert_equal(0, strcmp(ctr::kContractSha256,
         "4b3dae652d73e6eabf17d721a90b06371effbb3aaefb3d25a2218bb860dd47f7"));
     zassert_equal(0, strcmp(ctr::kContractVersion, "commissioning-2026-08-18b"));
+    /* The contract SHA says which contract; this says which generated artefacts. It is
+     * pinned separately because the generator has twice changed what it emits while the
+     * contract text -- and so its SHA -- stood still. */
+    zassert_equal(0, strcmp(ctr::kArtefactSetId,
+        "1a0a2094e928392d29c7153f84de6951159113198714e0b734e6ebd39bf74b07"));
     zassert_equal(0, strcmp(ctr::kProfileName, "commissioning-cliff-only-400k"));
     /* Asserted rather than merely present: this revision is not releasable, and the day
      * someone flips it must be a deliberate act that shows up in this diff. */
@@ -77,6 +82,9 @@ ZTEST(tof_cliff_packer, test_contract_sha_pin)
     zassert_equal(ctr::kProtocolVersion, 0x1);
     zassert_equal(ctr::kSentinelInvalid, 0xFFFF);
     zassert_equal(ctr::kDlc, 8);
+    /* Distinct concepts that happen to share a value. */
+    zassert_equal(ctr::kMaxTargets, TOF_CLIFF_MAX_TARGETS);
+    zassert_equal(ctr::kSourceCount, 4);
 }
 
 /* --------------------------------------------------- the zero-target rule -------- */
