@@ -240,19 +240,41 @@ mapping_state effective_mapping_state()
                                      : mapping_state::not_ready};
 
     if (reported == mapping_state::proven) {
-        // Two boards' worth of enable chain cannot be enumerated end to end yet, so a
-        // proven mapping is not something this firmware is entitled to claim. Reporting
-        // NOT_READY keeps the consumer's own fail-safe path in charge.
+        // A proven mapping is not something this firmware is entitled to claim yet, so
+        // reporting NOT_READY keeps the consumer's own fail-safe path in charge.
+        //
+        // WHAT IS ACTUALLY MISSING, as of 2026-08-18. This list has been wrong once
+        // already: it used to say "until the two-board enable chain is fixed", and the
+        // hardware was fixed on 08-17 -- a 50 ohm series resistor on the data line, gate
+        // passed 5/5 on DS20001. Anyone reading the stale reason would have concluded the
+        // condition was met. It is not, for four reasons that have nothing to do with that
+        // resistor:
+        //
+        //   - No mapping authority. tof_mapping_proof can evaluate the contract's
+        //     transaction and mint a token, but nothing owns the UNKNOWN/PROVEN/LOST/FAULT
+        //     state, and nothing consumes a token. There is no path from a proof to this
+        //     function's input.
+        //   - No role mapping. The four cliff positions in dasher_spec() carry
+        //     l4_role::unknown, and the masks the wire contract keys by source_id cannot be
+        //     filled from a position without it. The proof refuses on this today, by rule.
+        //   - No epoch. production_authorisation() reports epoch 0 because no epoch has
+        //     been issued; issuing one and resetting cycle_seq is one transaction that does
+        //     not exist yet, and under the commissioning profile the value comes from the
+        //     host.
+        //   - No cycle health. 0x217 is a state heartbeat only: cycle_valid is clear and
+        //     the masks are zero, so a measurement would have no authorising health frame
+        //     carrying its epoch and cycle, and a conforming decoder would reject every
+        //     frame it did send.
         //
         // Unconditional, with no build flag to lift it. A conditional safety bypass is
         // one careless -D away from shipping and would not show up in a diff of the code
-        // it disables; lifting this is an edit here, in its own commit, reviewed against
-        // the fixed hardware.
+        // it disables; lifting this is an edit here, in its own commit, once all four of
+        // the above are closed.
         static bool warned{false};
         if (!warned) {
             warned = true;
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY until the "
-                    "two-board enable chain is fixed");
+            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no mapping "
+                    "authority, role table, epoch or cycle health yet");
         }
         return mapping_state::not_ready;
     }

@@ -104,6 +104,16 @@ test_tof_cliff_sensor:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_cliff_sensor -d build-test-tof-cliff-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the cliff mapping proof: the contract's walk/isolation/walk
+# transaction, the semantic fingerprint and its L7 normalisation, and the one-shot
+# challenge/token pair. Pure decision logic -- neither the enumerator's object file nor any
+# driver is linked, because every arrangement worth testing is one a healthy machine cannot
+# produce.
+.PHONY: test_tof_mapping_proof
+test_tof_mapping_proof:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_proof -d build-test-tof-mapping-proof -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the ToF enumeration layer: currently the production
 # guarded readdress (exact-traffic properties the enumerator fakes cannot
 # prove, above all zero-writes-after-transport-error); the enumeration state
