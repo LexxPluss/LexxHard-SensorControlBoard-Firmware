@@ -1005,8 +1005,8 @@ def render_json(vectors, version, sha):
     return json.dumps(doc, indent=2, sort_keys=False) + "\n"
 
 
-def render_header(vectors, version, sha):
-    lines = [
+def _licence_and_provenance(version, sha, what):
+    return [
         "/*",
         " * Copyright (c) 2026, LexxPluss Inc.",
         " * All rights reserved.",
@@ -1024,14 +1024,29 @@ def render_header(vectors, version, sha):
         " *",
         f" * {BANNER}",
         " *",
-        " * Scope: frame layout and validation verdicts only. The decoder state machine",
-        " * (cycle assembly, retirement, staleness, event multisets) is NOT covered here.",
-        " *",
-        " * Zero dependencies on purpose: the SCBDriver tests have no JSON parser.",
+        f" * {what}",
         " */",
         "",
         "#pragma once",
         "",
+    ]
+
+
+def render_prod_header(vectors, version, sha):
+    """The half production code may include: identifiers, encodings, the status table.
+
+    Deliberately separate from the vector header. Production code needs the contract's
+    constants and its classification table; it must not be able to reach the test
+    vectors, the commissioning timing profile, or anything else that only a test should
+    see. The split exists because a single header made that reach one #include away.
+    """
+    lines = _licence_and_provenance(
+        version, sha,
+        "Production half: identifiers, field encodings and the status classification\n"
+        " * table. Contains no test vectors and no timing values -- see\n"
+        " * tof_cliff_layout_vectors.json for the commissioning profile, which a\n"
+        " * production configuration must not inherit.")
+    lines += [
         "#include <cstddef>",
         "#include <cstdint>",
         "",
@@ -1053,15 +1068,14 @@ def render_header(vectors, version, sha):
         f'inline constexpr uint8_t kCycleMissFault{{{RESOLVED["N_cycle_miss_fault"]}}};',
         f'inline constexpr uint8_t kCycleAdvanceMax{{{RESOLVED["N_cycle_advance_max"]}}};',
         f"inline constexpr uint8_t kDlc{{{DLC}}};",
+        f"inline constexpr uint8_t kMeasFrameType{{0x{MEAS_FRAME_TYPE:X}}};",
+        f"inline constexpr uint8_t kHealthFrameType{{0x{HEALTH_FRAME_TYPE:X}}};",
+        f"inline constexpr uint8_t kCycleValidBit{{0x{CYCLE_VALID_BIT:X}}};",
+        f"inline constexpr uint8_t kChainFaultBits{{0x{CHAIN_FAULT_BITS:X}}};",
         "",
-        "// NOTE: the commissioning timing profile is deliberately NOT exported here.",
-        "// This header is a test-vector artefact; a production decoder taking its timeouts",
-        "// from it would silently inherit model-derived placeholders as runtime defaults.",
-        "// The profile lives in tof_cliff_layout_vectors.json only, under profile_name",
-        f"// \"{PROFILE_NAME}\", and a production configuration must supply its own.",
-        "",
-        "// The status classification table, shared by both sides so it is not reimplemented",
-        "// twice. NO_SAMPLE statuses are never transmitted; a frame carrying one is invalid.",
+        "// The status classification table. Contract-owned so the packer and the decoder",
+        "// share it instead of each reimplementing it. NO_SAMPLE statuses are never",
+        "// transmitted: a frame carrying one is a producer defect, not an unusable sample.",
         "enum class status_class : uint8_t {",
     ]
     for i, c in enumerate(STATUS_CLASSES):
@@ -1084,6 +1098,45 @@ def render_header(vectors, version, sha):
         lines.append(f"    {{{raw}, status_class::{cls.lower()}, {pending}}},")
     lines += [
         "};",
+        "",
+        "// Reduction priority, most conservative first. The surviving class is the",
+        "// highest-priority one present among the targets.",
+        "inline constexpr status_class kReductionPriority[]{",
+        "    status_class::sensor_fault,",
+        "    status_class::no_sample,",
+        "    status_class::no_target,",
+        "    status_class::valid_range,",
+        "};",
+        "",
+        "}  // namespace tof_cliff_contract",
+        "",
+        "// clang-format on",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_header(vectors, version, sha):
+    """The test half: the vectors and their expected verdicts, nothing else.
+
+    Includes the production header rather than restating its constants, so the two
+    artefacts cannot drift apart.
+    """
+    lines = _licence_and_provenance(
+        version, sha,
+        "Test half: layout vectors and their expected verdicts.\n"
+        " *\n"
+        " * Scope: frame layout and validation verdicts only. The decoder state machine\n"
+        " * (cycle assembly, retirement, staleness, event multisets) is NOT covered here,\n"
+        " * and must not be inferred from these vectors.\n"
+        " *\n"
+        " * Zero dependencies on purpose: the SCBDriver tests have no JSON parser.")
+    lines += [
+        '#include "tof_cliff_contract.h"',
+        "",
+        "// clang-format off",
+        "",
+        "namespace tof_cliff_contract {",
         "",
         "enum class verdict : uint8_t {",
     ]
@@ -1248,9 +1301,12 @@ def main(argv):
 
     version, sha = contract_identity()
     json_path = HERE / "tof_cliff_layout_vectors.json"
+    prod_header_path = HERE / "tof_cliff_contract.h"
     header_path = HERE / "tof_cliff_contract_vectors.h"
 
-    artefacts = ((json_path, render_json), (header_path, render_header))
+    artefacts = ((json_path, render_json),
+                 (prod_header_path, render_prod_header),
+                 (header_path, render_header))
 
     if args.emit:
         if version.startswith("draft-"):

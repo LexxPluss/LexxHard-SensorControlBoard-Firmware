@@ -15,77 +15,22 @@
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
  *
+ * Test half: layout vectors and their expected verdicts.
+ *
  * Scope: frame layout and validation verdicts only. The decoder state machine
- * (cycle assembly, retirement, staleness, event multisets) is NOT covered here.
+ * (cycle assembly, retirement, staleness, event multisets) is NOT covered here,
+ * and must not be inferred from these vectors.
  *
  * Zero dependencies on purpose: the SCBDriver tests have no JSON parser.
  */
 
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
+#include "tof_cliff_contract.h"
 
 // clang-format off
 
 namespace tof_cliff_contract {
-
-inline constexpr char kContractVersion[]{"commissioning-2026-08-18b"};
-inline constexpr char kContractSha256[]{"4b3dae652d73e6eabf17d721a90b06371effbb3aaefb3d25a2218bb860dd47f7"};
-inline constexpr char kProfileName[]{"commissioning-cliff-only-400k"};
-inline constexpr bool kReleaseForbidden{true};
-
-inline constexpr uint16_t kMeasId{0x216};
-inline constexpr uint16_t kHealthId{0x217};
-inline constexpr uint8_t kProtocolVersion{0x1};
-inline constexpr uint16_t kSentinelInvalid{0xFFFF};
-inline constexpr uint8_t kSourceCount{4};
-inline constexpr uint8_t kChainPositionNone{0xFF};
-inline constexpr uint8_t kCycleMissFault{3};
-inline constexpr uint8_t kCycleAdvanceMax{16};
-inline constexpr uint8_t kDlc{8};
-
-// NOTE: the commissioning timing profile is deliberately NOT exported here.
-// This header is a test-vector artefact; a production decoder taking its timeouts
-// from it would silently inherit model-derived placeholders as runtime defaults.
-// The profile lives in tof_cliff_layout_vectors.json only, under profile_name
-// "commissioning-cliff-only-400k", and a production configuration must supply its own.
-
-// The status classification table, shared by both sides so it is not reimplemented
-// twice. NO_SAMPLE statuses are never transmitted; a frame carrying one is invalid.
-enum class status_class : uint8_t {
-    valid_range = 0,
-    no_target = 1,
-    sensor_fault = 2,
-    no_sample = 3,
-};
-
-struct status_row {
-    uint8_t raw;
-    status_class cls;
-    bool validation_pending;
-};
-
-inline constexpr size_t kStatusRowCount{16};
-
-inline constexpr status_row kStatusTable[kStatusRowCount]{
-    {0, status_class::valid_range, false},
-    {1, status_class::no_target, false},
-    {2, status_class::no_target, false},
-    {3, status_class::sensor_fault, true},
-    {4, status_class::no_target, false},
-    {5, status_class::sensor_fault, false},
-    {6, status_class::no_sample, false},
-    {7, status_class::no_target, false},
-    {8, status_class::sensor_fault, false},
-    {9, status_class::sensor_fault, false},
-    {10, status_class::no_sample, false},
-    {11, status_class::no_target, true},
-    {12, status_class::no_target, false},
-    {13, status_class::sensor_fault, false},
-    {14, status_class::sensor_fault, false},
-    {255, status_class::no_target, false},
-};
 
 enum class verdict : uint8_t {
     accept = 0,
