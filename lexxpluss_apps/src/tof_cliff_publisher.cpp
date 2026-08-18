@@ -33,11 +33,17 @@ bool ready_{false};
  * the chain lock held and takes this one, while the health work item and copy_counters take
  * only this one. Nothing here ever reaches for the chain lock.
  *
- * The bus is NOT touched while this is held. A can_send can block for as long as its
- * timeout, and holding a shared mutex across it would let a slow arbitration on the
- * measurement path stall the heartbeat -- which is the one thing that must keep flowing. So
- * the state is snapshotted under the lock, the sends happen outside it, and the counters are
- * updated under it again. */
+ * The bus is NOT touched while this is held. A can_send can block for as long as its timeout,
+ * and holding a shared mutex across it would let a slow arbitration on the measurement path
+ * stall the heartbeat -- which is the one thing that must keep flowing. So the state is
+ * snapshotted under the lock, the sends happen outside it, and the counters are updated under
+ * it again.
+ *
+ * The consequence, stated rather than glossed: the SENDS ARE NOT SERIALISED. A measurement
+ * send and a health send can be in the sink at the same time, which is what makes the sink's
+ * own thread safety a requirement rather than a convenience, and which means there is no
+ * ordering guarantee between a health frame and the measurements of the cycle it describes.
+ * The wire contract already allows that interleaving. */
 K_MUTEX_DEFINE(lock_);
 
 struct guard {

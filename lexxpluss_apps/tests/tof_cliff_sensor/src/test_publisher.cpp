@@ -53,11 +53,25 @@ struct {
     int count;
     int fail_after;   // -1 never fails; otherwise fail from this send onwards
     int send_calls;
+    bool block_measurements;  // hold a measurement send inside the sink until released
+    int measurements_inside;
 } bus;
+
+/* Kept outside `bus` so `bus = {}` in before() cannot clobber an initialised object. */
+K_SEM_DEFINE(sink_entered, 0, 8);
+K_SEM_DEFINE(sink_release, 0, 8);
 
 int fake_send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
 {
     ++bus.send_calls;
+    /* The concurrency test parks a measurement send in here. Health is never blocked, which
+     * is what lets the test show that a stalled measurement does not hold the heartbeat. */
+    if (bus.block_measurements && can_id == ctr::kMeasId) {
+        ++bus.measurements_inside;
+        k_sem_give(&sink_entered);
+        k_sem_take(&sink_release, K_FOREVER);
+        --bus.measurements_inside;
+    }
     if (bus.fail_after >= 0 && bus.send_calls > bus.fail_after)
         return -EIO;
     if (bus.count < static_cast<int>(sizeof bus.frames / sizeof bus.frames[0])) {
@@ -168,6 +182,8 @@ void before(void *)
 {
     bus = {};
     bus.fail_after = -1;
+    k_sem_reset(&sink_entered);
+    k_sem_reset(&sink_release);
     gate_open = false;
     epoch_value = kEpoch;
     state_value = acq::mapping_state::not_ready;
@@ -733,4 +749,83 @@ ZTEST(tof_cliff_publisher, test_a_real_bring_up_failure_still_publishes_health)
                   "a chain that never started is UNKNOWN, not PROVEN");
 
     acq::stop();
+}
+
+/* --------------------------------------------------------- concurrency ------------ */
+
+namespace concurrency {
+
+/* The flush runs on its own thread so the test can observe the system while a measurement
+ * send is parked inside the sink. Everything asserted here is about what remains possible
+ * while that is true. */
+K_THREAD_STACK_DEFINE(flush_stack, 2048);
+struct k_thread flush_thread;
+
+void flush_entry(void *, void *, void *)
+{
+    acq::cycle_facts f{};
+    f.cycle_seq = 21;
+    pub::on_cycle_complete(f);
+}
+
+} // namespace concurrency
+
+ZTEST(tof_cliff_publisher, test_a_stalled_measurement_send_does_not_hold_the_heartbeat)
+{
+    /* The publisher's mutex is released before the sink is called, on purpose: holding it
+     * across a can_send that can block for its whole timeout would put four measurements --
+     * worst case four milliseconds of bounded waiting -- in front of the heartbeat.
+     *
+     * The consequence is that the SENDS are not serialised, only the publisher's state is.
+     * That was true of the previous commit and went undocumented and untested; this is the
+     * test that makes it a checked property rather than a claim. */
+    gate_open = true;
+    bus.block_measurements = true;
+
+    for (uint8_t role = 0; role < kCliffSources; ++role)
+        pub::on_cliff_sample(role, 21, cliff_facts(role), one_valid_target(1100));
+
+    k_thread_create(&concurrency::flush_thread, concurrency::flush_stack,
+                    K_THREAD_STACK_SIZEOF(concurrency::flush_stack), concurrency::flush_entry,
+                    NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+
+    /* Wait until a measurement send is genuinely parked inside the sink. */
+    zassert_equal(k_sem_take(&sink_entered, K_MSEC(500)), 0,
+                  "the flush never reached the sink");
+    zassert_true(bus.measurements_inside > 0);
+
+    /* Health must get through while that is true. If the mutex were held across the send,
+     * this would block until the release below and the timeout would fire. */
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+    zassert_equal(count_id(ctr::kHealthId), 1,
+                  "the heartbeat was held behind a stalled measurement send");
+
+    /* And a counter snapshot must still be obtainable, and be self-consistent: the health
+     * frame is already counted, the parked measurements are not yet. */
+    pub::counters mid{};
+    pub::copy_counters(mid);
+    zassert_equal(mid.health_sent, 1);
+    zassert_equal(mid.measurements_sent, 0, "counted a send that has not returned");
+
+    /* Release every parked send and let the flush finish. */
+    for (int i = 0; i < kCliffSources; ++i)
+        k_sem_give(&sink_release);
+    zassert_equal(k_thread_join(&concurrency::flush_thread, K_MSEC(500)), 0,
+                  "the flush thread did not finish");
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.measurements_sent, kCliffSources, "the counts are not exact");
+    zassert_equal(c.health_sent, 1);
+    zassert_equal(c.send_failed_measurement, 0);
+    zassert_equal(c.queue_full, 0, "the queue was corrupted under concurrent access");
+    zassert_equal(c.discarded_stale_cycle, 0);
+    zassert_equal(count_id(ctr::kMeasId), kCliffSources);
+    zassert_equal(bus.measurements_inside, 0);
+
+    /* The queue is empty again, so the next cycle starts clean. */
+    pub::on_cliff_sample(0, 22, cliff_facts(0), one_valid_target(900));
+    bus.block_measurements = false;
+    flush(22);
+    zassert_equal(count_id(ctr::kMeasId), kCliffSources + 1);
 }

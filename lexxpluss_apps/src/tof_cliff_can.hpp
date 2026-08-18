@@ -21,10 +21,24 @@
  * It does not configure the bus. zcan_main owns can2 -- bitrate, mode and start -- and a
  * second configuration would fight it. This only looks the device up and checks it is ready.
  *
- * It holds no state that the publisher does not already serialise, and it is called from two
- * contexts: the acquisition cycle's flush and the health work item. can_send is thread-safe,
- * so nothing here needs its own lock; the shared state that did need one lives in the
- * publisher, behind its mutex, and the bus is never touched while that mutex is held.
+ * WHAT IS AND IS NOT SERIALISED
+ *
+ * Being precise about this, because the obvious reading is wrong. Called from two contexts --
+ * the acquisition cycle's flush and the health work item -- and:
+ *
+ *   - the publisher's shared state (queue, latched authorisation, counters) IS serialised,
+ *     behind the publisher's mutex;
+ *   - the CAN sends are NOT serialised. The publisher releases its mutex before calling in
+ *     here, so a measurement send and a health send can be in this file at the same time.
+ *     That rests on Zephyr's can_send() being thread-safe, and it is deliberate: serialising
+ *     the sends would put four measurements, worst case four milliseconds of bounded waiting,
+ *     in front of the heartbeat;
+ *   - there is therefore NO ordering guarantee between a health frame and the measurements of
+ *     the cycle it describes. The wire contract already allows them to interleave -- the two
+ *     identifiers arbitrate independently -- so nothing downstream may depend on the order.
+ *
+ * Do not add a transmit mutex to "fix" the second point. It would restore exactly the
+ * blocking the first one exists to avoid.
  */
 
 #include <cstdint>
