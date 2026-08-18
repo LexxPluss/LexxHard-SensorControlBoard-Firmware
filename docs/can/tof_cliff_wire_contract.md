@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-08-18a**
+Contract version: **commissioning-2026-08-18b**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
@@ -331,6 +331,37 @@ reducing differently would disagree about the floor while both passing their own
 
 When the surviving class is `VALID_RANGE` and more than one target qualifies, transmit the **farthest**
 of them.
+
+### Which target's raw status is transmitted
+
+Added 2026-08-18. The rules above pinned the surviving class and the range but left the status byte
+undefined whenever more than one target carried the surviving class — `[idx0: status 5, idx1: status 8]`
+are both `SENSOR_FAULT`, and nothing said whether `5` or `8` reaches the wire. That is exactly the gap
+that lets two implementations disagree about the floor while each passes its own tests, which is why
+this reduction is contract-owned rather than an implementation choice.
+
+> Select the highest-priority class first. If that class holds more than one target, select the one with
+> the **lowest index in the ULD's raw result array**, and transmit its raw status unchanged. **Do not
+> sort and then take.** `VALID_RANGE` remains the exception: select the **farthest** target, and
+> transmit **that** target's raw status.
+
+Why this rule and not the alternatives:
+
+- The status always comes from a **real target**, which is what "transmitted unchanged" requires. Under
+  `VALID_RANGE` the range and the status come from the same target, so the frame describes one target
+  rather than a composite of two.
+- **Lowest index, not lowest numeric value.** The numeric ordering of the status codes carries no safety
+  or device meaning — one enumerator simply happens to be smaller than another. The index does carry
+  meaning: it is the first target the device reported.
+- An aggregate sentinel such as `0xFE` would **no longer be a ULD raw status**, so introducing one is a
+  `protocol_version` bump, not a reduction rule.
+- If the ULD's target ordering ever jitters, the consequence is confined to the **diagnostic** status
+  byte. The surviving class, the range encoding and therefore the stopping outcome are unchanged. That
+  is the property that makes depending on vendor ordering acceptable here.
+
+This rule is exercised by the packer's reduction tests, not by the layout vectors: the pre-reduction
+target list never reaches the wire, so the decoder cannot see it and there is nothing for a shared
+vector to pin.
 
 **Farthest, not nearest — and this is the opposite of the grid path.** The hanging-object path takes the
 per-zone *minimum*, because there the hazard is something being closer than expected. Here the hazard is
