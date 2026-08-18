@@ -16,11 +16,36 @@
  * no staleness and no notion of READY -- those need timing values that are still
  * unresolved and event-multiset vectors that do not exist.
  *
+ * NOTHING IS SENT UNDER THE CHAIN LOCK
+ *
+ * tof_acquisition calls on_cliff_sample from inside run_cycle(), which holds the chain
+ * lock. A synchronous CAN send there would let bus backpressure block the whole I2C
+ * schedule -- one slow arbitration and every sensor's next read is late. So a sample is
+ * encoded into a bounded pending buffer under the lock and nothing touches the bus until
+ * on_cycle_complete(), which the acquisition layer calls after unlocking.
+ *
+ * Frames are attempted exactly once and then dropped, whatever the outcome. They are never
+ * retried and never carried into the next cycle: a range that failed to send is a stale
+ * range by the time the bus recovers, and "old values are never re-sent" is the one thing
+ * the contract forbids outright. So the queue cannot grow across cycles, and queue_full
+ * counts a defect rather than ordinary backpressure.
+ *
+ * Health is sent directly, because it runs on its own work item with no lock held. That is
+ * the whole reason the contract puts it on a separate timer.
+ *
  * NO CAN DEPENDENCY HERE, ON PURPOSE
  *
  * The sink is an injected function pointer, so this translation unit compiles and is fully
  * testable without Zephyr's CAN driver. The real glue is a separate commit and a separate
  * file, which is also what lets the flash cost of the glue be measured on its own.
+ *
+ * ONE AUTHORISATION READ, NOT TWO CALLBACKS
+ *
+ * Whether publication is allowed and which epoch the frames carry are read together, once
+ * per operation, as a single value. Two independent callbacks could disagree: the mapping
+ * could be lost between them, and the frame would go out authorised under a mapping that no
+ * longer holds, or carry the wrong epoch. Neither is acceptable once PROVEN is reachable,
+ * and it is cheaper to get right now than to remember later.
  *
  * THE PUBLICATION GATE, AND WHY IT IS INJECTED
  *
@@ -75,19 +100,23 @@ struct can_sink {
     int (*send)(uint16_t can_id, const uint8_t *data, uint8_t dlc);
 };
 
+/* Read once per operation, so the gate and the epoch cannot disagree. */
+struct authorisation {
+    bool allowed{false};
+    uint8_t epoch{0};
+};
+
 struct config {
     struct can_sink sink{};
     /* The acquisition descriptor table, read for `kind` and `role_id` only and never
-     * written. Needed because the snapshot's bits are per acquisition index while the
-     * contract's masks are per cliff source_id; this is the only thing that bridges them,
-     * and being immutable is what keeps the heartbeat off the acquisition path. */
+     * written. Used to cross-check the facts the sink was handed against the descriptor
+     * for that index: a mismatch means the sink was called with arguments that do not
+     * belong together, which is a wiring defect and not something a sensor can cause. */
     const tof_acq::source_desc *sources{nullptr};
     int source_count{0};
-    /* Production MUST pass tof_acq::publication_allowed. See the note above. */
-    bool (*publication_allowed)(){nullptr};
-    /* The mapping epoch the frames are stamped with. Injected rather than counted here:
-     * the epoch belongs to whatever proves the mapping, not to whatever publishes. */
-    uint8_t (*mapping_epoch)(){nullptr};
+    /* Production MUST return {tof_acq::publication_allowed(), <the proving epoch>} read
+     * together. See the notes above. */
+    struct authorisation (*authorise)(){nullptr};
 };
 
 /* Counters, not logs: a host test can assert on them, and they keep the three reasons a
@@ -98,25 +127,37 @@ struct counters {
     /* Suppressed before the packer ran. */
     uint32_t suppressed_not_proven{0};
     uint32_t suppressed_wrong_model{0};
+    /* The facts disagreed with the descriptor for that index. A wiring defect. */
+    uint32_t suppressed_role_mismatch{0};
     /* Suppressed by the packer: no frame is owed, or the input was unencodable. */
     uint32_t suppressed_no_frame{0};
     uint32_t suppressed_packer_refused{0};
+    /* The frame was encoded and there was no room to queue it. Cannot happen while the
+     * queue is drained every cycle and holds one slot per source, so this counts a defect. */
+    uint32_t queue_full{0};
     /* The frame was built and the transport rejected it. Deliberately separate from every
      * counter above: "the sensor said something we will not send" and "the bus would not
      * take it" have nothing to do with each other. */
     uint32_t send_failed_measurement{0};
     uint32_t send_failed_health{0};
+    /* The health fields contradicted the contract, so the packer refused to encode them.
+     * Kept apart from send_failed_health: one is a defect in what this layer assembled, the
+     * other is the bus refusing a correct frame. */
+    uint32_t health_encode_refused{0};
     /* The last packer refusal reason, for triage. */
     tof_cliff_packer::reason last_refusal{tof_cliff_packer::reason::none};
 };
 
-/* Returns -EINVAL for a missing sink, gate, epoch provider or source table. */
+/* Returns -EINVAL for a missing sink, authorisation callback or source table. */
 int init(const struct config &cfg);
 
 /* Wire these to tof_acq::sinks. Signatures match on purpose, so the wiring is a
  * one-liner and there is nowhere to insert a transformation. */
 void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts &facts,
                      const struct tof_cliff_sample &sample);
+/* Wire to tof_acq::sinks::on_cycle. Drains the pending buffer; this is where the bus is
+ * actually touched, and it runs after the chain lock has been released. */
+void on_cycle_complete(const tof_acq::cycle_facts &facts);
 void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state);
 
 void copy_counters(struct counters &out);

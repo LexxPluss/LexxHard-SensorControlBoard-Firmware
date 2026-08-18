@@ -23,6 +23,29 @@ config cfg_{};
 counters counters_{};
 bool ready_{false};
 
+/* One slot per source is enough by construction: at most one measurement per source per
+ * cycle, and the queue is drained at the end of every cycle. Sized to kMaxSources rather
+ * than to the cliff count so a table with more cliff sources cannot silently overflow it. */
+struct pending_frame {
+    uint16_t can_id;
+    uint8_t dlc;
+    uint8_t data[8];
+};
+pending_frame queue_[tof_acq::kMaxSources]{};
+int queued_{0};
+
+bool enqueue(uint16_t can_id, const uint8_t *data, uint8_t dlc)
+{
+    if (queued_ >= static_cast<int>(sizeof queue_ / sizeof queue_[0]))
+        return false;
+    pending_frame &f{queue_[queued_++]};
+    f.can_id = can_id;
+    f.dlc = dlc;
+    for (int i = 0; i < 8; ++i)
+        f.data[i] = data[i];
+    return true;
+}
+
 /* The snapshot's bit layout is deliberately NOT restated here. This commit fills none of
  * the fields that would need it, and a private copy of a layout that lives in another
  * translation unit would drift with nothing to catch it. Whichever commit first needs the
@@ -57,14 +80,14 @@ uint8_t wire_mapping_state(tof_acq::mapping_state state)
 
 int init(const struct config &cfg)
 {
-    if (cfg.sink.send == nullptr || cfg.publication_allowed == nullptr ||
-        cfg.mapping_epoch == nullptr || cfg.sources == nullptr)
+    if (cfg.sink.send == nullptr || cfg.authorise == nullptr || cfg.sources == nullptr)
         return -EINVAL;
     if (cfg.source_count <= 0 || cfg.source_count > tof_acq::kMaxSources)
         return -EINVAL;
 
     cfg_ = cfg;
     counters_ = counters{};
+    queued_ = 0;
     ready_ = true;
     return 0;
 }
@@ -86,10 +109,23 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
         return;
     }
 
-    /* The gate, before any encoding. Outside PROVEN a measurement frame carries a
-     * source_id that is this firmware's unproven guess rather than a physical position,
-     * so there is no such thing as trustworthy position-numbered production data. */
-    if (!cfg_.publication_allowed()) {
+    /* The descriptor for this index must agree with the facts the sink was handed. A
+     * disagreement means the two arguments do not belong together, which no sensor can
+     * cause -- it is a wiring defect, and packing it would attach a range to a role that
+     * did not produce it. */
+    const tof_acq::source_desc &d{cfg_.sources[index]};
+    if (d.kind != facts.kind || d.role_id != facts.role_id) {
+        counters_.suppressed_role_mismatch++;
+        return;
+    }
+
+    /* Gate and epoch read together, once. Two separate reads could straddle a mapping
+     * change and authorise a frame under a mapping that no longer holds. */
+    const authorisation auth{cfg_.authorise()};
+    if (!auth.allowed) {
+        /* Outside PROVEN a measurement frame carries a source_id that is this firmware's
+         * unproven guess rather than a physical position, so there is no such thing as
+         * trustworthy position-numbered production data. */
         counters_.suppressed_not_proven++;
         return;
     }
@@ -108,20 +144,38 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
 
     uint8_t frame[8]{};
     pk::reason why{pk::reason::none};
-    if (!pk::encode_measurement(r, facts.role_id, cfg_.mapping_epoch(),
+    if (!pk::encode_measurement(r, facts.role_id, auth.epoch,
                                 static_cast<uint8_t>(cycle_seq & 0xFF), frame, &why)) {
         counters_.suppressed_packer_refused++;
         counters_.last_refusal = why;
         return;
     }
 
-    if (cfg_.sink.send(ctr::kMeasId, frame, ctr::kDlc) != 0) {
-        /* Counted apart from every suppression above: the frame was correct and the bus
-         * would not take it, which is a transport problem and not a sensor one. */
-        counters_.send_failed_measurement++;
+    /* Queued, not sent. This runs under the chain lock; touching the bus here would let
+     * CAN backpressure stall every sensor's next read. */
+    if (!enqueue(ctr::kMeasId, frame, ctr::kDlc))
+        counters_.queue_full++;
+}
+
+void on_cycle_complete(const tof_acq::cycle_facts &facts)
+{
+    (void)facts;
+    if (!ready_)
         return;
+
+    /* The lock is released by the time this runs, so blocking here costs a late cycle
+     * rather than a stalled I2C schedule. Each frame is offered exactly once and then
+     * dropped whatever happens: carrying a failed range into the next cycle would put a
+     * stale distance on the wire, which the contract forbids outright. */
+    for (int i = 0; i < queued_; ++i) {
+        const pending_frame &f{queue_[i]};
+        if (cfg_.sink.send(f.can_id, f.data, f.dlc) != 0) {
+            counters_.send_failed_measurement++;
+            continue;
+        }
+        counters_.measurements_sent++;
     }
-    counters_.measurements_sent++;
+    queued_ = 0;
 }
 
 void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
@@ -130,7 +184,9 @@ void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
         return;
 
     pk::health_fields h{};
-    h.mapping_epoch = cfg_.mapping_epoch();
+    /* The epoch comes from the same authorisation read as the gate would; health is sent
+     * whether or not publication is allowed, so only the epoch half is used here. */
+    h.mapping_epoch = cfg_.authorise().epoch;
     h.health_seq = static_cast<uint8_t>(counters_.health_sent & 0xFF);
     h.mapping_state = wire_mapping_state(state);
     h.failing_chain_position = ctr::kChainPositionNone;
@@ -151,9 +207,9 @@ void on_cliff_health(uint32_t snapshot, tof_acq::mapping_state state)
 
     uint8_t frame[8]{};
     if (!pk::encode_health(h, frame)) {
-        /* The packer refuses contradictory health, so reaching this is a defect in the
-         * fields assembled just above rather than anything the sensors did. */
-        counters_.send_failed_health++;
+        /* A defect in the fields assembled just above, not the bus refusing a correct
+         * frame. Counted apart from send_failed_health for exactly that reason. */
+        counters_.health_encode_refused++;
         return;
     }
     if (cfg_.sink.send(ctr::kHealthId, frame, ctr::kDlc) != 0) {

@@ -94,11 +94,12 @@ const ctr::vector *find_vector(const char *name)
     return nullptr;
 }
 
-/* The injected gate. Closed by default, so a test that forgets to open it sees production
- * behaviour rather than an accidental publish. */
+/* The injected authorisation. Closed by default, so a test that forgets to open it sees
+ * production behaviour rather than an accidental publish. Gate and epoch are one value, so
+ * a test cannot accidentally exercise a combination production cannot produce. */
 bool gate_open{false};
-bool test_gate() { return gate_open; }
-uint8_t epoch_provider() { return kEpoch; }
+uint8_t epoch_value{kEpoch};
+pub::authorisation test_authorise() { return {gate_open, epoch_value}; }
 
 /* The publisher needs the descriptor table for kind and role_id. Same shape the
  * acquisition harness uses: four cliff sources then two grid stubs. */
@@ -119,8 +120,7 @@ pub::config make_pub_config()
     c.sink.send = fake_send;
     c.sources = descs;
     c.source_count = acq::kMaxSources;
-    c.publication_allowed = test_gate;
-    c.mapping_epoch = epoch_provider;
+    c.authorise = test_authorise;
     return c;
 }
 
@@ -146,11 +146,21 @@ acq::source_facts cliff_facts(uint8_t role)
     return f;
 }
 
+/* Nothing reaches the bus until the cycle ends, because on_cliff_sample runs under the
+ * chain lock. Every measurement assertion therefore flushes first -- which is also the
+ * property being tested. */
+void flush()
+{
+    acq::cycle_facts unused{};
+    pub::on_cycle_complete(unused);
+}
+
 void before(void *)
 {
     bus = {};
     bus.fail_after = -1;
     gate_open = false;
+    epoch_value = kEpoch;
     build_descs();
     zassert_equal(pub::init(make_pub_config()), 0);
 }
@@ -182,6 +192,7 @@ ZTEST(tof_cliff_publisher, test_no_measurement_is_sent_while_the_mapping_is_not_
     const auto s{one_valid_target(900)};
     for (uint8_t role = 0; role < kCliffSources; ++role)
         pub::on_cliff_sample(role, 1, cliff_facts(role), s);
+    flush();
 
     zassert_equal(count_id(ctr::kMeasId), 0, "published a range without a proven mapping");
 
@@ -233,10 +244,8 @@ ZTEST(tof_cliff_publisher, test_health_bytes_match_the_named_vector)
     /* The vector uses epoch 1 and health_seq 8. health_seq is the count BEFORE the
      * increment, so the ninth call is the one carrying 8 -- an off-by-one worth spelling
      * out, because eight calls looks right and produces seq 7. */
-    pub::config c{make_pub_config()};
-    static uint8_t epoch_one_value{1};
-    c.mapping_epoch = [] { return epoch_one_value; };
-    zassert_equal(pub::init(c), 0);
+    epoch_value = 1;
+    zassert_equal(pub::init(make_pub_config()), 0);
     for (int i = 0; i < 9; ++i)
         pub::on_cliff_health(0, acq::mapping_state::not_ready);
 
@@ -252,14 +261,13 @@ ZTEST(tof_cliff_publisher, test_health_bytes_match_the_named_vector)
 ZTEST(tof_cliff_publisher, test_measurement_bytes_match_the_named_vector)
 {
     gate_open = true;
-    pub::config c{make_pub_config()};
-    static uint8_t one{1};
-    c.mapping_epoch = [] { return one; };
-    zassert_equal(pub::init(c), 0);
+    epoch_value = 1;
+    zassert_equal(pub::init(make_pub_config()), 0);
     gate_open = true;
 
     /* The vector is source 0, epoch 1, cycle 0, range 1234, status 0, one target. */
     pub::on_cliff_sample(0, 0, cliff_facts(0), one_valid_target(1234));
+    flush();
 
     const auto *v{find_vector("meas_role_0_front_left")};
     zassert_not_null(v);
@@ -279,6 +287,7 @@ ZTEST(tof_cliff_publisher, test_the_cycle_the_sample_belongs_to_reaches_the_wire
     pub::on_cliff_sample(0, 0, cliff_facts(0), one_valid_target(900));
     pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
     pub::on_cliff_sample(0, 258, cliff_facts(0), one_valid_target(900));
+    flush();
 
     zassert_equal(count_id(ctr::kMeasId), 3);
     zassert_equal(bus.frames[0].data[2], 0);
@@ -293,6 +302,7 @@ ZTEST(tof_cliff_publisher, test_a_stale_sample_is_not_published)
     s.fresh = false;
 
     pub::on_cliff_sample(0, 1, cliff_facts(0), s);
+    flush();
 
     zassert_equal(count_id(ctr::kMeasId), 0, "a stale sample must never reach the bus");
     pub::counters c{};
@@ -313,6 +323,7 @@ ZTEST(tof_cliff_publisher, test_a_packer_refusal_sends_nothing_at_all)
     s.entries[0].range_status = 5;
 
     pub::on_cliff_sample(0, 1, cliff_facts(0), s);
+    flush();
 
     zassert_equal(bus.send_calls, 0, "a refused frame must not be handed to the bus");
     pub::counters c{};
@@ -332,6 +343,7 @@ ZTEST(tof_cliff_publisher, test_l7_stub_data_never_reaches_the_cliff_packer)
     grid.kind = acq::model::l7_grid;
 
     pub::on_cliff_sample(4, 1, grid, one_valid_target(900));
+    flush();
 
     zassert_equal(bus.send_calls, 0);
     pub::counters c{};
@@ -350,6 +362,7 @@ ZTEST(tof_cliff_publisher, test_a_bus_failure_is_counted_apart_from_a_sensor_fai
     bus.fail_after = 0; // every send fails
 
     pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
+    flush();
     pub::on_cliff_health(0, acq::mapping_state::not_ready);
 
     pub::counters c{};
@@ -373,7 +386,8 @@ ZTEST(tof_cliff_publisher, test_health_keeps_flowing_after_a_measurement_bus_fai
     bus.fail_after = 1; // the first send succeeds, everything after fails
 
     pub::on_cliff_health(0, acq::mapping_state::not_ready); // succeeds
-    pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900)); // fails
+    pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
+    flush();                                                // this send fails
     pub::on_cliff_health(0, acq::mapping_state::not_ready); // fails too, but is attempted
 
     pub::counters c{};
@@ -395,10 +409,220 @@ ZTEST(tof_cliff_publisher, test_init_refuses_an_incomplete_configuration)
         return pub::init(base);
     };
     zassert_equal(missing(c, [](pub::config &x) { x.sink.send = nullptr; }), -EINVAL);
-    zassert_equal(missing(c, [](pub::config &x) { x.publication_allowed = nullptr; }), -EINVAL);
-    zassert_equal(missing(c, [](pub::config &x) { x.mapping_epoch = nullptr; }), -EINVAL);
+    zassert_equal(missing(c, [](pub::config &x) { x.authorise = nullptr; }), -EINVAL);
     zassert_equal(missing(c, [](pub::config &x) { x.sources = nullptr; }), -EINVAL);
     zassert_equal(missing(c, [](pub::config &x) { x.source_count = 0; }), -EINVAL);
     zassert_equal(missing(c, [](pub::config &x) { x.source_count = acq::kMaxSources + 1; }),
                   -EINVAL);
+}
+
+/* ------------------------------------------------------- nothing under the lock --- */
+
+ZTEST(tof_cliff_publisher, test_nothing_reaches_the_bus_before_the_cycle_ends)
+{
+    /* on_cliff_sample runs under the chain lock. A synchronous send there would let CAN
+     * backpressure stall every sensor's next read, so the frame is queued and the bus is
+     * only touched after the lock is released. */
+    gate_open = true;
+    for (uint8_t role = 0; role < kCliffSources; ++role)
+        pub::on_cliff_sample(role, 3, cliff_facts(role), one_valid_target(700));
+
+    zassert_equal(bus.send_calls, 0, "the bus was touched while the chain lock was held");
+
+    flush();
+    zassert_equal(count_id(ctr::kMeasId), kCliffSources);
+}
+
+ZTEST(tof_cliff_publisher, test_a_failed_frame_is_never_carried_into_the_next_cycle)
+{
+    /* A range that failed to send is a stale range by the time the bus recovers, and the
+     * contract forbids re-sending old values outright. So a frame is offered exactly once
+     * and then dropped, whatever happened. */
+    gate_open = true;
+    bus.fail_after = 0; // every send fails
+    pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
+    flush();
+    zassert_equal(bus.send_calls, 1);
+
+    bus.fail_after = -1; // the bus recovers
+    flush();             // the next cycle ends with nothing queued
+    zassert_equal(bus.send_calls, 1, "a failed frame was retried on a later cycle");
+    zassert_equal(count_id(ctr::kMeasId), 0);
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.send_failed_measurement, 1);
+    zassert_equal(c.queue_full, 0);
+}
+
+/* ------------------------------------------------------- descriptor agreement ----- */
+
+ZTEST(tof_cliff_publisher, test_facts_disagreeing_with_the_descriptor_are_refused)
+{
+    /* No sensor can cause this: it means the sink was handed an index and a set of facts
+     * that do not belong together, and packing it would attach a range to a role that did
+     * not produce it. */
+    gate_open = true;
+    acq::source_facts wrong{cliff_facts(0)};
+    wrong.role_id = 2; // descriptor 0 carries role 0
+
+    pub::on_cliff_sample(0, 1, wrong, one_valid_target(900));
+    flush();
+
+    zassert_equal(bus.send_calls, 0);
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.suppressed_role_mismatch, 1);
+}
+
+/* ------------------------------------------------------------ real integration ---- */
+
+namespace integration {
+
+int fake_dev[acq::kMaxSources];
+int fake_scratch[acq::kMaxSources];
+int16_t canned_mm{1234};
+bool start_fails{false};
+
+int op_open(void *, uint8_t, acq::op_status *) { return 0; }
+int op_configure(void *, acq::op_status *) { return 0; }
+int op_start(void *, acq::op_status *st)
+{
+    if (start_fails) {
+        st->stage = TOF_CLIFF_STAGE_START;
+        return -EIO;
+    }
+    return 0;
+}
+int op_stop(void *, acq::op_status *) { return 0; }
+int op_read(void *, void *, struct tof_cliff_sample *out, acq::op_status *)
+{
+    *out = tof_cliff_sample{};
+    out->fresh = true;
+    out->target_count = 1;
+    out->entry_count = 1;
+    out->entries[0].range_mm = canned_mm;
+    out->entries[0].range_status = 0;
+    return 0;
+}
+
+const acq::source_ops kOps{op_open, op_configure, op_start, op_read, op_stop};
+
+acq::mapping_state provider() { return acq::mapping_state::proven; }
+uint32_t clock_ms() { return 0; }
+
+acq::config make_acq_config()
+{
+    acq::config c{};
+    for (int i = 0; i < acq::kMaxSources; ++i) {
+        descs[i].dev = &fake_dev[i];
+        descs[i].scratch = &fake_scratch[i];
+        descs[i].ops = &kOps;
+    }
+    c.sources = descs;
+    c.source_count = acq::kMaxSources;
+    c.periods.cycle_period_ms = 50;
+    c.periods.health_period_ms = 100;
+    /* The real wiring: the acquisition layer's sinks are the publisher's entry points, and
+     * nothing sits in between to transform anything. */
+    c.hooks.on_cycle = pub::on_cycle_complete;
+    c.hooks.on_cliff_sample = pub::on_cliff_sample;
+    c.hooks.on_cliff_health = pub::on_cliff_health;
+    c.mapping_state_provider = provider;
+    c.now_ms = clock_ms;
+    return c;
+}
+
+} // namespace integration
+
+ZTEST(tof_cliff_publisher, test_a_real_cycle_reaches_the_bus_through_the_packer)
+{
+    /* The whole path, not an interface splice: acq::init with the publisher's own functions
+     * as the sinks, bring_up over fake device ops, then a real run_cycle that reads every
+     * source, calls the sink under the lock, and flushes on the way out. */
+    integration::start_fails = false;
+    integration::canned_mm = 1234;
+    build_descs();
+    zassert_equal(acq::init(integration::make_acq_config()), 0);
+    epoch_value = 1;
+    zassert_equal(pub::init(make_pub_config()), 0);
+    gate_open = true;
+
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    /* Four cliff sources produced a sample; the two grid stubs are gated out by the
+     * acquisition layer itself, before the publisher ever sees them. */
+    zassert_equal(count_id(ctr::kMeasId), kCliffSources,
+                  "the real cycle did not deliver one frame per cliff source");
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.measurements_sent, kCliffSources);
+    zassert_equal(c.suppressed_wrong_model, 0, "the grid stubs must not reach this layer");
+    zassert_equal(c.suppressed_role_mismatch, 0);
+
+    /* Byte-exact against the contract's vector: source 0, epoch 1, cycle 1, range 1234. A
+     * real cycle numbers from 1, so only the cycle byte differs from the named vector. */
+    const auto *v{find_vector("meas_role_0_front_left")};
+    zassert_not_null(v);
+    const sent_frame *f{&bus.frames[0]};
+    zassert_equal(f->data[0], v->bytes[0]);
+    zassert_equal(f->data[1], v->bytes[1]);
+    zassert_equal(f->data[2], 1, "the first real cycle is 1, not 0");
+    for (int i = 3; i < 8; ++i)
+        zassert_equal(f->data[i], v->bytes[i], "byte %d", i);
+
+    acq::stop();
+}
+
+ZTEST(tof_cliff_publisher, test_a_real_cycle_publishes_nothing_with_the_production_gate)
+{
+    /* The same path with the gate wired the way production wires it. Every sensor answers,
+     * every sample is fresh, and not one frame is published -- which is the behaviour a
+     * bring-up engineer should see on hardware today. */
+    integration::start_fails = false;
+    build_descs();
+    zassert_equal(acq::init(integration::make_acq_config()), 0);
+
+    pub::config c{make_pub_config()};
+    c.authorise = [] { return pub::authorisation{acq::publication_allowed(), 1}; };
+    zassert_equal(pub::init(c), 0);
+
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+    acq::run_cycle();
+
+    zassert_equal(count_id(ctr::kMeasId), 0,
+                  "the production gate let a range onto the bus");
+    pub::counters got{};
+    pub::copy_counters(got);
+    zassert_equal(got.suppressed_not_proven, 2 * kCliffSources);
+    zassert_equal(got.measurements_sent, 0);
+
+    acq::stop();
+}
+
+ZTEST(tof_cliff_publisher, test_a_real_bring_up_failure_still_publishes_health)
+{
+    /* Nothing starts, so no cycle produces anything -- and health still has to go out, or
+     * a dead subsystem is indistinguishable from a silent bus. */
+    integration::start_fails = true;
+    build_descs();
+    zassert_equal(acq::init(integration::make_acq_config()), 0);
+    zassert_equal(pub::init(make_pub_config()), 0);
+
+    (void)acq::bring_up();
+    acq::run_cycle();
+    pub::on_cliff_health(acq::snapshot(), acq::effective_mapping_state());
+
+    zassert_equal(count_id(ctr::kMeasId), 0);
+    zassert_equal(count_id(ctr::kHealthId), 1);
+
+    const sent_frame *h{last_of(ctr::kHealthId)};
+    zassert_not_null(h);
+    zassert_equal(static_cast<uint8_t>(h->data[3] >> 4), 0x0,
+                  "a chain that never started is UNKNOWN, not PROVEN");
+
+    acq::stop();
 }
