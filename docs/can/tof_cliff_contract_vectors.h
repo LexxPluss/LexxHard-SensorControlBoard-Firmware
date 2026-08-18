@@ -32,26 +32,7 @@
 
 namespace tof_cliff_contract {
 
-enum class verdict : uint8_t {
-    accept = 0,
-    dlc_not_8 = 1,
-    frame_type_mismatch = 2,
-    source_id_out_of_range = 3,
-    reserved_field_nonzero = 4,
-    target_count_malformed = 5,
-    status_undefined = 6,
-    status_not_transmissible = 7,
-    range_contradicts_status = 8,
-    no_target_encoding_inconsistent = 9,
-    protocol_version_zero = 10,
-    protocol_version_unsupported = 11,
-    mapping_state_malformed = 12,
-    chain_position_malformed = 13,
-    cycle_fields_inconsistent = 14,
-    mask_fault_without_sample = 15,
-    chain_position_without_fault = 16,
-};
-
+// verdict comes from the production header: one definition, both sides.
 enum class frame_kind : uint8_t { measurement = 0, health = 1 };
 
 struct vector {
