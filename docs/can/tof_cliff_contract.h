@@ -19,14 +19,19 @@
  * table. Contains no test vectors and no timing values -- see
  * tof_cliff_layout_vectors.json for the commissioning profile, which a
  * production configuration must not inherit.
+ *
+ * clang-format is disabled for the whole file, starting above the include guard.
+ * SCBDriver's CI reformats every .h in the repository with an explicitly named
+ * style file, which overrides any directory .clang-format -- so a generated file
+ * can only stay byte-identical across the two repositories by opting out here, in
+ * the generator, rather than per checkout.
  */
 
+// clang-format off
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
-
-// clang-format off
 
 namespace tof_cliff_contract {
 

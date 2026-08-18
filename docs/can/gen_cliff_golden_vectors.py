@@ -1025,8 +1025,15 @@ def _licence_and_provenance(version, sha, what):
         f" * {BANNER}",
         " *",
         f" * {what}",
+        " *",
+        " * clang-format is disabled for the whole file, starting above the include guard.",
+        " * SCBDriver's CI reformats every .h in the repository with an explicitly named",
+        " * style file, which overrides any directory .clang-format -- so a generated file",
+        " * can only stay byte-identical across the two repositories by opting out here, in",
+        " * the generator, rather than per checkout.",
         " */",
         "",
+        "// clang-format off",
         "#pragma once",
         "",
     ]
@@ -1049,8 +1056,6 @@ def render_prod_header(vectors, version, sha):
     lines += [
         "#include <cstddef>",
         "#include <cstdint>",
-        "",
-        "// clang-format off",
         "",
         "namespace tof_cliff_contract {",
         "",
@@ -1144,8 +1149,6 @@ def render_header(vectors, version, sha):
         " * Zero dependencies on purpose: the SCBDriver tests have no JSON parser.")
     lines += [
         '#include "tof_cliff_contract.h"',
-        "",
-        "// clang-format off",
         "",
         "namespace tof_cliff_contract {",
         "",
