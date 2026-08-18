@@ -385,7 +385,7 @@ void run_cycle()
         // The payload goes to the model's own sink, so neither packer ever has to step
         // over the other model's data, and the fail direction stays out of here.
         if (f.sample_produced && d.kind == model::l4_cliff)
-            cfg_.hooks.on_cliff_sample(i, f, sample);
+            cfg_.hooks.on_cliff_sample(i, facts_.cycle_seq, f, sample);
     }
 
     in_cycle_ = false;

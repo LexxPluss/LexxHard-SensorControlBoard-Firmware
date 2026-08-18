@@ -170,7 +170,13 @@ struct cycle_facts {
 struct sinks {
     void (*on_cycle)(const cycle_facts &facts);
     // Raw, unclassified, unreduced. index is the source index in the descriptor table.
-    void (*on_cliff_sample)(int index, const source_facts &facts,
+    //
+    // cycle_seq is passed rather than left to be looked up, because the wire contract
+    // correlates a measurement with its health frame by it and this is the only place the
+    // sample and its cycle are both in hand. on_cycle fires AFTER every sample, so a sink
+    // latching the value from there would stamp the previous cycle; and reading it back
+    // through copy_facts() is worse -- this call happens under the chain lock.
+    void (*on_cliff_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
                             const struct tof_cliff_sample &sample);
     // Sent from startup, on its own timer, never from the acquisition path.
     void (*on_cliff_health)(uint32_t snapshot, mapping_state state);

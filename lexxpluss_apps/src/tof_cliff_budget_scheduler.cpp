@@ -28,7 +28,7 @@ void on_cycle(const acq::cycle_facts &f)
     sink_cycles = f.cycle_seq;
 }
 
-void on_cliff_sample(int, const acq::source_facts &, const struct tof_cliff_sample &s)
+void on_cliff_sample(int, uint32_t, const acq::source_facts &, const struct tof_cliff_sample &s)
 {
     sink_mm = s.entries[0].range_mm;
 }

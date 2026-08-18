@@ -156,7 +156,7 @@ void on_cycle(const acq::cycle_facts &facts)
     rec.last = facts;
 }
 
-void on_cliff_sample(int index, const acq::source_facts &, const struct tof_cliff_sample &s)
+void on_cliff_sample(int index, uint32_t, const acq::source_facts &, const struct tof_cliff_sample &s)
 {
     ++rec.cliff_samples;
     rec.last_sample_index = index;
