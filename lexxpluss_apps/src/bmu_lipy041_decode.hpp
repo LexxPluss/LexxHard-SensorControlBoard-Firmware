@@ -24,6 +24,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace lexxhard::bmu_lipy041 {
@@ -103,16 +104,53 @@ struct msg_0x131 {
     uint32_t accumulated_capacity{0};
 };
 
-void decode_0x100(const uint8_t data[8], msg_0x100 &msg);
-void decode_0x101(const uint8_t data[8], msg_0x101 &msg);
-void decode_0x103(const uint8_t data[8], msg_0x103 &msg);
-void decode_0x110(const uint8_t data[8], msg_0x110 &msg);
-void decode_0x111(const uint8_t data[8], msg_0x111 &msg);
-void decode_0x112(const uint8_t data[8], msg_0x112 &msg);
-void decode_0x113(const uint8_t data[8], msg_0x113 &msg);
-void decode_0x120(const uint8_t data[8], msg_0x120 &msg);
-void decode_0x130(const uint8_t data[8], msg_0x130 &msg);
-void decode_0x131(const uint8_t data[8], msg_0x131 &msg);
+// Bundles all 10 message structs consumed by bmu_controller.cpp's bmu_info shell
+// output. Moved here (was previously lexxhard::bmu_controller::msg_bmu) so
+// decode_frame_bmu_info() can be declared alongside the other decode functions.
+struct msg_bmu {
+    msg_0x100 f100;
+    msg_0x101 f101;
+    msg_0x103 f103;
+    msg_0x110 f110;
+    msg_0x111 f111;
+    msg_0x112 f112;
+    msg_0x113 f113;
+    msg_0x120 f120;
+    msg_0x130 f130;
+    msg_0x131 f131;
+} __attribute__((aligned(4)));
+
+// All decode_0x1XX functions require dlc == 8 (every LIPY041 List# frame is a fixed
+// 8 bytes per the datasheet). On dlc != 8 they leave msg untouched and return false,
+// so a stale cached value is kept rather than mixing in hardware-register residue
+// from a short frame (STM32 bxcan always copies 8 bytes regardless of dlc).
+bool decode_0x100(const uint8_t data[8], uint8_t dlc, msg_0x100 &msg);
+bool decode_0x101(const uint8_t data[8], uint8_t dlc, msg_0x101 &msg);
+bool decode_0x103(const uint8_t data[8], uint8_t dlc, msg_0x103 &msg);
+bool decode_0x110(const uint8_t data[8], uint8_t dlc, msg_0x110 &msg);
+bool decode_0x111(const uint8_t data[8], uint8_t dlc, msg_0x111 &msg);
+bool decode_0x112(const uint8_t data[8], uint8_t dlc, msg_0x112 &msg);
+bool decode_0x113(const uint8_t data[8], uint8_t dlc, msg_0x113 &msg);
+bool decode_0x120(const uint8_t data[8], uint8_t dlc, msg_0x120 &msg);
+bool decode_0x130(const uint8_t data[8], uint8_t dlc, msg_0x130 &msg);
+bool decode_0x131(const uint8_t data[8], uint8_t dlc, msg_0x131 &msg);
+
+// ID -> decoder dispatch, one function per caller. Returns false only when id is
+// recognized but dlc is invalid (the caller should log this); an unrecognized id
+// returns true (nothing to decode, not an error -- matches the pre-existing
+// silently-ignore-unknown-id behavior).
+bool decode_frame_bmu_info(uint32_t id, const uint8_t data[8], uint8_t dlc, msg_bmu &msg);
+bool decode_frame_power_sequence(uint32_t id, const uint8_t data[8], uint8_t dlc,
+                                  msg_0x100 &f100, msg_0x101 &f101, msg_0x113 &f113);
+
+// Formats one line of the bmu_info shell display (line in [0, BMU_INFO_LINE_COUNT)).
+// Building one line at a time keeps the caller's stack buffer small (~single line,
+// not the whole ~12-line message) -- bmu_info() is called from the shell thread's
+// stack, which is not sized to hold the full message in one buffer.
+// Same semantics as snprintf: returns the number of characters that would have been
+// written, excluding the null terminator; a return >= buf_size means truncation.
+inline constexpr size_t BMU_INFO_LINE_COUNT{12};
+int format_bmu_info_line(const msg_bmu &msg, size_t line, char *buf, size_t buf_size);
 
 bool is_ok(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113);
 bool is_full_charge(const msg_0x100 &f100);

@@ -31,18 +31,9 @@ namespace lexxhard::bmu_controller {
 
 #define BMU_CAN_DATA_LENGTH 8
 
-struct msg_bmu {
-    bmu_lipy041::msg_0x100 f100;
-    bmu_lipy041::msg_0x101 f101;
-    bmu_lipy041::msg_0x103 f103;
-    bmu_lipy041::msg_0x110 f110;
-    bmu_lipy041::msg_0x111 f111;
-    bmu_lipy041::msg_0x112 f112;
-    bmu_lipy041::msg_0x113 f113;
-    bmu_lipy041::msg_0x120 f120;
-    bmu_lipy041::msg_0x130 f130;
-    bmu_lipy041::msg_0x131 f131;
-} __attribute__((aligned(4)));
+// Definition lives in bmu_lipy041_decode.hpp so decode_frame_bmu_info() can be
+// declared alongside the other decode functions without a circular include.
+using msg_bmu = bmu_lipy041::msg_bmu;
 
 struct msg_rawframe_bmu {
     uint8_t frame[BMU_CAN_DATA_LENGTH];

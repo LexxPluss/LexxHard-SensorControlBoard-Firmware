@@ -37,6 +37,11 @@ namespace lexxhard::bmu_controller {
 
 LOG_MODULE_REGISTER(bmu);
 
+// Generous upper bound for a single format_bmu_info_line() line (longest line is
+// well under 100 bytes); this is printed and reused per line, not sized for the
+// whole ~12-line message, to keep the shell thread's stack usage small.
+constexpr size_t BMU_INFO_LINE_BUFFER_SIZE{160};
+
 char __aligned(4) msgq_rawframe_bmu_buffer[8 * sizeof (can_frame)];
 
 CAN_MSGQ_DEFINE(msgq_can_recv_bmu, 32);
@@ -92,57 +97,18 @@ public:
     }
 
     void bmu_info(const shell *shell) const {
-        shell_print(shell,
-                    "FailStatus1:0x%02x/0x%02x LeaderBMStatus:0x%02x\n"
-                    "ASOCmin:%u RSOCmin:%u SOHmin:%u\n"
-                    "MaxFETTemp:%d AvgCurrent:%d MaxChgCurrent:%u\n"
-                    "BMVoltageMax:%u Capacity(design):%u Capacity(FCCmin):%u Capacity(RCmin):%u FETStatus:0x%02x\n"
-                    "Max Voltage:%u/%u Min Voltage:%u/%u\n"
-                    "Max Temp:%d/%u Min Temp:%d/%u\n"
-                    "Max Current:%d/%u Min Current:%d/%u\n"
-                    "FWVer:0x%02x DataVer:0x%02x ConnectedBMNum:0x%02x\n"
-                    "LeaderAlarm1:0x%02x LeaderAlarm2:0x%02x FailStatus3:0x%02x\n"
-                    "Max Cell Voltage:%u/%u Min Cell Voltage:%u/%u\n"
-                    "Manufacture:%u Inspection:%u Serial:%u\n"
-                    "AccumulatedCapacity:%u\n",
-                    msg.f100.fail_status1, msg.f101.fail_status2, msg.f100.leader_battery_status,
-                    msg.f100.asoc_min, msg.f100.rsoc_min, msg.f100.soh_min,
-                    msg.f100.max_fet_temp, msg.f101.average_current, msg.f101.max_charging_current,
-                    msg.f101.bm_voltage_max, msg.f103.design_capacity, msg.f103.fcc_min, msg.f103.rc_min, msg.f103.fet_status,
-                    msg.f110.max_voltage.value, msg.f110.max_voltage.id, msg.f110.min_voltage.value, msg.f110.min_voltage.id,
-                    msg.f111.max_temp.value, msg.f111.max_temp.id, msg.f111.min_temp.value, msg.f111.min_temp.id,
-                    msg.f112.max_current.value, msg.f112.max_current.id, msg.f112.min_current.value, msg.f112.min_current.id,
-                    msg.f113.fw_ver, msg.f113.data_ver, msg.f113.connected_bm_count,
-                    msg.f113.leader_alarm1, msg.f113.leader_alarm2, msg.f113.fail_status3,
-                    msg.f120.max_cell_voltage.value, msg.f120.max_cell_voltage.id, msg.f120.min_cell_voltage.value, msg.f120.min_cell_voltage.id,
-                    msg.f130.manufacturing, msg.f130.inspection, msg.f130.serial,
-                    msg.f131.accumulated_capacity);
+        char buf[BMU_INFO_LINE_BUFFER_SIZE];
+        for (size_t line = 0; line < bmu_lipy041::BMU_INFO_LINE_COUNT; ++line) {
+            bmu_lipy041::format_bmu_info_line(msg, line, buf, sizeof buf);
+            shell_print(shell, "%s", buf);
+        }
     }
 
 private:
     void handler_bmu(can_frame &frame) {
-        if (frame.id == 0x100) {
-            bmu_lipy041::decode_0x100(frame.data, msg.f100);
-        } else if (frame.id == 0x101) {
-            bmu_lipy041::decode_0x101(frame.data, msg.f101);
-        } else if (frame.id == 0x103) {
-            bmu_lipy041::decode_0x103(frame.data, msg.f103);
-        } else if (frame.id == 0x110) {
-            bmu_lipy041::decode_0x110(frame.data, msg.f110);
-        } else if (frame.id == 0x111) {
-            bmu_lipy041::decode_0x111(frame.data, msg.f111);
-        } else if (frame.id == 0x112) {
-            bmu_lipy041::decode_0x112(frame.data, msg.f112);
-        } else if (frame.id == 0x113) {
-            bmu_lipy041::decode_0x113(frame.data, msg.f113);
-        } else if (frame.id == 0x120) {
-            bmu_lipy041::decode_0x120(frame.data, msg.f120);
-        } else if (frame.id == 0x130) {
-            bmu_lipy041::decode_0x130(frame.data, msg.f130);
-        } else if (frame.id == 0x131) {
-            bmu_lipy041::decode_0x131(frame.data, msg.f131);
+        if (!bmu_lipy041::decode_frame_bmu_info(frame.id, frame.data, frame.dlc, msg)) {
+            LOG_WRN("bmu decode failed: id=0x%03x dlc=%u", frame.id, frame.dlc);
         }
-        return;
     }
 
     msg_bmu msg{};

@@ -943,16 +943,9 @@ public:
     }
 private:
     void handle_can(can_frame &frame) {
-        switch (frame.id) {
-        case 0x100:
-            lexxhard::bmu_lipy041::decode_0x100(frame.data, data100);
-            break;
-        case 0x101:
-            lexxhard::bmu_lipy041::decode_0x101(frame.data, data101);
-            break;
-        case 0x113:
-            lexxhard::bmu_lipy041::decode_0x113(frame.data, data113);
-            break;
+        if (!lexxhard::bmu_lipy041::decode_frame_power_sequence(frame.id, frame.data, frame.dlc,
+                                                                 data100, data101, data113)) {
+            LOG_WRN("bmu decode failed (power sequence): id=0x%03x dlc=%u", frame.id, frame.dlc);
         }
     }
     const device *dev{nullptr};

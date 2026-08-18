@@ -22,55 +22,89 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+#include <stdio.h>
 #include "bmu_lipy041_decode.hpp"
 
 namespace lexxhard::bmu_lipy041 {
 
-void decode_0x100(const uint8_t data[8], msg_0x100 &msg) {
+// Every LIPY041 List# frame is a fixed 8 bytes (datasheet section 2); dlc != 8
+// means the frame is short (or corrupted) and must not be decoded.
+namespace {
+constexpr uint8_t EXPECTED_DLC{8};
+}
+
+bool decode_0x100(const uint8_t data[8], uint8_t dlc, msg_0x100 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.fail_status1 = data[0];
     msg.leader_battery_status = data[1];
     msg.asoc_min = data[2];
     msg.rsoc_min = data[3];
     msg.soh_min = data[4];
     msg.max_fet_temp = static_cast<int16_t>((data[5] << 8) | data[6]);
+    return true;
 }
 
-void decode_0x101(const uint8_t data[8], msg_0x101 &msg) {
+bool decode_0x101(const uint8_t data[8], uint8_t dlc, msg_0x101 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.average_current = static_cast<int16_t>((data[0] << 8) | data[1]);
     msg.max_charging_current = static_cast<uint16_t>((data[2] << 8) | data[3]);
     msg.bm_voltage_max = static_cast<uint16_t>((data[4] << 8) | data[5]);
     msg.fail_status2 = data[6];
+    return true;
 }
 
-void decode_0x103(const uint8_t data[8], msg_0x103 &msg) {
+bool decode_0x103(const uint8_t data[8], uint8_t dlc, msg_0x103 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.design_capacity = static_cast<uint16_t>((data[0] << 8) | data[1]);
     msg.fcc_min = static_cast<uint16_t>((data[2] << 8) | data[3]);
     msg.rc_min = static_cast<uint16_t>((data[4] << 8) | data[5]);
     msg.fet_status = data[6];
+    return true;
 }
 
-void decode_0x110(const uint8_t data[8], msg_0x110 &msg) {
+bool decode_0x110(const uint8_t data[8], uint8_t dlc, msg_0x110 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.max_voltage.value = static_cast<uint16_t>((data[0] << 8) | data[1]);
     msg.max_voltage.id = data[2];
     msg.min_voltage.value = static_cast<uint16_t>((data[4] << 8) | data[5]);
     msg.min_voltage.id = data[6];
+    return true;
 }
 
-void decode_0x111(const uint8_t data[8], msg_0x111 &msg) {
+bool decode_0x111(const uint8_t data[8], uint8_t dlc, msg_0x111 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.max_temp.value = static_cast<int16_t>((data[0] << 8) | data[1]);
     msg.max_temp.id = data[2];
     msg.min_temp.value = static_cast<int16_t>((data[4] << 8) | data[5]);
     msg.min_temp.id = data[6];
+    return true;
 }
 
-void decode_0x112(const uint8_t data[8], msg_0x112 &msg) {
+bool decode_0x112(const uint8_t data[8], uint8_t dlc, msg_0x112 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.max_current.value = static_cast<int16_t>((data[0] << 8) | data[1]);
     msg.max_current.id = data[2];
     msg.min_current.value = static_cast<int16_t>((data[4] << 8) | data[5]);
     msg.min_current.id = data[6];
+    return true;
 }
 
-void decode_0x113(const uint8_t data[8], msg_0x113 &msg) {
+bool decode_0x113(const uint8_t data[8], uint8_t dlc, msg_0x113 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.fw_ver = data[0];
     msg.data_ver = data[1];
     // data[2] is Reserved
@@ -78,26 +112,118 @@ void decode_0x113(const uint8_t data[8], msg_0x113 &msg) {
     msg.leader_alarm1 = data[4];
     msg.leader_alarm2 = data[5];
     msg.fail_status3 = data[6];
+    return true;
 }
 
-void decode_0x120(const uint8_t data[8], msg_0x120 &msg) {
+bool decode_0x120(const uint8_t data[8], uint8_t dlc, msg_0x120 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.max_cell_voltage.value = static_cast<uint16_t>((data[0] << 8) | data[1]);
     msg.max_cell_voltage.id = data[2];
     msg.min_cell_voltage.value = static_cast<uint16_t>((data[4] << 8) | data[5]);
     msg.min_cell_voltage.id = data[6];
+    return true;
 }
 
-void decode_0x130(const uint8_t data[8], msg_0x130 &msg) {
+bool decode_0x130(const uint8_t data[8], uint8_t dlc, msg_0x130 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.manufacturing = static_cast<uint16_t>((data[0] << 8) | data[1]);
     msg.inspection = static_cast<uint16_t>((data[2] << 8) | data[3]);
     msg.serial = static_cast<uint16_t>((data[4] << 8) | data[5]);
+    return true;
 }
 
-void decode_0x131(const uint8_t data[8], msg_0x131 &msg) {
+bool decode_0x131(const uint8_t data[8], uint8_t dlc, msg_0x131 &msg) {
+    if (dlc != EXPECTED_DLC) {
+        return false;
+    }
     msg.accumulated_capacity = (static_cast<uint32_t>(data[0]) << 24) |
                                 (static_cast<uint32_t>(data[1]) << 16) |
                                 (static_cast<uint32_t>(data[2]) << 8) |
                                 static_cast<uint32_t>(data[3]);
+    return true;
+}
+
+bool decode_frame_bmu_info(uint32_t id, const uint8_t data[8], uint8_t dlc, msg_bmu &msg) {
+    if (id == 0x100) {
+        return decode_0x100(data, dlc, msg.f100);
+    } else if (id == 0x101) {
+        return decode_0x101(data, dlc, msg.f101);
+    } else if (id == 0x103) {
+        return decode_0x103(data, dlc, msg.f103);
+    } else if (id == 0x110) {
+        return decode_0x110(data, dlc, msg.f110);
+    } else if (id == 0x111) {
+        return decode_0x111(data, dlc, msg.f111);
+    } else if (id == 0x112) {
+        return decode_0x112(data, dlc, msg.f112);
+    } else if (id == 0x113) {
+        return decode_0x113(data, dlc, msg.f113);
+    } else if (id == 0x120) {
+        return decode_0x120(data, dlc, msg.f120);
+    } else if (id == 0x130) {
+        return decode_0x130(data, dlc, msg.f130);
+    } else if (id == 0x131) {
+        return decode_0x131(data, dlc, msg.f131);
+    }
+    return true;  // unrecognized id: nothing to decode, not an error
+}
+
+bool decode_frame_power_sequence(uint32_t id, const uint8_t data[8], uint8_t dlc,
+                                  msg_0x100 &f100, msg_0x101 &f101, msg_0x113 &f113) {
+    if (id == 0x100) {
+        return decode_0x100(data, dlc, f100);
+    } else if (id == 0x101) {
+        return decode_0x101(data, dlc, f101);
+    } else if (id == 0x113) {
+        return decode_0x113(data, dlc, f113);
+    }
+    return true;  // unrecognized id: nothing to decode, not an error
+}
+
+int format_bmu_info_line(const msg_bmu &msg, size_t line, char *buf, size_t buf_size) {
+    if (line == 0) {
+        return snprintf(buf, buf_size, "FailStatus1:0x%02x/0x%02x LeaderBMStatus:0x%02x",
+                         msg.f100.fail_status1, msg.f101.fail_status2, msg.f100.leader_battery_status);
+    } else if (line == 1) {
+        return snprintf(buf, buf_size, "ASOCmin:%u RSOCmin:%u SOHmin:%u",
+                         msg.f100.asoc_min, msg.f100.rsoc_min, msg.f100.soh_min);
+    } else if (line == 2) {
+        return snprintf(buf, buf_size, "MaxFETTemp:%d AvgCurrent:%d MaxChgCurrent:%u",
+                         msg.f100.max_fet_temp, msg.f101.average_current, msg.f101.max_charging_current);
+    } else if (line == 3) {
+        return snprintf(buf, buf_size,
+                         "BMVoltageMax:%u Capacity(design):%u Capacity(FCCmin):%u Capacity(RCmin):%u FETStatus:0x%02x",
+                         msg.f101.bm_voltage_max, msg.f103.design_capacity, msg.f103.fcc_min, msg.f103.rc_min, msg.f103.fet_status);
+    } else if (line == 4) {
+        return snprintf(buf, buf_size, "Max Voltage:%u/%u Min Voltage:%u/%u",
+                         msg.f110.max_voltage.value, msg.f110.max_voltage.id, msg.f110.min_voltage.value, msg.f110.min_voltage.id);
+    } else if (line == 5) {
+        return snprintf(buf, buf_size, "Max Temp:%d/%u Min Temp:%d/%u",
+                         msg.f111.max_temp.value, msg.f111.max_temp.id, msg.f111.min_temp.value, msg.f111.min_temp.id);
+    } else if (line == 6) {
+        return snprintf(buf, buf_size, "Max Current:%d/%u Min Current:%d/%u",
+                         msg.f112.max_current.value, msg.f112.max_current.id, msg.f112.min_current.value, msg.f112.min_current.id);
+    } else if (line == 7) {
+        return snprintf(buf, buf_size, "FWVer:0x%02x DataVer:0x%02x ConnectedBMNum:0x%02x",
+                         msg.f113.fw_ver, msg.f113.data_ver, msg.f113.connected_bm_count);
+    } else if (line == 8) {
+        return snprintf(buf, buf_size, "LeaderAlarm1:0x%02x LeaderAlarm2:0x%02x FailStatus3:0x%02x",
+                         msg.f113.leader_alarm1, msg.f113.leader_alarm2, msg.f113.fail_status3);
+    } else if (line == 9) {
+        return snprintf(buf, buf_size, "Max Cell Voltage:%u/%u Min Cell Voltage:%u/%u",
+                         msg.f120.max_cell_voltage.value, msg.f120.max_cell_voltage.id,
+                         msg.f120.min_cell_voltage.value, msg.f120.min_cell_voltage.id);
+    } else if (line == 10) {
+        return snprintf(buf, buf_size, "Manufacture:%u Inspection:%u Serial:%u",
+                         msg.f130.manufacturing, msg.f130.inspection, msg.f130.serial);
+    } else if (line == 11) {
+        return snprintf(buf, buf_size, "AccumulatedCapacity:%u", msg.f131.accumulated_capacity);
+    }
+    return -1;
 }
 
 bool is_ok(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113) {

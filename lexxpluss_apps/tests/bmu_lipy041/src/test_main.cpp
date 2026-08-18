@@ -23,6 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <string.h>
 #include <zephyr/ztest.h>
 #include "bmu_lipy041_decode.hpp"
 
@@ -36,7 +37,7 @@ ZTEST(bmu_lipy041_decode, test_0x120_normal_max_greater_than_min)
 {
     uint8_t data[8] = {0x10, 0x68, 0x01, 0x00, 0x0e, 0xd8, 0x02, 0x00};  // 0x1068=4200, 0x0ed8=3800
     msg_0x120 msg{};
-    decode_0x120(data, msg);
+    zassert_true(decode_0x120(data, 8, msg));
     zassert_equal(msg.max_cell_voltage.value, 4200);
     zassert_equal(msg.min_cell_voltage.value, 3800);
 }
@@ -47,7 +48,7 @@ ZTEST(bmu_lipy041_decode, test_0x120_regression_not_lia1020_layout)
 {
     uint8_t data[8] = {0x10, 0x68, 0x01, 0x00, 0x0e, 0xd8, 0x02, 0x00};
     msg_0x120 msg{};
-    decode_0x120(data, msg);
+    zassert_true(decode_0x120(data, 8, msg));
     zassert_not_equal(msg.max_cell_voltage.value, 3800);
 }
 
@@ -55,7 +56,7 @@ ZTEST(bmu_lipy041_decode, test_0x120_module_id_decoded)
 {
     uint8_t data[8] = {0x10, 0x68, 0x05, 0x00, 0x0e, 0xd0, 0x07, 0x00};
     msg_0x120 msg{};
-    decode_0x120(data, msg);
+    zassert_true(decode_0x120(data, 8, msg));
     zassert_equal(msg.max_cell_voltage.id, 0x05);
     zassert_equal(msg.min_cell_voltage.id, 0x07);
 }
@@ -64,7 +65,7 @@ ZTEST(bmu_lipy041_decode, test_0x120_boundary_zero)
 {
     uint8_t data[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     msg_0x120 msg{};
-    decode_0x120(data, msg);
+    zassert_true(decode_0x120(data, 8, msg));
     zassert_equal(msg.max_cell_voltage.value, 0);
     zassert_equal(msg.min_cell_voltage.value, 0);
 }
@@ -73,7 +74,7 @@ ZTEST(bmu_lipy041_decode, test_0x120_boundary_max)
 {
     uint8_t data[8] = {0xff, 0xff, 0, 0, 0xff, 0xff, 0, 0};
     msg_0x120 msg{};
-    decode_0x120(data, msg);
+    zassert_true(decode_0x120(data, 8, msg));
     zassert_equal(msg.max_cell_voltage.value, 0xFFFF);
     zassert_equal(msg.min_cell_voltage.value, 0xFFFF);
 }
@@ -84,7 +85,7 @@ ZTEST(bmu_lipy041_decode, test_0x131_thirty_two_bit_big_endian)
 {
     uint8_t data[8] = {0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0};
     msg_0x131 msg{};
-    decode_0x131(data, msg);
+    zassert_true(decode_0x131(data, 8, msg));
     zassert_equal(msg.accumulated_capacity, 0x01020304u);
 }
 
@@ -92,7 +93,7 @@ ZTEST(bmu_lipy041_decode, test_0x131_zero_value)
 {
     uint8_t data[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     msg_0x131 msg{};
-    decode_0x131(data, msg);
+    zassert_true(decode_0x131(data, 8, msg));
     zassert_equal(msg.accumulated_capacity, 0u);
 }
 
@@ -100,7 +101,7 @@ ZTEST(bmu_lipy041_decode, test_0x131_max_value)
 {
     uint8_t data[8] = {0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0};
     msg_0x131 msg{};
-    decode_0x131(data, msg);
+    zassert_true(decode_0x131(data, 8, msg));
     zassert_equal(msg.accumulated_capacity, 0xFFFFFFFFu);
 }
 
@@ -110,7 +111,7 @@ ZTEST(bmu_lipy041_decode, test_0x100_fail_status1)
 {
     uint8_t data[8] = {0x42, 0x01, 50, 60, 70, 0x00, 0x64, 0};
     msg_0x100 msg{};
-    decode_0x100(data, msg);
+    zassert_true(decode_0x100(data, 8, msg));
     zassert_equal(msg.fail_status1, 0x42);
 }
 
@@ -118,7 +119,7 @@ ZTEST(bmu_lipy041_decode, test_0x100_leader_battery_status)
 {
     uint8_t data[8] = {0x00, 0x01, 50, 60, 70, 0x00, 0x64, 0};
     msg_0x100 msg{};
-    decode_0x100(data, msg);
+    zassert_true(decode_0x100(data, 8, msg));
     zassert_equal(msg.leader_battery_status, 0x01);
 }
 
@@ -126,7 +127,7 @@ ZTEST(bmu_lipy041_decode, test_0x100_asoc_rsoc_soh_min)
 {
     uint8_t data[8] = {0x00, 0x01, 50, 60, 70, 0x00, 0x64, 0};
     msg_0x100 msg{};
-    decode_0x100(data, msg);
+    zassert_true(decode_0x100(data, 8, msg));
     zassert_equal(msg.asoc_min, 50);
     zassert_equal(msg.rsoc_min, 60);
     zassert_equal(msg.soh_min, 70);
@@ -136,7 +137,7 @@ ZTEST(bmu_lipy041_decode, test_0x100_max_fet_temp_signed_big_endian)
 {
     uint8_t data[8] = {0x00, 0x01, 50, 60, 70, 0x00, 0x64, 0};  // 0x0064 = 100 (10.0C)
     msg_0x100 msg{};
-    decode_0x100(data, msg);
+    zassert_true(decode_0x100(data, 8, msg));
     zassert_equal(msg.max_fet_temp, 100);
 }
 
@@ -144,7 +145,7 @@ ZTEST(bmu_lipy041_decode, test_0x100_max_fet_temp_negative)
 {
     uint8_t data[8] = {0x00, 0x01, 50, 60, 70, 0xff, 0x9c, 0};  // 0xff9c = -100
     msg_0x100 msg{};
-    decode_0x100(data, msg);
+    zassert_true(decode_0x100(data, 8, msg));
     zassert_equal(msg.max_fet_temp, -100);
 }
 
@@ -154,7 +155,7 @@ ZTEST(bmu_lipy041_decode, test_0x101_average_current_positive)
 {
     uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};  // avg=100, maxchg=200, vol=0x3039
     msg_0x101 msg{};
-    decode_0x101(data, msg);
+    zassert_true(decode_0x101(data, 8, msg));
     zassert_equal(msg.average_current, 100);
 }
 
@@ -162,7 +163,7 @@ ZTEST(bmu_lipy041_decode, test_0x101_average_current_negative)
 {
     uint8_t data[8] = {0xff, 0x9c, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};  // avg=-100
     msg_0x101 msg{};
-    decode_0x101(data, msg);
+    zassert_true(decode_0x101(data, 8, msg));
     zassert_equal(msg.average_current, -100);
 }
 
@@ -170,7 +171,7 @@ ZTEST(bmu_lipy041_decode, test_0x101_max_charging_current)
 {
     uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
     msg_0x101 msg{};
-    decode_0x101(data, msg);
+    zassert_true(decode_0x101(data, 8, msg));
     zassert_equal(msg.max_charging_current, 200);
 }
 
@@ -178,7 +179,7 @@ ZTEST(bmu_lipy041_decode, test_0x101_bm_voltage_max)
 {
     uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
     msg_0x101 msg{};
-    decode_0x101(data, msg);
+    zassert_true(decode_0x101(data, 8, msg));
     zassert_equal(msg.bm_voltage_max, 0x3039);
 }
 
@@ -186,7 +187,7 @@ ZTEST(bmu_lipy041_decode, test_0x101_fail_status2)
 {
     uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x81, 0};
     msg_0x101 msg{};
-    decode_0x101(data, msg);
+    zassert_true(decode_0x101(data, 8, msg));
     zassert_equal(msg.fail_status2, 0x81);
 }
 
@@ -196,7 +197,7 @@ ZTEST(bmu_lipy041_decode, test_0x103_design_fcc_rc_capacity)
 {
     uint8_t data[8] = {0x27, 0x10, 0x1f, 0x40, 0x13, 0x88, 0x02, 0};  // 0x2710=10000,0x1f40=8000,0x1388=5000
     msg_0x103 msg{};
-    decode_0x103(data, msg);
+    zassert_true(decode_0x103(data, 8, msg));
     zassert_equal(msg.design_capacity, 10000);
     zassert_equal(msg.fcc_min, 8000);
     zassert_equal(msg.rc_min, 5000);
@@ -206,7 +207,7 @@ ZTEST(bmu_lipy041_decode, test_0x103_fet_status_byte6)
 {
     uint8_t data[8] = {0x27, 0x10, 0x1f, 0x40, 0x13, 0x88, 0x03, 0};
     msg_0x103 msg{};
-    decode_0x103(data, msg);
+    zassert_true(decode_0x103(data, 8, msg));
     zassert_equal(msg.fet_status, 0x03);
 }
 
@@ -216,7 +217,7 @@ ZTEST(bmu_lipy041_decode, test_0x110_max_min_voltage)
 {
     uint8_t data[8] = {0x10, 0x68, 0x01, 0, 0x0e, 0xd8, 0x02, 0};
     msg_0x110 msg{};
-    decode_0x110(data, msg);
+    zassert_true(decode_0x110(data, 8, msg));
     zassert_equal(msg.max_voltage.value, 4200);
     zassert_equal(msg.max_voltage.id, 1);
     zassert_equal(msg.min_voltage.value, 3800);
@@ -227,7 +228,7 @@ ZTEST(bmu_lipy041_decode, test_0x111_max_min_temp_positive)
 {
     uint8_t data[8] = {0x00, 0x19, 0x03, 0, 0x00, 0x0a, 0x04, 0};  // max=25, id=3; min=10, id=4
     msg_0x111 msg{};
-    decode_0x111(data, msg);
+    zassert_true(decode_0x111(data, 8, msg));
     zassert_equal(msg.max_temp.value, 25);
     zassert_equal(msg.max_temp.id, 3);
     zassert_equal(msg.min_temp.value, 10);
@@ -238,7 +239,7 @@ ZTEST(bmu_lipy041_decode, test_0x111_max_min_temp_negative)
 {
     uint8_t data[8] = {0xff, 0xd8, 0x05, 0, 0xff, 0xc9, 0x06, 0};  // max=-40, id=5; min=-55, id=6
     msg_0x111 msg{};
-    decode_0x111(data, msg);
+    zassert_true(decode_0x111(data, 8, msg));
     zassert_equal(msg.max_temp.value, -40);
     zassert_equal(msg.max_temp.id, 5);
     zassert_equal(msg.min_temp.value, -55);
@@ -249,7 +250,7 @@ ZTEST(bmu_lipy041_decode, test_0x111_boundary_int16_min_max)
 {
     uint8_t data[8] = {0x7f, 0xff, 0x07, 0, 0x80, 0x00, 0x08, 0};  // max=INT16_MAX(32767), id=7; min=INT16_MIN(-32768), id=8
     msg_0x111 msg{};
-    decode_0x111(data, msg);
+    zassert_true(decode_0x111(data, 8, msg));
     zassert_equal(msg.max_temp.value, 32767);
     zassert_equal(msg.max_temp.id, 7);
     zassert_equal(msg.min_temp.value, -32768);
@@ -260,7 +261,7 @@ ZTEST(bmu_lipy041_decode, test_0x111_boundary_zero_and_negative_one)
 {
     uint8_t data[8] = {0x00, 0x00, 0x09, 0, 0xff, 0xff, 0x0a, 0};  // max=0, id=9; min=-1, id=10
     msg_0x111 msg{};
-    decode_0x111(data, msg);
+    zassert_true(decode_0x111(data, 8, msg));
     zassert_equal(msg.max_temp.value, 0);
     zassert_equal(msg.max_temp.id, 9);
     zassert_equal(msg.min_temp.value, -1);
@@ -271,7 +272,7 @@ ZTEST(bmu_lipy041_decode, test_0x112_max_min_current_signed)
 {
     uint8_t data[8] = {0xff, 0x9c, 0x01, 0, 0x00, 0x64, 0x02, 0};
     msg_0x112 msg{};
-    decode_0x112(data, msg);
+    zassert_true(decode_0x112(data, 8, msg));
     zassert_equal(msg.max_current.value, -100);
     zassert_equal(msg.min_current.value, 100);
 }
@@ -282,7 +283,7 @@ ZTEST(bmu_lipy041_decode, test_0x113_fw_data_version)
 {
     uint8_t data[8] = {0x01, 0x02, 0xaa, 0x05, 0x00, 0x00, 0x00, 0};
     msg_0x113 msg{};
-    decode_0x113(data, msg);
+    zassert_true(decode_0x113(data, 8, msg));
     zassert_equal(msg.fw_ver, 0x01);
     zassert_equal(msg.data_ver, 0x02);
 }
@@ -291,7 +292,7 @@ ZTEST(bmu_lipy041_decode, test_0x113_connected_bm_num_at_byte3_not_byte2)
 {
     uint8_t data[8] = {0x01, 0x02, 0xaa, 0x05, 0x00, 0x00, 0x00, 0};  // byte2=0xaa is Reserved
     msg_0x113 msg{};
-    decode_0x113(data, msg);
+    zassert_true(decode_0x113(data, 8, msg));
     zassert_equal(msg.connected_bm_count, 0x05);
 }
 
@@ -299,7 +300,7 @@ ZTEST(bmu_lipy041_decode, test_0x113_leader_alarm1_and_2)
 {
     uint8_t data[8] = {0x01, 0x02, 0x00, 0x05, 0x03, 0x0f, 0x00, 0};
     msg_0x113 msg{};
-    decode_0x113(data, msg);
+    zassert_true(decode_0x113(data, 8, msg));
     zassert_equal(msg.leader_alarm1, 0x03);
     zassert_equal(msg.leader_alarm2, 0x0f);
 }
@@ -308,7 +309,7 @@ ZTEST(bmu_lipy041_decode, test_0x113_fail_status3)
 {
     uint8_t data[8] = {0x01, 0x02, 0x00, 0x05, 0x00, 0x00, 0x80, 0};
     msg_0x113 msg{};
-    decode_0x113(data, msg);
+    zassert_true(decode_0x113(data, 8, msg));
     zassert_equal(msg.fail_status3, 0x80);
 }
 
@@ -318,7 +319,7 @@ ZTEST(bmu_lipy041_decode, test_0x130_mfg_insp_serial)
 {
     uint8_t data[8] = {0x26, 0x08, 0x00, 0x01, 0x12, 0x34, 0x00, 0};
     msg_0x130 msg{};
-    decode_0x130(data, msg);
+    zassert_true(decode_0x130(data, 8, msg));
     zassert_equal(msg.manufacturing, 0x2608);
     zassert_equal(msg.inspection, 0x0001);
     zassert_equal(msg.serial, 0x1234);
@@ -502,4 +503,240 @@ ZTEST(bmu_lipy041_decode, test_is_charging_false_when_zero_or_negative)
     zassert_false(is_charging(f101));
     f101.average_current = -1;
     zassert_false(is_charging(f101));
+}
+
+// ---- DLC (data length) validation: every LIPY041 frame is a fixed 8 bytes ----
+
+ZTEST(bmu_lipy041_decode, test_0x101_dlc_7_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
+    msg_0x101 msg{};
+    msg.average_current = 42;  // sentinel: must survive the rejected call untouched
+    zassert_false(decode_0x101(data, 7, msg));
+    zassert_equal(msg.average_current, 42);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x101_dlc_0_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
+    msg_0x101 msg{};
+    msg.average_current = 42;
+    zassert_false(decode_0x101(data, 0, msg));
+    zassert_equal(msg.average_current, 42);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x100_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x42, 0x01, 50, 60, 70, 0x00, 0x64, 0};
+    msg_0x100 msg{};
+    msg.fail_status1 = 0x77;
+    zassert_false(decode_0x100(data, 6, msg));
+    zassert_equal(msg.fail_status1, 0x77);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x103_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x27, 0x10, 0x1f, 0x40, 0x13, 0x88, 0x03, 0};
+    msg_0x103 msg{};
+    msg.fet_status = 0x77;
+    zassert_false(decode_0x103(data, 6, msg));
+    zassert_equal(msg.fet_status, 0x77);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x110_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x10, 0x68, 0x01, 0, 0x0e, 0xd8, 0x02, 0};
+    msg_0x110 msg{};
+    msg.max_voltage.value = 0x1234;
+    zassert_false(decode_0x110(data, 6, msg));
+    zassert_equal(msg.max_voltage.value, 0x1234);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x111_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x00, 0x19, 0x03, 0, 0x00, 0x0a, 0x04, 0};
+    msg_0x111 msg{};
+    msg.max_temp.value = 0x1234;
+    zassert_false(decode_0x111(data, 6, msg));
+    zassert_equal(msg.max_temp.value, 0x1234);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x112_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0xff, 0x9c, 0x01, 0, 0x00, 0x64, 0x02, 0};
+    msg_0x112 msg{};
+    msg.max_current.value = 0x1234;
+    zassert_false(decode_0x112(data, 6, msg));
+    zassert_equal(msg.max_current.value, 0x1234);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x113_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x01, 0x02, 0x00, 0x05, 0x03, 0x0f, 0x00, 0};
+    msg_0x113 msg{};
+    msg.fail_status3 = 0x77;
+    zassert_false(decode_0x113(data, 6, msg));
+    zassert_equal(msg.fail_status3, 0x77);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x120_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x10, 0x68, 0x01, 0x00, 0x0e, 0xd8, 0x02, 0x00};
+    msg_0x120 msg{};
+    msg.max_cell_voltage.value = 0x1234;
+    zassert_false(decode_0x120(data, 6, msg));
+    zassert_equal(msg.max_cell_voltage.value, 0x1234);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x130_dlc_6_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x26, 0x08, 0x00, 0x01, 0x12, 0x34, 0x00, 0};
+    msg_0x130 msg{};
+    msg.manufacturing = 0x1234;
+    zassert_false(decode_0x130(data, 6, msg));
+    zassert_equal(msg.manufacturing, 0x1234);
+}
+
+ZTEST(bmu_lipy041_decode, test_0x131_dlc_3_rejected_msg_unchanged)
+{
+    uint8_t data[8] = {0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0};
+    msg_0x131 msg{};
+    msg.accumulated_capacity = 0x1234;
+    zassert_false(decode_0x131(data, 3, msg));
+    zassert_equal(msg.accumulated_capacity, 0x1234u);
+}
+
+// ---- decode_frame_bmu_info() / decode_frame_power_sequence(): id dispatch ----
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_known_id_dlc_8_decodes)
+{
+    uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x101, data, 8, msg));
+    zassert_equal(msg.f101.average_current, 100);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_known_id_dlc_7_rejected)
+{
+    uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
+    msg_bmu msg{};
+    msg.f101.average_current = 42;
+    zassert_false(decode_frame_bmu_info(0x101, data, 7, msg));
+    zassert_equal(msg.f101.average_current, 42);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_unknown_id_passthrough)
+{
+    uint8_t data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    msg_bmu msg{};
+    msg.f101.average_current = 42;
+    zassert_true(decode_frame_bmu_info(0x102, data, 8, msg));
+    zassert_equal(msg.f101.average_current, 42);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_known_id_dlc_8_decodes)
+{
+    uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    zassert_true(decode_frame_power_sequence(0x101, data, 8, f100, f101, f113));
+    zassert_equal(f101.average_current, 100);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_known_id_dlc_7_rejected)
+{
+    uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    f101.average_current = 42;
+    zassert_false(decode_frame_power_sequence(0x101, data, 7, f100, f101, f113));
+    zassert_equal(f101.average_current, 42);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_unknown_id_passthrough)
+{
+    // 0x103 is handled by decode_frame_bmu_info but not by the power-sequence path
+    // (board_controller.cpp only cares about 0x100/0x101/0x113).
+    uint8_t data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    f100.fail_status1 = 0x11;
+    f101.average_current = 22;
+    f113.fail_status3 = 0x33;
+    zassert_true(decode_frame_power_sequence(0x103, data, 8, f100, f101, f113));
+    zassert_equal(f100.fail_status1, 0x11);
+    zassert_equal(f101.average_current, 22);
+    zassert_equal(f113.fail_status3, 0x33);
+}
+
+// ---- format_bmu_info_line(): pure formatting, closes the previously-untested gap ----
+// Built one line at a time (not one big buffer) to keep bmu_info()'s shell-thread
+// stack usage small.
+
+ZTEST(bmu_lipy041_decode, test_format_bmu_info_line_matches_expected_lines)
+{
+    msg_bmu msg{};
+    msg.f100.fail_status1 = 0x00;
+    msg.f100.leader_battery_status = 0x01;
+    msg.f100.asoc_min = 76;
+    msg.f100.rsoc_min = 76;
+    msg.f100.soh_min = 100;
+    msg.f100.max_fet_temp = 237;
+    msg.f101.average_current = -115;
+    msg.f101.max_charging_current = 4200;
+    msg.f101.bm_voltage_max = 26261;
+    msg.f101.fail_status2 = 0x00;
+    msg.f103.design_capacity = 2100;
+    msg.f103.fcc_min = 2100;
+    msg.f103.rc_min = 1607;
+    msg.f103.fet_status = 0x03;
+    msg.f110.max_voltage = {26261, 1};
+    msg.f110.min_voltage = {26261, 1};
+    msg.f111.max_temp = {241, 1};
+    msg.f111.min_temp = {234, 1};
+    msg.f112.max_current = {-115, 1};
+    msg.f112.min_current = {-115, 1};
+    msg.f113.fw_ver = 0x14;
+    msg.f113.data_ver = 0x10;
+    msg.f113.connected_bm_count = 0x01;
+    msg.f113.leader_alarm1 = 0x00;
+    msg.f113.leader_alarm2 = 0x00;
+    msg.f113.fail_status3 = 0x00;
+    msg.f120.max_cell_voltage = {3285, 1};
+    msg.f120.min_cell_voltage = {3278, 1};
+    msg.f130.manufacturing = 23078;
+    msg.f130.inspection = 21088;
+    msg.f130.serial = 80;
+    msg.f131.accumulated_capacity = 3;
+
+    const char *expected_lines[BMU_INFO_LINE_COUNT] = {
+        "FailStatus1:0x00/0x00 LeaderBMStatus:0x01",
+        "ASOCmin:76 RSOCmin:76 SOHmin:100",
+        "MaxFETTemp:237 AvgCurrent:-115 MaxChgCurrent:4200",
+        "BMVoltageMax:26261 Capacity(design):2100 Capacity(FCCmin):2100 Capacity(RCmin):1607 FETStatus:0x03",
+        "Max Voltage:26261/1 Min Voltage:26261/1",
+        "Max Temp:241/1 Min Temp:234/1",
+        "Max Current:-115/1 Min Current:-115/1",
+        "FWVer:0x14 DataVer:0x10 ConnectedBMNum:0x01",
+        "LeaderAlarm1:0x00 LeaderAlarm2:0x00 FailStatus3:0x00",
+        "Max Cell Voltage:3285/1 Min Cell Voltage:3278/1",
+        "Manufacture:23078 Inspection:21088 Serial:80",
+        "AccumulatedCapacity:3",
+    };
+    for (size_t line = 0; line < BMU_INFO_LINE_COUNT; ++line) {
+        char buf[160];
+        int written = format_bmu_info_line(msg, line, buf, sizeof buf);
+        zassert_true(written > 0 && static_cast<size_t>(written) < sizeof buf);
+        zassert_true(strcmp(buf, expected_lines[line]) == 0, "line %zu: got \"%s\"", line, buf);
+    }
+}
+
+ZTEST(bmu_lipy041_decode, test_format_bmu_info_line_out_of_range_returns_negative)
+{
+    msg_bmu msg{};
+    char buf[160];
+    zassert_true(format_bmu_info_line(msg, BMU_INFO_LINE_COUNT, buf, sizeof buf) < 0);
 }
