@@ -402,3 +402,150 @@ ZTEST(tof_cliff_packer, test_health_refuses_malformed_state_and_position)
     h.failing_chain_position = 0;
     zassert_false(pk::encode_health(h, out));
 }
+
+/* --------------------------------------------- staleness and array agreement ---- */
+
+ZTEST(tof_cliff_packer, test_a_stale_sample_produces_no_frame)
+{
+    /* fresh == false means no new sample was ready, so entries hold whatever the
+     * previous read left. Packing them would transmit an old distance as a fresh one,
+     * which the contract forbids outright. Not an error: nothing was produced. */
+    const target_in in[1]{{900, 0}};
+    auto s{make_sample(1, 1, in, 1)};
+    s.fresh = false;
+    const auto r{pk::reduce(s)};
+
+    zassert_equal(static_cast<int>(r.outcome), static_cast<int>(pk::result::no_frame));
+    zassert_equal(r.error, 0);
+
+    uint8_t out[8];
+    memset(out, 0x77, sizeof out);
+    zassert_false(pk::encode_measurement(r, 0, 1, 0, out));
+    zassert_equal(out[0], 0x77);
+}
+
+ZTEST(tof_cliff_packer, test_entry_count_must_agree_with_target_count)
+{
+    /* Trusting target_count while the array is shorter would classify entries nobody
+     * filled, and whatever is in them would look like device data. */
+    const target_in in[4]{{900, 0}, {0, 0}, {0, 0}, {0, 0}};
+    auto s{make_sample(3, 1, in, 1)};
+    const auto r{pk::reduce(s)};
+
+    zassert_equal(r.error, -EPROTO);
+    zassert_equal(static_cast<int>(r.why), static_cast<int>(pk::reason::entry_count_mismatch));
+
+    s = make_sample(2, 3, in, 3);
+    zassert_equal(pk::reduce(s).error, -EPROTO, "the other direction is wrong too");
+}
+
+ZTEST(tof_cliff_packer, test_status_255_among_positive_targets_is_eproto)
+{
+    /* Reducing this would build status 255 with a non-zero target_count, which breaks
+     * the bidirectional invariant -- the decoder must reject it, so the defect would
+     * surface as a discarded frame instead of being diagnosed at the producer. */
+    const target_in in[2]{{900, 0}, {8191, 255}};
+    const auto s{make_sample(2, 2, in, 2)};
+    const auto r{pk::reduce(s)};
+
+    zassert_equal(r.error, -EPROTO);
+    zassert_equal(static_cast<int>(r.why),
+                  static_cast<int>(pk::reason::none_status_among_targets));
+    zassert_equal(r.observed_status, 255);
+}
+
+/* ------------------------------------------------ a hand-built reduction -------- */
+
+ZTEST(tof_cliff_packer, test_encode_refuses_a_reduction_reduce_could_not_produce)
+{
+    /* The struct is public so tests and diagnostics can read it, which means a caller
+     * can also assemble one. Each of these would encode into a frame the decoder is
+     * obliged to reject. */
+    pk::reduction forged{};
+    forged.outcome = pk::result::frame_ready;
+    uint8_t out[8];
+    pk::reason why{pk::reason::none};
+
+    /* VALID_RANGE carrying the sentinel. */
+    forged.cls = ctr::status_class::valid_range;
+    forged.raw_status = 0;
+    forged.range_mm = ctr::kSentinelInvalid;
+    forged.target_count = 1;
+    memset(out, 0x42, sizeof out);
+    zassert_false(pk::encode_measurement(forged, 0, 1, 0, out, &why));
+    zassert_equal(static_cast<int>(why), static_cast<int>(pk::reason::reduction_inconsistent));
+    zassert_equal(out[0], 0x42, "still no partial payload");
+
+    /* A NO_TARGET status carrying a finite range. */
+    forged.cls = ctr::status_class::no_target;
+    forged.raw_status = 2;
+    forged.range_mm = 1234;
+    zassert_false(pk::encode_measurement(forged, 0, 1, 0, out, &why));
+
+    /* target_count 0 without the status-255 encoding. */
+    forged.cls = ctr::status_class::sensor_fault;
+    forged.raw_status = 5;
+    forged.range_mm = ctr::kSentinelInvalid;
+    forged.target_count = 0;
+    zassert_false(pk::encode_measurement(forged, 0, 1, 0, out, &why));
+
+    /* A class that disagrees with its own status. */
+    forged.cls = ctr::status_class::valid_range;
+    forged.raw_status = 5; // SENSOR_FAULT
+    forged.range_mm = 900;
+    forged.target_count = 1;
+    zassert_false(pk::encode_measurement(forged, 0, 1, 0, out, &why));
+
+    /* A NO_SAMPLE status, which is never transmitted. */
+    forged.cls = ctr::status_class::no_sample;
+    forged.raw_status = 6;
+    forged.range_mm = ctr::kSentinelInvalid;
+    zassert_false(pk::encode_measurement(forged, 0, 1, 0, out, &why));
+}
+
+ZTEST(tof_cliff_packer, test_encode_reports_an_out_of_range_source_id)
+{
+    const target_in in[1]{{1234, 0}};
+    const auto r{pk::reduce(make_sample(1, 1, in, 1))};
+    uint8_t out[8]{};
+    pk::reason why{pk::reason::none};
+
+    zassert_false(pk::encode_measurement(r, ctr::kSourceCount, 1, 0, out, &why));
+    zassert_equal(static_cast<int>(why), static_cast<int>(pk::reason::source_id_out_of_range));
+}
+
+/* ---------------------------------------- health nibbles are not truncated ------ */
+
+ZTEST(tof_cliff_packer, test_health_refuses_a_field_wider_than_its_nibble)
+{
+    /* Masking would produce a different *legal* frame: an enumerated mask of 0x1F
+     * becoming 0x0F reports three sensors enumerated as four. */
+    pk::health_fields good{};
+    good.mapping_state = 0x1;
+    good.flags = ctr::kCycleValidBit;
+    good.enumerated_mask = 0xF;
+    good.model_verified_mask = 0xF;
+    good.sample_produced_mask = 0xF;
+    good.failing_chain_position = ctr::kChainPositionNone;
+
+    uint8_t out[8]{};
+    zassert_true(pk::encode_health(good, out));
+
+    const uint8_t canary{0x9C};
+    struct { const char *name; uint8_t pk::health_fields::*field; } wide[]{
+        {"flags", &pk::health_fields::flags},
+        {"enumerated", &pk::health_fields::enumerated_mask},
+        {"model_verified", &pk::health_fields::model_verified_mask},
+        {"produced", &pk::health_fields::sample_produced_mask},
+        {"fault", &pk::health_fields::sensor_fault_mask},
+    };
+    for (const auto &w : wide) {
+        auto h{good};
+        h.*(w.field) = 0x1F;
+        uint8_t buf[8];
+        memset(buf, canary, sizeof buf);
+        zassert_false(pk::encode_health(h, buf), "a five-bit value must be refused");
+        for (size_t i = 0; i < sizeof buf; ++i)
+            zassert_equal(buf[i], canary, "refused health must not write the buffer");
+    }
+}

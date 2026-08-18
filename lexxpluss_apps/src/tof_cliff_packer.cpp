@@ -41,6 +41,16 @@ reduction refuse(reason why, uint8_t observed)
 
 reduction reduce(const struct tof_cliff_sample &sample)
 {
+    /* No new sample was ready. The entries then hold whatever the previous read left
+     * behind, and packing them would transmit a stale distance as a fresh one -- the
+     * one thing the contract forbids absolutely ("old values are never re-sent"). This
+     * is an ordinary outcome, not an error: nothing was produced this cycle. */
+    if (!sample.fresh) {
+        reduction r{};
+        r.outcome = result::no_frame;
+        return r;
+    }
+
     /* The read layer already rejects a count above the array, so reaching either of
      * these means something upstream changed. Refusing loudly beats trusting it. */
     if (sample.target_count > TOF_CLIFF_MAX_TARGETS)
@@ -70,11 +80,23 @@ reduction reduce(const struct tof_cliff_sample &sample)
         return r;
     }
 
+    /* With targets present, entry_count must equal target_count -- that is what the read
+     * layer documents. Trusting target_count while the array is shorter would classify
+     * entries nobody filled, and whatever is in them would look like device data. */
+    if (sample.entry_count != sample.target_count)
+        return refuse(reason::entry_count_mismatch, sample.entries[0].range_status);
+
     /* Classify every target first. An unclassifiable status cannot be reduced to a
      * safety outcome at all, so it refuses the whole measurement rather than being
      * guessed at. */
     const status_row *rows[TOF_CLIFF_MAX_TARGETS]{};
     for (uint8_t i = 0; i < sample.target_count; ++i) {
+        /* Status 255 means "no target detected", so it cannot appear alongside targets.
+         * Reducing it here would build status 255 with a non-zero target_count, which
+         * breaks the wire's bidirectional invariant and the decoder must reject -- so
+         * the frame would be discarded after transmission instead of diagnosed here. */
+        if (sample.entries[i].range_status == kStatusNone)
+            return refuse(reason::none_status_among_targets, kStatusNone);
         rows[i] = classify(sample.entries[i].range_status);
         if (rows[i] == nullptr)
             return refuse(reason::status_undefined, sample.entries[i].range_status);
@@ -151,16 +173,60 @@ reduction reduce(const struct tof_cliff_sample &sample)
     return r;
 }
 
-bool encode_measurement(const reduction &r, uint8_t source_id, uint8_t mapping_epoch,
-                        uint8_t cycle_seq, uint8_t out[8])
+namespace {
+
+/* Re-derives the wire invariants from the reduction itself.
+ *
+ * reduce() cannot produce an inconsistent reduction, but nothing stops a caller
+ * building one by hand -- the struct is public so tests and diagnostics can read it.
+ * Without this, a hand-assembled reduction would encode into a frame the decoder is
+ * obliged to reject, and the defect would surface as a discarded frame on the other
+ * side of the bus instead of a refusal here. Cheap defence in depth against a
+ * programming error, not against the device. */
+bool wire_consistent(const reduction &r)
 {
+    if (r.target_count > TOF_CLIFF_MAX_TARGETS)
+        return false;
+    const status_row *row{classify(r.raw_status)};
+    if (row == nullptr || row->cls != r.cls)
+        return false;
+    if (r.cls == status_class::no_sample)
+        return false; // never transmitted
+    if (r.cls == status_class::valid_range) {
+        if (r.range_mm == kSentinelInvalid)
+            return false;
+    } else if (r.range_mm != kSentinelInvalid) {
+        return false;
+    }
+    /* target_count == 0 if and only if status 255 with the sentinel. */
+    const bool zero_targets{r.target_count == 0};
+    const bool encoded_none{r.raw_status == kStatusNone && r.range_mm == kSentinelInvalid};
+    return zero_targets == encoded_none;
+}
+
+} // namespace
+
+bool encode_measurement(const reduction &r, uint8_t source_id, uint8_t mapping_epoch,
+                        uint8_t cycle_seq, uint8_t out[8], reason *why)
+{
+    if (why != nullptr)
+        *why = reason::none;
+
     /* Every rejection happens before the first store, so a refused encode leaves `out`
      * exactly as the caller left it. A half-written payload looks like a frame to
      * anything that forgets to check the return value. */
     if (r.outcome != result::frame_ready)
         return false;
-    if (source_id >= kSourceCount)
+    if (source_id >= kSourceCount) {
+        if (why != nullptr)
+            *why = reason::source_id_out_of_range;
         return false;
+    }
+    if (!wire_consistent(r)) {
+        if (why != nullptr)
+            *why = reason::reduction_inconsistent;
+        return false;
+    }
 
     out[0] = static_cast<uint8_t>((kMeasFrameType << 4) | (source_id & 0x0F));
     out[1] = mapping_epoch;
@@ -181,11 +247,19 @@ bool encode_health(const health_fields &h, uint8_t out[8])
         !(h.failing_chain_position >= 1 && h.failing_chain_position <= 6))
         return false;
 
-    const uint8_t enumerated{static_cast<uint8_t>(h.enumerated_mask & 0x0F)};
-    const uint8_t model_verified{static_cast<uint8_t>(h.model_verified_mask & 0x0F)};
-    const uint8_t produced{static_cast<uint8_t>(h.sample_produced_mask & 0x0F)};
-    const uint8_t fault{static_cast<uint8_t>(h.sensor_fault_mask & 0x0F)};
-    const uint8_t flags{static_cast<uint8_t>(h.flags & 0x0F)};
+    /* Every one of these occupies a nibble on the wire. Masking a wider value would
+     * silently turn a producer error into a *different* legal health frame -- 0x1F
+     * becoming 0x0F reports three sensors enumerated as four. Refusing names the bug on
+     * the side that made it. */
+    if (h.flags > 0x0F || h.enumerated_mask > 0x0F || h.model_verified_mask > 0x0F ||
+        h.sample_produced_mask > 0x0F || h.sensor_fault_mask > 0x0F)
+        return false;
+
+    const uint8_t enumerated{h.enumerated_mask};
+    const uint8_t model_verified{h.model_verified_mask};
+    const uint8_t produced{h.sample_produced_mask};
+    const uint8_t fault{h.sensor_fault_mask};
+    const uint8_t flags{h.flags};
 
     /* With cycle_valid clear the frame describes no cycle, so both per-cycle fields
      * must be empty -- sample_produced_mask and sensor_fault_mask alike. */

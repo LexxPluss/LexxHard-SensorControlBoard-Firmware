@@ -56,11 +56,18 @@ enum class reason : uint8_t {
     none,
     zero_targets_with_unexpected_status,
     zero_targets_entry_count_not_one,
+    entry_count_mismatch,
+    none_status_among_targets,
     valid_range_negative,
     valid_range_is_sentinel,
     status_undefined,
     target_count_malformed,
     no_entries,
+    source_id_out_of_range,
+    /* encode_measurement rejected a reduction that reduce() could not have produced.
+     * Reaching this means a caller built one by hand, so it names a programming error
+     * rather than a device anomaly. */
+    reduction_inconsistent,
 };
 
 struct reduction {
@@ -95,9 +102,15 @@ reduction reduce(const struct tof_cliff_sample &sample);
  *
  * On false, `out` is not written at all -- not even partially. A half-filled payload is
  * worse than no payload: it looks like a frame to anything that forgets to check the
- * return value. */
+ * return value.
+ *
+ * The wire invariants are re-derived from `r` before anything is written. reduce()
+ * cannot produce an inconsistent reduction, but the struct is public so a caller can
+ * build one by hand, and such a frame would be rejected by the decoder rather than
+ * refused here -- turning a programming error into a discarded frame on the far side of
+ * the bus. `why` is optional and reports which check refused. */
 bool encode_measurement(const reduction &r, uint8_t source_id, uint8_t mapping_epoch,
-                        uint8_t cycle_seq, uint8_t out[8]);
+                        uint8_t cycle_seq, uint8_t out[8], reason *why = nullptr);
 
 struct health_fields {
     uint8_t mapping_epoch{0};
@@ -114,9 +127,12 @@ struct health_fields {
 
 /* Writes the 8 health bytes. Returns false when the fields contradict the contract --
  * a per-cycle mask set with cycle_valid clear, a fault bit outside the produced mask, a
- * malformed mapping_state or chain position. Refusing to encode is deliberate: those
- * combinations are producer defects, and a decoder would reject them anyway, so
- * catching them here names the bug on the side that caused it. */
+ * malformed mapping_state or chain position, or any nibble field given a value wider
+ * than four bits. Refusing to encode is deliberate: those combinations are producer
+ * defects, and a decoder would reject them anyway, so catching them here names the bug
+ * on the side that caused it. Masking a too-wide nibble would be worse than refusing,
+ * because it produces a different *legal* frame -- an enumerated mask of 0x1F becoming
+ * 0x0F reports three sensors as four. On false, `out` is untouched. */
 bool encode_health(const health_fields &h, uint8_t out[8]);
 
 } // namespace tof_cliff_packer
