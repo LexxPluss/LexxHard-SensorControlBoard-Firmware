@@ -1,12 +1,34 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-08-18b**
+Contract version: **commissioning-2026-08-18c**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
-This revision exists for one purpose: to let the commissioning end-to-end path be built against
+The `-18b` revision existed for one purpose: to let the commissioning end-to-end path be built against
 byte-exact, double-pinned vectors instead of against prose. It is **not** a product release and must
 never be treated as one.
+
+`-18c` adds nothing to the wire and changes no byte of any vector. It exists because writing the
+mapping-proof implementation against `-18b` surfaced three defects in the prose, and each of them would
+have been resolved in code — silently, and differently in the two repositories — if the document had
+been left as it was:
+
+- **A decoder rule contradicted itself about late measurements.** The required-vector list called a
+  measurement "arriving while health says `LOST`" a firmware fault, while the normative correlation rule
+  says the judgement is made against the measurement's *own* cycle's health frame and that this exact
+  reordering is legal. The firmware makes the reordering routine — its measurement and health sends are
+  deliberately not serialised — so a decoder written to the vector list would have entered protocol
+  `FAULT` on the first genuine mapping loss. Corrected in *Golden vectors*; the normative rule was
+  already right and is unchanged.
+- **The `PROVEN` evidence set could not be satisfied by any single chain state.** Tail isolation
+  destroys the addresses of positions 3-5, so the chain that holds the live addresses can never be the
+  chain that produced the isolation result. `-18b` demanded all three results without saying how the
+  evidence transfers, which invites closing the gap by loosening a criterion. Now specified as a
+  **transaction** with a semantic fingerprint equality between the two enumerations.
+- **`mapping_epoch` issuance had no owner under this profile.** The firmware has no persistent store, so
+  it cannot discharge the cross-restart obligation on its own. The commissioning profile now names the
+  host as the issuing authority and states exactly what the firmware still guarantees and what it no
+  longer claims.
 
 What this revision settles, and what it does not:
 
@@ -42,9 +64,12 @@ What this revision settles, and what it does not:
   `gen_cliff_golden_vectors.py` remains a catalogue, and the generator continues to refuse to emit
   event-multiset vectors. This revision covers layout only.
 
-The release ban lifts only when the timing values come from the six-board schedule measurement and the
-status 3 / 11 rates and the multi-target scenarios have been validated on hardware. Doing either is a
-version bump and a re-pin on both sides.
+The release ban lifts only when all four of these are closed: the timing values come from the six-board
+schedule measurement; the status 3 / 11 rates and the multi-target scenarios are validated on hardware;
+the **frozen position-to-role table** for the four cliff carriers exists, without which no mask keyed by
+`source_id` can be filled honestly and `PROVEN` is unreachable by rule; and a **firmware-side persistent
+`mapping_epoch` issuer** exists, because the host-issued epoch of this profile presupposes an operator.
+Closing any of them is a version bump and a re-pin on both sides.
 
 This document is the single source of truth shared by two repositories:
 
@@ -185,7 +210,10 @@ without it none of the cross-checks in this contract are decidable.
   keeps flowing with `health_seq` advancing and `cycle_valid` clear.
 - **The firmware MUST issue a new `mapping_epoch` whenever the cliff subsystem restarts**, so a cycle
   counter never resumes mid-sequence. This is what keeps `cycle_seq` unambiguous across a reset, and it
-  removes the main way an old frame could alias onto a new cycle.
+  removes the main way an old frame could alias onto a new cycle. **Under the commissioning profile the
+  issuing *authority* is the host, not the firmware** — the obligation is the same, who discharges it is
+  not, and the firmware makes no cross-restart claim of its own. See *Commissioning `mapping_epoch`
+  issuance*.
 
 ### `cycle_valid`, and why cycle 0 needs distinguishing
 
@@ -520,7 +548,10 @@ produces no frame and leaves that source's `sample_produced_mask` bit clear.
   machine that has not produced them, a conforming firmware never reaches `PROVEN` and never transmits
   a measurement frame.
 - Re-enumeration is permitted only once the robot is already safely stopped. A new `mapping_epoch` may
-  be issued, and measurements may resume, only after the mapping has been fully proven again. On
+  be issued, and measurements may resume, only after the mapping has been fully proven again — which
+  means the whole transaction of *The proof is a transaction*, not merely an enumeration that returned
+  `complete`. Authorisation is withdrawn **before** the first enable line moves, so a chain being
+  re-enumerated can never be a chain producing measurements. On
   hardware where the enable chain can still advance two stages on one pulse, any implementation that
   reaches `PROVEN` automatically has a bug — that was the state of every machine before 2026-08-17, and
   it remains the state of any machine whose enable chain has not passed the gate.
@@ -849,9 +880,12 @@ gate, and only these three results count:
 - all six chain positions individually addressed, each verified by a **type-appropriate** identity read
   (`VL53L7CX` at positions 1-2, `VL53L4CX` at 3-6) at six mutually distinct addresses
 - **nothing left at the default address** after enumeration
-- **tail isolation**: with only position 6 enabled, position 6 answers **its own** address. If it answers
+- **tail isolation**: with only position 6 enabled, position 6 answers **its own** address, returns the
+  expected `VL53L4CX` identity, and **position 5's address does not answer**. If position 6 answers
   position 5's address, two devices were written to one address — a silent merge, and the exact failure
-  this gate exists to catch
+  this gate exists to catch. The negative half is not redundant: an address that still answers while its
+  device is supposed to be disabled means the isolation itself did not take, and then the positive half
+  proves nothing.
 
 A bus-wide address scan count is **not** admissible evidence. It was observed on DS20001 to
 intermittently miss the two grid sensors' addresses inside a 112-address sweep while those same devices
@@ -859,6 +893,77 @@ passed 200/200 back-to-back probes and 100/100 register transfers with payload c
 unexplained; two hypotheses — degradation of the transaction following a NACK, and a back-to-back rate
 effect — were each tested and disproved. An unexplained, intermittent measurement cannot gate a safety
 mapping claim.
+
+### The proof is a transaction, because the isolated chain is not the chain that produces data
+
+The three results above cannot all come from one chain state, and no implementation should be written as
+if they could. Tail isolation requires positions 3-5 to be disabled, and on the L4 carriers the enable
+line is reset-class — disabling a position returns that device to the default address. So the chain that
+carries the live addresses is **always** a chain enumerated *after* the isolation, and it can never
+itself hold an isolation result. An implementation that tries to satisfy all three from the final state
+will fail every time, and the tempting repair is to weaken one criterion.
+
+The proof is therefore defined as one **transaction**, in this order:
+
+- **walk 1** — a full enumeration of all six positions, reaching `complete`
+- **isolation** — the tail-isolation result above, which destroys the addresses of positions 3-5
+- **walk 2** — a second full enumeration, reaching `complete`, which restores the four L4 addresses and
+  is the chain the acquisition path then uses
+
+What transfers the isolation evidence from walk 1 to walk 2 is not an unstated assumption that nothing
+changed. It is an explicit **semantic fingerprint** that both walks must produce identically. The
+fingerprint is, per position: the position index, the expected model, the assigned target address, the
+observed identity bytes, the logical `source_id` or role, and `verified`.
+
+Normalisation is part of the definition, because the raw per-position verdicts legitimately differ
+between the two walks:
+
+- **Positions 1-2 (`VL53L7CX`)**: `enumerated` and `retained` both normalise to `verified`. The L7 keeps
+  its assigned address across an enable-low while powered, so walk 2 finds it already at its target and
+  reports `retained` where walk 1 reported `enumerated`. Requiring identical raw verdicts would fail on
+  every healthy chain.
+- **Positions 3-6 (`VL53L4CX`)**: both walks MUST report `enumerated`. A `retained` L4 contradicts the
+  reset-class enable and is a fault, not a normalisation case.
+- **Both walks MUST be `complete`**, and the fingerprints MUST match on every field above.
+- **Not compared**: pulse counts, control history, and the raw verdict values themselves. They are
+  diagnostics; two walks may reach the same proven configuration by different pulse counts, and demanding
+  equality there manufactures failures with no bearing on the mapping.
+
+Two further obligations follow from the transaction being the unit:
+
+- **A partial transaction authorises nothing.** If any of the three steps fails or is skipped, no proof
+  exists; there is no such thing as "walk 1 was clean, so proceed".
+- **`PROVEN` is unreachable while any cliff position's logical role is unknown.** The masks a consumer
+  reads are keyed by `source_id`, not by chain position, so a firmware without the frozen role table
+  cannot fill them and cannot claim a proven position-to-`source_id` mapping. Electrical enumeration
+  proves the *type* sequence; it cannot prove which of four identical carriers is mounted where.
+
+## Commissioning `mapping_epoch` issuance — the host is the authority, and what that costs
+
+The firmware obligation stated in *The acquisition cycle is the unit of correlation* — a new
+`mapping_epoch` on every restart of the cliff subsystem — is unchanged. Under this profile **who
+discharges it changes**, and that has to be written down rather than assumed, because the firmware has no
+persistent store: the SCB application has `CONFIG_FLASH` and `CONFIG_FLASH_MAP` and no NVS or settings
+partition, so it cannot remember an epoch across a power cycle at all.
+
+Under `commissioning-cliff-only-400k`:
+
+- The **commissioning host is the issuing authority**. `mapping_epoch` is supplied to the firmware as
+  part of the operator-initiated proof, and the host is the component that persists it.
+- The host MUST store the last epoch it issued, increment it **modulo 256** for the next proof, and record
+  both the old and the new epoch in the commissioning evidence for that machine.
+- The **firmware** guarantees exactly three things, and no more: it refuses an epoch equal to any it has
+  already used since power-on; it advances the epoch and resets `cycle_seq` to 0 in **one** transaction;
+  and it stays non-`PROVEN` if issuance fails for any reason.
+- A restart returns the subsystem to `UNKNOWN`. No measurement frame can be transmitted until a fresh
+  proof supplies a fresh epoch, which is what keeps a post-restart `cycle_seq` from aliasing onto the
+  sequence that came before it.
+
+**The limitation, stated plainly: cross-restart uniqueness now rests on procedure, not on firmware.** The
+firmware does not claim it and must not be described as providing it. The property holds because a
+restart cannot reach `PROVEN` without an operator, and it would stop holding the moment anything proves
+the mapping automatically. A production configuration that proves on boot therefore requires a
+firmware-side persistent epoch issuer, and that is a release blocker, not a refinement.
 
 ## Timing values — what the production release still has to resolve
 
@@ -960,8 +1065,17 @@ Beyond the happy path the vectors MUST cover at least:
 - `mapping_state` `UNKNOWN`, `PROVEN`, `LOST`, and recovery back to `PROVEN`
 - health stopping while measurements continue, and `health_seq` repeated
 - a measurement arriving before any health snapshot at all — cold start
-- a measurement arriving while health says `UNKNOWN`, `LOST` or `FAULT`, which is a firmware fault and
-  must produce protocol FAULT
+- a measurement whose **own correlated cycle's** health frame reports `UNKNOWN`, `LOST` or `FAULT`, which
+  is a firmware fault and must produce protocol FAULT. Note precisely what this is **not**: a measurement
+  that merely *arrives* while the newest health frame reports `LOST` is legal, and on real hardware it is
+  routine. The firmware's measurement flush and its health snapshot are deliberately not serialised
+  (serialising them would put four bounded send waits in front of the heartbeat), so a cycle that was
+  authorised while `PROVEN` can reach the bus after the snapshot that revokes the mapping. The
+  discriminator is *which* health frame authorises the measurement, never arrival order — see
+  *Validation, and protocol fault*, whose rule is normative and unchanged. The benign case has its own
+  required vector further down this list ("a late measurement from a `PROVEN` cycle arriving after a newer
+  health frame reports `LOST`"); the two entries are the same distinction from opposite sides, and a
+  decoder that passes one and fails the other has implemented arrival order.
 - a new epoch with `PROVEN` where only some of the four sources have refreshed
 - a measurement of the **previous** epoch or a **retired** cycle arriving late
 - two different measurements for one `(source_id, epoch, cycle_seq)`
