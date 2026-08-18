@@ -84,6 +84,16 @@ test_tof_packer:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the cliff measurement packer: the contract SHA pin (the firmware
+# half of the cross-repository lock) and the normative reduction, which the layout
+# vectors cannot cover because the pre-reduction target list never reaches the wire.
+# The generator check runs first, for the same reason the grid target does it.
+.PHONY: test_tof_cliff_packer
+test_tof_cliff_packer:
+	$(RUNNER) python3 docs/can/gen_cliff_golden_vectors.py --check
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_cliff_packer -d build-test-tof-cliff-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the cliff (VL53L4CX) sensor layer. Two levels in one image:
 # the port's wire shape and errno path through an emulated I2C controller, and the
 # read_once adapter against fakes that reproduce the ULD's own defects. The ULD's
