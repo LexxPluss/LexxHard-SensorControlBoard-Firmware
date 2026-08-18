@@ -12,14 +12,29 @@ What this revision settles, and what it does not:
 
 - **Frame layouts, encodings and validation rules: settled.** Golden vectors for the *layout* are
   generated from this document and pinned by both repositories.
-- **Health CAN identifier: settled** as `0x217`, by the same team-authorised self-assignment used for
-  `0x214`/`0x215`/`0x216`. Evidence: both repositories scanned — the highest assigned identifier is
-  `0x216`, and `0x217` is unclaimed in either tree; a live `can1` capture on DS20001 agrees. The source
-  scan is the evidence, not the capture: a capture cannot prove an identifier unused.
-- **Status classes 3 and 11: unchanged and `validation_pending`.** Class 3 stays `SENSOR_FAULT`, class
-  11 stays `NO_TARGET`, exactly as the classification table already specifies. Authorising them for
-  commissioning is **not** a statement that either has been validated on hardware; the validation column
-  still applies in full.
+- **Health CAN identifier: `0x217`, usable here, registration outstanding.** Self-assigned 2026-08-17
+  under the same team authorisation as `0x214`/`0x215`/`0x216`, after a fresh scan of both repositories
+  and a live `can1` capture. But this contract's own rule is that **the team's CAN ID register is the
+  deciding evidence** and a scan and a capture are only supporting — so the row is still owed, along
+  with the grid identifiers' rows. It must be closed before production.
+- **Status classes 3 and 11: re-decided 2026-08-18, and `validation_pending`.** Class 3 stays
+  `SENSOR_FAULT`, class 11 stays `NO_TARGET` — the values the classification table already carried.
+  These were **re-opened deliberately** rather than inherited, because an intermediate proposal had both
+  as `SENSOR_FAULT` and the difference is behavioural, not cosmetic: `NO_TARGET` publishes the far-side
+  sentinel and keeps `READY`, while `SENSOR_FAULT` sets a `sensor_fault_mask` bit and loses `READY`
+  immediately with no cycle budget.
+
+  Class 11 is `NO_TARGET` because a merged return is the signature of the hazard, not of broken
+  hardware: a step edge is exactly the geometry that merges pulses, so `SENSOR_FAULT` would drop the
+  subsystem into a fault state every time the robot approached a real cliff, and would attribute a scene
+  property to the sensor. `NO_TARGET` stops the robot for the same reading and recovers on the next cycle
+  once the edge is no longer in view. Class 3 is `SENSOR_FAULT` because a fouled lens and a very near
+  floor are indistinguishable, and a permanently blinded sensor must not read as healthy.
+
+  Authorising both for commissioning is **not** a statement that either has been validated on hardware.
+  The validation column applies in full, and class 11's stated risk is the live one: if merged pulses
+  turn out to be common over plain floor, that is a ROI or timing-configuration problem to fix, not a
+  reason to reclassify.
 - **Timing values: a named commissioning profile, not measurements.** They are model-derived and are
   marked as such throughout. **A production configuration must not inherit them**; see
   *Commissioning timing profile*.
@@ -69,13 +84,21 @@ CAN classic, 11-bit identifiers, on **CAN2 at 1 Mbit/s** (the SCB-to-IPC bus).
 that allocated `0x214`/`0x215`. This contract is what un-reserves it: until this document is frozen,
 no filter or handler may claim `0x216` either.
 
-`0x217` is the candidate for health. An offline sweep on 2026-08-11 found it unused in the firmware
-repository on `main` and on all three ToF branches, in `SCBDriver`, and in `LexxAuto` and
-`lexxauto_msgs`; the SCB block is contiguous `0x200`-`0x213` on `main` and extends to `0x216` with the
-grid allocation. **That is not an allocation.** A source sweep cannot see a transmitter whose code we
-do not hold, and a live capture cannot see one that stays silent while the bus is recorded — a quiet
-identifier and an unused one look the same. **The team's CAN ID register is the deciding evidence**;
-the sweep and a capture are supporting, and the allocation must be recorded there and here.
+`0x217` is health, **self-assigned for commissioning on 2026-08-17 and not yet recorded in the team's
+CAN ID register.** Evidence gathered: a fresh source scan of both repositories that day found the
+highest assigned identifier to be `0x216` and `0x217` unclaimed in either tree, and a live `can1`
+capture on DS20001 showed `0x100`-`0x131`, `0x204`, `0x206`/`0x207`, `0x209`/`0x20A`, `0x20C`, `0x20F`
+and `0x212` in use with `0x213`-`0x217` silent.
+
+**Neither of those is an allocation, and the earlier wording in this section still stands.** A source
+sweep cannot see a transmitter whose code we do not hold; a live capture cannot see one that stays
+silent while the bus is recorded — `0x213` is in the source tree and did not appear in that capture,
+which is the point made concretely. **The team's CAN ID register remains the deciding evidence.**
+
+So the status is: usable under this commissioning revision, **with registration outstanding**. That
+outstanding item is the same one the grid allocation left open — `0x214`/`0x215`/`0x216` also still owe
+their rows — and it must be closed before any production release. Self-assignment authorised by the
+team means being responsible for the allocation, not being excused from recording it.
 
 Two identifiers rather than one because measurement and health must **dispatch independently**.
 Measurement takes the lower identifier because there are four of it per cycle against one health
@@ -113,13 +136,26 @@ is one of the open timing values.
 Only 0-3 exist; any other value makes the frame malformed.
 
 **These are intended roles, not a verified runtime mapping.** The role names above become meaningful
-only while `mapping_state == PROVEN`. Under the hardware installed today they never do: one enable
-clock pulse enables two adjacent carriers, so two identical VL53L4CX can sit on the factory-default
-address at once and a single address assignment moves both, undetectably. Consequently a conforming
-implementation publishes **no role-named data at all** today, and — since measurement frames are
-forbidden outside `PROVEN` — `0x216` carries **no traffic at all**. The only cliff traffic on the bus
-is the health heartbeat, reporting `UNKNOWN`. That is the intended behaviour, not a defect, and it is
-what a bring-up engineer should expect to see.
+only while `mapping_state == PROVEN`, and `PROVEN` is a claim about the machine in front of you, not
+about the design.
+
+**Updated 2026-08-17.** The defect that made `PROVEN` unreachable — one enable clock pulse advancing
+two stages, so two identical VL53L4CX could sit on the factory-default address at once and a single
+address assignment moved both undetectably — was root-caused and has a working fix. The cause was a
+timing race, not a wiring error: the shared clock net is heavily loaded while each data line is a
+single point-to-point hop, so the fast data edge beat the slow clock edge into the receiving flip-flop.
+A series resistor on the data line slows and delays that edge, and with it fitted the on-machine gate
+passed 5/5 rounds on DS20001 — six positions individually addressed with type-appropriate identity
+reads at six distinct addresses, nothing left at the default address, and tail isolation showing
+position 6 on its own address rather than position 5's.
+
+Two things that does **not** mean. It is a **commissioning workaround on one machine**, not a
+production-qualified fix; the resistor value, its placement at every hop, and the flip-flop's hold
+margin are all open. And it changes nothing about the rule: on hardware that has not passed that gate,
+`mapping_state` stays `UNKNOWN`, a conforming implementation publishes **no role-named data at all**,
+`0x216` carries **no traffic**, and the only cliff traffic is the health heartbeat reporting `UNKNOWN`.
+That remains the intended behaviour rather than a defect, and it is what a bring-up engineer should
+expect to see on an ungated machine.
 
 `chain_position` appears only in the health frame's `failing_chain_position`, for diagnostics.
 Nothing in the decoder may branch on it. **The two numbering spaces are different**: `source_id` is
@@ -448,13 +484,15 @@ produces no frame and leaves that source's `sample_produced_mask` bit clear.
   commissioning over CAN is ever required, it must use a **distinct frame type or identifier carrying
   an explicit `enumeration_slot`**, and must never be decodable as a production measurement.
 - `mapping_state == PROVEN` is not an optimistic verdict reached because enumeration returned without
-  error. The contract owes a definition of what evidence proves it; **under the hardware installed
-  today no such evidence exists**, so a conforming firmware never reaches `PROVEN` and never transmits
+  error. **The evidence that proves it is now defined** — see *What proves `mapping_state == PROVEN`
+  under this profile* — and it is three specific on-machine results, not the absence of an error. On a
+  machine that has not produced them, a conforming firmware never reaches `PROVEN` and never transmits
   a measurement frame.
 - Re-enumeration is permitted only once the robot is already safely stopped. A new `mapping_epoch` may
-  be issued, and measurements may resume, only after the mapping has been fully proven again. While
-  the two-board-wide enable window exists, any implementation that reaches `PROVEN` automatically has
-  a bug.
+  be issued, and measurements may resume, only after the mapping has been fully proven again. On
+  hardware where the enable chain can still advance two stages on one pulse, any implementation that
+  reaches `PROVEN` automatically has a bug — that was the state of every machine before 2026-08-17, and
+  it remains the state of any machine whose enable chain has not passed the gate.
 
 ### Two constraints the acquisition path inherits from the hardware
 
@@ -940,11 +978,13 @@ two sides will each pick one and they will not pick the same one.
 Nothing in this section may be resolved unilaterally, and the contract cannot be frozen while any of
 it is open.
 
-- **The health CAN identifier.** `0x217` is a *candidate only*. The 2026-08-06 sweep is stale — three
-  rows were added to the table since — so allocation requires a fresh sweep of both repositories and
-  confirmation against the team's CAN ID register, which is the only evidence that settles it: a
-  silent device never appears in a live capture, so a capture can support the case but cannot close
-  it. Then self-assign and record it in both places.
+- **The health CAN identifier's registration.** The identifier itself is settled for commissioning:
+  `0x217`, self-assigned 2026-08-17 after a fresh sweep of both repositories and a live `can1` capture.
+  What is **still open** is the part the contract says actually settles it — the row in the team's CAN
+  ID register. A silent device never appears in a capture and a sweep cannot see code we do not hold,
+  so neither piece of evidence closes it. `0x214`/`0x215`/`0x216` owe their rows as well. **Registration
+  must be closed before any production release**, and it is the one item in this list that costs nothing
+  but a message to the team.
 - **All timing values** above, and with them the consumer timeouts.
 - **The validation column of the status classification.** The rows are complete and traced to the
   vendored ULD's own code paths, but two are explicitly **provisional** and can only be settled on

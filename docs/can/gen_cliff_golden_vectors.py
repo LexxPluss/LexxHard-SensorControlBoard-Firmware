@@ -63,10 +63,11 @@ UNRESOLVED = {
 
 RESOLVED = {
     "TOF_CLIFF_MEAS_ID": 0x216,
-    # Allocated 2026-08-17 by the same team-authorised self-assignment as 0x214/0x215/0x216.
-    # Evidence is the source scan of both repositories (highest assigned is 0x216, 0x217
-    # unclaimed in either tree); the live can1 capture only agrees with it. A capture cannot
-    # prove an identifier unused.
+    # Self-assigned 2026-08-17 under the same team authorisation as 0x214/0x215/0x216, after a
+    # fresh scan of both repositories and a live can1 capture. Per the contract, the team's CAN
+    # ID register is the deciding evidence and both of those are only supporting -- so the row
+    # is still owed and REGISTRATION IS OUTSTANDING. Usable under this commissioning revision;
+    # must be closed before production.
     "TOF_CLIFF_HEALTH_ID": 0x217,
     "PROTOCOL_VERSION": 0x1,
     "SENTINEL_INVALID": 0xFFFF,
@@ -601,24 +602,62 @@ CATALOGUE = [
 
 MEAS_FRAME_TYPE = 0x1
 HEALTH_FRAME_TYPE = 0x2
+DLC = 8
 
 REJECT_REASONS = (
     "ACCEPT",
+    "DLC_NOT_8",
     "FRAME_TYPE_MISMATCH",
     "SOURCE_ID_OUT_OF_RANGE",
     "RESERVED_FIELD_NONZERO",
     "TARGET_COUNT_MALFORMED",
+    "STATUS_UNDEFINED",
+    "STATUS_NOT_TRANSMISSIBLE",
+    "RANGE_CONTRADICTS_STATUS",
     "NO_TARGET_ENCODING_INCONSISTENT",
     "PROTOCOL_VERSION_ZERO",
     "PROTOCOL_VERSION_UNSUPPORTED",
     "MAPPING_STATE_MALFORMED",
     "CHAIN_POSITION_MALFORMED",
     "CYCLE_FIELDS_INCONSISTENT",
+    "MASK_FAULT_WITHOUT_SAMPLE",
     "CHAIN_POSITION_WITHOUT_FAULT",
 )
 
 CYCLE_VALID_BIT = 0x8
 CHAIN_FAULT_BITS = 0x7
+
+# ---------------------------------------------------------------------------
+# Status classification. This is the table both sides share, so it is emitted into
+# the artefacts rather than being reimplemented twice. Classes 3 and 11 come from
+# RESOLVED so the decision lives in exactly one place.
+#
+# The classes have wire consequences, which is why the validator enforces them:
+#   VALID_RANGE  -> a finite range; the sentinel would contradict the status
+#   NO_TARGET    -> "transmitted with 0xFFFF and its real status" (contract)
+#   SENSOR_FAULT -> also the sentinel; there is no trustworthy distance
+#   NO_SAMPLE    -> NOT TRANSMITTED AT ALL; the frame's existence is the defect
+
+STATUS_CLASSES = ("VALID_RANGE", "NO_TARGET", "SENSOR_FAULT", "NO_SAMPLE")
+
+STATUS_CLASS = {
+    0: "VALID_RANGE",     # RANGE_VALID
+    1: "NO_TARGET",       # SIGMA_FAIL
+    2: "NO_TARGET",       # SIGNAL_FAIL -- what a real drop-off looks like
+    3: RESOLVED["STATUS_CLASS_3"],   # RANGE_VALID_MIN_RANGE_CLIPPED (validation_pending)
+    4: "NO_TARGET",       # OUTOFBOUNDS_FAIL
+    5: "SENSOR_FAULT",    # HARDWARE_FAIL
+    6: "NO_SAMPLE",       # RANGE_VALID_NO_WRAP_CHECK_FAIL -- start-up artefact
+    7: "NO_TARGET",       # WRAP_TARGET_FAIL
+    8: "SENSOR_FAULT",    # PROCESSING_FAIL
+    9: "SENSOR_FAULT",    # XTALK_SIGNAL_FAIL
+    10: "NO_SAMPLE",      # SYNCRONISATION_INT -- "ignore data"
+    11: RESOLVED["STATUS_CLASS_11"],  # RANGE_VALID_MERGED_PULSE (validation_pending)
+    12: "NO_TARGET",      # TARGET_PRESENT_LACK_OF_SIGNAL
+    13: "SENSOR_FAULT",   # MIN_RANGE_FAIL (ROI clip, per the vendored ULD)
+    14: "SENSOR_FAULT",   # RANGE_INVALID (negative range)
+    255: "NO_TARGET",     # NONE -- active_results == 0; must become the sentinel, never 8191
+}
 
 
 def meas_bytes(source_id, epoch, cycle, range_mm, status, targets,
@@ -635,8 +674,10 @@ def meas_bytes(source_id, epoch, cycle, range_mm, status, targets,
     ]
 
 
-def meas_verdict(b):
+def meas_verdict(b, dlc=DLC):
     """The contract's measurement-frame validation rules, in the order they are stated."""
+    if dlc != DLC:
+        return "DLC_NOT_8"
     if (b[0] >> 4) != MEAS_FRAME_TYPE:
         return "FRAME_TYPE_MISMATCH"
     if (b[0] & 0x0F) > 3:
@@ -645,9 +686,23 @@ def meas_verdict(b):
         return "RESERVED_FIELD_NONZERO"
     if b[6] > 4:
         return "TARGET_COUNT_MALFORMED"
+    status = b[5]
+    if status not in STATUS_CLASS:
+        return "STATUS_UNDEFINED"
+    cls = STATUS_CLASS[status]
+    if cls == "NO_SAMPLE":
+        # The two NO_SAMPLE statuses "produce no frame". A frame carrying one is not a
+        # sample that happens to be unusable; it is a producer defect.
+        return "STATUS_NOT_TRANSMISSIBLE"
+    sentinel = RESOLVED["SENTINEL_INVALID"]
+    rng = (b[3] << 8) | b[4]
+    if cls == "VALID_RANGE" and rng == sentinel:
+        return "RANGE_CONTRADICTS_STATUS"
+    if cls in ("NO_TARGET", "SENSOR_FAULT") and rng != sentinel:
+        return "RANGE_CONTRADICTS_STATUS"
     # "target_count == 0 if and only if the frame carries status 255 and range_mm == 0xFFFF"
     no_target = (b[6] == 0)
-    encoded_none = (b[5] == 255 and ((b[3] << 8) | b[4]) == RESOLVED["SENTINEL_INVALID"])
+    encoded_none = (status == 255 and rng == sentinel)
     if no_target != encoded_none:
         return "NO_TARGET_ENCODING_INCONSISTENT"
     return "ACCEPT"
@@ -670,8 +725,10 @@ def health_bytes(epoch, health_seq, mapping_state, flags, enumerated, model_veri
     ]
 
 
-def health_verdict(b):
+def health_verdict(b, dlc=DLC):
     """The contract's health-frame validation rules, in the order they are stated."""
+    if dlc != DLC:
+        return "DLC_NOT_8"
     if (b[0] >> 4) != HEALTH_FRAME_TYPE:
         return "FRAME_TYPE_MISMATCH"
     pv = b[0] & 0x0F
@@ -682,23 +739,36 @@ def health_verdict(b):
     mapping_state = b[3] >> 4
     if mapping_state > 0x3:
         return "MAPPING_STATE_MALFORMED"
+    none = RESOLVED["CHAIN_POSITION_NONE"]
     chain_position = b[6]
-    if chain_position != RESOLVED["CHAIN_POSITION_NONE"] and not 1 <= chain_position <= 6:
+    if chain_position != none and not 1 <= chain_position <= 6:
         return "CHAIN_POSITION_MALFORMED"
     flags = b[3] & 0xF
+    enumerated, model_verified = b[4] >> 4, b[4] & 0xF
+    sample_produced, sensor_fault = b[5] >> 4, b[5] & 0xF
     if not flags & CYCLE_VALID_BIT:
-        # With cycle_valid clear the frame describes no cycle, so the per-cycle fields
-        # must be empty. A non-zero one is a producer defect, not a heartbeat.
-        if b[7] != 0 or (b[5] >> 4) != 0:
+        # With cycle_valid clear the frame describes no cycle, so BOTH per-cycle fields
+        # must be empty -- sample_produced_mask and sensor_fault_mask are per cycle.
+        if b[7] != 0 or sample_produced != 0 or sensor_fault != 0:
             return "CYCLE_FIELDS_INCONSISTENT"
-    if chain_position != RESOLVED["CHAIN_POSITION_NONE"] and not flags & CHAIN_FAULT_BITS:
+    # sensor_fault_mask classifies "that sample", so a fault bit without the
+    # corresponding produced bit describes the classification of a sample that does
+    # not exist.
+    if sensor_fault & ~sample_produced & 0xF:
+        return "MASK_FAULT_WITHOUT_SAMPLE"
+    # The contract's rule is compound: naming a position is contradictory only when
+    # there is no chain fault AND no incomplete mask. An incomplete enumeration is
+    # itself the reason a position can be named.
+    if chain_position != none and not flags & CHAIN_FAULT_BITS \
+            and enumerated == 0xF and model_verified == 0xF:
         return "CHAIN_POSITION_WITHOUT_FAULT"
     return "ACCEPT"
 
 
-def V(name, kind, data, why=""):
-    verdict = meas_verdict(data) if kind == "meas" else health_verdict(data)
-    return {"name": name, "kind": kind, "bytes": data, "verdict": verdict, "why": why}
+def V(name, kind, data, why="", dlc=DLC):
+    verdict = meas_verdict(data, dlc) if kind == "meas" else health_verdict(data, dlc)
+    return {"name": name, "kind": kind, "dlc": dlc, "bytes": data,
+            "verdict": verdict, "why": why}
 
 
 def layout_vectors():
@@ -711,17 +781,47 @@ def layout_vectors():
                      meas_bytes(src, 1, 0, 1234, 0, 1),
                      "source_id is a stable logical role, not a chain position"))
 
-    # -- measurement: every status class in the classification table --------
-    # target_count is 1 for every class except 255, which is the only encoding with 0.
-    for status in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
-        rng = 1234 if status == 0 else sentinel
-        out.append(V(f"meas_status_{status}", "meas",
+    # -- measurement: every status in the classification table --------------
+    # The class decides the range: VALID_RANGE carries a finite value, NO_TARGET and
+    # SENSOR_FAULT carry the sentinel, and the two NO_SAMPLE statuses must not be on
+    # the wire at all -- so those two are rejection vectors, by construction.
+    for status, cls in STATUS_CLASS.items():
+        if status == 255:
+            continue  # the no-target encoding, done separately below
+        rng = 1234 if cls == "VALID_RANGE" else sentinel
+        out.append(V(f"meas_status_{status}_{cls.lower()}", "meas",
                      meas_bytes(0, 1, 0, rng, status, 1),
-                     "raw ULD status is transmitted unchanged; the class is a decoder concern"))
+                     f"class {cls}; raw status is transmitted unchanged"))
     out.append(V("meas_status_255_no_target", "meas",
                  meas_bytes(0, 1, 0, sentinel, 255, 0),
                  "the ULD forces 8191 mm when active_results == 0; the packer MUST send the "
                  "sentinel instead and never forward 8191 as a finite range"))
+
+    # -- measurement: the class-to-range rules, violated ---------------------
+    out.append(V("meas_reject_valid_status_with_sentinel", "meas",
+                 meas_bytes(0, 1, 0, sentinel, 0, 1),
+                 "RANGE_VALID cannot carry the invalid sentinel"))
+    out.append(V("meas_reject_no_target_with_finite_range", "meas",
+                 meas_bytes(0, 1, 0, 1234, 2, 1),
+                 "a NO_TARGET class is transmitted with 0xFFFF and its real status; a finite "
+                 "value here would publish an untrustworthy distance as a floor"))
+    out.append(V("meas_reject_merged_pulse_with_finite_range", "meas",
+                 meas_bytes(0, 1, 0, 1234, 11, 1),
+                 "status 11 has a device-valid range, and that is exactly why it must not be "
+                 "forwarded: a step edge merges returns and reads as an intermediate floor"))
+    out.append(V("meas_reject_sensor_fault_with_finite_range", "meas",
+                 meas_bytes(0, 1, 0, 1234, 5, 1),
+                 "a SENSOR_FAULT class has no trustworthy distance"))
+    for status in (6, 10):
+        out.append(V(f"meas_reject_no_sample_status_{status}", "meas",
+                     meas_bytes(0, 1, 0, sentinel, status, 1),
+                     "the two NO_SAMPLE statuses produce no frame at all; the frame existing "
+                     "is itself the defect"))
+    for status in (15, 100, 254):
+        out.append(V(f"meas_reject_status_undefined_{status}", "meas",
+                     meas_bytes(0, 1, 0, sentinel, status, 1),
+                     "a raw status outside the classification table cannot be classified, so "
+                     "it cannot be reduced to a safety outcome"))
 
     # -- measurement: range boundaries --------------------------------------
     for rng, note in ((0, "zero is encodable and is not the sentinel"),
@@ -752,15 +852,25 @@ def layout_vectors():
                  "byte 7 is reserved for a future capture tick; using it is a version bump"))
     out.append(V("meas_reject_target_count_5", "meas",
                  meas_bytes(0, 1, 0, 1234, 0, 5), "target_count > 4 is malformed"))
+    # All four ways to break the "target_count == 0 iff status 255 and range 0xFFFF"
+    # invariant. The first is caught by the class rule before the invariant is reached,
+    # which is itself worth pinning: the rules have an order.
     out.append(V("meas_reject_none_with_finite_range", "meas",
                  meas_bytes(0, 1, 0, 1234, 255, 0),
-                 "status 255 with a finite range breaks the no-target encoding"))
+                 "status 255 with a finite range; the class rule catches this first"))
     out.append(V("meas_reject_none_with_targets", "meas",
                  meas_bytes(0, 1, 0, sentinel, 255, 1),
                  "status 255 must carry target_count 0"))
     out.append(V("meas_reject_zero_targets_with_valid_status", "meas",
                  meas_bytes(0, 1, 0, 1234, 0, 0),
                  "target_count 0 is only legal as the status-255 encoding"))
+    out.append(V("meas_reject_zero_targets_with_sentinel_not_255", "meas",
+                 meas_bytes(0, 1, 0, sentinel, 2, 0),
+                 "the sentinel alone does not license target_count 0; the invariant needs "
+                 "status 255 as well"))
+    out.append(V("meas_reject_dlc_7", "meas",
+                 meas_bytes(0, 1, 0, 1234, 0, 1), dlc=7,
+                 why="DLC is 8 always; a short frame must be rejected before any byte is read"))
 
     # -- health: accepted shapes -------------------------------------------
     out.append(V("health_proven_cycle_valid", "health",
@@ -812,9 +922,28 @@ def layout_vectors():
     out.append(V("health_reject_produced_mask_without_cycle_valid", "health",
                  health_bytes(1, 1, 0x1, 0x0, 0xF, 0xF, 0xF, 0x0, 0xFF, 0),
                  "sample_produced_mask is a per-cycle field"))
+    out.append(V("health_reject_fault_mask_without_cycle_valid", "health",
+                 health_bytes(1, 1, 0x1, 0x0, 0xF, 0xF, 0x0, 0x1, 0xFF, 0),
+                 "sensor_fault_mask is per cycle too, so it must also be empty in a heartbeat"))
+    out.append(V("health_reject_fault_without_sample", "health",
+                 health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0x3, 0x4, 0xFF, 1),
+                 "sensor_fault_mask classifies a produced sample, so a fault bit outside "
+                 "sample_produced_mask classifies a sample that does not exist"))
     out.append(V("health_reject_position_without_chain_fault", "health",
                  health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 3, 1),
-                 "naming a failing position with no chain fault set is contradictory"))
+                 "naming a failing position with no chain fault and complete masks is "
+                 "contradictory"))
+    out.append(V("health_position_with_incomplete_mask", "health",
+                 health_bytes(1, 1, 0x0, CYCLE_VALID_BIT, 0x7, 0x7, 0x0, 0x0, 4, 0),
+                 "the complement of the case above, and the reason the contract's rule is "
+                 "compound: an incomplete enumeration is itself why a position can be named"))
+    out.append(V("health_fault_mask_subset", "health",
+                 health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x5, 0xFF, 2),
+                 "a strict subset is legal: two of four produced samples classified "
+                 "SENSOR_FAULT"))
+    out.append(V("health_reject_dlc_0", "health",
+                 health_bytes(1, 1, 0x1, CYCLE_VALID_BIT, 0xF, 0xF, 0xF, 0x0, 0xFF, 0), dlc=0,
+                 why="DLC is 8 always"))
     return out
 
 
@@ -831,11 +960,20 @@ def layout_self_check(vectors):
             problems.append(f"{v['name']}: byte out of range")
         if v["verdict"] not in REJECT_REASONS:
             problems.append(f"{v['name']}: unknown verdict {v['verdict']}")
-    # A suite with no rejections would not test the validation rules at all.
-    if not any(v["verdict"] != "ACCEPT" for v in vectors):
-        problems.append("the suite contains no rejection case")
-    if not any(v["verdict"] == "ACCEPT" for v in vectors):
-        problems.append("the suite contains no acceptance case")
+        if not 0 <= v["dlc"] <= 8:
+            problems.append(f"{v['name']}: dlc {v['dlc']} is not a CAN 2.0 length")
+    # Every rule the validator can invoke must have a vector that invokes it, or the
+    # suite silently stops covering rules as they are added.
+    exercised = {v["verdict"] for v in vectors}
+    for reason in REJECT_REASONS:
+        if reason not in exercised:
+            problems.append(f"no vector exercises {reason}")
+    # Every classified status must appear, so a class change cannot slip through
+    # without a vector moving with it.
+    statuses = {v["bytes"][5] for v in vectors if v["kind"] == "meas"}
+    for raw in STATUS_CLASS:
+        if raw not in statuses:
+            problems.append(f"no vector carries raw status {raw}")
     return problems
 
 
@@ -843,7 +981,7 @@ BANNER = "COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both si
          "six-board schedule measurement; status 3/11 remain unvalidated."
 
 
-def emit_json(vectors, version, sha, path):
+def render_json(vectors, version, sha):
     doc = {
         "contract_file": CONTRACT.name,
         "contract_version": version,
@@ -859,13 +997,15 @@ def emit_json(vectors, version, sha, path):
         "profile_provenance": PROFILE_PROVENANCE,
         "unresolved_for_release": UNRESOLVED,
         "reject_reasons": list(REJECT_REASONS),
+        "status_classes": list(STATUS_CLASSES),
+        "status_table": {str(k): v for k, v in STATUS_CLASS.items()},
+        "dlc": DLC,
         "vectors": vectors,
     }
-    path.write_text(json.dumps(doc, indent=2, sort_keys=False) + "\n")
-    return path
+    return json.dumps(doc, indent=2, sort_keys=False) + "\n"
 
 
-def emit_header(vectors, version, sha, path):
+def render_header(vectors, version, sha):
     lines = [
         "/*",
         " * Copyright (c) 2026, LexxPluss Inc.",
@@ -912,13 +1052,38 @@ def emit_header(vectors, version, sha, path):
         f'inline constexpr uint8_t kChainPositionNone{{0x{RESOLVED["CHAIN_POSITION_NONE"]:02X}}};',
         f'inline constexpr uint8_t kCycleMissFault{{{RESOLVED["N_cycle_miss_fault"]}}};',
         f'inline constexpr uint8_t kCycleAdvanceMax{{{RESOLVED["N_cycle_advance_max"]}}};',
+        f"inline constexpr uint8_t kDlc{{{DLC}}};",
         "",
-        "// Commissioning profile. Model-derived, NOT measured. A production build must not",
-        "// inherit these values.",
+        "// NOTE: the commissioning timing profile is deliberately NOT exported here.",
+        "// This header is a test-vector artefact; a production decoder taking its timeouts",
+        "// from it would silently inherit model-derived placeholders as runtime defaults.",
+        "// The profile lives in tof_cliff_layout_vectors.json only, under profile_name",
+        f"// \"{PROFILE_NAME}\", and a production configuration must supply its own.",
+        "",
+        "// The status classification table, shared by both sides so it is not reimplemented",
+        "// twice. NO_SAMPLE statuses are never transmitted; a frame carrying one is invalid.",
+        "enum class status_class : uint8_t {",
     ]
-    for k, v in PROFILE.items():
-        lines.append(f"inline constexpr uint32_t k{''.join(p.capitalize() for p in k.split('_'))}{{{v}}};")
+    for i, c in enumerate(STATUS_CLASSES):
+        lines.append(f"    {c.lower()} = {i},")
     lines += [
+        "};",
+        "",
+        "struct status_row {",
+        "    uint8_t raw;",
+        "    status_class cls;",
+        "    bool validation_pending;",
+        "};",
+        "",
+        f"inline constexpr size_t kStatusRowCount{{{len(STATUS_CLASS)}}};",
+        "",
+        "inline constexpr status_row kStatusTable[kStatusRowCount]{",
+    ]
+    for raw, cls in STATUS_CLASS.items():
+        pending = "true" if f"STATUS_CLASS_{raw}" in VALIDATION_PENDING else "false"
+        lines.append(f"    {{{raw}, status_class::{cls.lower()}, {pending}}},")
+    lines += [
+        "};",
         "",
         "enum class verdict : uint8_t {",
     ]
@@ -932,6 +1097,7 @@ def emit_header(vectors, version, sha, path):
         "struct vector {",
         "    const char *name;",
         "    frame_kind kind;",
+        "    uint8_t dlc;          // 8 for every valid frame; other values must be rejected",
         "    uint8_t bytes[8];",
         "    verdict expected;",
         "    const char *why;",
@@ -945,8 +1111,8 @@ def emit_header(vectors, version, sha, path):
         b = ", ".join(f"0x{x:02x}" for x in v["bytes"])
         kind = "frame_kind::measurement" if v["kind"] == "meas" else "frame_kind::health"
         why = v["why"].replace('"', '\\"')
-        lines.append(f'    {{"{v["name"]}", {kind}, {{{b}}}, verdict::{v["verdict"].lower()},')
-        lines.append(f'     "{why}"}},')
+        lines.append(f'    {{"{v["name"]}", {kind}, {v["dlc"]}, {{{b}}},')
+        lines.append(f'     verdict::{v["verdict"].lower()}, "{why}"}},')
     lines += [
         "};",
         "",
@@ -955,8 +1121,7 @@ def emit_header(vectors, version, sha, path):
         "// clang-format on",
         "",
     ]
-    path.write_text("\n".join(lines))
-    return path
+    return "\n".join(lines)
 
 
 def contract_identity():
@@ -1085,17 +1250,19 @@ def main(argv):
     json_path = HERE / "tof_cliff_layout_vectors.json"
     header_path = HERE / "tof_cliff_contract_vectors.h"
 
+    artefacts = ((json_path, render_json), (header_path, render_header))
+
     if args.emit:
         if version.startswith("draft-"):
             print(f"refusing to emit: the contract is a draft ({version})", file=sys.stderr)
             return 1
-        emit_json(vectors, version, sha, json_path)
-        emit_header(vectors, version, sha, header_path)
+        for path, render in artefacts:
+            path.write_text(render(vectors, version, sha))
         accepts = len([v for v in vectors if v["verdict"] == "ACCEPT"])
         print(f"emitted {len(vectors)} layout vectors "
               f"({accepts} accept / {len(vectors) - accepts} reject)")
-        print(f"  {json_path.name}")
-        print(f"  {header_path.name}")
+        for path, _ in artefacts:
+            print(f"  {path.name}")
         print(f"contract {version}  sha256 {sha}")
         print(f"profile {PROFILE_NAME}  release_forbidden={RELEASE_FORBIDDEN}")
         return 0
@@ -1107,15 +1274,14 @@ def main(argv):
         print(f"layout OK: {len(vectors)} vectors")
         print(f"contract {version}  sha256 {sha}")
         # Catch "the contract text was edited but the artefacts were not regenerated".
+        # Read-only on purpose: a check that repairs what it is checking cannot be used
+        # in CI, and hides the very drift it was asked to report.
         stale = []
-        for path, emit in ((json_path, emit_json), (header_path, emit_header)):
+        for path, render in artefacts:
             if not path.exists():
                 stale.append(f"{path.name} is missing")
-                continue
-            before = path.read_text()
-            emit(vectors, version, sha, path)
-            if path.read_text() != before:
-                stale.append(f"{path.name} was out of date and has been rewritten")
+            elif path.read_text() != render(vectors, version, sha):
+                stale.append(f"{path.name} is out of date; run --emit")
         for s in stale:
             print(f"artefact drift: {s}", file=sys.stderr)
         return 1 if stale else 0
