@@ -670,16 +670,14 @@ ZTEST(tof_cliff_publisher, test_a_real_cycle_reaches_the_bus_through_the_packer)
     zassert_equal(c.suppressed_wrong_model, 0, "the grid stubs must not reach this layer");
     zassert_equal(c.suppressed_role_mismatch, 0);
 
-    /* Byte-exact against the contract's vector: source 0, epoch 1, cycle 1, range 1234. A
-     * real cycle numbers from 1, so only the cycle byte differs from the named vector. */
+    /* Byte-exact against the contract's vector, cycle byte included: the vector is cycle 0
+     * and so is the first cycle of an epoch. An earlier version of this test asserted 1
+     * here, with a comment explaining it -- pinning a contract violation as expected
+     * behaviour, which is worse than the violation on its own. */
     const auto *v{find_vector("meas_role_0_front_left")};
     zassert_not_null(v);
-    const sent_frame *f{&bus.frames[0]};
-    zassert_equal(f->data[0], v->bytes[0]);
-    zassert_equal(f->data[1], v->bytes[1]);
-    zassert_equal(f->data[2], 1, "the first real cycle is 1, not 0");
-    for (int i = 3; i < 8; ++i)
-        zassert_equal(f->data[i], v->bytes[i], "byte %d", i);
+    zassert_equal(memcmp(bus.frames[0].data, v->bytes, 8), 0,
+                  "the first cycle of an epoch is 0, and the frame must match the vector");
 
     acq::stop();
 }

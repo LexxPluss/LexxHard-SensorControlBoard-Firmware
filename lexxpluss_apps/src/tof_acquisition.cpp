@@ -29,6 +29,26 @@ bool configured_{false};
 bool running_{false};
 bool in_cycle_{false};
 cycle_facts facts_;
+
+/* The cycle number the NEXT cycle will carry.
+ *
+ * The contract is specific: cycle_seq "starts at 0 for the first cycle of a new
+ * mapping_epoch, increments by one per COMPLETED cycle and wraps 255 -> 0". A
+ * pre-increment at the top of the cycle gives 1 for the first one, which is a plain
+ * violation -- and one that an earlier integration test managed to pin as expected
+ * behaviour, comment and all.
+ *
+ * Kept as a full uint32 rather than the wire's uint8: the publisher truncates for the
+ * wire, which produces the required 255 -> 0 wrap, while the untruncated value is what
+ * lets a pending frame be matched to its own cycle without aliasing every 256th one.
+ *
+ * MUST be reset to 0 whenever the mapping epoch changes. The acquisition layer does not
+ * own the epoch -- it is injected on the publishing side -- so it cannot detect that on
+ * its own. It resets here on init() and on bring_up(), because a bring-up is a fresh
+ * enumeration attempt and therefore a fresh epoch. Whatever eventually issues a new epoch
+ * WITHOUT re-running bring-up has to reset this too, or measurements will be correlated
+ * against health frames from a different epoch. */
+uint32_t next_cycle_seq_{0};
 atomic_t snapshot_{ATOMIC_INIT(0)};
 k_timer health_timer_;
 k_work health_work_;
@@ -285,6 +305,8 @@ int init(const config &cfg)
     in_cycle_ = false;
 
     facts_ = cycle_facts{};
+    /* A fresh start is a fresh epoch, so the first cycle must carry 0. */
+    next_cycle_seq_ = 0;
     facts_.source_count = cfg.source_count;
     for (int i{0}; i < cfg.source_count; ++i) {
         facts_.sources[i].kind = cfg.sources[i].kind;
@@ -311,6 +333,11 @@ int bring_up()
 
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
     in_cycle_ = true;
+
+    /* A bring-up is a fresh enumeration attempt and therefore a fresh epoch, so the next
+     * cycle is again the epoch's first and carries 0. The acquisition layer cannot see an
+     * epoch change that happens WITHOUT a bring-up -- see the note on next_cycle_seq_. */
+    next_cycle_seq_ = 0;
 
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
@@ -359,7 +386,7 @@ void run_cycle()
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
     in_cycle_ = true;
 
-    ++facts_.cycle_seq;
+    facts_.cycle_seq = next_cycle_seq_;
     facts_.began_ms = now();
 
     for (int i{0}; i < facts_.source_count; ++i) {
@@ -393,6 +420,9 @@ void run_cycle()
 
     publish_snapshot();
     cfg_.hooks.on_cycle(facts_);
+
+    /* Per COMPLETED cycle, which is why this is here and not at the top. */
+    ++next_cycle_seq_;
 }
 
 void stop()

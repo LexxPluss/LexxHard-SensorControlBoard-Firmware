@@ -156,11 +156,17 @@ void on_cycle(const acq::cycle_facts &facts)
     rec.last = facts;
 }
 
-void on_cliff_sample(int index, uint32_t, const acq::source_facts &, const struct tof_cliff_sample &s)
+uint32_t sample_cycles[8];
+int sample_cycle_count;
+
+void on_cliff_sample(int index, uint32_t cycle_seq, const acq::source_facts &,
+                     const struct tof_cliff_sample &s)
 {
     ++rec.cliff_samples;
     rec.last_sample_index = index;
     rec.last_sample_mm = s.entries[0].range_mm;
+    if (sample_cycle_count < static_cast<int>(sizeof sample_cycles / sizeof sample_cycles[0]))
+        sample_cycles[sample_cycle_count++] = cycle_seq;
 }
 
 void on_cliff_health(uint32_t snapshot, acq::mapping_state state)
@@ -213,6 +219,7 @@ void before(void *)
     acq::stop();
     memset(devs, 0, sizeof(devs));
     rec = {};
+    sample_cycle_count = 0;
     provider_state = acq::mapping_state::not_ready;
     fake_clock_ms = 1000;
 }
@@ -726,4 +733,76 @@ ZTEST(tof_acquisition, test_the_snapshot_carries_what_the_heartbeat_needs)
     // The heartbeat reports the same word, and it does so without the lock.
     k_msleep(kHealthPeriodMs * 2);
     zassert_equal(rec.last_health_snapshot, snap);
+}
+
+/* ------------------------------------------------------ cycle_seq, per contract --- */
+
+ZTEST(tof_acquisition, test_the_first_cycle_of_an_epoch_is_zero)
+{
+    /* The contract is specific: cycle_seq "starts at 0 for the first cycle of a new
+     * mapping_epoch, increments by one per COMPLETED cycle and wraps 255 -> 0". A
+     * pre-increment at the top of the cycle gives 1 for the first one, and that violation
+     * once made it as far as being asserted as expected behaviour in another test. */
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    for (int i = 0; i < acq::kMaxSources; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    zassert_true(sample_cycle_count > 0, "no sample to read a cycle number from");
+    zassert_equal(sample_cycles[0], 0, "the first cycle of an epoch must be 0");
+
+    acq::cycle_facts f{};
+    acq::copy_facts(f);
+    zassert_equal(f.cycle_seq, 0);
+
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    zassert_equal(sample_cycles[0], 1, "the second cycle must be 1");
+    acq::copy_facts(f);
+    zassert_equal(f.cycle_seq, 1);
+
+    acq::stop();
+}
+
+ZTEST(tof_acquisition, test_a_bring_up_restarts_the_epoch_at_zero)
+{
+    /* A bring-up is a fresh enumeration attempt, so it is a fresh epoch and the numbering
+     * starts over. Otherwise measurements would be correlated against health frames from a
+     * different epoch. */
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    for (int i = 0; i < acq::kMaxSources; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+    acq::run_cycle();
+
+    zassert_equal(acq::bring_up(), 0);
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    zassert_equal(sample_cycles[0], 0, "a new epoch numbers from 0 again");
+
+    acq::stop();
+}
+
+ZTEST(tof_acquisition, test_the_wire_byte_wraps_255_to_zero)
+{
+    /* The wire field is a uint8. The counter is kept wider so a pending frame can be
+     * matched to its own cycle without aliasing every 256th one, and the wrap the contract
+     * requires happens on truncation. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    for (int i = 0; i < 256; ++i)
+        acq::run_cycle();
+
+    sample_cycle_count = 0;
+    acq::run_cycle();
+    zassert_equal(sample_cycles[0], 256, "the internal counter does not wrap");
+    zassert_equal(static_cast<uint8_t>(sample_cycles[0] & 0xFF), 0,
+                  "the wire byte must wrap 255 -> 0");
+
+    acq::stop();
 }
