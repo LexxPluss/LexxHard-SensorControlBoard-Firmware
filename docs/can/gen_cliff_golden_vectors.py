@@ -72,6 +72,11 @@ RESOLVED = {
     "PROTOCOL_VERSION": 0x1,
     "SENTINEL_INVALID": 0xFFFF,
     "SOURCE_COUNT": 4,
+    # The number of targets one VL53L4CX reports, VL53LX_MAX_RANGE_RESULTS. Distinct
+    # from SOURCE_COUNT even though both are 4 today: one is how many sensors the chain
+    # carries, the other is how many returns one of them can find. Using either for the
+    # other is a bug waiting for one of them to change.
+    "MAX_TARGETS": 4,
     "CHAIN_POSITION_NONE": 0xFF,
     # Decisions, not measurements. N_cycle_miss_fault is an AUXILIARY gate: it does not
     # extend or substitute for T_meas_max_gap, which stays the hard limit on a monotonic clock.
@@ -684,7 +689,7 @@ def meas_verdict(b, dlc=DLC):
         return "SOURCE_ID_OUT_OF_RANGE"
     if b[7] != 0:
         return "RESERVED_FIELD_NONZERO"
-    if b[6] > 4:
+    if b[6] > RESOLVED["MAX_TARGETS"]:
         return "TARGET_COUNT_MALFORMED"
     status = b[5]
     if status not in STATUS_CLASS:
@@ -986,6 +991,7 @@ def render_json(vectors, version, sha):
         "contract_file": CONTRACT.name,
         "contract_version": version,
         "contract_sha256": sha,
+        "artefact_set_id": artifact_set_id(),
         "profile_name": PROFILE_NAME,
         "release_forbidden": RELEASE_FORBIDDEN,
         "banner": BANNER,
@@ -1020,6 +1026,7 @@ def _licence_and_provenance(version, sha, what):
         f" * Contract : {CONTRACT.name}",
         f" * Version  : {version}",
         f" * SHA-256  : {sha}",
+        f" * ArtefactSet : {artifact_set_id()}",
         f" * Profile  : {PROFILE_NAME}",
         " *",
         f" * {BANNER}",
@@ -1062,6 +1069,12 @@ def render_prod_header(vectors, version, sha):
         f'inline constexpr char kContractVersion[]{{"{version}"}};',
         f'inline constexpr char kContractSha256[]{{"{sha}"}};',
         f'inline constexpr char kProfileName[]{{"{PROFILE_NAME}"}};',
+        "",
+        "// The contract SHA says which contract. This says which generated artefacts: it",
+        "// hashes the contract text together with the generator's own source, so a change",
+        "// to what the generator emits is visible even when the contract stands still.",
+        "// Both repositories pin it.",
+        f'inline constexpr char kArtefactSetId[]{{"{artifact_set_id()}"}};',
         f"inline constexpr bool kReleaseForbidden{{{'true' if RELEASE_FORBIDDEN else 'false'}}};",
         "",
         f'inline constexpr uint16_t kMeasId{{0x{RESOLVED["TOF_CLIFF_MEAS_ID"]:03X}}};',
@@ -1069,6 +1082,10 @@ def render_prod_header(vectors, version, sha):
         f'inline constexpr uint8_t kProtocolVersion{{0x{RESOLVED["PROTOCOL_VERSION"]:X}}};',
         f'inline constexpr uint16_t kSentinelInvalid{{0x{RESOLVED["SENTINEL_INVALID"]:04X}}};',
         f'inline constexpr uint8_t kSourceCount{{{RESOLVED["SOURCE_COUNT"]}}};',
+        "// How many targets one sensor can report. NOT interchangeable with kSourceCount,",
+        "// which is how many sensors the chain carries; both are 4 today and neither implies",
+        "// the other.",
+        f'inline constexpr uint8_t kMaxTargets{{{RESOLVED["MAX_TARGETS"]}}};',
         f'inline constexpr uint8_t kChainPositionNone{{0x{RESOLVED["CHAIN_POSITION_NONE"]:02X}}};',
         f'inline constexpr uint8_t kCycleMissFault{{{RESOLVED["N_cycle_miss_fault"]}}};',
         f'inline constexpr uint8_t kCycleAdvanceMax{{{RESOLVED["N_cycle_advance_max"]}}};',
@@ -1183,6 +1200,29 @@ def render_header(vectors, version, sha):
         "",
     ]
     return "\n".join(lines)
+
+
+def artifact_set_id():
+    """Identity of the emitted artefacts, not just of the contract they describe.
+
+    The contract SHA answers "which contract is this?" and nothing else. It cannot answer
+    "are these two repositories holding the same generated files?", and that gap is not
+    theoretical: this generator moved the verdict enum between headers and changed where
+    clang-format starts, twice, while the contract text and therefore its SHA stood still.
+    A byte comparison of the vendored copies proves they agree at the moment it runs; it
+    proves nothing at build time.
+
+    So this hashes the inputs that decide the output -- the contract text and this
+    generator's own source. Any edit to either changes the identifier, and both sides'
+    pins fail until the artefacts are regenerated and the pins updated deliberately.
+    Editing a comment in the generator also changes it; that is the intended cost, since
+    the alternative is an identifier that misses exactly the class of change that
+    motivated it.
+    """
+    h = hashlib.sha256()
+    h.update(CONTRACT.read_bytes())
+    h.update(Path(__file__).resolve().read_bytes())
+    return h.hexdigest()
 
 
 def contract_identity():
@@ -1328,6 +1368,7 @@ def main(argv):
         for path, _ in artefacts:
             print(f"  {path.name}")
         print(f"contract {version}  sha256 {sha}")
+        print(f"artefact set {artifact_set_id()}")
         print(f"profile {PROFILE_NAME}  release_forbidden={RELEASE_FORBIDDEN}")
         return 0
 
@@ -1337,6 +1378,7 @@ def main(argv):
               f"{len(UNRESOLVED)} symbols unresolved for release")
         print(f"layout OK: {len(vectors)} vectors")
         print(f"contract {version}  sha256 {sha}")
+        print(f"artefact set {artifact_set_id()}")
         # Catch "the contract text was edited but the artefacts were not regenerated".
         # Read-only on purpose: a check that repairs what it is checking cannot be used
         # in CI, and hides the very drift it was asked to report.
