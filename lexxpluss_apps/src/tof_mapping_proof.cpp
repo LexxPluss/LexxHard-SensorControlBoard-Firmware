@@ -112,20 +112,64 @@ challenge gate::issue()
     return challenge{current_};
 }
 
+namespace {
+
+/* The commissioning profile is checked in two halves, and the split is about diagnostics
+ * rather than tidiness.
+ *
+ * The topology half -- two grid sensors then four cliff sensors -- is what a bench chain
+ * fails. The role half is what the PRODUCTION chain fails today, and it must say so: fold
+ * the two together and dasher_spec() gets told "not the commissioning profile" when its
+ * actual and only problem is that no role table has been frozen. That is the single most
+ * important refusal this module produces, and it would have been the least informative. */
+bool is_commissioning_topology(const enm::chain_spec &spec)
+{
+    constexpr size_t kPositions{6};
+    if (spec.positions != kPositions)
+        return false;
+    for (size_t i{0}; i < kPositions; ++i) {
+        const enm::model want{i < 2 ? enm::model::l7cx : enm::model::l4cx};
+        if (spec.at[i].expected != want)
+            return false;
+    }
+    return true;
+}
+
+/* The role half, and only reached once the roles are known and distinct. Checked as a SET
+ * rather than inferred from "four distinct known roles": that inference holds today only
+ * because l4_role has exactly four real values, and it would stop holding the moment a
+ * fifth is added -- silently, in the direction that accepts a chain the profile does not
+ * describe. */
+bool has_the_four_cliff_roles(const enm::chain_spec &spec)
+{
+    const enm::l4_role required[4]{enm::l4_role::front_left, enm::l4_role::rear_left,
+                                   enm::l4_role::rear_right, enm::l4_role::front_right};
+    for (const enm::l4_role want : required) {
+        size_t seen{0};
+        for (size_t i{2}; i < spec.positions; ++i) {
+            if (spec.at[i].role == want)
+                ++seen;
+        }
+        if (seen != 1)
+            return false;
+    }
+    return true;
+}
+
+refusal check_transaction(const evidence &ev, bool require_profile, fingerprint &proven);
+
+} // namespace
+
 verdict gate::evaluate(const evidence &ev, const challenge &c)
 {
     verdict v{};
 
-    if (ev.spec == nullptr || ev.walk1 == nullptr || ev.walk2 == nullptr ||
-        ev.spec->positions == 0) {
-        v.reason = refusal::missing_evidence;
-        return v;
-    }
-
-    /* The challenge first, before any evidence is looked at. Order matters for the
-     * diagnostic: "you presented evidence for a superseded attempt" is a different
-     * problem from anything about the chain, and reporting a chain fault for it would send
-     * an operator to the hardware. */
+    /* The challenge first, and spent unconditionally. Before the evidence, because the
+     * challenge is the authorisation context: "you presented evidence for an attempt that
+     * is over" is a different problem from anything about the chain, and reporting a chain
+     * fault for it would send an operator to the hardware. Spent whatever follows, because
+     * one challenge covers one walk 1 -> isolation -> walk 2, and a second bite would let a
+     * repaired chain's walk 2 be judged against the old chain's isolation. */
     if (!c.valid()) {
         v.reason = refusal::challenge_invalid;
         return v;
@@ -138,16 +182,61 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
         v.reason = refusal::challenge_consumed;
         return v;
     }
+    consumed_ = true;
+
+    fingerprint proven{};
+    const refusal r{check_transaction(ev, true, proven)};
+    if (r != refusal::none) {
+        v.reason = r;
+        return v;
+    }
+
+    v.reason = refusal::none;
+    v.token = proof_token{c.nonce(), proven};
+    return v;
+}
+
+bench_report gate::evaluate_bench(const evidence &ev)
+{
+    /* No challenge, because there is nothing to authorise and therefore no attempt to bind
+     * to. A bench run can be repeated as often as an operator likes. */
+    bench_report b{};
+    b.reason = check_transaction(ev, false, b.proven);
+    return b;
+}
+
+namespace {
+
+/* Fills `proven` on success and leaves it untouched otherwise -- both callers hand in a
+ * value-initialised fingerprint, so a refusal already reports an empty one.
+ *
+ * There used to be a `proven = fingerprint{};` here, and removing it was not a tidy-up: the
+ * Zephyr SDK 0.16.5-1 cross compiler (arm-zephyr-eabi-gcc 12.2.0) hit an internal compiler
+ * error on that line -- "in gimple_add_tmp_var, at gimplify.cc:772" -- while host gcc 11.4
+ * compiled the same file without complaint, so the whole native_sim suite passed and all
+ * three firmware images failed to build. Assigning a fresh temporary of this aggregate to a
+ * reference parameter inside a static function that is inlined into two callers is enough to
+ * trigger it. If a similar ICE appears again, this is the shape to suspect. */
+refusal check_transaction(const evidence &ev, bool require_profile, fingerprint &proven)
+{
+    if (ev.spec == nullptr || ev.walk1 == nullptr || ev.walk2 == nullptr ||
+        ev.spec->positions == 0)
+        return refusal::missing_evidence;
 
     const enm::chain_spec &spec{*ev.spec};
+
+    /* The product's topology, and only for a proof that could open PROVEN. A three-board
+     * bench chain can be checked against every other rule here and still must not be
+     * provable: it is not a weaker proof of the product, it is a proof of a different
+     * machine. */
+    if (require_profile && !is_commissioning_topology(spec))
+        return refusal::spec_not_commissioning_profile;
 
     /* Isolation's negative half needs a neighbour whose silence can be proven, so a
      * single-position chain is not provable by this definition. Refusing is right: the
      * alternative is a proof that quietly means less on some chains than on others. */
-    if (spec.positions < 2) {
-        v.reason = refusal::spec_too_few_positions;
-        return v;
-    }
+    if (spec.positions < 2)
+        return refusal::spec_too_few_positions;
 
     /* "No cliff sensor at all" comes before "the tail is not a cliff sensor", and the order
      * is the whole reason both refusals exist. Reversed, a chain of two grid sensors fails
@@ -159,10 +248,8 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
         if (spec.at[i].expected == enm::model::l4cx)
             ++cliff_positions;
     }
-    if (cliff_positions == 0) {
-        v.reason = refusal::spec_no_cliff;
-        return v;
-    }
+    if (cliff_positions == 0)
+        return refusal::spec_no_cliff;
 
     /* Tail isolation is defined on the tail, and the tail of a cliff chain is an L4. A spec
      * ending in an L7 is not a chain this proof knows how to prove -- a refusal, not
@@ -172,28 +259,20 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
      * so a bench chain with fewer boards stays provable and the product's length is not
      * baked into the safety logic. */
     const size_t tail{spec.positions - 1};
-    if (spec.at[tail].expected != enm::model::l4cx) {
-        v.reason = refusal::spec_no_tail_l4;
-        return v;
-    }
+    if (spec.at[tail].expected != enm::model::l4cx)
+        return refusal::spec_no_tail_l4;
 
     /* Both walks must have been run against a spec the enumerator itself accepted. Cheap,
      * and it closes the one hole this module cannot close on its own: it does not validate
      * the spec (the validator is internal to enumerate()), so without this a caller could
      * present a spec the enumerator would have rejected outright. */
-    if (ev.walk1->spec != enm::spec_error::none || ev.walk2->spec != enm::spec_error::none) {
-        v.reason = refusal::walk_spec_rejected;
-        return v;
-    }
+    if (ev.walk1->spec != enm::spec_error::none || ev.walk2->spec != enm::spec_error::none)
+        return refusal::walk_spec_rejected;
 
-    if (ev.walk1->status != enm::chain_status::complete) {
-        v.reason = refusal::walk1_not_complete;
-        return v;
-    }
-    if (ev.walk2->status != enm::chain_status::complete) {
-        v.reason = refusal::walk2_not_complete;
-        return v;
-    }
+    if (ev.walk1->status != enm::chain_status::complete)
+        return refusal::walk1_not_complete;
+    if (ev.walk2->status != enm::chain_status::complete)
+        return refusal::walk2_not_complete;
 
     /* The role table, before the electrical checks. A machine can be electrically perfect
      * and still unprovable: the masks a consumer reads are keyed by source_id, not by
@@ -203,30 +282,29 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
     for (size_t i{0}; i < spec.positions; ++i) {
         if (spec.at[i].expected != enm::model::l4cx)
             continue;
-        if (spec.at[i].role == enm::l4_role::unknown) {
-            v.reason = refusal::role_unknown;
-            return v;
-        }
+        if (spec.at[i].role == enm::l4_role::unknown)
+            return refusal::role_unknown;
         for (size_t j{i + 1}; j < spec.positions; ++j) {
             if (spec.at[j].expected == enm::model::l4cx &&
-                spec.at[j].role == spec.at[i].role) {
-                v.reason = refusal::role_duplicate;
-                return v;
-            }
+                spec.at[j].role == spec.at[i].role)
+                return refusal::role_duplicate;
         }
     }
+
+    /* The profile's role half, after the two checks that produce a better diagnostic. With
+     * four known, distinct roles this can only fire if l4_role has grown a value the profile
+     * does not name -- which is exactly the silent-acceptance case worth spending a loop
+     * on. */
+    if (require_profile && !has_the_four_cliff_roles(spec))
+        return refusal::spec_not_commissioning_profile;
 
     fingerprint fp1{}, fp2{};
     refusal why{refusal::none};
 
-    if (!fingerprint_of(spec, *ev.walk1, fp1, why)) {
-        v.reason = why;
-        return v;
-    }
-    if (!fingerprint_of(spec, *ev.walk2, fp2, why)) {
-        v.reason = why;
-        return v;
-    }
+    if (!fingerprint_of(spec, *ev.walk1, fp1, why))
+        return why;
+    if (!fingerprint_of(spec, *ev.walk2, fp2, why))
+        return why;
 
     /* The live chain against the spec: each position answers on the address the mapping
      * assigns it, with a type-appropriate identity. Walk 2 and not walk 1, because walk 2
@@ -243,14 +321,10 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
      * so it can never detect two of them being swapped between positions. That is exactly
      * why the mounting roles come from a frozen document and are refused when unknown. */
     for (size_t i{0}; i < fp2.positions; ++i) {
-        if (fp2.at[i].address != spec.at[i].target_addr) {
-            v.reason = refusal::address_mismatch;
-            return v;
-        }
-        if (!enm::id_matches(spec.at[i].expected, fp2.at[i].id)) {
-            v.reason = refusal::identity_mismatch;
-            return v;
-        }
+        if (fp2.at[i].address != spec.at[i].target_addr)
+            return refusal::address_mismatch;
+        if (!enm::id_matches(spec.at[i].expected, fp2.at[i].id))
+            return refusal::identity_mismatch;
     }
 
     /* Mutually distinct addresses. The enumerator's own spec validation rejects duplicate
@@ -259,69 +333,52 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
      * take on trust. */
     for (size_t i{0}; i < fp2.positions; ++i) {
         for (size_t j{i + 1}; j < fp2.positions; ++j) {
-            if (fp2.at[i].address == fp2.at[j].address) {
-                v.reason = refusal::address_not_distinct;
-                return v;
-            }
+            if (fp2.at[i].address == fp2.at[j].address)
+                return refusal::address_not_distinct;
         }
     }
 
-    if (!same(fp1, fp2)) {
-        v.reason = refusal::fingerprint_mismatch;
-        return v;
-    }
+    if (!same(fp1, fp2))
+        return refusal::fingerprint_mismatch;
 
     /* Isolation last, because it is the criterion whose meaning depends on everything
      * above: "the tail answers its own address" is only informative once we know which
      * address is the tail's and that both walks agree on it. */
     const isolation_observation &iso{ev.isolation};
 
-    if (!iso.attempted) {
-        v.reason = refusal::isolation_not_attempted;
-        return v;
-    }
+    if (!iso.attempted)
+        return refusal::isolation_not_attempted;
     if (iso.tail_probe == enm::probe_state::transport_error ||
-        iso.prev_probe == enm::probe_state::transport_error) {
-        v.reason = refusal::isolation_transport_error;
-        return v;
-    }
-    if (iso.tail_probe != enm::probe_state::ack || iso.answering_addr == 0) {
-        v.reason = refusal::isolation_no_answer;
-        return v;
-    }
+        iso.prev_probe == enm::probe_state::transport_error)
+        return refusal::isolation_transport_error;
+    if (iso.tail_probe != enm::probe_state::ack || iso.answering_addr == 0)
+        return refusal::isolation_no_answer;
     if (iso.answering_addr != spec.at[tail].target_addr) {
         /* The silent merge this whole gate exists to catch: two devices were written to
          * one address, so the isolated tail answers on its neighbour's. */
-        v.reason = refusal::isolation_wrong_address;
-        return v;
+        return refusal::isolation_wrong_address;
     }
-    if (!iso.id_read_ok || !enm::id_matches(enm::model::l4cx, iso.seen)) {
-        v.reason = refusal::isolation_identity;
-        return v;
-    }
+    if (!iso.id_read_ok || !enm::id_matches(enm::model::l4cx, iso.seen))
+        return refusal::isolation_identity;
     /* The negative half, and it has to be proven at the RIGHT address. A caller that
      * probed some unrelated address would collect a clean NACK for free and the check
      * would pass while proving nothing about the neighbour. */
-    if (iso.prev_addr != spec.at[tail - 1].target_addr) {
-        v.reason = refusal::isolation_prev_addr_wrong;
-        return v;
-    }
+    if (iso.prev_addr != spec.at[tail - 1].target_addr)
+        return refusal::isolation_prev_addr_wrong;
     /* An address that still answers while its device is supposed to be disabled means the
      * isolation did not take, and then the positive half proves nothing -- the tail could
      * have been answering all along with its neighbour awake beside it. Only a clean NACK
      * proves silence. */
-    if (iso.prev_probe != enm::probe_state::nack) {
-        v.reason = refusal::isolation_prev_answered;
-        return v;
-    }
+    if (iso.prev_probe != enm::probe_state::nack)
+        return refusal::isolation_prev_answered;
 
-    /* Everything held. The challenge is spent here and not before: a refused attempt
-     * leaves it outstanding so evidence can be re-presented after a repair, and a granted
-     * one can never be repeated. */
-    consumed_ = true;
-    v.reason = refusal::none;
-    v.token = proof_token{c.nonce(), fp2};
-    return v;
+    /* Everything held. The caller mints the token; this function only ever answers "is this
+     * transaction sound", which is what lets the same checks serve a bench report that can
+     * authorise nothing. */
+    proven = fp2;
+    return refusal::none;
 }
+
+} // namespace
 
 } // namespace lexxhard::tof_proof

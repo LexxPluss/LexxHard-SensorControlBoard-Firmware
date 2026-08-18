@@ -85,7 +85,8 @@ enum class refusal : uint8_t {
     missing_evidence,        // a null spec or walk pointer, or an empty spec
     challenge_invalid,       // the default-constructed challenge, which authorises nothing
     challenge_stale,         // not the challenge this gate most recently issued
-    challenge_consumed,      // that challenge already produced a token
+    challenge_consumed,      // that challenge has already been evaluated, pass or fail
+    spec_not_commissioning_profile,  // not L7,L7,L4,L4,L4,L4 with each cliff role once
     spec_no_tail_l4,         // the tail position is not an L4: isolation is undefined
     spec_no_cliff,           // the spec carries no L4 at all
     spec_too_few_positions,  // fewer than two: isolation has no neighbour to silence
@@ -227,6 +228,25 @@ struct verdict {
 };
 
 /*
+ * The result of a diagnostic evaluation on a chain that is not the commissioning profile.
+ *
+ * It carries no token, and that is the whole design: a bench chain of three boards can be
+ * checked against every rule this module knows, and still cannot produce anything that
+ * could later open PROVEN. The commissioning profile is a fixed topology -- two grid
+ * sensors then four cliff sensors, each cliff role used exactly once -- and a proof of some
+ * other chain is not a weaker proof of the product, it is a proof of a different machine.
+ *
+ * Not enforced by a flag on the token, deliberately. A `scope` field would mean a bench run
+ * does mint a PROVEN-capable object and something downstream is trusted to look at the
+ * field. Here there is no object to check.
+ */
+struct bench_report {
+    refusal reason{refusal::missing_evidence};
+    fingerprint proven{};
+    bool clean() const { return reason == refusal::none; }
+};
+
+/*
  * Issues challenges and evaluates evidence against them.
  *
  * The order is the safety property: a challenge is issued BEFORE the first enable line
@@ -242,10 +262,26 @@ public:
     // is that the previous challenge dies here.
     challenge issue();
 
-    // Consumes the challenge on success and only on success: a refused attempt leaves it
-    // outstanding, so an operator can fix the machine and re-present evidence without
-    // re-issuing. A granted attempt cannot be repeated.
+    // ONE EVALUATION PER CHALLENGE, pass or fail. Presenting a challenge spends it, before
+    // any evidence is looked at.
+    //
+    // The earlier version left a refused challenge outstanding so an operator could repair
+    // the machine and re-present evidence. That was wrong, and not subtly: a repair means
+    // the enable chain moved, so the second attempt's walk 2 belongs to a different
+    // physical chain state than the first attempt's walk 1 and isolation. Accepting
+    // evidence piecemeal against one challenge is exactly how evidence from two different
+    // walks gets spliced into one transaction, which is the thing the transaction exists to
+    // prevent. A retry is a new issue() and a fresh walk 1 -> isolation -> walk 2.
+    //
+    // Only the commissioning profile can be proven here; anything else is refused with
+    // `spec_not_commissioning_profile`. Diagnostics use evaluate_bench().
     verdict evaluate(const evidence &ev, const challenge &c);
+
+    // Diagnostic evaluation of any chain shape. Takes no challenge and returns no token,
+    // because it authorises nothing -- there is no attempt to bind it to. Everything else
+    // is checked exactly as evaluate() checks it, so a bench chain still gets a real answer
+    // about its wiring.
+    bench_report evaluate_bench(const evidence &ev);
 
     // For diagnostics and for the authority's own assertions. Not an authorisation path.
     uint32_t outstanding_nonce() const { return consumed_ ? 0 : current_; }

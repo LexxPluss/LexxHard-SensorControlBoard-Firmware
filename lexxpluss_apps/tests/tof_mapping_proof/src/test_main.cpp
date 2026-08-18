@@ -128,6 +128,15 @@ pf::refusal refused(const transaction &t)
     return g.evaluate(t.evidence(), c).reason;
 }
 
+/* The diagnostic path. Chain shapes that are not the commissioning profile can only be
+ * checked here, because evaluate() refuses them on the topology before it looks at
+ * anything else -- which is the point of the topology check. */
+pf::refusal bench_refused(const transaction &t)
+{
+    pf::gate g;
+    return g.evaluate_bench(t.evidence()).reason;
+}
+
 } // namespace
 
 ZTEST_SUITE(tof_mapping_proof, NULL, NULL, NULL, NULL, NULL);
@@ -243,22 +252,30 @@ ZTEST(tof_mapping_proof, test_a_granted_challenge_cannot_be_used_twice)
     zassert_false(again.token.valid());
 }
 
-ZTEST(tof_mapping_proof, test_a_refused_attempt_leaves_the_challenge_outstanding)
+ZTEST(tof_mapping_proof, test_a_refused_attempt_also_consumes_the_challenge)
 {
-    /* Deliberate asymmetry with the test above. A refusal is a machine that needs a repair,
-     * and forcing a fresh challenge after every refusal would mean the operator's retry
-     * path and the replay path are the same path. */
+    /* One evaluation per challenge, pass or fail, and the failing case is the one that
+     * matters. A refusal means the machine needs a repair; a repair moves the enable chain;
+     * so the fixed machine's walk 2 belongs to a different physical chain state than the
+     * refused attempt's walk 1 and isolation. Letting the same challenge take a second
+     * submission is precisely how evidence from two different walks gets spliced into one
+     * transaction. A retry is a new challenge and a fresh walk 1 -> isolation -> walk 2. */
     transaction bad;
     bad.isolation.prev_probe = enm::probe_state::ack;
 
     pf::gate g;
     const pf::challenge c{g.issue()};
     zassert_equal(g.evaluate(bad.evidence(), c).reason, pf::refusal::isolation_prev_answered);
-    zassert_equal(g.outstanding_nonce(), c.nonce());
+    zassert_equal(g.outstanding_nonce(), 0u, "a refusal spends the challenge too");
 
     const transaction fixed;
-    zassert_true(g.evaluate(fixed.evidence(), c).granted());
-    zassert_equal(g.outstanding_nonce(), 0u);
+    const pf::verdict spliced{g.evaluate(fixed.evidence(), c)};
+    zassert_false(spliced.granted());
+    zassert_equal(spliced.reason, pf::refusal::challenge_consumed);
+
+    /* The legitimate retry path, and the only one. */
+    const pf::challenge again{g.issue()};
+    zassert_true(g.evaluate(fixed.evidence(), again).granted());
 }
 
 ZTEST(tof_mapping_proof, test_moving_a_token_empties_the_source)
@@ -446,13 +463,15 @@ ZTEST(tof_mapping_proof, test_missing_evidence_is_refused)
     pf::evidence ev{t.evidence()};
     ev.walk2 = nullptr;
     zassert_equal(g.evaluate(ev, c).reason, pf::refusal::missing_evidence);
+    /* Spent, like every other outcome. Presenting a challenge is what spends it, so there is
+     * no cheap probe that keeps an attempt alive. */
+    zassert_equal(g.outstanding_nonce(), 0u);
 
     pf::evidence no_spec{t.evidence()};
     no_spec.spec = nullptr;
-    zassert_equal(g.evaluate(no_spec, c).reason, pf::refusal::missing_evidence);
-
-    /* None of that consumed the challenge: there was nothing to evaluate. */
-    zassert_equal(g.outstanding_nonce(), c.nonce());
+    const pf::challenge second{g.issue()};
+    zassert_equal(g.evaluate(no_spec, second).reason, pf::refusal::missing_evidence);
+    zassert_equal(g.outstanding_nonce(), 0u);
 }
 
 ZTEST(tof_mapping_proof, test_a_chain_too_short_to_isolate_is_not_provable)
@@ -462,7 +481,9 @@ ZTEST(tof_mapping_proof, test_a_chain_too_short_to_isolate_is_not_provable)
     t.spec.at[0] = {enm::model::l4cx, 0x2C, -1, enm::l4_role::front_left};
     t.walk1 = clean_walk(t.spec, false);
     t.walk2 = clean_walk(t.spec, false);
-    zassert_equal(refused(t), pf::refusal::spec_too_few_positions);
+    zassert_equal(bench_refused(t), pf::refusal::spec_too_few_positions);
+    /* And it is not provable by the other door either, for a blunter reason. */
+    zassert_equal(refused(t), pf::refusal::spec_not_commissioning_profile);
 }
 
 ZTEST(tof_mapping_proof, test_a_chain_with_no_cliff_sensor_at_all_is_refused)
@@ -472,7 +493,8 @@ ZTEST(tof_mapping_proof, test_a_chain_with_no_cliff_sensor_at_all_is_refused)
     t.walk1 = clean_walk(t.spec, false);
     t.walk2 = clean_walk(t.spec, true);
     t.isolation = clean_isolation(t.spec);
-    zassert_equal(refused(t), pf::refusal::spec_no_cliff);
+    zassert_equal(bench_refused(t), pf::refusal::spec_no_cliff);
+    zassert_equal(refused(t), pf::refusal::spec_not_commissioning_profile);
 }
 
 ZTEST(tof_mapping_proof, test_a_chain_whose_tail_is_not_a_cliff_sensor_is_refused)
@@ -487,7 +509,8 @@ ZTEST(tof_mapping_proof, test_a_chain_whose_tail_is_not_a_cliff_sensor_is_refuse
     t.walk1 = clean_walk(t.spec, false);
     t.walk2 = clean_walk(t.spec, false);
     t.isolation = clean_isolation(t.spec);
-    zassert_equal(refused(t), pf::refusal::spec_no_tail_l4);
+    zassert_equal(bench_refused(t), pf::refusal::spec_no_tail_l4);
+    zassert_equal(refused(t), pf::refusal::spec_not_commissioning_profile);
 }
 
 ZTEST(tof_mapping_proof, test_a_walk_reporting_a_different_position_count_is_refused)
@@ -498,4 +521,91 @@ ZTEST(tof_mapping_proof, test_a_walk_reporting_a_different_position_count_is_ref
     transaction t;
     t.walk2.positions = 5;
     zassert_equal(refused(t), pf::refusal::walk_position_count);
+}
+
+ZTEST(tof_mapping_proof, test_a_bench_chain_cannot_be_proven_through_the_commissioning_door)
+{
+    /* The P1 this test exists for: before it, a three-board bench chain produced the same
+     * proof_token as the product, and a token is a token -- whatever the authority does with
+     * it later, the object capable of opening PROVEN had already been minted. */
+    transaction t;
+    t.spec.positions = 3;
+    t.spec.at[0] = {enm::model::l7cx, 0x2A, 0, enm::l4_role::unknown};
+    t.spec.at[1] = {enm::model::l7cx, 0x2B, 1, enm::l4_role::unknown};
+    t.spec.at[2] = {enm::model::l4cx, 0x2C, -1, enm::l4_role::front_left};
+    t.walk1 = clean_walk(t.spec, false);
+    t.walk2 = clean_walk(t.spec, true);
+    t.isolation = clean_isolation(t.spec);
+
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    const pf::verdict v{g.evaluate(t.evidence(), c)};
+    zassert_false(v.granted());
+    zassert_equal(v.reason, pf::refusal::spec_not_commissioning_profile);
+    zassert_false(v.token.valid());
+}
+
+ZTEST(tof_mapping_proof, test_the_same_bench_chain_still_gets_a_real_diagnostic_answer)
+{
+    /* Keeping the bench path useful is the other half of the P1: a chain that cannot be
+     * proven should still be told whether it is wired correctly. This one is. */
+    transaction t;
+    t.spec.positions = 3;
+    t.spec.at[0] = {enm::model::l7cx, 0x2A, 0, enm::l4_role::unknown};
+    t.spec.at[1] = {enm::model::l7cx, 0x2B, 1, enm::l4_role::unknown};
+    t.spec.at[2] = {enm::model::l4cx, 0x2C, -1, enm::l4_role::front_left};
+    t.walk1 = clean_walk(t.spec, false);
+    t.walk2 = clean_walk(t.spec, true);
+    t.isolation = clean_isolation(t.spec);
+
+    pf::gate g;
+    const pf::bench_report b{g.evaluate_bench(t.evidence())};
+    zassert_true(b.clean(), "reason %d", static_cast<int>(b.reason));
+    zassert_equal(b.proven.positions, 3u);
+    zassert_equal(b.proven.at[2].address, 0x2C);
+    /* And it reports faults, so it is a real check and not a rubber stamp. */
+    transaction merged{t};
+    merged.isolation.answering_addr = t.spec.at[1].target_addr;
+    zassert_equal(bench_refused(merged), pf::refusal::isolation_wrong_address);
+}
+
+ZTEST(tof_mapping_proof, test_a_bench_evaluation_never_touches_the_challenge)
+{
+    /* It authorises nothing, so it has nothing to spend -- and it must not be able to burn
+     * an attempt the operator is in the middle of. */
+    const transaction t;
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    (void)g.evaluate_bench(t.evidence());
+    zassert_equal(g.outstanding_nonce(), c.nonce());
+    zassert_true(g.evaluate(t.evidence(), c).granted());
+}
+
+ZTEST(tof_mapping_proof, test_the_profile_requires_the_grid_sensors_first)
+{
+    /* Six boards, four cliff roles, and still not the profile: the models are in the wrong
+     * order. Enumeration would pass and the mapping would be someone else's. */
+    transaction t;
+    t.spec.at[0] = {enm::model::l4cx, 0x2A, -1, enm::l4_role::front_left};
+    t.spec.at[2] = {enm::model::l7cx, 0x2C, 0, enm::l4_role::unknown};
+    t.walk1 = clean_walk(t.spec, false);
+    t.walk2 = clean_walk(t.spec, true);
+    zassert_equal(refused(t), pf::refusal::spec_not_commissioning_profile);
+}
+
+ZTEST(tof_mapping_proof, test_the_role_diagnostics_survive_the_profile_check)
+{
+    /* The reason the profile is checked in two halves. Production's chain has the right
+     * topology and no role table, and it must be told THAT -- not "not the commissioning
+     * profile", which would send someone looking at the hardware. */
+    transaction unknown_roles;
+    unknown_roles.spec = lexxhard::tof_chain::dasher_spec();
+    unknown_roles.walk1 = clean_walk(unknown_roles.spec, false);
+    unknown_roles.walk2 = clean_walk(unknown_roles.spec, true);
+    unknown_roles.isolation = clean_isolation(unknown_roles.spec);
+    zassert_equal(refused(unknown_roles), pf::refusal::role_unknown);
+
+    transaction duplicated;
+    duplicated.spec.at[4].role = duplicated.spec.at[2].role;
+    zassert_equal(refused(duplicated), pf::refusal::role_duplicate);
 }
