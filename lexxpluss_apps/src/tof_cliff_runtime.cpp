@@ -16,6 +16,7 @@
 #include <zephyr/logging/log.h>
 
 #include "tof_acquisition.hpp"
+#include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
@@ -53,7 +54,16 @@ VL53L4CX_Object_t objs_[kCliffSensors];
 struct tof_cliff_scratch scratch_;
 
 stage stage_{stage::not_started};
-bool mapping_applied_{false};
+/* The epoch the descriptors were keyed under, and whether they were keyed at all.
+ *
+ * NOT a plain "applied" flag. A flag can only be correct if somebody remembers to clear it, and the
+ * case that matters is the one nobody would remember: a successful proof, then a LATER proof that
+ * fails. The authority revokes before every attempt, so the flag would still say "applied" while the
+ * keys described a mapping that is no longer proven. Recording the epoch instead lets
+ * mapping_applied() ASK the authority whether those keys are still the current mapping's, which
+ * cannot go stale. */
+bool keyed_{false};
+uint8_t keyed_epoch_{0};
 
 uint32_t now_ms()
 {
@@ -95,6 +105,48 @@ void build_descriptors()
     }
 }
 
+int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
+{
+    /* The authority's install callback, called INSIDE the commit transaction with the chain lock
+     * held and before anything is published. Two-pass on purpose: validate every position into a
+     * temporary, and only then write. A single pass that wrote as it validated would leave a
+     * half-keyed table on the first refusal -- some corners published correctly, the rest not
+     * published at all, and nothing on the wire to say which. */
+    uint8_t keys[acq::kMaxSources];
+
+    if (!ready())
+        return -EPERM;
+    if (fp.positions != spec_.positions)
+        return -EINVAL;
+
+    for (size_t i{0}; i < spec_.positions; ++i) {
+        keys[i] = kRoleUnassigned;
+        if (descs_[i].kind != acq::model::l4_cliff)
+            continue;   // the grid stubs have no cliff source id and stay unassigned
+
+        /* The address, because role_id is the key a measurement is published under: if the mapping
+         * proved front_left at 0x2C and the descriptor acquisition reads is 0x2D, keying it would
+         * publish one corner's distance under another corner's name -- and nothing on the wire
+         * would look wrong. The role, because a mapping with an unknown role has no source id and
+         * the contract cannot express a measurement without one. */
+        if (fp.at[i].address != descs_[i].addr_7bit)
+            return -EINVAL;
+
+        const int8_t src{pf::source_id_of(fp.at[i].role)};
+
+        if (src < 0)
+            return -EINVAL;
+        keys[i] = static_cast<uint8_t>(src);
+    }
+
+    for (size_t i{0}; i < spec_.positions; ++i)
+        descs_[i].role_id = keys[i];
+    keyed_ = true;
+    keyed_epoch_ = epoch;
+    LOG_INF("descriptors keyed from the installed mapping under epoch %u", epoch);
+    return 0;
+}
+
 int init_authority()
 {
     au::config cfg{};
@@ -102,6 +154,7 @@ int init_authority()
     cfg.runtime_spec = &spec_;
     cfg.begin_epoch = acq::begin_epoch;
     cfg.acquisition_idle = acq::is_idle;
+    cfg.install_mapping = install_from_mapping;
     return au::init(cfg);
 }
 
@@ -161,6 +214,19 @@ int bootstrap(const config &cfg)
     if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0)
         return -EINVAL;
 
+    /* The chain glue first, as a PRECONDITION rather than a convention.
+     *
+     * Acquisition drives i2c2 and the enable lines, so a bootstrap that ran before the chain
+     * controller configured them would bring sensors up against unconfigured pins. That used to be
+     * true in the B6 image, where a SYS_INIT ran the probe before main(): the ordering was expressed
+     * only by where the calls happened to sit. Checking it here makes a wrong order a loud refusal
+     * instead of a silent one. */
+    if (!tof_chain_controller::glue_ready()) {
+        stage_ = stage::chain_not_ready;
+        LOG_ERR("chain glue not initialised: refusing to bootstrap the cliff subsystem");
+        return -ENODEV;
+    }
+
     build_descriptors();
 
     if (const int rc{init_authority()}; rc != 0) {
@@ -212,6 +278,8 @@ const char *stage_name(stage st)
     switch (st) {
     case stage::not_started:
         return "not_started";
+    case stage::chain_not_ready:
+        return "chain_not_ready";
     case stage::authority_failed:
         return "authority_failed";
     case stage::publisher_failed:
@@ -229,56 +297,22 @@ enm::chain_spec &spec()
     return spec_;
 }
 
-int apply_installed_mapping()
-{
-    if (!ready())
-        return -EPERM;
-    /* PROVEN is the only state that has an installed mapping to read. Asking the authority rather
-     * than trusting a caller's word about what just happened is the same rule the commit follows. */
-    if (au::current().state != acq::mapping_state::proven)
-        return -EPERM;
-
-    const pf::fingerprint &fp{au::installed_mapping()};
-
-    if (fp.positions != spec_.positions)
-        return -EINVAL;
-
-    /* Two checks per cliff position, and both matter.
-     *
-     * The address, because role_id is about to become the key a measurement is published under: if
-     * the mapping says front_left lives at 0x2C and the descriptor acquisition reads is 0x2D, then
-     * attaching front_left's source id to that descriptor would publish one corner's distance under
-     * another corner's name -- which is precisely the failure this subsystem exists to prevent, and
-     * it would be invisible on the wire.
-     *
-     * The role, because a mapping with an unknown role has no source id, and the contract has no
-     * way to express a measurement without one. */
-    for (size_t i{0}; i < spec_.positions; ++i) {
-        if (descs_[i].kind != acq::model::l4_cliff)
-            continue;
-        if (fp.at[i].address != descs_[i].addr_7bit)
-            return -EINVAL;
-
-        const int8_t src{pf::source_id_of(fp.at[i].role)};
-
-        if (src < 0)
-            return -EINVAL;
-        descs_[i].role_id = static_cast<uint8_t>(src);
-    }
-
-    mapping_applied_ = true;
-    LOG_INF("descriptors keyed from the installed mapping");
-    return 0;
-}
-
 bool mapping_applied()
 {
-    return mapping_applied_;
+    /* Asked, not remembered. PROVEN plus the same epoch the keys were written under is the only
+     * state in which those keys describe the current mapping; a revocation (LOST) or any newer
+     * epoch invalidates them without this module having to be told. */
+    const au::snapshot now{au::current()};
+
+    return keyed_ && now.state == acq::mapping_state::proven && now.epoch == keyed_epoch_;
 }
 
 int start_acquisition()
 {
-    if (!ready() || !mapping_applied_)
+    /* mapping_applied() rather than a flag, so this also requires the authority to be PROVEN right
+     * now: descriptors keyed under a mapping that has since been revoked are exactly as wrong as
+     * descriptors that were never keyed. */
+    if (!ready() || !mapping_applied())
         return -EPERM;
     /* Sensors only. The acquisition thread lands in the next commit and belongs behind this same
      * gate: a thread that starts before the descriptors are keyed would publish cycles whose facts
@@ -291,7 +325,8 @@ void reset_for_test()
 {
     acq::teardown();
     stage_ = stage::not_started;
-    mapping_applied_ = false;
+    keyed_ = false;
+    keyed_epoch_ = 0;
     spec_ = tof_chain::dasher_spec();
     for (auto &d : descs_)
         d = acq::source_desc{};
@@ -305,7 +340,7 @@ const acq::source_desc *descriptors_for_test()
 int force_rebuild_descriptors_for_test()
 {
     build_descriptors();
-    mapping_applied_ = false;
+    keyed_ = false;
     return 0;
 }
 #endif

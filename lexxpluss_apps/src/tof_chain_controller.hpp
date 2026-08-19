@@ -51,6 +51,14 @@ void init();
 // concurrently.
 k_mutex &chain_lock();
 
+/* True once init() has brought the control lines and i2c2 up.
+ *
+ * Exported because it is a PRECONDITION of the cliff subsystem rather than a diagnostic: acquisition
+ * drives i2c2 and the enable lines, so tof_cliff_runtime::bootstrap() refuses while this is false.
+ * That turns the ordering between the two into something the code enforces, instead of something
+ * that happens to be true because of where two calls sit. */
+bool glue_ready();
+
 }  // namespace lexxhard::tof_chain_controller
 
 #endif  // ENABLE_TOF_CHAIN

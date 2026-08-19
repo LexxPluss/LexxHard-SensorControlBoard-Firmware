@@ -116,6 +116,15 @@ int fake_begin_epoch()
     return 0;
 }
 
+int install_rc{0};
+int install_calls{0};
+
+int fake_install(const pf::fingerprint &, uint8_t)
+{
+    ++install_calls;
+    return install_rc;
+}
+
 void arrange(const enm::chain_spec &spec)
 {
     runtime_spec = spec;
@@ -123,11 +132,14 @@ void arrange(const enm::chain_spec &spec)
     quiesce_rc = 0;
     quiesce_calls = 0;
     acquisition_idle = true;
+    install_rc = 0;
+    install_calls = 0;
 
     au::config acfg{};
     acfg.runtime_spec = &runtime_spec;
     acfg.begin_epoch = fake_begin_epoch;
     acfg.acquisition_idle = fake_is_idle;
+    acfg.install_mapping = fake_install;
     zassert_equal(au::init(acfg), 0);
     au::reset_epoch_history_for_test();
 

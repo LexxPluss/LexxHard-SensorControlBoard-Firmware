@@ -37,15 +37,17 @@ volatile uint32_t sink_counters;
 
 extern "C" int tof_cliff_budget_walk_scheduler(void)
 {
-    /* The production bootstrap, including its static storage: the four VL53L4CX objects and the
-     * shared scratch now live in the runtime, which is why this file no longer takes them as
-     * arguments and the probe no longer defines its own.
+    /* Does NOT bootstrap. The chain controller has already done that, from the one call site
+     * production uses, after configuring the control lines -- and this file calling bootstrap() as
+     * well is precisely the defect that made the B6 image a different machine: two calls, the second
+     * refused with -EALREADY and logged as a failure, and a walk that ran before the pins were
+     * configured because its SYS_INIT fired before main().
      *
-     * The timing comes from the devicetree, the same required properties production reads. A local
-     * placeholder here would be a number that exists only in a measurement build -- and the
-     * measurement would then be of a configuration nobody ships. */
-    if (const int rc{rt::bootstrap(rt::config_from_devicetree())}; rc != 0)
-        return rc;
+     * Refusing when the subsystem is not ready rather than bootstrapping it: if this is ever wired
+     * before the bootstrap again, the measurement fails loudly instead of quietly wiring a second
+     * time. */
+    if (!rt::ready())
+        return -EPERM;
 
     /* One cycle, driven directly, with no mapping applied and therefore no role keys. That is the
      * honest measurement of what this image can do: every measurement frame is suppressed by the

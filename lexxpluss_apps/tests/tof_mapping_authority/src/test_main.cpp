@@ -108,17 +108,42 @@ struct transaction {
     }
 };
 
+/* The descriptor keying, as the authority sees it: a hook that can refuse. What production does
+ * inside it is tof_cliff_runtime's business and is tested there; what matters here is that the
+ * transaction treats a refusal as a failed commit rather than as a detail after the fact. */
+int install_rc{0};
+int install_calls{0};
+uint8_t install_epoch_seen{0};
+bool proven_when_installed{false};
+
+int fake_install(const pf::fingerprint &fp, uint8_t epoch)
+{
+    ++install_calls;
+    install_epoch_seen = epoch;
+    /* Recorded, because the ORDER is the property: the keying has to happen while the authority is
+     * still not PROVEN. A callback that observed PROVEN would mean publication had already happened,
+     * which is the arrangement this transaction replaced. */
+    proven_when_installed = au::current().state == acq::mapping_state::proven;
+    zassert_true(fp.positions > 0, "the callback was handed an empty mapping");
+    return install_rc;
+}
+
 void fresh_authority()
 {
     begin_epoch_rc = 0;
     begin_epoch_calls = 0;
     acquisition_is_idle = true;
+    install_rc = 0;
+    install_calls = 0;
+    install_epoch_seen = 0;
+    proven_when_installed = false;
     runtime_spec_storage = product_spec();
 
     au::config cfg{};
     cfg.runtime_spec = &runtime_spec_storage;
     cfg.begin_epoch = fake_begin_epoch;
     cfg.acquisition_idle = fake_is_idle;
+    cfg.install_mapping = fake_install;
     zassert_equal(au::init(cfg), 0);
     /* Explicitly, through the test-only door. init() deliberately does NOT clear the used-epoch
      * bitmap -- the guarantee is per power cycle, not per configuration -- so a suite that
@@ -156,11 +181,13 @@ ZTEST(tof_mapping_authority, test_init_refuses_an_incomplete_configuration)
     au::config no_spec{};
     no_spec.begin_epoch = fake_begin_epoch;
     no_spec.acquisition_idle = fake_is_idle;
+    no_spec.install_mapping = fake_install;
     zassert_equal(au::init(no_spec), -EINVAL);
 
     au::config no_epoch_hook{};
     no_epoch_hook.runtime_spec = &runtime_spec_storage;
     no_epoch_hook.acquisition_idle = fake_is_idle;
+    no_epoch_hook.install_mapping = fake_install;
     zassert_equal(au::init(no_epoch_hook), -EINVAL);
 
     /* The idle hook is not optional either: without it the authority cannot tell whether a
@@ -168,7 +195,17 @@ ZTEST(tof_mapping_authority, test_init_refuses_an_incomplete_configuration)
     au::config no_idle_hook{};
     no_idle_hook.runtime_spec = &runtime_spec_storage;
     no_idle_hook.begin_epoch = fake_begin_epoch;
+    no_idle_hook.install_mapping = fake_install;
     zassert_equal(au::init(no_idle_hook), -EINVAL);
+
+    /* Nor is the install hook. Publishing PROVEN without keying the descriptors that give its
+     * source_ids meaning would be publishing a mapping nothing acts on -- and an optional hook
+     * would make that the default. */
+    au::config no_install_hook{};
+    no_install_hook.runtime_spec = &runtime_spec_storage;
+    no_install_hook.begin_epoch = fake_begin_epoch;
+    no_install_hook.acquisition_idle = fake_is_idle;
+    zassert_equal(au::init(no_install_hook), -EINVAL);
 }
 
 ZTEST(tof_mapping_authority, test_a_committed_proof_publishes_proven_with_its_epoch)
@@ -641,6 +678,7 @@ ZTEST(tof_mapping_authority, test_re_initialising_does_not_hand_the_epoch_space_
     cfg.runtime_spec = &runtime_spec_storage;
     cfg.begin_epoch = fake_begin_epoch;
     cfg.acquisition_idle = fake_is_idle;
+    cfg.install_mapping = fake_install;
     zassert_equal(au::init(cfg), 0);
     /* Note: no reset_epoch_history_for_test() here. That is the point. */
 
@@ -665,6 +703,7 @@ ZTEST(tof_mapping_authority, test_re_initialising_does_close_any_open_attempt)
     cfg.runtime_spec = &runtime_spec_storage;
     cfg.begin_epoch = fake_begin_epoch;
     cfg.acquisition_idle = fake_is_idle;
+    cfg.install_mapping = fake_install;
     zassert_equal(au::init(cfg), 0);
 
     zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 30),
@@ -755,4 +794,63 @@ ZTEST(tof_mapping_authority, test_aborting_restores_nothing)
     zassert_equal(au::current().state, acq::mapping_state::lost);
     zassert_true(au::abort_proof(a.challenge));
     zassert_equal(au::current().state, acq::mapping_state::lost, "an abort restored PROVEN");
+}
+
+/* ------------------------------------------- the install step of the transaction ---- */
+
+ZTEST(tof_mapping_authority, test_the_descriptors_are_keyed_before_proven_is_published)
+{
+    fresh_authority();
+    const transaction t;
+
+    zassert_equal(prove(t, 9), au::commit_refusal::none);
+
+    zassert_equal(install_calls, 1, "the install callback was not part of the commit");
+    zassert_equal(install_epoch_seen, 9, "the callback was not told which epoch it is keying");
+    zassert_false(proven_when_installed,
+                  "PROVEN was already published when the descriptors were keyed");
+    zassert_equal(au::current().state, acq::mapping_state::proven);
+}
+
+ZTEST(tof_mapping_authority, test_a_refused_install_never_reaches_proven)
+{
+    /* The P1 this step exists for. Keying used to happen after the commit, so a refusal left a
+     * PROVEN authority whose descriptors described a different chain -- and only the clamp stood
+     * between that and a measurement published under another corner's source_id. */
+    fresh_authority();
+    const transaction t;
+    install_rc = -EINVAL;
+
+    zassert_equal(prove(t, 11), au::commit_refusal::mapping_install_failed);
+
+    const au::snapshot s{au::current()};
+    zassert_not_equal(s.state, acq::mapping_state::proven, "a failed install still published PROVEN");
+    zassert_equal(au::installed_mapping().positions, 0u,
+                  "the installed mapping survived a failed install");
+    zassert_equal(s.enumerated_mask, 0);
+    zassert_equal(s.model_verified_mask, 0);
+}
+
+ZTEST(tof_mapping_authority, test_an_epoch_refused_by_the_install_is_not_burned)
+{
+    /* It was never issued, so it must still be available -- the same rule a failed cycle reset
+     * follows. Burning it would cost one of 256 for a mapping that never took effect. */
+    fresh_authority();
+    install_rc = -EINVAL;
+    zassert_equal(prove(transaction{}, 12), au::commit_refusal::mapping_install_failed);
+
+    install_rc = 0;
+    zassert_equal(prove(transaction{}, 12), au::commit_refusal::none,
+                  "the epoch was burned by a commit that never published");
+    zassert_equal(au::current().epoch, 12);
+}
+
+ZTEST(tof_mapping_authority, test_a_refused_install_still_spends_the_attempt)
+{
+    /* One attempt buys one commit, whatever the outcome. Otherwise the same evidence could be
+     * re-presented until some later check happened to pass. */
+    fresh_authority();
+    install_rc = -EINVAL;
+    zassert_equal(prove(transaction{}, 13), au::commit_refusal::mapping_install_failed);
+    zassert_equal(au::attempt_nonce(), 0u, "a failed install left the attempt open");
 }

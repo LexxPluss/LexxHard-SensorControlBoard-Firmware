@@ -190,7 +190,8 @@ void masks_from(const pf::fingerprint &fp, uint8_t &enumerated, uint8_t &model_v
 int init(const config &cfg)
 {
     if (cfg.runtime_spec == nullptr || cfg.begin_epoch == nullptr ||
-        cfg.acquisition_idle == nullptr || cfg.runtime_spec->positions == 0) {
+        cfg.acquisition_idle == nullptr || cfg.install_mapping == nullptr ||
+        cfg.runtime_spec->positions == 0) {
         /* A failed init leaves the authority unusable rather than quietly running on whatever
          * was configured before. That direction costs a proven mapping -- but the alternative
          * is a commit compared against a configuration nobody meant to be current, and of the
@@ -333,8 +334,8 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
     /* THE TRANSACTION. Nothing above this point has changed any published state, and nothing
      * below it may publish PROVEN until every step has succeeded.
      *
-     * Install, then epoch, then cycle reset, then PROVEN -- in that order, because each step
-     * is a precondition of the meaning of the next. A consumer that saw PROVEN with the old
+     * Record the mapping, then the cycle reset, then key the descriptors, then the epoch, then
+     * PROVEN -- in that order, because each step is a precondition of the meaning of the next. A consumer that saw PROVEN with the old
      * epoch would correlate against an epoch no measurement will carry; one that saw PROVEN
      * before the cycle reset would accept a cycle number from the previous epoch. */
     installed_ = held.proven();
@@ -344,6 +345,27 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
         installed_ = kNoMapping;
         return rc == -EBUSY ? commit_refusal::acquisition_busy
                             : commit_refusal::epoch_install_failed;
+    }
+
+    /* The descriptors, keyed from this mapping, BEFORE anything is published.
+     *
+     * This step used to live outside the transaction: the shell called it after commit_proof() had
+     * already published PROVEN. Everything about that was wrong in the same direction -- a failure
+     * left the authority PROVEN with descriptors that did not describe the proven chain, a partial
+     * write left some positions keyed, and a later failed re-proof could leave the PREVIOUS
+     * mapping's keys in place with nothing to notice it. The clamp hid the consequence; lifting the
+     * clamp would have turned it into a measurement published under another corner's source_id.
+     *
+     * A failure here keeps the state the revocation left (LOST, or UNKNOWN if nothing was ever
+     * proven) and clears the installed mapping. The epoch is NOT marked used: it was never issued,
+     * for the same reason a failed cycle reset does not burn one.
+     *
+     * begin_epoch() has already reset the cycle counter at this point, which is safe precisely
+     * because PROVEN is not published below: publication requires PROVEN, so no measurement can
+     * carry a reissued (source_id, epoch, cycle_seq) triple out of this failure. */
+    if (const int irc{cfg_.install_mapping(installed_, host_epoch)}; irc != 0) {
+        installed_ = kNoMapping;
+        return commit_refusal::mapping_install_failed;
     }
 
     mark_epoch_used(host_epoch);

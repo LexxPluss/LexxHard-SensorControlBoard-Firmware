@@ -57,6 +57,12 @@
 #include "tof_acquisition.hpp"
 #include "tof_cliff_runtime.hpp"
 #include "tof_commissioning.hpp"
+#if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
+/* The budget probe is C, and this is the whole of its interface: one call, made after the bootstrap
+ * this file performs. Declared here rather than in a header of its own because there is exactly one
+ * caller and it must stay that way. */
+extern "C" int tof_cliff_budget_run_after_bootstrap(void);
+#endif
 #endif
 #include "tof_enumerator.hpp"
 #include "tof_readdress.hpp"
@@ -356,14 +362,15 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
     if (!r.proven())
         return -EIO;
 
-    /* Now, and only now, the descriptors may be keyed. role_id is the key a measurement's source_id
-     * and the per-cycle masks are built from, and the only legitimate source for it is the mapping
-     * this proof just installed -- never the descriptor's index. */
-    if (const int rc{tof_cliff_runtime::apply_installed_mapping()}; rc != 0) {
-        shell_error(shell, "mapping installed but descriptors not keyed (%d): "
-                           "acquisition stays down",
-                    rc);
-        return rc;
+    /* The descriptors were keyed inside the commit, by the authority's install callback -- there is
+     * no step here to do it, which is the point: a command that could key them separately could key
+     * them from a mapping that was never proven, and a failure between the two used to leave a
+     * PROVEN authority describing a different chain. Asserted rather than assumed, because "the
+     * commit says it succeeded" and "the keys are the current mapping's" are different claims. */
+    if (!tof_cliff_runtime::mapping_applied()) {
+        shell_error(shell, "commit reported success but the descriptors are not keyed to it: "
+                           "refusing to report a usable mapping");
+        return -EIO;
     }
 
     /* Proven, keyed, and deliberately going no further. Starting acquisition is the next commit's
@@ -402,6 +409,11 @@ SHELL_CMD_REGISTER(tof, &sub_tof, "ToF chain commands", NULL);
 k_mutex &chain_lock()
 {
     return chain_mutex;
+}
+
+bool glue_ready()
+{
+    return init_status.load() == 0;
 }
 
 void init()
@@ -447,6 +459,18 @@ void init()
         LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
                 tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), rc);
     }
+#if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
+    /* The budget probe's walk, from HERE rather than from its own SYS_INIT.
+     *
+     * It used to run at APPLICATION init level, before main() -- so it brought sensors up against
+     * pins this function had not configured yet, and it bootstrapped the subsystem a second time,
+     * whose -EALREADY main() then logged as a bootstrap failure. Measuring an image is not a reason
+     * to wire it differently from the product: the probe now runs after the same bootstrap
+     * production uses, in the same order, and its only remaining job is to drive one cycle so the
+     * path cannot be collected. */
+    if (const int rc{tof_cliff_budget_run_after_bootstrap()}; rc != 0)
+        LOG_ERR("cliff budget walk failed (%d)", rc);
+#endif
 #endif
 }
 

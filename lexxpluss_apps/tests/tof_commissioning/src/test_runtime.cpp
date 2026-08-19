@@ -91,6 +91,18 @@ struct tof_cliff_pub::authorisation production_authorisation()
 
 }  // namespace lexxhard::tof_cliff_can
 
+/* The chain controller's readiness, stubbed. The runtime refuses to bootstrap while this is false,
+ * which is how the ordering between "the control lines are configured" and "sensors may be brought
+ * up" stopped being a convention about where two calls sit. */
+bool glue_is_ready{true};
+
+namespace lexxhard::tof_chain_controller {
+bool glue_ready()
+{
+    return glue_is_ready;
+}
+}  // namespace lexxhard::tof_chain_controller
+
 namespace {
 
 constexpr rt::config kTiming{50, 20};   // injected, as production injects it from the devicetree
@@ -102,6 +114,7 @@ int quiesce_via_acquisition()
 
 void before(void *)
 {
+    glue_is_ready = true;
     rt::reset_for_test();
     au::reset_epoch_history_for_test();
     chain = fake::fake_chain{};
@@ -238,21 +251,10 @@ ZTEST(tof_cliff_runtime, test_a_board_with_no_can_still_comes_up)
     zassert_true(rt::ready());
 }
 
-ZTEST(tof_cliff_runtime, test_nothing_is_keyed_or_started_before_a_proof)
-{
-    zassert_equal(rt::bootstrap(kTiming), 0);
-
-    zassert_equal(rt::apply_installed_mapping(), -EPERM,
-                  "descriptors were keyed without a proven mapping");
-    zassert_false(rt::mapping_applied());
-    zassert_equal(rt::start_acquisition(), -EPERM,
-                  "acquisition started with unkeyed descriptors");
-}
-
 ZTEST(tof_cliff_runtime, test_the_gates_refuse_before_the_bootstrap_has_run)
 {
     zassert_equal(rt::current_stage(), rt::stage::not_started);
-    zassert_equal(rt::apply_installed_mapping(), -EPERM);
+    zassert_false(rt::mapping_applied());
     zassert_equal(rt::start_acquisition(), -EPERM);
 }
 
@@ -279,11 +281,11 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     for (int i{0}; i < 6; ++i)
         zassert_equal(d[i].role_id, rt::kRoleUnassigned, "position %d was keyed early", i + 1);
 
+    /* The keying happens INSIDE the commit now, through the authority's install callback -- there is
+     * no separate step for a caller to forget, get wrong, or do from a mapping nobody proved. */
     const cm::outcome r{prove_over_the_fake_chain(7)};
     zassert_true(r.proven(), "the proof failed at stage %d", static_cast<int>(r.failed_at));
     zassert_equal(au::current().state, acq::mapping_state::proven);
-
-    zassert_equal(rt::apply_installed_mapping(), 0);
     zassert_true(rt::mapping_applied());
 
     zassert_equal(d[2].role_id, 0, "position 3 (index 2) must key to front_left = source 0");
@@ -299,21 +301,104 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_equal(rt::start_acquisition(), 0);
 }
 
-ZTEST(tof_cliff_runtime, test_a_mapping_for_other_addresses_is_refused)
+ZTEST(tof_cliff_runtime, test_nothing_is_keyed_or_started_before_a_proof)
 {
-    /* The check that makes keying safe. If the proven mapping puts a role at an address that is not
-     * the one this descriptor will be read at, then keying it would publish one corner's distance
-     * under another corner's name -- and nothing on the wire would look wrong. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    zassert_false(rt::mapping_applied());
+    zassert_equal(rt::start_acquisition(), -EPERM, "acquisition started with unkeyed descriptors");
+}
+
+/* ------------------------------------------- a refused keying ----------------------- */
+
+/* Staged the way it would really happen: the descriptors are built from one spec, the spec is then
+ * edited, and the proof that follows proves the EDITED chain. matches_runtime() therefore passes --
+ * the proven chain is the configured chain -- and the mismatch is only visible where it matters, at
+ * the descriptors acquisition will actually read. */
+void make_the_descriptors_stale_at(size_t position_index, uint8_t built_addr)
+{
+    const uint8_t real_addr{rt::spec().at[position_index].target_addr};
+
+    rt::spec().at[position_index].target_addr = built_addr;
+    zassert_equal(rt::force_rebuild_descriptors_for_test(), 0);
+    rt::spec().at[position_index].target_addr = real_addr;
+}
+
+ZTEST(tof_cliff_runtime, test_a_refused_keying_is_never_observed_as_proven)
+{
     zassert_equal(rt::bootstrap(kTiming), 0);
     freeze_the_roles();
-    zassert_true(prove_over_the_fake_chain(8).proven());
+    make_the_descriptors_stale_at(3, 0x3D);
 
-    /* Move the descriptor's address out from under the installed mapping, the way a spec edit
-     * between a proof and a restart would. */
-    rt::spec().at[3].target_addr = 0x3D;
-    zassert_equal(rt::force_rebuild_descriptors_for_test(), 0);
+    const cm::outcome r{prove_over_the_fake_chain(7)};
 
-    zassert_equal(rt::apply_installed_mapping(), -EINVAL);
+    zassert_false(r.proven());
+    zassert_equal(r.failed_at, cm::stage::commit_refused);
+    zassert_equal(r.commit, au::commit_refusal::mapping_install_failed);
+    zassert_not_equal(au::current().state, acq::mapping_state::proven,
+                      "a failed keying still published PROVEN");
+    zassert_equal(au::installed_mapping().positions, 0u);
     zassert_false(rt::mapping_applied());
     zassert_equal(rt::start_acquisition(), -EPERM);
+}
+
+ZTEST(tof_cliff_runtime, test_a_keying_that_fails_late_leaves_no_earlier_role_written)
+{
+    /* The two-pass rule. Position 6 is the last cliff descriptor, so a single-pass implementation
+     * would have written positions 3, 4 and 5 before refusing -- a table where some corners are
+     * keyed and the rest are not, with nothing on the wire to say which. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    freeze_the_roles();
+    make_the_descriptors_stale_at(5, 0x3F);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    zassert_equal(prove_over_the_fake_chain(7).commit, au::commit_refusal::mapping_install_failed);
+
+    for (int i{0}; i < 6; ++i)
+        zassert_equal(d[i].role_id, rt::kRoleUnassigned,
+                      "position %d kept a role from a keying that failed", i + 1);
+}
+
+ZTEST(tof_cliff_runtime, test_a_failed_re_proof_does_not_leave_the_old_mapping_startable)
+{
+    /* The stale-flag case, and the reason mapping_applied() asks the authority instead of
+     * remembering. The first proof keys the descriptors and acquisition may start. A second proof
+     * revokes on the way in and then fails -- so those keys describe a mapping that is no longer
+     * proven, and a latched "applied" flag would still be saying otherwise. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    freeze_the_roles();
+    zassert_true(prove_over_the_fake_chain(7).proven());
+    zassert_true(rt::mapping_applied());
+    zassert_equal(rt::start_acquisition(), 0);
+    acq::stop();
+
+    make_the_descriptors_stale_at(3, 0x3D);
+    zassert_equal(prove_over_the_fake_chain(8).commit, au::commit_refusal::mapping_install_failed);
+
+    zassert_false(rt::mapping_applied(), "the previous mapping still counted as applied");
+    zassert_equal(rt::start_acquisition(), -EPERM,
+                  "acquisition started on keys from a revoked mapping");
+}
+
+/* ------------------------------------------- the ordering against the chain glue ---- */
+
+ZTEST(tof_cliff_runtime, test_the_bootstrap_refuses_before_the_chain_glue_is_up)
+{
+    /* Acquisition drives i2c2 and the enable lines, so bootstrapping before the chain controller has
+     * configured them would bring sensors up against unconfigured pins. That is exactly what the B6
+     * image did, from a SYS_INIT that ran before main(): the ordering was expressed only by where
+     * the calls happened to sit, and it was wrong. Now it is a precondition. */
+    glue_is_ready = false;
+
+    zassert_equal(rt::bootstrap(kTiming), -ENODEV);
+    zassert_equal(rt::current_stage(), rt::stage::chain_not_ready);
+    zassert_false(rt::ready());
+    zassert_equal(rt::start_acquisition(), -EPERM);
+
+    /* And it is not a permanent refusal: the same call succeeds once the glue is up, which is the
+     * order production uses -- one call site, after the control lines. */
+    rt::reset_for_test();
+    glue_is_ready = true;
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    zassert_true(rt::ready());
 }

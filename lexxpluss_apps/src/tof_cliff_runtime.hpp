@@ -56,6 +56,7 @@ namespace lexxhard::tof_cliff_runtime {
  * place when the truth is that can2 never came up. */
 enum class stage : uint8_t {
     not_started,
+    chain_not_ready,   // the chain controller's glue never came up; nothing was wired
     authority_failed,
     publisher_failed,
     acquisition_failed,
@@ -77,12 +78,15 @@ struct config {
  * config instead. */
 config config_from_devicetree();
 
-/* Runs the four steps in order, exactly once.
+/* Runs the four steps in order, exactly once, and only after the chain controller's glue is up.
  *
  * Returns 0 when everything came up, -EALREADY if it has already run (and does NOT re-run any
  * step: a second tof_authority::init() would discard an installed mapping), -EINVAL for a config
- * with a zero period, or the failing step's errno. On failure it stops at that step: a half-wired
- * subsystem must not look ready.
+ * with a zero period, -ENODEV when the chain glue is not initialised, or the failing step's errno.
+ * On failure it stops at that step: a half-wired subsystem must not look ready.
+ *
+ * ONE call site in production, in tof_chain_controller::init(). The -ENODEV check enforces the half
+ * of that rule which is about ORDER; the single-shot check enforces the half that is about count.
  */
 int bootstrap(const config &cfg);
 
@@ -96,14 +100,18 @@ const char *stage_name(stage st);
  * chain. */
 tof_enum::chain_spec &spec();
 
-/* Fills every cliff descriptor's role_id from the mapping a proof installed.
+/* Are the descriptors keyed by the mapping the authority currently reports as PROVEN?
  *
- * Refuses with -EPERM unless the authority reports PROVEN, and -EINVAL if the installed mapping
- * does not describe the chain the descriptors were built for (position count, or an address that
- * does not match the descriptor acquisition will read). role_id is the key the wire contract's
- * source_id and per-cycle masks are built from, so it may only ever come from a proven mapping.
+ * There is deliberately no public "apply" entry point any more. Keying happens INSIDE the authority's
+ * commit transaction, through the install_mapping callback registered by bootstrap(), and that is
+ * what makes it safe: a caller that could key descriptors on its own could key them from a mapping
+ * that was never proven, and the version of this module that let the shell do it after the commit
+ * left a PROVEN authority whose descriptors described a different chain when the keying failed.
+ *
+ * The answer is computed from the authority, not from a latched flag: keys written under an epoch
+ * that has since been revoked or superseded are as wrong as no keys at all, and a flag would still
+ * be saying "applied".
  */
-int apply_installed_mapping();
 bool mapping_applied();
 
 /* The value a descriptor carries until a proof has said what it is. Not zero: zero is front_left's
@@ -111,8 +119,9 @@ bool mapping_applied();
 constexpr uint8_t kRoleUnassigned{0xFF};
 
 /* Brings up the sensors, and later starts the acquisition thread. Refuses with -EPERM unless the
- * bootstrap is ready AND a proven mapping has been applied, because a cycle whose descriptors carry
- * kRoleUnassigned would produce facts nothing can be keyed by. */
+ * bootstrap is ready AND mapping_applied() -- which means the authority is PROVEN right now, under
+ * the same epoch the descriptors were keyed under. A cycle whose descriptors carry kRoleUnassigned,
+ * or keys from a mapping that has since been revoked, produces facts nothing can be keyed by. */
 int start_acquisition();
 
 #ifdef CONFIG_ZTEST

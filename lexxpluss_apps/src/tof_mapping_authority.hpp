@@ -79,6 +79,12 @@ enum class commit_refusal : uint8_t {
     epoch_space_exhausted,     // all 256 used this power cycle; wrapping would reuse
     acquisition_busy,          // begin_epoch() refused: cycles are still being produced
     epoch_install_failed,      // begin_epoch() failed for any other reason
+    /* The runtime could not key its descriptors from this mapping. Inside the transaction on
+     * purpose: keying used to happen after the commit had already published PROVEN, so a failure
+     * left a PROVEN authority whose descriptors did not describe the proven chain -- and the only
+     * thing standing between that and a measurement published under the wrong source_id was the
+     * clamp. */
+    mapping_install_failed,
 };
 
 // One consistent view of the authority's state. Decoded from a single atomic read.
@@ -115,6 +121,16 @@ struct config {
     // against THIS, position by position, so a proof of some other chain cannot install
     // itself over the running configuration.
     const tof_enum::chain_spec *runtime_spec{nullptr};
+    /* Keys the acquisition descriptors from the mapping being committed, and validates before it
+     * writes. REQUIRED, not optional: a commit that published PROVEN without the descriptors that
+     * make its source_ids mean anything would be publishing a mapping nothing acts on.
+     *
+     * Called with the chain lock already held by the commissioning session, which is the same lock
+     * acquisition reads those descriptors under. Must return 0 only if EVERY position was keyed;
+     * on any refusal it must leave none of them keyed, because a half-keyed table publishes some
+     * corners correctly and others under the wrong name.
+     */
+    int (*install_mapping)(const pf::fingerprint &proven, uint8_t epoch){nullptr};
     // tof_acq::begin_epoch in production. Injected so the authority stays host-testable
     // without a bus, and so a test can make the cycle reset fail on demand.
     int (*begin_epoch)(){nullptr};

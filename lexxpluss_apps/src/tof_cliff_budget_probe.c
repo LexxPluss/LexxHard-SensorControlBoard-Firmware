@@ -167,7 +167,19 @@ static int tof_cliff_budget_walk(void)
 	return 0;
 }
 
+#if TOF_CLIFF_BUDGET >= 6
+/* No SYS_INIT for B6. The walk drives the real subsystem, which must be bootstrapped first and can
+ * only be bootstrapped after the chain controller has configured i2c2 and the enable lines -- and
+ * both of those happen in main(), after every SYS_INIT has run. So the chain controller calls this,
+ * once, at the point where "after the bootstrap" is expressible. Running it from a SYS_INIT was
+ * measuring an image whose initialisation order no product image has. */
+int tof_cliff_budget_run_after_bootstrap(void)
+{
+	return tof_cliff_budget_walk();
+}
+#else
 SYS_INIT(tof_cliff_budget_walk, APPLICATION, 99);
+#endif
 
 #elif defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET == 4
 /* Keep the four objects, the shared scratch and the per-source state from being
