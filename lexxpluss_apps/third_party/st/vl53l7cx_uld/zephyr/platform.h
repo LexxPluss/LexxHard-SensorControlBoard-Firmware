@@ -21,11 +21,14 @@
  *   nb_target_detected, distance_mm, target_status.
  *
  * Do not ask the sensor to send fields that are discarded immediately. Besides shrinking
- * VL53L7CX_ResultsData by about 1.1 KiB, this makes VL53L7CX_MAX_RESULTS_SIZE exactly 328 bytes:
- * one transaction at the hardware-proven port bound instead of five segmented transactions for
- * the upstream 1,452-byte default. These defines live in platform.h because vl53l7cx_api.h includes
- * it before declaring either the result structure or the output block list; every consumer
- * therefore sees one ABI rather than relying on a matching build-system definition. */
+ * VL53L7CX_ResultsData by about 1.1 KiB, the current selection makes
+ * VL53L7CX_MAX_RESULTS_SIZE 328 bytes: one transaction within the independently hardware-proven
+ * port limit instead of five segmented transactions for the upstream 1,452-byte default. The
+ * compile-time check in platform.c deliberately states a <= relationship; the selected fields and
+ * the measured bus limit have different owners and must not be made equal by definition. These
+ * defines live in platform.h because vl53l7cx_api.h includes it before declaring either the result
+ * structure or the output block list; every consumer therefore sees one ABI rather than relying on
+ * a matching build-system definition. */
 #define VL53L7CX_DISABLE_AMBIENT_PER_SPAD
 #define VL53L7CX_DISABLE_NB_SPADS_ENABLED
 #define VL53L7CX_DISABLE_SIGNAL_PER_SPAD

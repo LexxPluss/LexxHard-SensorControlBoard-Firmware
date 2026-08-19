@@ -45,7 +45,8 @@ segmentation bound nor sticky Zephyr errno reporting.
 directory. It makes two narrow changes:
 
 1. omit the 86,016-byte `VL53L7CX_FIRMWARE[]` when `VL53L7CX_EXTERNAL_FIRMWARE` is defined, while
-   retaining the signed-image default-configuration and xtalk arrays;
+   retaining the default-configuration and xtalk arrays in the signed image once init is reachable
+   (an image with no L7 lifecycle caller may still garbage-collect them);
 2. require a verified `platform.firmware` plus a bound covering all 86,016 bytes, and use that
    pointer for the ULD's three fixed download ranges.
 

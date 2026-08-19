@@ -21,7 +21,7 @@
 #include "vl53l7cx_api.h"
 #include "vl53l7cx_port.h"
 
-_Static_assert(VL53L7CX_MAX_RESULTS_SIZE == VL53L7CX_PORT_MAX_TRANSFER,
+_Static_assert(VL53L7CX_MAX_RESULTS_SIZE <= VL53L7CX_PORT_MAX_TRANSFER,
                "the selected L7 grid fields must fit one proven transfer");
 
 static const struct device *const l7_bus = DEVICE_DT_GET(DT_NODELABEL(i2c2));

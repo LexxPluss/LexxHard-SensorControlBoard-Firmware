@@ -20,7 +20,7 @@ Measured 2026-08-11/12, on this board and this toolchain:
 | unpadded signed-image ceiling | 261,712 |
 | B6 signed image before this L7 work | 239,516 |
 | B6 after the record gate, vendor import and expectation | 243,604 |
-| B6 with the minimal grid fields and lifecycle forced reachable | 250,728 |
+| B6 commissioning capacity probe: minimal fields + lifecycle reachable | 250,728 |
 
 The pre-L7 B6 point had 22,196 B left under the measured MCUboot-aware ceiling; embedding the
 86,016-byte payload would exceed it by at least 63,820 B before adding the L7 adapter. Compression
@@ -30,18 +30,40 @@ every byte.
 
 The 2026-08-19 forced-reachability build is the current planning bound for the next phase. Only the
 three result fields consumed by the frozen grid contract are enabled; this reduces one result read
-from 1,452 to exactly 328 bytes. Even so, making the ULD lifecycle plus port and retained
-configuration/xtalk arrays reachable adds 7,124 B over the Phase 1 image and leaves 10,984 B. That
-is below the agreed 15 KiB stop line, before the adapter, two live L7 objects, scheduling code or CAN
-glue. Phase 1 may land, but the data path must not simply continue from here without a capacity
-decision or a measured reduction.
+from 1,452 to 328 bytes, within the independently measured 328-byte port limit. Even so, making the
+ULD lifecycle plus port and retained configuration/xtalk arrays reachable adds 7,124 B over the
+Phase 1 image and leaves 10,984 B. That is below the agreed 15 KiB stop line, before the adapter, two
+live L7 objects, scheduling code or CAN glue.
+
+This number is now reproducible from
+`allmemory/hanging_object/l7_commissioning_capacity_2026-08-19/`: a throwaway Zephyr module, a
+frozen overlay, the exact commands and full before/after ROM/RAM reports. The module has its own
+`TOF_L7_COMMISSIONING_CAPACITY=1` flag and produces
+`build-l7-commissioning-capacity`; it refuses any version other than the non-release `99.99.99`
+bypass build. The earlier ad-hoc linker command is not an acceptance record even though it happened
+to produce the same size.
+
+**Capacity decision for commissioning:** Phase 1 may land and L7 E2E development may continue only
+at that named commissioning build point. The exception belongs to the build point, not to this
+branch. Its image is not product capacity acceptance, must not enter release signing or publication,
+and does not waive the 15 KiB stop line for a product image. Product enablement still requires a
+measured reduction or a reviewed capacity decision after the real adapter and two device objects are
+linked.
+
+If about 4.4 KiB must be recovered, the first non-safety candidates to **measure**, not promised
+savings, are libc formatting (`_svfprintf_r` 6,384 B and `_vfiprintf_r` 3,474 B in this image;
+evaluate nano cbprintf and removal of floating-point formatting against all current users) and shell
+help strings. Every claim needs a before/after signed image and regressions; none is authorised by
+this document.
 
 Only the 86,016-byte device-firmware blob moves out of the image. The 972-byte default
-configuration and 776-byte xtalk table remain with the ULD in the signed image, because rolling
-application code back while silently retaining newer configuration would create another
-compatibility problem. `storage_partition` — 131,072 B at offset `0x20000` on `lexxpluss_scb` — is
-the one flash region no application code referenced. **One blob fits; two do not**, which is the
-fact that decides the open question below.
+configuration and 776-byte xtalk table remain part of the ULD and are retained in the signed image
+**once `vl53l7cx_init()` is reachable**, because rolling application code back while silently
+retaining newer configuration would create another compatibility problem. The ordinary Phase 1 B6
+image has no L7 lifecycle caller yet, so its linker correctly garbage-collects both tables; they
+appear in the forced-reachability capacity point. `storage_partition` — 131,072 B at offset
+`0x20000` on `lexxpluss_scb` — is the one flash region no application code referenced. **One blob
+fits; two do not**, which is the fact that decides the open question below.
 
 ## The record
 
