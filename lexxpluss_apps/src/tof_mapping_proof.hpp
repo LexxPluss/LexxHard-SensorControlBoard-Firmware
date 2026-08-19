@@ -145,12 +145,15 @@ bool is_commissioning_profile(const fingerprint &fp);
 // the evaluator decides what they mean.
 struct isolation_observation {
     bool attempted{false};
-    // The tail's own address was probed, and separately the previous position's.
+    // "The isolated tail answered SOMEWHERE", and `answering_addr` is where. Not "the tail's own
+    // address ACKed": in the failure this check exists for, the tail answers its NEIGHBOUR's
+    // address because both were written to it, and reporting that as "the tail did not answer"
+    // would send an operator looking for a dead board instead of a merge.
     enm::probe_state tail_probe{enm::probe_state::transport_error};
-    // Which address actually answered. The whole point of the check is that this may be
-    // the PREVIOUS position's address -- two devices written to one address -- so it is
-    // recorded rather than assumed.
+    // Which address actually answered -- possibly the previous position's. Zero when none did.
     uint8_t answering_addr{0};
+    // Identity read AT THE ADDRESS THAT ANSWERED, not at the expected one: reading at the expected
+    // one would fail in the merge case and lose the distinction the isolation is for.
     bool id_read_ok{false};
     enm::id_bytes seen{};
     // The previous position is disabled and must be silent. A clean NACK is the only

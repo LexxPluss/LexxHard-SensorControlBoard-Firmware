@@ -112,6 +112,15 @@ test_tof_mapping_authority:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for tail isolation: the middle step of the proof transaction. The fake models the
+# shift register and records every control operation, because the ORDER is the property -- an
+# isolation that reaches the right end state through an all-off has destroyed the evidence it was
+# sent to collect, and no end-state assertion can see the difference.
+.PHONY: test_tof_tail_isolation
+test_tof_tail_isolation:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_tail_isolation -d build-test-tof-tail-isolation -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the cliff mapping proof: the contract's walk/isolation/walk
 # transaction, the semantic fingerprint and its L7 normalisation, and the one-shot
 # challenge/token pair. Pure decision logic -- neither the enumerator's object file nor any
