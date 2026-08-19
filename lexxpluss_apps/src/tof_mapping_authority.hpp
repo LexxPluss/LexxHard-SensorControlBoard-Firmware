@@ -168,7 +168,26 @@ bench_result evaluate_bench(const pf::evidence &ev);
 
 // The only path to PROVEN. Takes the token by rvalue reference and empties it: a token is
 // one attempt's worth of authority, and after this call the caller holds nothing.
+//
+// A token that MATCHES the open attempt closes it, whatever the outcome. One attempt buys one
+// commit, exactly as one challenge buys one evaluation: retrying a refused commit against the same
+// attempt would let a caller keep presenting the same evidence until some later check happened to
+// pass. A forged or superseded token closes nothing -- it was never this attempt's.
 commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch);
+
+// Closes an attempt that will not be committed.
+//
+// Nonce-bound: it closes the attempt only if `c` IS the open attempt, so one caller cannot cancel
+// another's. Returns true when it closed one.
+//
+// It exists because an attempt that stays open is not harmless. evaluate_bench() refuses while one
+// is open -- deliberately, since a bench walk would re-address the chain the attempt is about -- so
+// an abandoned attempt silently disables diagnostics until someone starts another proof. Every path
+// that gives up after begin_proof() has to say so.
+//
+// It does NOT restore anything. begin_proof() revoked the mapping and the chain has since been
+// walked; only a completed proof can make it PROVEN again.
+bool abort_proof(const pf::challenge &c);
 
 // A mapping that was proven and is not any more. Publishes LOST while keeping the epoch, so
 // the consumer can still correlate the measurements it already accepted.

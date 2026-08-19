@@ -325,6 +325,14 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
     if (held.nonce() != attempt_)
         return commit_refusal::wrong_attempt;
 
+    /* From here the token IS this attempt's, so the attempt is spent whatever happens below. One
+     * attempt buys one commit, for the same reason one challenge buys one evaluation: otherwise a
+     * caller could re-present the same evidence until a later check happened to pass, and each
+     * retry would be judged against a chain that is one attempt older. */
+    struct spend_attempt {
+        ~spend_attempt() { attempt_ = 0; }
+    } const spend{};
+
     /* Re-checked here rather than trusted. The evaluator refuses anything but the profile
      * today; if that ever loosens, this is the check that keeps a bench chain from becoming
      * the product's mapping. */
@@ -367,9 +375,15 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
     proven.failing_position = 0xFF;
     publish(proven);
 
-    /* The attempt is over either way. A committed proof is not a licence to commit again. */
-    attempt_ = 0;
     return commit_refusal::none;
+}
+
+bool abort_proof(const pf::challenge &c)
+{
+    if (!initialised_ || !c.valid() || c.nonce() != attempt_ || attempt_ == 0)
+        return false;
+    attempt_ = 0;
+    return true;
 }
 
 void note_mapping_lost()

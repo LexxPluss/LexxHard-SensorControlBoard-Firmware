@@ -53,6 +53,10 @@
 
 #include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
+#if defined(ENABLE_TOF_CLIFF_ULD)
+#include "tof_acquisition.hpp"
+#include "tof_commissioning.hpp"
+#endif
 #include "tof_enumerator.hpp"
 #include "tof_readdress.hpp"
 
@@ -260,10 +264,112 @@ int cmd_enum(const struct shell *shell, size_t, char **)
     return r.status == tof_enum::chain_status::degraded ? -ENODATA : -EIO;
 }
 
+#if defined(ENABLE_TOF_CLIFF_ULD)
+
+const char *stage_label(tof_commissioning::stage st)
+{
+    using tof_commissioning::stage;
+    switch (st) {
+    case stage::none:               return "proven";
+    case stage::not_configured:     return "not_configured";
+    case stage::epoch_out_of_range: return "epoch_out_of_range";
+    case stage::quiesce_failed:     return "quiesce_failed";
+    case stage::chain_busy:         return "chain_busy";
+    case stage::attempt_refused:    return "attempt_refused";
+    case stage::evidence_refused:   return "evidence_refused";
+    case stage::commit_refused:     return "commit_refused";
+    }
+    return "?";
+}
+
+/* Stops acquisition without retiring the subsystem.
+ *
+ * stop(), never teardown(): the heartbeat has to keep running for the whole run, because it is the
+ * only channel telling a consumer that the subsystem is alive and that its mapping is being
+ * re-proven. Nothing to join yet -- there is no acquisition thread; when there is, joining it belongs
+ * here and the assertion below is what will catch its absence. */
+int quiesce_acquisition()
+{
+    tof_acq::stop();
+    return tof_acq::is_idle() ? 0 : -EBUSY;
+}
+
+int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
+{
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d): refusing to run", st);
+        return -ENODEV;
+    }
+
+    /* The epoch is mandatory and has no default. Under the commissioning profile the HOST owns it and
+     * is the component that persists it; a firmware-invented value would be an epoch no operator
+     * recorded. Parsed wide and range-checked by the orchestration, so 256 is refused rather than
+     * truncated to a different epoch. */
+    if (argc != 2) {
+        shell_error(shell, "usage: tof cliff prove <host_epoch 0-255>");
+        return -EINVAL;
+    }
+    char *end{nullptr};
+    unsigned long const parsed{strtoul(argv[1], &end, 0)};
+    if (end == argv[1] || *end != '\0' || parsed > 0xFFFFFFFFUL) {
+        shell_error(shell, "bad epoch '%s'", argv[1]);
+        return -EINVAL;
+    }
+
+    static tof_enum::chain_spec spec{tof_chain::dasher_spec()};
+    static zephyr_chain_ops ops{};
+    tof_commissioning::config cfg{};
+    cfg.chain = &chain_mutex;
+    cfg.ops = &ops;
+    cfg.spec = &spec;
+    cfg.quiesce = quiesce_acquisition;
+    if (int const rc{tof_commissioning::init(cfg)}; rc != 0) {
+        shell_error(shell, "commissioning not configurable (%d)", rc);
+        return rc;
+    }
+
+    auto const r{tof_commissioning::prove(static_cast<uint32_t>(parsed))};
+
+    shell_print(shell, "result: %s", stage_label(r.failed_at));
+    shell_print(shell, "detail: rc=%d begin=%d proof=%d commit=%d isolation_rc=%d", r.rc,
+                static_cast<int>(r.begin), static_cast<int>(r.proof),
+                static_cast<int>(r.commit), r.isolation_rc);
+    shell_print(shell, "walk1: %s  walk2: %s", status_name(r.walk1.status),
+                status_name(r.walk2.status));
+    shell_print(shell, "isolation: attempted=%d answered=0x%02x prev=0x%02x id=%02x/%02x",
+                r.isolation.attempted, r.isolation.answering_addr, r.isolation.prev_addr,
+                r.isolation.seen.first, r.isolation.seen.second);
+
+    if (!r.proven())
+        return -EIO;
+
+    /* Proven, and deliberately going no further. Starting acquisition is the next commit's job --
+     * there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so no
+     * measurement frame can leave this board even now. Saying so here keeps an operator from reading
+     * "proven" as "producing". */
+    shell_print(shell, "mapping installed under epoch %lu; acquisition NOT started "
+                       "(no thread yet) and the PROVEN clamp is still in force",
+                parsed);
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+    SHELL_CMD_ARG(prove, NULL,
+                  "prove the cliff mapping: stop acquisition, walk -> isolate -> walk, install "
+                  "under <host_epoch 0-255>",
+                  cmd_cliff_prove, 2, 0),
+    SHELL_SUBCMD_SET_END
+);
+
+#endif  // ENABLE_TOF_CLIFF_ULD
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
     SHELL_CMD(enum, NULL,
               "manual commissioning: enumerate the ToF chain (holds the chain lock)",
               cmd_enum),
+#if defined(ENABLE_TOF_CLIFF_ULD)
+    SHELL_CMD(cliff, &sub_tof_cliff, "cliff mapping commissioning", NULL),
+#endif
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(tof, &sub_tof, "ToF chain commands", NULL);

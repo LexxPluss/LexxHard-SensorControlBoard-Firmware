@@ -28,9 +28,13 @@
  *
  * The sequence that works starts from a chain where every position is enabled, which is exactly
  * the state a completed enumeration leaves behind: drive the data line LOW and issue
- * (positions - 1) clock pulses. Each pulse shifts one zero a stage further down, so positions
- * 1..N-1 go dark one at a time while THE TAIL IS NEVER DISABLED and keeps the address the
- * enumeration gave it.
+ * (positions - 2) clock pulses.
+ *
+ * TWO, not one. Position 1's enable IS the data line, so driving it low darkens position 1 with no
+ * pulse at all; the pulses darken positions 2..N-1 -- four of them for a six-position chain. A
+ * fifth would shift the zero into the tail and turn off the very board being isolated, which is
+ * what the first version of this function did. THE TAIL IS NEVER DISABLED, and that is the only
+ * reason it still holds the address the enumeration gave it.
  *
  * The cost is stated in the contract rather than hidden here: the isolation destroys the
  * addresses of every position it darkens, so a second enumeration must follow before any

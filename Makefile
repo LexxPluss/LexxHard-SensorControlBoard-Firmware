@@ -112,6 +112,16 @@ test_tof_mapping_authority:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the commissioning orchestration: the order of the steps, recursive locking
+# inside one chain session, which exit paths release the chain, and what is left open when a step
+# fails. The chain mutex is a real k_mutex and the authority, proof, enumerator and isolation are the
+# real components -- only the bus and the quiesce hook are faked, because faking any of the others
+# would assume the answer.
+.PHONY: test_tof_commissioning
+test_tof_commissioning:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for tail isolation: the middle step of the proof transaction. The fake models the
 # shift register and records every control operation, because the ORDER is the property -- an
 # isolation that reaches the right end state through an all-off has destroyed the evidence it was

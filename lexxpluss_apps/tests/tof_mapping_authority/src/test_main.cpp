@@ -670,3 +670,89 @@ ZTEST(tof_mapping_authority, test_re_initialising_does_close_any_open_attempt)
     zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 30),
                   au::commit_refusal::no_attempt);
 }
+
+ZTEST(tof_mapping_authority, test_a_refused_commit_still_closes_the_attempt)
+{
+    /* One attempt buys one commit. Otherwise a caller could re-present the same evidence until some
+     * later check happened to pass, and each retry would be judged against a chain that is one
+     * attempt older than the evidence describing it. */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 3), au::commit_refusal::none);
+
+    /* A commit refused for a reason discovered AFTER the token matched: the epoch is reused. */
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted());
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 3),
+                  au::commit_refusal::epoch_reused);
+    zassert_equal(au::attempt_nonce(), 0u, "a refused commit left the attempt open");
+}
+
+ZTEST(tof_mapping_authority, test_a_forged_token_cannot_close_someone_elses_attempt)
+{
+    /* The other half. Checks that run BEFORE the nonce comparison must not spend an attempt they
+     * have no claim to -- otherwise anyone could cancel a commissioning run in progress by
+     * presenting an empty token. */
+    fresh_authority();
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+
+    pf::proof_token forged{};
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(forged), 5),
+                  au::commit_refusal::invalid_token);
+    zassert_equal(au::attempt_nonce(), a.challenge.nonce(), "a forged token closed the attempt");
+
+    /* And the real attempt still works. */
+    const transaction t;
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted());
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 5),
+                  au::commit_refusal::none);
+}
+
+ZTEST(tof_mapping_authority, test_abort_closes_an_attempt_that_will_not_be_committed)
+{
+    /* An abandoned attempt is not harmless: evaluate_bench() refuses while one is open, so giving
+     * up without saying so silently disables diagnostics until somebody starts another proof. */
+    fresh_authority();
+    const transaction t;
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    zassert_false(au::evaluate_bench(t.evidence()).ran, "an open attempt blocks bench runs");
+
+    zassert_true(au::abort_proof(a.challenge));
+    zassert_equal(au::attempt_nonce(), 0u);
+    zassert_true(au::evaluate_bench(t.evidence()).ran, "aborting must give diagnostics back");
+}
+
+ZTEST(tof_mapping_authority, test_abort_is_bound_to_the_attempt_it_names)
+{
+    /* One caller must not be able to cancel another's run. */
+    fresh_authority();
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+
+    zassert_false(au::abort_proof(pf::challenge{}), "a fabricated challenge aborted an attempt");
+    zassert_equal(au::attempt_nonce(), a.challenge.nonce());
+
+    const au::attempt b{au::begin_proof()};   // supersedes a
+    zassert_false(au::abort_proof(a.challenge), "a stale challenge aborted the current attempt");
+    zassert_equal(au::attempt_nonce(), b.challenge.nonce());
+    zassert_true(au::abort_proof(b.challenge));
+}
+
+ZTEST(tof_mapping_authority, test_aborting_restores_nothing)
+{
+    /* begin_proof() revoked the mapping and the chain has since been walked. An abort says "this
+     * attempt is over", not "put things back" -- there is nothing to put back that would be true. */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 9), au::commit_refusal::none);
+
+    const au::attempt a{au::begin_proof()};
+    zassert_equal(au::current().state, acq::mapping_state::lost);
+    zassert_true(au::abort_proof(a.challenge));
+    zassert_equal(au::current().state, acq::mapping_state::lost, "an abort restored PROVEN");
+}

@@ -1025,3 +1025,43 @@ ZTEST(tof_acquisition, test_teardown_retires_the_subsystem_rather_than_pausing_i
     k_msleep(kHealthPeriodMs * 3);
     zassert_true(rec.health_beats >= before + 2);
 }
+
+/* A commissioning run holds the chain for two full enumerations plus an isolation -- seconds, on real
+ * hardware. The heartbeat has to keep going for all of it, because it is the only channel telling a
+ * consumer that the subsystem is alive and that its mapping is being re-proven. The health work item
+ * takes no lock and reads one atomic word, so this holds by construction; "by construction" is what
+ * gets verified, not asserted. */
+K_THREAD_STACK_DEFINE(chain_holder_stack, 1024);
+static k_thread chain_holder;
+K_SEM_DEFINE(holder_took_it, 0, 1);
+K_SEM_DEFINE(holder_release, 0, 1);
+
+static void chain_holder_entry(void *, void *, void *)
+{
+    k_mutex_lock(&lexxhard::tof_chain_controller::chain_lock(), K_FOREVER);
+    k_sem_give(&holder_took_it);
+    (void)k_sem_take(&holder_release, K_FOREVER);
+    k_mutex_unlock(&lexxhard::tof_chain_controller::chain_lock());
+}
+
+ZTEST(tof_acquisition, test_the_heartbeat_survives_a_long_chain_session)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    acq::stop();   // what commissioning does: quiesce, and keep the heartbeat
+
+    k_sem_reset(&holder_took_it);
+    k_sem_reset(&holder_release);
+    k_thread_create(&chain_holder, chain_holder_stack, K_THREAD_STACK_SIZEOF(chain_holder_stack),
+                    chain_holder_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(1), 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&holder_took_it, K_MSEC(500)), 0, "the holder never took the chain");
+
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 4);
+    const int during{rec.health_beats};
+
+    k_sem_give(&holder_release);
+    (void)k_thread_join(&chain_holder, K_MSEC(500));
+
+    zassert_true(during >= before + 3,
+                 "the heartbeat stalled while the chain was held: %d -> %d", before, during);
+}
