@@ -1039,15 +1039,17 @@ static void cycle_runner_entry(void *, void *, void *)
 {
     /* Signals BEFORE the call, and the PRIORITY is what makes that sound.
      *
-     * The interleaving being staged is a cycle that has already read running_ as true and is now
-     * waiting for the chain. The first version of this thread ran one band BELOW the ztest thread
-     * (which is cooperative at -1), so k_sem_give() handed control straight back to the test before
-     * this thread had read running_ at all: try_stop() then ran, and the cycle returned at its
-     * unlocked check instead of the locked one. The test passed, and went on passing with the
-     * locked re-check deleted -- it was staging nothing.
+     * The interleaving being staged is a cycle that is already waiting for the chain when the
+     * quiesce runs -- so this thread has to get as far as the blocking acquire before the test
+     * thread continues. Created one band ABOVE the test thread for exactly that: giving the
+     * semaphore does not yield, so this thread runs on until it blocks on the chain.
      *
-     * Created one band ABOVE the test thread instead, so giving the semaphore does not yield: this
-     * thread runs on until it blocks on the chain, which is exactly the state the race needs. */
+     * The first version ran one band BELOW the ztest thread (cooperative at -1), so k_sem_give()
+     * handed control straight back to the test before this thread had reached run_cycle() at all.
+     * back then run_cycle() still had an unlocked pre-check, so the cycle returned there instead,
+     * and the case passed with the locked check deleted -- it was staging nothing. The pre-check is
+     * gone now (an unsynchronised read of running_ was a data race, not an optimisation), but the
+     * priority is still what decides whether anything is staged. */
     k_sem_give(&cycle_thread_started);
     acq::run_cycle();
 }
@@ -1146,12 +1148,11 @@ ZTEST(tof_acquisition, test_a_cycle_that_lost_the_race_to_a_quiesce_does_not_run
 {
     /* The race that arrives with the acquisition thread, staged deterministically.
      *
-     * A cycle reads running_ before taking the chain. Here it reads true, then blocks on the lock
-     * this test thread is holding -- and while it waits, try_stop() (recursive on the same thread,
-     * so it succeeds) sets running_ false. When the cycle finally gets the lock, the quiesce it is
-     * about to ignore has already returned success to a commissioner who has been told the chain is
-     * safe to enumerate in. Enumeration drops enable lines, so the cycle would be reading parts
-     * mid-re-address.
+     * A cycle blocks on the chain this test thread is holding, and while it waits, try_stop()
+     * (recursive on the same thread, so it succeeds) sets running_ false. When the cycle finally
+     * gets the lock, the quiesce it is about to ignore has already returned success to a
+     * commissioner who has been told the chain is safe to enumerate in. Enumeration drops enable
+     * lines, so the cycle would be reading parts mid-re-address.
      *
      * The cycle must therefore not begin: no on_cycle_begin, no reads, and no cycle number spent
      * on something that did not happen. */

@@ -30,6 +30,20 @@ bool configured_{false};
  * refused: the health work item reads cfg_ from another context, and overwriting the
  * configuration underneath it is a data race with a function pointer in it. */
 bool active_{false};
+
+/* SYNCHRONISATION RULE, and it is one rule rather than two.
+ *
+ * running_ and in_cycle_ are touched by more than one context -- the acquisition side and the
+ * commissioning side -- so every read and every write of them happens with the chain lock held.
+ * No exceptions for "advisory" or "optimisation" reads: they are plain bools, so an unsynchronised
+ * read while another thread writes one under the lock is a data race, which is undefined behaviour
+ * rather than a stale value, and a later check under the lock does not repair it.
+ *
+ * configured_ and active_ are different: they are written only by init() and teardown(), which are
+ * lifecycle calls made from ONE context. That is what makes reading them outside the lock sound,
+ * and it is a constraint on whoever wires up the runtime rather than a property of this file -- if a
+ * future acquisition thread ever calls init(), teardown() or try_stop() itself, they need the same
+ * treatment as the two above. */
 bool running_{false};
 bool in_cycle_{false};
 cycle_facts facts_;
@@ -519,25 +533,27 @@ int bring_up()
 
 void run_cycle()
 {
-    /* Advisory only: it saves taking the chain every period while stopped, and it is allowed to be
-     * stale. The check that decides is the one below, under the lock. */
-    if (!running_)
-        return;
-
-    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-
-    /* Re-checked under the lock, because the check above is not a decision.
+    /* running_ is read ONLY under the chain lock, here and everywhere else.
      *
-     * The window is real as soon as there is an acquisition thread: the thread reads running_ as
-     * true, then waits here for whoever holds the chain -- and that holder may be try_stop()
-     * setting running_ to false. Without this the thread would then run a full cycle AFTER the
-     * quiesce returned success, reading devices that stop_locked() has just stopped, in a window
-     * commissioning has been told is safe to enumerate in. Enumeration drops enable lines, so the
+     * There used to be an unlocked pre-check above this, excused as an advisory read that was
+     * allowed to be stale. That excuse does not exist in C++: running_ is a plain bool written by
+     * try_stop() under the lock from another thread, so an unsynchronised read of it is a data race
+     * and therefore undefined behaviour -- not a value that is merely out of date. A second check
+     * under the lock does not repair the first one, and "it is only an optimisation" is not a
+     * defence for UB. The alternative would be to make it atomic, which buys one saved lock
+     * acquisition per idle period in exchange for two synchronisation rules for one variable.
+     *
+     * The check itself matters as soon as there is an acquisition thread. The thread can find
+     * running_ true, wait here for whoever holds the chain, and be woken by the very try_stop()
+     * that cleared it -- then run a full cycle AFTER the quiesce reported success to a commissioner
+     * who has been told the chain is safe to enumerate in. Enumeration drops enable lines, so the
      * cycle would be reading parts that are being re-addressed underneath it.
      *
      * Returning here leaves the cycle NOT BEGUN: no on_cycle_begin, no on_cycle, and
      * next_cycle_seq_ untouched. That is the correct account of what happened -- the cycle did not
      * happen, so it owes no health frame and must not consume a cycle number. */
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+
     if (!running_) {
         k_mutex_unlock(&tof_chain_controller::chain_lock());
         return;
