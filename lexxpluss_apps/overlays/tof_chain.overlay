@@ -22,6 +22,14 @@
 		clock-gpios = <&gpioj 1 GPIO_ACTIVE_HIGH>;
 		data-settle-ms = <2000>;
 		sensor-boot-ms = <2000>;
+		/* PROVISIONAL, and unresolved in the cliff wire contract. Stated
+		 * here rather than defaulted in firmware so that the number is
+		 * visible in a diff and has an owner. 20 Hz acquisition with a
+		 * 5 Hz heartbeat is the shape the contract's timing section
+		 * assumes; both must be replaced by approved values before
+		 * release. */
+		cycle-period-ms = <50>;
+		health-period-ms = <200>;
 	};
 };
 

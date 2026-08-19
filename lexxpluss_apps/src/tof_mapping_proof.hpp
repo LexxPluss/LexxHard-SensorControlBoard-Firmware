@@ -141,6 +141,17 @@ bool same(const fingerprint &a, const fingerprint &b);
 // the two drift.
 bool is_commissioning_profile(const fingerprint &fp);
 
+// The wire contract's role -> source_id table: front_left 0, rear_left 1, rear_right 2,
+// front_right 3. Returns -1 for unknown, which is not a source id but the absence of one.
+//
+// ONE definition, exported rather than copied. Two callers need it now -- the authority, to build
+// the per-cycle masks, and the runtime, to fill source_desc::role_id from an installed mapping --
+// and a second copy is how they drift apart while both still compile. Written as an explicit
+// switch and never as arithmetic on the enum: `static_cast<int>(role) - 1` happens to agree today
+// and would silently follow any reordering of an enum the contract has no say over, producing a
+// source_id that points at a different corner of the machine.
+int8_t source_id_of(enm::l4_role role);
+
 // What was observed with only the tail position enabled. Raw observations, not verdicts:
 // the evaluator decides what they mean.
 struct isolation_observation {

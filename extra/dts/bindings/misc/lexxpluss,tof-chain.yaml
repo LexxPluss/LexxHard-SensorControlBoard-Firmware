@@ -34,3 +34,20 @@ properties:
     description: |
       Wait after a position's enable rises before probing it. DS20001
       provisional value.
+
+  cycle-period-ms:
+    type: int
+    required: true
+    description: |
+      Acquisition cycle period. UNRESOLVED in the cliff wire contract: there is
+      no approved value yet, which is exactly why it is required here instead of
+      defaulted in firmware. A provisional number in an overlay is visible in a
+      diff and belongs to whoever owns the deployment; the same number inside a
+      scheduler becomes the specification by being the only one anybody can find.
+
+  health-period-ms:
+    type: int
+    required: true
+    description: |
+      Health frame period, on its own timer and independent of the acquisition
+      path. Also unresolved in the contract; required for the same reason.

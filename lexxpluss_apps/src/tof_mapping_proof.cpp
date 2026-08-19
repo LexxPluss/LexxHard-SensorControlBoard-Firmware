@@ -41,6 +41,25 @@ bool same_position(const position_fingerprint &a, const position_fingerprint &b)
 
 } // namespace
 
+int8_t source_id_of(enm::l4_role role)
+{
+    /* The contract's table, spelled out. See the header for why this is a switch and not
+     * arithmetic on the enum. */
+    switch (role) {
+    case enm::l4_role::front_left:
+        return 0;
+    case enm::l4_role::rear_left:
+        return 1;
+    case enm::l4_role::rear_right:
+        return 2;
+    case enm::l4_role::front_right:
+        return 3;
+    case enm::l4_role::unknown:
+    default:
+        return -1;
+    }
+}
+
 bool is_commissioning_profile(const fingerprint &fp)
 {
     constexpr size_t kPositions{6};

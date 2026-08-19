@@ -38,9 +38,18 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 # takes the chain used to block on it, and only the real acquisition layer can show that it no longer
 # does. Its dependency on the vendor sensor entry points is stubbed in the test rather than satisfied
 # by linking the ULD, which belongs to the sensor suite.
+# Two suites in one binary, sharing the chain fake: the commissioning transaction and the runtime
+# bootstrap. They share it because a second copy of a fake that models the flip-flop chain, the L4/L7
+# reset-class asymmetry and the tail-races-ahead defect would drift, and the verdicts depend on
+# exactly those details. The runtime suite also links the publisher and packer, because the bootstrap
+# it tests is the production one -- wiring the modules up in the test would be a third wiring.
 target_sources(app PRIVATE
     src/test_main.cpp
+    src/test_runtime.cpp
     ${APP_SRC_DIR}/tof_acquisition.cpp
+    ${APP_SRC_DIR}/tof_cliff_packer.cpp
+    ${APP_SRC_DIR}/tof_cliff_publisher.cpp
+    ${APP_SRC_DIR}/tof_cliff_runtime.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp
@@ -49,8 +58,10 @@ target_sources(app PRIVATE
 )
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
 set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
+set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
+    ${CONTRACT_DIR}
     ${ULD_DIR}/zephyr
     ${ULD_DIR}/upstream
     ${ULD_DIR}/upstream/modules

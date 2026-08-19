@@ -296,43 +296,43 @@ mapping_state clamp_mapping_state(mapping_state reported)
         // A proven mapping is not something this firmware is entitled to claim yet, so
         // reporting NOT_READY keeps the consumer's own fail-safe path in charge.
         //
-        // WHAT IS ACTUALLY MISSING, as of 2026-08-18. This list has been wrong once
+        // WHAT IS ACTUALLY MISSING, as of 2026-08-19. This list has been wrong once
         // already: it used to say "until the two-board enable chain is fixed", and the
         // hardware was fixed on 08-17 -- a 50 ohm series resistor on the data line, gate
         // passed 5/5 on DS20001. Anyone reading the stale reason would have concluded the
-        // condition was met. It is not, for two reasons that have nothing to do with that
-        // resistor:
+        // condition was met. It is not, for these reasons, none of which is that resistor:
         //
         //   - No role/source table. The four cliff positions in dasher_spec() carry
         //     l4_role::unknown, so tof_mapping_proof refuses to reach PROVEN at all today,
         //     by rule: the masks the wire contract keys by source_id cannot be filled from a
         //     position without that table, and electrical enumeration cannot prove which of
         //     four identical carriers is mounted where.
-        //   - No production wiring. The authority, the epoch transaction and both health
-        //     frames exist now, but only the B6 budget probe constructs any of it; nothing in
-        //     a shipping image calls acq::init(), so there is no acquisition thread and no
-        //     heartbeat either. That wiring also owes one thing this code cannot check for
-        //     itself: source_desc::role_id must be BUILT FROM the authority's installed
-        //     mapping. Today the probe sets it to the descriptor index, and it is what both
-        //     the measurement frames' source_id and the per-cycle health masks are keyed by,
-        //     while the enumeration masks are keyed by the proven role. They agree only as
-        //     long as nobody reorders the descriptor table.
+        //   - No acquisition thread. tof_cliff_runtime::bootstrap() now wires the subsystem
+        //     up from main(), so a shipping image DOES call acq::init() and the heartbeat
+        //     does run from power-on -- that half of this entry is closed. What is not: only
+        //     the commissioning command drives run_cycle(), so no image produces cycles on
+        //     its own yet.
+        //   - No on-machine acceptance. Nothing above has been observed on hardware end to
+        //     end: no 0x216 capture, no boot timing, no stack watermark.
         //
-        // Three things that WERE on this list are now closed, which is exactly why the list
-        // has to be maintained: there is a mapping authority, there is an epoch plus
-        // cycle-reset transaction, and the cycle health frame exists. None of them lifts this
-        // clamp, and the log line above has to keep naming what is actually left -- a stale
-        // diagnostic sends whoever reads it to the wrong place.
+        // What WAS on this list and is now closed, because a list that only grows stops being
+        // read: the mapping authority, the epoch plus cycle-reset transaction, the cycle
+        // health frame, the single runtime bootstrap, and role_id being built from the
+        // authority's installed mapping rather than from the descriptor's index
+        // (tof_cliff_runtime::apply_installed_mapping, which refuses unless the authority
+        // reports PROVEN and the addresses match). None of them lifts this clamp, and the log
+        // line below has to keep naming what is actually left -- a stale diagnostic sends
+        // whoever reads it to the wrong place.
         //
         // Unconditional, with no build flag to lift it. A conditional safety bypass is
         // one careless -D away from shipping and would not show up in a diff of the code
-        // it disables; lifting this is an edit here, in its own commit, once all four of
+        // it disables; lifting this is an edit here, in its own commit, once all three of
         // the above are closed.
         static bool warned{false};
         if (!warned) {
             warned = true;
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role "
-                    "table and no production wiring yet");
+            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role table, "
+                    "no acquisition thread, no on-machine acceptance yet");
         }
         return mapping_state::not_ready;
     }

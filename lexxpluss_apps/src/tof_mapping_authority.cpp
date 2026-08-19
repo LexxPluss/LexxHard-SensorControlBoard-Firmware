@@ -159,23 +159,6 @@ bool matches_runtime(const pf::fingerprint &fp, const enm::chain_spec &spec)
  * follow any future reordering of an enumeration that has nothing to do with the contract --
  * producing frames whose source_id names the wrong corner of the robot, which is the one error
  * class this whole subsystem exists to prevent. Returns -1 for a role that has no source. */
-int8_t source_of(enm::l4_role role)
-{
-    switch (role) {
-    case enm::l4_role::front_left:
-        return 0;
-    case enm::l4_role::rear_left:
-        return 1;
-    case enm::l4_role::rear_right:
-        return 2;
-    case enm::l4_role::front_right:
-        return 3;
-    case enm::l4_role::unknown:
-    default:
-        return -1;
-    }
-}
-
 /* The two enumeration masks, from the chain a proof actually proved.
  *
  * Both are 0xF for a committed proof, and that is not a shortcut: the proof cannot be granted
@@ -188,7 +171,7 @@ void masks_from(const pf::fingerprint &fp, uint8_t &enumerated, uint8_t &model_v
     enumerated = 0;
     model_verified = 0;
     for (size_t i{0}; i < fp.positions; ++i) {
-        const int8_t src{source_of(fp.at[i].role)};
+        const int8_t src{pf::source_id_of(fp.at[i].role)};
         if (src < 0 || !fp.at[i].verified)
             continue;
         const uint8_t bit{static_cast<uint8_t>(1U << src)};

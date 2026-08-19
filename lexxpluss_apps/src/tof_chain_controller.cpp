@@ -55,6 +55,7 @@
 #include "tof_chain_spec.hpp"
 #if defined(ENABLE_TOF_CLIFF_ULD)
 #include "tof_acquisition.hpp"
+#include "tof_cliff_runtime.hpp"
 #include "tof_commissioning.hpp"
 #endif
 #include "tof_enumerator.hpp"
@@ -304,12 +305,23 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
         return -EINVAL;
     }
 
-    static tof_enum::chain_spec spec{tof_chain::dasher_spec()};
+    /* The bootstrap has to have finished, and saying WHICH step failed matters: "not ready" sends
+     * an operator to look at the chain, which is the wrong place when the truth is that can2 never
+     * came up or that this image never ran the bootstrap at all. */
+    if (!tof_cliff_runtime::ready()) {
+        shell_error(shell, "cliff runtime not ready (%s): refusing to commission",
+                    tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+        return -EPERM;
+    }
+
     static zephyr_chain_ops ops{};
     tof_commissioning::config cfg{};
     cfg.chain = &chain_mutex;
     cfg.ops = &ops;
-    cfg.spec = &spec;
+    /* THE spec, not a copy of it. The authority compares every proof against this same object; a
+     * local static here would mean commissioning walked one chain description while the authority
+     * checked the result against another. */
+    cfg.spec = &tof_cliff_runtime::spec();
     /* The tested primitive itself, with no wrapper in between.
      *
      * try_stop(), not stop(): stop() takes the chain with K_FOREVER, so a wrapper around it would
@@ -344,12 +356,22 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
     if (!r.proven())
         return -EIO;
 
-    /* Proven, and deliberately going no further. Starting acquisition is the next commit's job --
-     * there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so no
-     * measurement frame can leave this board even now. Saying so here keeps an operator from reading
-     * "proven" as "producing". */
-    shell_print(shell, "mapping installed under epoch %lu; acquisition NOT started "
-                       "(no thread yet) and the PROVEN clamp is still in force",
+    /* Now, and only now, the descriptors may be keyed. role_id is the key a measurement's source_id
+     * and the per-cycle masks are built from, and the only legitimate source for it is the mapping
+     * this proof just installed -- never the descriptor's index. */
+    if (const int rc{tof_cliff_runtime::apply_installed_mapping()}; rc != 0) {
+        shell_error(shell, "mapping installed but descriptors not keyed (%d): "
+                           "acquisition stays down",
+                    rc);
+        return rc;
+    }
+
+    /* Proven, keyed, and deliberately going no further. Starting acquisition is the next commit's
+     * job -- there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so
+     * no measurement frame can leave this board even now. Saying so here keeps an operator from
+     * reading "proven" as "producing". */
+    shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; acquisition NOT "
+                       "started (no thread yet) and the PROVEN clamp is still in force",
                 parsed);
     return 0;
 }
@@ -411,6 +433,21 @@ void init()
     LOG_INF("tof chain glue ready (data settle %u ms, sensor boot %u ms; "
             "DS20001 provisional timing)",
             kDataSettleMs, kSensorBootMs);
+
+#if defined(ENABLE_TOF_CLIFF_ULD)
+    /* The cliff subsystem's ONE bootstrap, from the ONE context allowed to run it: main(), before
+     * any per-feature thread starts. tof_acq reads configured_/active_ outside the chain lock on
+     * exactly that basis, so init() and teardown() must never be called from anywhere else.
+     *
+     * After the control lines, because a subsystem whose enable lines are not configurable has
+     * nothing to acquire from. A failure here is logged and left in the stage: the shell command
+     * reports which step failed, and the health path is still what a consumer hears. */
+    if (const int rc{tof_cliff_runtime::bootstrap(tof_cliff_runtime::config_from_devicetree())};
+        rc != 0) {
+        LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
+                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), rc);
+    }
+#endif
 }
 
 }  // namespace lexxhard::tof_chain_controller

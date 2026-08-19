@@ -45,7 +45,12 @@
 LOG_MODULE_REGISTER(tof_cliff_budget, CONFIG_LOG_DEFAULT_LEVEL);
 #endif
 
-#if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 4
+/* B4 and B5 own their storage; B6 does NOT. From B6 on, the four VL53L4CX objects and the shared
+ * scratch belong to tof_cliff_runtime, because that is where production keeps them -- and two sets
+ * would both inflate the RAM figure and measure a layout nobody ships. The B6 static RAM number
+ * therefore differs from B5 by more than one step's worth: the probe's stand-in per-source struct is
+ * gone and the real descriptor table has taken its place. */
+#if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 4 && TOF_CLIFF_BUDGET < 6
 #include "tof_cliff_sensor.h"
 
 #define TOF_CLIFF_SENSORS 4
@@ -87,8 +92,9 @@ static VL53L4CX_Object_t *volatile cliff_obj_ref = &cliff_obj;
 #endif
 
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
-/* The scheduler is C++, so the probe reaches it through one C entry point. */
-int tof_cliff_budget_walk_scheduler(void *objs, void *scratch, int stride);
+/* The scheduler is C++, so the probe reaches it through one C entry point. No arguments: it drives
+ * the production bootstrap, which owns the objects. */
+int tof_cliff_budget_walk_scheduler(void);
 #endif
 
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 5
@@ -141,11 +147,10 @@ static void cliff_walk_one(int i)
 static int tof_cliff_budget_walk(void)
 {
 #if TOF_CLIFF_BUDGET >= 6
-	/* B6: the real scheduler drives the same four objects, plus two stubbed grid
-	 * sources, so the measurement covers the sequential walk, the publication gate and
-	 * the heartbeat rather than a hand-rolled loop. */
-	(void)tof_cliff_budget_walk_scheduler(cliff_objs, &cliff_scratch,
-					      (int)sizeof(cliff_objs[0]));
+	/* B6: the production bootstrap drives the whole path -- six descriptors built from the
+	 * chain spec, the publication gate, the heartbeat, one full cycle -- so what gets
+	 * measured is the wiring that ships rather than a hand-rolled loop beside it. */
+	(void)tof_cliff_budget_walk_scheduler();
 #else
 	/* Sequential, one sensor at a time, sharing one scratch - the shape the real
 	 * acquisition thread will use while holding chain_lock(). */
