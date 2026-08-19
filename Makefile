@@ -117,6 +117,15 @@ test_tof_mapping_authority:
 # fails. The chain mutex is a real k_mutex and the authority, proof, enumerator and isolation are the
 # real components -- only the bus and the quiesce hook are faked, because faking any of the others
 # would assume the answer.
+# Host-side tests for the stored VL53L7CX device-firmware record. The bytes under test are the
+# generator's own output (tests/tof_l7_blob/src/golden_record.h), which is what keeps
+# scripts/gen_l7_blob_record.py and the C++ reader from drifting apart: the layout is written once at
+# manufacture and read at every boot, and a disagreement has to fail in CI rather than on a board.
+.PHONY: test_tof_l7_blob
+test_tof_l7_blob:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: test_tof_commissioning
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export

@@ -53,6 +53,7 @@
 
 #include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
+#include "tof_l7_blob_provider.hpp"
 #if defined(ENABLE_TOF_CLIFF_ULD)
 #include "tof_acquisition.hpp"
 #include "tof_cliff_runtime.hpp"
@@ -373,12 +374,12 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
         return -EIO;
     }
 
-    /* Proven, keyed, and deliberately going no further. Starting acquisition is the next commit's
-     * job -- there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so
-     * no measurement frame can leave this board even now. Saying so here keeps an operator from
-     * reading "proven" as "producing". */
-    shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; acquisition NOT "
-                       "started (no thread yet) and the PROVEN clamp is still in force",
+    /* Proven, keyed, and deliberately going no further. The acquisition thread now exists -- this
+     * command simply does not start it, because starting it is a separate decision from proving a
+     * mapping -- and the PROVEN clamp is shut regardless, so no measurement frame can leave this
+     * board even now. Saying so here keeps an operator from reading "proven" as "producing". */
+    shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; the acquisition "
+                       "thread was NOT started and the PROVEN clamp is still in force",
                 parsed);
     return 0;
 }
@@ -393,6 +394,41 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
 
 #endif  // ENABLE_TOF_CLIFF_ULD
 
+int cmd_l7_blob(const struct shell *shell, size_t, char **)
+{
+    /* Reports what is stored, and deliberately does NOT verify it against an expectation: this
+     * firmware has no VL53L7CX ULD yet, so it has nothing to compare against and inventing one here
+     * would be a claim rather than a check. What it can answer is the question bring-up actually
+     * asks -- "is a record there, and which one" -- and it answers it from the same reader the
+     * verification uses. */
+    const tof_l7_blob::report rep{tof_l7_blob::stored_header()};
+
+    shell_print(shell, "storage partition: %zu bytes", rep.region_size);
+    shell_print(shell, "record: %s", tof_l7_blob::status_name(rep.st));
+    if (!rep.stored.parsed) {
+        shell_print(shell, "no usable header; nothing can be said about the payload");
+        return rep.st == tof_l7_blob::status::ok ? 0 : -ENOENT;
+    }
+
+    shell_print(shell, "format %u, payload %u bytes", rep.stored.format_version,
+                rep.stored.payload_len);
+    shell_fprintf(shell, SHELL_NORMAL, "payload sha256: ");
+    for (size_t i{0}; i < tof_l7_blob::kDigestSize; ++i)
+        shell_fprintf(shell, SHELL_NORMAL, "%02x", rep.stored.payload_digest[i]);
+    shell_fprintf(shell, SHELL_NORMAL, "\n");
+    /* The integrity of the payload is NOT asserted by this command: it read the header only. Saying
+     * so matters -- an operator who reads "ok" here must not conclude the blob is intact. */
+    shell_print(shell, "header only: the payload was not hashed, so this says nothing about whether "
+                       "it is intact or which ULD it belongs to");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_l7,
+    SHELL_CMD(blob, NULL, "report the device-firmware record stored in the storage partition",
+              cmd_l7_blob),
+    SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
     SHELL_CMD(enum, NULL,
               "manual commissioning: enumerate the ToF chain (holds the chain lock)",
@@ -400,6 +436,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
 #if defined(ENABLE_TOF_CLIFF_ULD)
     SHELL_CMD(cliff, &sub_tof_cliff, "cliff mapping commissioning", NULL),
 #endif
+    SHELL_CMD(l7, &sub_tof_l7, "grid sensor provisioning", NULL),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(tof, &sub_tof, "ToF chain commands", NULL);
