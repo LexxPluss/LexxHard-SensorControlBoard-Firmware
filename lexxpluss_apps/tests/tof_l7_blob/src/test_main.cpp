@@ -25,8 +25,10 @@
 
 #include "golden_record.h"
 #include "tof_l7_blob_record.hpp"
+#include "tof_l7_runtime.hpp"
 
 namespace blob = lexxhard::tof_l7_blob;
+namespace runtime = lexxhard::tof_l7_runtime;
 
 namespace {
 
@@ -39,6 +41,7 @@ int forced_read_rc;
 size_t fail_at_offset;
 int reads_seen;
 blob::expectation accepted[2];
+bool map_for_runtime;
 
 int read_region(void *, size_t offset, void *dst, size_t len)
 {
@@ -76,6 +79,17 @@ blob::accept_list golden_accept_list()
     return {accepted, 1};
 }
 
+blob::report verify_for_runtime(const blob::accept_list &list, blob::blob_view &out)
+{
+    blob::report rep{};
+
+    rep.region_size = region_size;
+    (void)blob::read_header(make_reader(), region_size, rep.stored);
+    rep.st = blob::verify(make_reader(), region_size, list, out,
+                          map_for_runtime ? region : nullptr);
+    return rep;
+}
+
 void before(void *)
 {
     memset(region, 0, sizeof region);
@@ -86,6 +100,8 @@ void before(void *)
     reads_seen = 0;
     accepted[0] = make_golden_expectation();
     accepted[1] = blob::expectation{};
+    map_for_runtime = true;
+    runtime::reset_for_test();
 }
 
 /* Recomputes the header CRC after a case has edited a header field, so that the case tests the field
@@ -116,6 +132,52 @@ ZTEST(tof_l7_blob, test_the_generators_record_verifies)
      * off-by-one here would push the header into a sensor as though it were firmware. */
     zassert_equal(view.data(), region + 64);
     zassert_equal(view.data()[0], blob::golden::kRecord[64]);
+}
+
+ZTEST(tof_l7_blob, test_runtime_publishes_only_the_pointer_verified_at_boot)
+{
+    zassert_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), 0);
+
+    const runtime::snapshot state{runtime::current()};
+    zassert_equal(state.current_stage, runtime::stage::available);
+    zassert_true(state.firmware_available);
+    zassert_equal(state.firmware_size, blob::golden::kPayloadLen);
+    zassert_equal(runtime::firmware_data(), region + blob::kHeaderSize);
+    zassert_equal(runtime::firmware_size(), blob::golden::kPayloadLen);
+}
+
+ZTEST(tof_l7_blob, test_runtime_refusal_never_publishes_a_firmware_pointer)
+{
+    region[blob::kHeaderSize + 10] ^= 0x01;
+
+    zassert_not_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), 0);
+
+    const runtime::snapshot state{runtime::current()};
+    zassert_equal(state.current_stage, runtime::stage::refused);
+    zassert_equal(state.verification.st, blob::status::digest_mismatch);
+    zassert_false(state.firmware_available);
+    zassert_is_null(runtime::firmware_data());
+    zassert_equal(runtime::firmware_size(), 0);
+}
+
+ZTEST(tof_l7_blob, test_runtime_refuses_an_ok_verdict_without_a_mapped_view)
+{
+    map_for_runtime = false;
+
+    zassert_not_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), 0);
+    zassert_equal(runtime::current().verification.st, blob::status::mapping_mismatch);
+    zassert_is_null(runtime::firmware_data());
+}
+
+ZTEST(tof_l7_blob, test_runtime_bootstrap_is_single_shot)
+{
+    zassert_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), 0);
+    const uint8_t *const first{runtime::firmware_data()};
+
+    region[blob::kHeaderSize + 10] ^= 0x01;
+    zassert_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), -EALREADY);
+    zassert_equal(runtime::current().current_stage, runtime::stage::available);
+    zassert_equal(runtime::firmware_data(), first);
 }
 
 ZTEST(tof_l7_blob, test_the_last_written_commit_marker_is_required)

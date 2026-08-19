@@ -7,12 +7,13 @@
  * The stored VL53L7CX device-firmware blob, and what has to be true before a byte of it is pushed
  * to a sensor.
  *
- * WHY THE BLOB IS NOT IN THE IMAGE. Measured on 2026-08-11/12, not estimated:
- * VL53L7CX_FIRMWARE[] is 86,016 B, plus 972 B of default configuration and 776 B of xtalk table.
- * The signed application image had 67,096 B of slot tail left -- MCUboot trailer included -- so the
- * blob alone overshot by 18,920 B, and compression does not rescue it (LZMA 61,848, xz -9e 62,168).
- * The ULD's own code is only ~4.7 KiB. So the whole problem is where the constant arrays live, and
- * storage_partition (131,072 B at 0x20000) is the one region no application code referenced.
+ * WHY THE BLOB IS NOT IN THE IMAGE. Measured, not estimated: VL53L7CX_FIRMWARE[] is 86,016 B,
+ * plus 972 B of default configuration and 776 B of xtalk table. The B6 image already used 239,516 B
+ * of the 261,712-byte MCUboot-aware ceiling before this L7 work, so embedding the payload alone
+ * would exceed it by at least 63,820 B. With the external record gate already reachable, forcing
+ * init/start/ready/fetch/stop plus the port and retained configuration/xtalk arrays into B6 adds
+ * another measured 7,332 B. The constant blob is therefore the first hard problem, and
+ * storage_partition (131,072 B at offset 0x20000) is the one region no application code referenced.
  *
  * WHAT THIS MODULE IS FOR. Flash is memory-mapped, so once a record has been verified the payload
  * can be handed to the I2C port as a pointer and streamed straight out -- no RAM copy of 84 KiB.

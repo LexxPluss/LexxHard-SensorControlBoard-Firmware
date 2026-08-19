@@ -17,6 +17,10 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_sources(app PRIVATE
     src/test_main.cpp
     ${APP_SRC_DIR}/tof_l7_blob_record.cpp
+    ${APP_SRC_DIR}/tof_l7_runtime.cpp
 )
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN)
-target_include_directories(app PRIVATE ${APP_SRC_DIR})
+target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_L7_ULD)
+target_include_directories(app PRIVATE
+    ${APP_SRC_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld/zephyr
+)

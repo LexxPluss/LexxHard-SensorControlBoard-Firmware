@@ -119,13 +119,19 @@ test_tof_mapping_authority:
 # would assume the answer.
 # Host-side tests for the stored VL53L7CX device-firmware record. The bytes under test are the
 # generator's own output (tests/tof_l7_blob/src/golden_record.h), which is what keeps
-# scripts/gen_l7_blob_record.py and the C++ reader from drifting apart: the layout is written once at
+# the offline L7 blob-record generator and the C++ reader from drifting apart: the layout is written once at
 # manufacture and read at every boot, and a disagreement has to fail in CI rather than on a board.
 .PHONY: test_tof_l7_blob
 test_tof_l7_blob:
-	python3 scripts/gen_l7_blob_record.py golden --out lexxpluss_apps/tests/tof_l7_blob/src/golden_record.h --check
+	python3 docs/can/gen_l7_blob_record.py golden --out lexxpluss_apps/tests/tof_l7_blob/src/golden_record.h --check
+	python3 docs/can/gen_l7_blob_record.py pack lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/modules/vl53l7cx_buffers.h --c-array VL53L7CX_FIRMWARE --expect-header lexxpluss_apps/third_party/st/vl53l7cx_uld/zephyr/vl53l7cx_blob_expectation.hpp --check
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+.PHONY: test_tof_l7_port
+test_tof_l7_port:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_port -d build-test-tof-l7-port -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 .PHONY: test_tof_commissioning
 test_tof_commissioning:

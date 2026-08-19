@@ -1,10 +1,11 @@
 # Stored VL53L7CX device-firmware record
 
-Status: **implemented, unprovisioned.** The reader and the packer exist and agree (a host suite
-verifies the packer's own bytes); no vendor blob has been imported and no board has been programmed.
+Status: **reader, vendor identity and boot-time gate implemented; board unprovisioned.** The reader
+and packer agree, the VL53L7CX 2.0.0 / MM1.8 snapshot supplies the signed-image expectation, and
+boot refuses L7 unless storage verifies. No board has yet been programmed with this record.
 
 Owner of this format: this document. The reader
-(`lexxpluss_apps/src/tof_l7_blob_record.cpp`) and the packer (`scripts/gen_l7_blob_record.py`)
+(`lexxpluss_apps/src/tof_l7_blob_record.cpp`) and the packer (`docs/can/gen_l7_blob_record.py`)
 implement it; where they disagree with this text, they are wrong.
 
 ## Why the blob is not in the signed image
@@ -16,18 +17,29 @@ Measured 2026-08-11/12, on this board and this toolchain:
 | `VL53L7CX_FIRMWARE[]` | 86,016 |
 | `VL53L7CX_DEFAULT_CONFIGURATION` | 972 |
 | `VL53L7CX_DEFAULT_XTALK` | 776 |
-| ULD code plus our Zephyr port | ~4,676 |
-| slot tail left in the signed application image | 67,096 |
+| unpadded signed-image ceiling | 261,712 |
+| B6 signed image before this L7 work | 239,516 |
+| B6 after the record gate, vendor import and expectation | 243,604 |
+| B6 with init/start/ready/fetch/stop forced reachable | 250,936 |
 
-The blob alone overshoots the entire remaining slot tail by 18,920 B, and that 67,096 is optimistic
-because the MCUboot trailer lives in the same slot. Compression does not rescue it: LZMA 61,848,
-`xz -9e` 62,168, which would leave about 5 KiB for a decompressor plus both ULDs plus the acquisition
-thread. Garbage collection cannot help either — the blob is referenced from the init path, so it is
-always reachable.
+The pre-L7 B6 point had 22,196 B left under the measured MCUboot-aware ceiling; embedding the
+86,016-byte payload would exceed it by at least 63,820 B before adding the L7 adapter. Compression
+does not rescue the design: LZMA 61,848 and `xz -9e` 62,168 would consume nearly all of that tail
+before a decompressor or the remaining L7 path. Garbage collection cannot help either — init needs
+every byte.
 
-So the constant arrays move out of the image, and the code (~4.7 KiB) stays in. `storage_partition`
-— 131,072 B at `0x20000` on `lexxpluss_scb` — is the one flash region no application code
-referenced. **One blob fits; two do not**, which is the fact that decides the open question below.
+The 2026-08-19 forced-reachability build is the current planning bound for the next phase. Making the
+ULD lifecycle plus port and retained configuration/xtalk arrays reachable adds 7,332 B over the
+Phase 1 image and leaves 10,776 B. That is below the agreed 15 KiB stop line, before the adapter,
+two live L7 objects, scheduling code or CAN glue. Phase 1 may land, but the data path must not simply
+continue from here without a capacity decision or a measured reduction.
+
+Only the 86,016-byte device-firmware blob moves out of the image. The 972-byte default
+configuration and 776-byte xtalk table remain with the ULD in the signed image, because rolling
+application code back while silently retaining newer configuration would create another
+compatibility problem. `storage_partition` — 131,072 B at offset `0x20000` on `lexxpluss_scb` — is
+the one flash region no application code referenced. **One blob fits; two do not**, which is the
+fact that decides the open question below.
 
 ## The record
 
@@ -85,7 +97,7 @@ prevents. The two also send whoever reads them to different places: `version_mis
 provision a different blob, `digest_mismatch` means the flash is damaged.
 
 The accept-list of `(length, digest)` pairs is compiled into the image, generated from bench-proven
-vendor files by `scripts/gen_l7_blob_record.py pack --expect-header` plus optional
+vendor files by `docs/can/gen_l7_blob_record.py pack --expect-header` plus optional
 `--accept-blob`. It is never taken from the record being checked. A list rather than one value is
 required because rollback can pair an older application with a newer provisioned blob; every extra
 entry is therefore a compatibility claim that needs a bench result with that ULD.
@@ -106,32 +118,32 @@ Two rules follow:
 
 ## Provisioning
 
-`scripts/gen_l7_blob_record.py pack <blob.bin> --out record.uncommitted.img
+`docs/can/gen_l7_blob_record.py pack <blob.bin> --out record.uncommitted.img
 --commit-marker-out marker.bin --expect-header <header>` produces three deliberately separate
 artefacts: header+payload, the four commit bytes, and the signed-image accept-list. The safe ordering
 is therefore the natural use of the tool rather than a comment attached to an already-committed
 image. A provisioner must erase, write `record.uncommitted.img`, read it back and verify the payload
 digest, then write `marker.bin` at offset `64 + payload_len`.
 
-The initial manufacturing path uses SWD at `0x20000` (`storage_partition`); 86 KiB over the shell
-console is not a serious proposition. A future in-field writer must preserve exactly the same
-ordering.
+The initial manufacturing path uses SWD at physical address `0x08020000` (`storage_partition` is at
+offset `0x20000` inside internal flash); 86 KiB over the shell console is not a serious proposition.
+A future in-field writer must preserve exactly the same ordering.
 
 **Open, and deliberately not decided here:** the blob is not part of the A/B image pair. One copy
 fits the partition and two do not, so a firmware update cannot carry a new blob the way it carries a
 new application, and a board whose blob and application disagree refuses to range rather than
-ranging wrongly (step 9). Whether provisioning stays a manufacturing step, moves to a CAN transfer,
+ranging wrongly (step 12). Whether provisioning stays a manufacturing step, moves to a CAN transfer,
 or forces a repartition is an ADR, not a code change — the repartition option costs an entire 256 KiB
 erase sector, i.e. the second slot or the scratch area, i.e. the ability to roll back.
 
 ## Cost
 
-Every boot pays one SHA-256 over the payload. On this part that is milliseconds; the same boot
-pushes 86,016 B to each sensor over differential I2C, which is ~1.9 s per sensor at 400 kHz and
-~0.8 s at 1 Mbit/s. The verification is not the expensive part and does not need caching.
+Every boot pays one SHA-256 over the payload. Its real duration is not yet measured and remains part
+of hardware acceptance. It is expected to be smaller than downloading 86,016 B to each sensor, but
+that comparison is not a timing claim until both are measured on the board.
 
 ## Not covered by this document
 
-The wire contract for grid measurements (`0x214`/`0x215`) is in `docs/can/`. The ULD import, the
-Zephyr I2C port and the 328-byte transfer cap are separate work; this document ends where the
-verified payload is handed over.
+The wire contract for grid measurements (`0x214`/`0x215`) is in `docs/can/`. The vendored ULD and
+the Zephyr port are separate modules beside the reader; this document still ends where the verified
+payload is handed over.

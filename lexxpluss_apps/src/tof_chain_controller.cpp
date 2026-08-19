@@ -54,6 +54,9 @@
 #include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
 #include "tof_l7_blob_provider.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_runtime.hpp"
+#endif
 #if defined(ENABLE_TOF_CLIFF_ULD)
 #include "tof_acquisition.hpp"
 #include "tof_cliff_runtime.hpp"
@@ -396,12 +399,24 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
 
 int cmd_l7_blob(const struct shell *shell, size_t, char **)
 {
+#if defined(ENABLE_TOF_L7_ULD)
+    const tof_l7_runtime::snapshot runtime{tof_l7_runtime::current()};
+
+    shell_print(shell, "runtime: %s", tof_l7_runtime::stage_name(runtime.current_stage));
+    if (runtime.current_stage == tof_l7_runtime::stage::not_started ||
+        runtime.current_stage == tof_l7_runtime::stage::verifying) {
+        shell_print(shell, "verification has not completed");
+        return -EAGAIN;
+    }
+    const tof_l7_blob::report &rep{runtime.verification};
+#else
     /* Reports what is stored, and deliberately does NOT verify it against an expectation: this
      * firmware has no VL53L7CX ULD yet, so it has nothing to compare against and inventing one here
      * would be a claim rather than a check. What it can answer is the question bring-up actually
      * asks -- "is a record there, and which one" -- and it answers it from the same reader the
      * verification uses. */
     const tof_l7_blob::report rep{tof_l7_blob::stored_header()};
+#endif
 
     shell_print(shell, "storage partition: %zu bytes", rep.region_size);
     shell_print(shell, "record: %s", tof_l7_blob::status_name(rep.st));
@@ -416,11 +431,21 @@ int cmd_l7_blob(const struct shell *shell, size_t, char **)
     for (size_t i{0}; i < tof_l7_blob::kDigestSize; ++i)
         shell_fprintf(shell, SHELL_NORMAL, "%02x", rep.stored.payload_digest[i]);
     shell_fprintf(shell, SHELL_NORMAL, "\n");
+#if defined(ENABLE_TOF_L7_ULD)
+    if (runtime.firmware_available) {
+        shell_print(shell, "verified against this signed image; %zu payload bytes authorised",
+                    runtime.firmware_size);
+        return 0;
+    }
+    shell_print(shell, "payload refused; L7 ranging remains unavailable");
+    return -EIO;
+#else
     /* The integrity of the payload is NOT asserted by this command: it read the header only. Saying
      * so matters -- an operator who reads "ok" here must not conclude the blob is intact. */
     shell_print(shell, "header only: the payload was not hashed, so this says nothing about whether "
                        "it is intact or which ULD it belongs to");
     return 0;
+#endif
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_l7,
@@ -482,6 +507,18 @@ void init()
     LOG_INF("tof chain glue ready (data settle %u ms, sensor boot %u ms; "
             "DS20001 provisional timing)",
             kDataSettleMs, kSensorBootMs);
+
+#if defined(ENABLE_TOF_L7_ULD)
+    /* Integrity failure disables only L7. Cliff health must still come up: losing the hanging-object
+     * feature is already fail-open for that hazard, and suppressing the independent cliff channel
+     * would make the failure larger while hiding the diagnosis. */
+    if (const int rc{tof_l7_runtime::bootstrap()}; rc != 0) {
+        const auto state{tof_l7_runtime::current()};
+        LOG_ERR("L7 runtime bootstrap failed at %s (%s, %d); L7 remains unavailable",
+                tof_l7_runtime::stage_name(state.current_stage),
+                tof_l7_blob::status_name(state.verification.st), rc);
+    }
+#endif
 
 #if defined(ENABLE_TOF_CLIFF_ULD)
     /* The cliff subsystem's ONE bootstrap, from the ONE context allowed to run it: main(), before
