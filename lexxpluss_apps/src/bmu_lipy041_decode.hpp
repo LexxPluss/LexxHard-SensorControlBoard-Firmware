@@ -32,6 +32,7 @@ namespace lexxhard::bmu_lipy041 {
 // debug logging can reference the same definition instead of duplicating literals.
 inline constexpr uint8_t FAIL_STATUS1_ABNORMAL_MASK{0b10111111};  // excludes bit6 (full-charge info bit, checked separately by is_full_charge())
 inline constexpr uint8_t FAIL_STATUS2_ABNORMAL_MASK{0b11111111};  // no reserved bits
+inline constexpr uint8_t FAIL_STATUS3_ABNORMAL_MASK{0b11111111};  // self-test diagnostics, no reserved bits
 inline constexpr uint8_t LEADER_ALARM1_ABNORMAL_MASK{0b00000111}; // bits 3-7 reserved
 inline constexpr uint8_t LEADER_ALARM2_ABNORMAL_MASK{0b00001111}; // bits 4-7 reserved
 

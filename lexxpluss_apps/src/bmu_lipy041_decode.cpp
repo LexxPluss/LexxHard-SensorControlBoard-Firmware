@@ -190,6 +190,7 @@ bool is_ok(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113) 
     // !is_ok() being used as the power-shutdown trigger at 7 call sites. Fixed to AND.
     return ((f100.fail_status1 & FAIL_STATUS1_ABNORMAL_MASK) == 0 &&
             (f101.fail_status2 & FAIL_STATUS2_ABNORMAL_MASK) == 0 &&
+            (f113.fail_status3 & FAIL_STATUS3_ABNORMAL_MASK) == 0 &&
             (f113.leader_alarm1 & LEADER_ALARM1_ABNORMAL_MASK) == 0 &&
             (f113.leader_alarm2 & LEADER_ALARM2_ABNORMAL_MASK) == 0);
 }

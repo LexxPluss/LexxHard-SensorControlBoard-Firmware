@@ -333,6 +333,7 @@ ZTEST(bmu_lipy041_decode, test_is_ok_all_clear_is_ok)
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0;
     zassert_true(is_ok(f100, f101, f113));
@@ -345,6 +346,7 @@ ZTEST(bmu_lipy041_decode, test_is_ok_full_charge_bit_alone_still_ok)
     msg_0x113 f113{};
     f100.fail_status1 = 0b01000000;  // bit6 only: informational, excluded from mask
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0;
     zassert_true(is_ok(f100, f101, f113));
@@ -361,6 +363,7 @@ ZTEST(bmu_lipy041_decode, test_is_ok_fail_status1_abnormal_bit_detected)
     msg_0x113 f113{};
     f100.fail_status1 = 0b00000001;  // bit0: over current
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0;
     zassert_false(is_ok(f100, f101, f113));
@@ -373,6 +376,23 @@ ZTEST(bmu_lipy041_decode, test_is_ok_fail_status2_abnormal_bit_detected)
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0b00000001;
+    f113.fail_status3 = 0;
+    f113.leader_alarm1 = 0;
+    f113.leader_alarm2 = 0;
+    zassert_false(is_ok(f100, f101, f113));
+}
+
+// fail_status3 (self-test diagnostics, LIPY041-specific, no LIA1020 precedent) must gate
+// is_ok() on its own, same as the other three fields -- a self-test hardware fault must
+// not be silently ignored just because fail_status1/2 and the leader alarms are clean.
+ZTEST(bmu_lipy041_decode, test_is_ok_fail_status3_abnormal_bit_detected)
+{
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    f100.fail_status1 = 0;
+    f101.fail_status2 = 0;
+    f113.fail_status3 = 0b00000001;  // bit0: self-test clock fail
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0;
     zassert_false(is_ok(f100, f101, f113));
@@ -385,6 +405,7 @@ ZTEST(bmu_lipy041_decode, test_is_ok_leader_alarm1_abnormal_bit_detected)
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0b00000001;
     f113.leader_alarm2 = 0;
     zassert_false(is_ok(f100, f101, f113));
@@ -397,6 +418,7 @@ ZTEST(bmu_lipy041_decode, test_is_ok_leader_alarm1_reserved_bit_ignored)
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0b00001000;  // bit3: reserved, masked out
     f113.leader_alarm2 = 0;
     zassert_true(is_ok(f100, f101, f113));
@@ -409,6 +431,7 @@ ZTEST(bmu_lipy041_decode, test_is_ok_leader_alarm2_abnormal_bit_detected)
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0b00000001;
     zassert_false(is_ok(f100, f101, f113));
@@ -421,6 +444,7 @@ ZTEST(bmu_lipy041_decode, test_is_ok_leader_alarm2_reserved_bit_ignored)
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0b00010000;  // bit4: reserved, masked out
     zassert_true(is_ok(f100, f101, f113));
