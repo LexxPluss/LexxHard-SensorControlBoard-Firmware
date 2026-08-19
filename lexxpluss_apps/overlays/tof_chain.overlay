@@ -30,6 +30,15 @@
 		 * release. */
 		cycle-period-ms = <50>;
 		health-period-ms = <200>;
+		/* Also provisional. The join timeout has to cover a cycle (50 ms)
+		 * plus one blocking sensor read, and 500 ms is a generous bound
+		 * chosen to make a REFUSAL the outcome rather than a long wait;
+		 * the stack is a guess until a watermark exists, and the priority
+		 * is preemptible and below the shell so a stuck cycle cannot
+		 * starve the console. */
+		stop-join-timeout-ms = <500>;
+		acq-stack-size = <2048>;
+		acq-thread-priority = <7>;
 	};
 };
 

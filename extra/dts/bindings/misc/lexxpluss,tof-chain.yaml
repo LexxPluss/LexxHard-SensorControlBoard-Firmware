@@ -51,3 +51,31 @@ properties:
     description: |
       Health frame period, on its own timer and independent of the acquisition
       path. Also unresolved in the contract; required for the same reason.
+
+  stop-join-timeout-ms:
+    type: int
+    required: true
+    description: |
+      How long a caller waits for the acquisition thread to finish its cycle
+      and exit before giving up. On a timeout commissioning refuses to run and
+      nothing is killed, so this value decides how patient that refusal is --
+      a deployment decision, not a scheduler's, which is why it is required
+      here and has no firmware default. It must exceed one cycle period plus
+      the worst-case blocking time of a single sensor read.
+
+  acq-stack-size:
+    type: int
+    required: true
+    description: |
+      Stack for the acquisition thread. It calls into the vendor ULD, whose
+      depth is not ours to predict, so the value is provisional until a
+      watermark has been measured on hardware -- and required, so that the
+      provisional number is one somebody wrote down.
+
+  acq-thread-priority:
+    type: int
+    required: true
+    description: |
+      Zephyr priority for the acquisition thread. Every value is legal,
+      including 0, so nothing can range-check this; being required is the only
+      guarantee that it was chosen rather than inherited.

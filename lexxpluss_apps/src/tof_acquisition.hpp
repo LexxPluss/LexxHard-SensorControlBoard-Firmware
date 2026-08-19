@@ -17,14 +17,13 @@
 //     does not suit an 8x8 grid. When the real L7 path lands, the ops table and the sinks
 //     both change shape; the grid stub refusing a cliff-shaped read is the visible marker
 //     of that debt, not a design.
-//   - The packer, the publisher and the CAN glue all exist and are wired: a cycle produces
-//     measurement frames and a cycle health frame, and a timer produces the heartbeat. What
-//     is missing is a PRODUCTION caller -- only the B6 budget probe constructs any of it, so
-//     no shipping image runs a cycle or a heartbeat.
-//   - No thread is created here. Something has to call bring_up() and run_cycle() on the
-//     single acquisition thread; the cycle period is carried but not yet used to pace it.
+//   - The packer, the publisher and the CAN glue all exist and are wired, and
+//     tof_cliff_runtime::bootstrap() is a production caller: a shipping image runs the heartbeat
+//     from power-on. Cycles need a proven mapping first, so today they happen only behind
+//     commissioning.
 //   - PROVEN is unreachable by construction, see effective_mapping_state().
-//   - Stack watermark and boot time are unmeasured; both need a run on the board.
+//   - Stack watermark and boot time are unmeasured; both need a run on the board, and the
+//     acquisition thread's stack size is a devicetree value chosen without one.
 //
 // The six-sensor acquisition skeleton: one thread, one cycle at a time, sequential
 // over the configured sources. What it produces is a set of NEUTRAL FACTS about the
@@ -42,12 +41,16 @@
 //
 // LOCKING
 //
-// Every device operation happens on this one thread while it holds
-// tof_chain_controller::chain_lock(), because the chain control lines and the bus are a
-// single shared resource. Manual commissioning takes the same lock for its whole
-// session, and additionally must not run while acquisition is live: enumeration drops
-// enable lines, which re-addresses parts underneath a reader. tof_acq_stop() quiesces
-// the thread and tof_acq_is_idle() is what the commissioning path checks.
+// Every device operation happens on ONE thread -- the acquisition thread, created by start() --
+// while it holds tof_chain_controller::chain_lock(), because the chain control lines and the bus
+// are a single shared resource. The lock is not the whole rule: serialised is not single-owner, and
+// the ULD's port keeps one file-scope transport record, so bring_up(), run_cycle() and stop() refuse
+// callers other than that thread while it exists. See the ownership rule above bring_up().
+//
+// Manual commissioning takes the same lock for its whole session, and additionally must not run
+// while acquisition is live: enumeration drops enable lines, which re-addresses parts underneath a
+// reader. try_stop() is what commissioning calls -- it asks the thread to stop and joins with an
+// injected bound, and refuses rather than waiting or killing.
 //
 // PUBLICATION GATE
 //
@@ -210,9 +213,29 @@ struct config {
 // period, a missing hook, more sources than kMaxSources, or a source without ops.
 int init(const config &cfg);
 
+/* THE OWNERSHIP RULE for everything below that touches a sensor.
+ *
+ * bring_up(), run_cycle() and stop() are the ULD lifecycle. While an acquisition thread exists,
+ * ALL THREE belong to that thread and nobody else may call them: they return -EPERM (or, where the
+ * signature has no room to say so, return without doing anything and count the attempt in
+ * foreign_lifecycle_calls()).
+ *
+ * This is not tidiness. The ULD's port keeps its transport record in one file-scope variable -- the
+ * BSP IO callbacks carry no per-device context -- so a second caller anywhere inside these
+ * functions can clear the record belonging to the first, and the failure mode is a transport error
+ * reported as a good sample. The chain lock serialises them, but serialised is not the same as
+ * single-owner: a second thread holding the lock in turn still interleaves bring-up with cycles.
+ *
+ * With no thread running, direct calls are allowed and are how the budget probe, the host suites
+ * and a single commissioning cycle drive the chain. The rule is "while a thread owns the ULD,
+ * nobody else touches it", not "these functions are private".
+ */
+
 // Bring-up: open, configure and start every source, in table order, under the lock.
 // Failures are recorded per source and do not stop the others - one dead cliff sensor
 // must not prevent the other three from ranging.
+//
+// Returns -EPERM if called from anywhere but the acquisition thread while one is running.
 int bring_up();
 
 // Starts a new mapping epoch's cycle numbering: resets cycle_seq to 0.
@@ -228,7 +251,71 @@ int begin_epoch();
 
 // One cycle: read every started source once, sequentially, under the lock. Never waits
 // on a source; a source with nothing ready simply has sample_produced false.
+//
+// Does nothing when called from a thread that is not the acquisition thread while one is running.
 void run_cycle();
+
+/* The acquisition thread, and everything it needs, injected.
+ *
+ * No defaults anywhere in here. The cadence is config::periods.cycle_period_ms, which is already
+ * required; these three are the same kind of decision and get the same treatment. A stack size or a
+ * join timeout invented in this file would become the specification by being the only number
+ * anybody could find -- and a join timeout in particular decides how long commissioning waits
+ * before refusing, which is a deployment decision, not a scheduler's.
+ *
+ * The stack is caller-owned because it has to be: a Zephyr thread stack is a compile-time sized
+ * object, so it is defined where its size is known -- tof_cliff_runtime, from a required devicetree
+ * property -- and passed in here.
+ */
+struct thread_config {
+    k_thread_stack_t *stack{nullptr};
+    size_t stack_size{0};
+    // Not range-checkable: every value is a legal Zephyr priority, including 0. The devicetree
+    // property being REQUIRED is the whole guarantee that somebody chose it.
+    int priority{0};
+    // How long a caller's bounded join waits before giving up. Zero is refused.
+    uint32_t join_timeout_ms{0};
+};
+
+/* Starts the acquisition thread: bring-up, then one cycle per cadence period until asked to stop.
+ *
+ * Returns -EINVAL before init() or for a config with no stack or a zero join timeout, -EALREADY if
+ * a thread is already running.
+ *
+ * Deliberately does NOT touch the cycle counter. Starting a thread is not the start of a mapping
+ * epoch: the contract numbers cycles from 0 per epoch, begin_epoch() is what resets them as one step
+ * of the authority's commit, and a reset here would renumber a sequence a consumer is half-way
+ * through -- or, worse, restart at 0 under an epoch whose 0 has already been used.
+ */
+int start(const thread_config &tcfg);
+
+/* Asks the thread to stop. Returns immediately, from any thread, and is idempotent.
+ *
+ * The thread finishes the cycle it is in, calls stop() itself -- at a cycle boundary, from the
+ * thread that owns the ULD -- and exits. A caller that needs to know it has finished calls join().
+ */
+void request_stop();
+
+/* Waits for the thread to exit, for at most timeout_ms. Returns 0 when it has exited (or was never
+ * running), -EBUSY on timeout.
+ *
+ * A timeout is NOT escalated to anything stronger. There is no way to abort a thread that may be
+ * inside a vendor driver holding the chain lock and a half-finished I2C transaction; a caller that
+ * cannot get a clean stop must refuse to proceed, which is what commissioning does.
+ */
+int join(uint32_t timeout_ms);
+
+bool thread_running();
+
+// How many times a foreign thread tried to drive the ULD while the acquisition thread owned it.
+// Diagnostics for the ownership rule: it must stay zero.
+uint32_t foreign_lifecycle_calls();
+
+#ifdef CONFIG_ZTEST
+/* The owning thread's id, so a suite can assert that every recorded ULD call came from it. Test-only
+ * because production has no use for it: the rule is enforced by the guard, not by inspection. */
+k_tid_t thread_id_for_test();
+#endif
 
 // Quiesces acquisition and RELEASES THE CHAIN. Deliberately leaves the health timer running:
 // the contract requires health to keep flowing while no acquisition runs, which is exactly when
@@ -252,10 +339,13 @@ void stop();
 // user would hang in the quiesce and never reach the non-blocking acquire it was written to
 // rely on. The refusal has to start here or it does not exist.
 //
-// Note for the acquisition thread (Step 4B): stopping is not the same as the thread having
-// stopped. When there is a thread, this is where request_stop() and a BOUNDED join belong --
-// commissioning must not wait on it indefinitely, and the thread lifecycle is acquisition's
-// business, not the shell's.
+// WITH A THREAD RUNNING it does not touch a device at all: it requests a stop and joins with the
+// injected timeout, and the thread is what calls stop(). That is the ownership rule -- the shell
+// thread stopping devices out from under a thread that is mid-cycle is exactly the interleaving the
+// ULD's single transport record cannot survive. A join timeout returns -EBUSY and nothing is killed.
+//
+// WITH NO THREAD, it quiesces directly under the chain lock, which is how the budget probe and the
+// host suites use it: with no owner, there is nobody to interleave with.
 int try_stop();
 
 // The real shutdown: stop(), then the heartbeat, then a SYNCHRONOUS cancel of any health work

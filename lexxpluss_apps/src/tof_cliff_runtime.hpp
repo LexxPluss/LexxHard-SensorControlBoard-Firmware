@@ -70,6 +70,11 @@ enum class stage : uint8_t {
 struct config {
     uint32_t cycle_period_ms{0};
     uint32_t health_period_ms{0};
+    /* The acquisition thread's, and injected for the same reason. The join timeout in particular
+     * decides how long commissioning waits before refusing to run, which belongs to whoever owns the
+     * deployment. Zero is refused for the first two here and by tof_acq::start() for the timeout. */
+    uint32_t stop_join_timeout_ms{0};
+    int thread_priority{0};
 };
 
 /* The value production uses. DEFINED only where the chain devicetree node exists -- which is every
@@ -127,6 +132,10 @@ int start_acquisition();
 #ifdef CONFIG_ZTEST
 // Lets a suite exercise the single-shot rule more than once per image.
 void reset_for_test();
+/* The acquisition thread's stack, for suites that have no devicetree to size one from. Injected
+ * rather than defaulted: a fallback stack compiled in for tests would be a size nobody chose, and it
+ * would be in the production image too. */
+void set_thread_stack_for_test(k_thread_stack_t *stack, size_t size);
 /* Read-only view of the descriptor table. The contents ARE the property under test -- addresses
  * taken from the spec, role_id absent until a proof installs one -- and there is no production
  * reason to expose them, so the door is test-only rather than a public accessor nobody needs. */

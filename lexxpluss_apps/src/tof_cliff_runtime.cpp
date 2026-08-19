@@ -53,7 +53,26 @@ constexpr int kCliffSensors{4};
 VL53L4CX_Object_t objs_[kCliffSensors];
 struct tof_cliff_scratch scratch_;
 
+/* The acquisition thread's stack, sized from the devicetree.
+ *
+ * It lives here rather than in tof_acquisition because a Zephyr thread stack is a compile-time sized
+ * object and this is the layer that reads the devicetree; keeping the size out of the acquisition
+ * module is also what lets that module stay host-testable with no devicetree at all. Its cost is
+ * static RAM and shows up in the budget accordingly. */
+#if DT_NODE_EXISTS(DT_PATH(tof_chain))
+K_THREAD_STACK_DEFINE(acq_stack_, DT_PROP(DT_PATH(tof_chain), acq_stack_size));
+#endif
+
+/* Where the stack came from, resolved once. On a board it is the devicetree's; in a host suite it is
+ * whatever the suite handed over. There is deliberately no third case: a compiled-in fallback would
+ * be a size nobody chose, and it would ship. */
+k_thread_stack_t *stack_{nullptr};
+size_t stack_size_{0};
+
 stage stage_{stage::not_started};
+/* Kept from the bootstrap, because start_acquisition() happens later -- inside a commissioning run --
+ * and re-deriving these from the devicetree there would be a second source for the same numbers. */
+config cfg_{};
 /* The epoch the descriptors were keyed under, and whether they were keyed at all.
  *
  * NOT a plain "applied" flag. A flag can only be correct if somebody remembers to clear it, and the
@@ -193,12 +212,16 @@ int init_acquisition(const config &cfg)
 #if DT_NODE_EXISTS(DT_PATH(tof_chain))
 config config_from_devicetree()
 {
+    /* Five required properties, all of them provisional and all of them somebody's decision rather
+     * than this file's. */
     /* Required properties, so a build that has not stated them does not compile. That is the whole
      * mechanism: the numbers are provisional either way, but they are provisional IN THE OVERLAY,
      * where they are visible in a diff and belong to whoever owns the deployment -- rather than
      * provisional in a scheduler, where the first plausible value silently becomes the spec. */
     return config{DT_PROP(DT_PATH(tof_chain), cycle_period_ms),
-                  DT_PROP(DT_PATH(tof_chain), health_period_ms)};
+                  DT_PROP(DT_PATH(tof_chain), health_period_ms),
+                  DT_PROP(DT_PATH(tof_chain), stop_join_timeout_ms),
+                  DT_PROP(DT_PATH(tof_chain), acq_thread_priority)};
 }
 #endif
 
@@ -211,8 +234,13 @@ int bootstrap(const config &cfg)
     if (stage_ != stage::not_started)
         return -EALREADY;
 
-    if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0)
+    if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0 || cfg.stop_join_timeout_ms == 0)
         return -EINVAL;
+
+#if DT_NODE_EXISTS(DT_PATH(tof_chain))
+    stack_ = acq_stack_;
+    stack_size_ = K_THREAD_STACK_SIZEOF(acq_stack_);
+#endif
 
     /* The chain glue first, as a PRECONDITION rather than a convention.
      *
@@ -253,6 +281,7 @@ int bootstrap(const config &cfg)
         return rc;
     }
 
+    cfg_ = cfg;
     stage_ = stage::ready;
     /* The heartbeat is already beating at this point, and it reports NOT_READY. That is the
      * intended state from power-on: a consumer must be able to tell "alive, mapping unproven" from
@@ -314,13 +343,28 @@ int start_acquisition()
      * descriptors that were never keyed. */
     if (!ready() || !mapping_applied())
         return -EPERM;
-    /* Sensors only. The acquisition thread lands in the next commit and belongs behind this same
-     * gate: a thread that starts before the descriptors are keyed would publish cycles whose facts
-     * carry kRoleUnassigned. */
-    return acq::bring_up();
+    /* The thread, which from here on is the only thing allowed to touch a sensor. Behind this gate
+     * because a thread that started before the descriptors were keyed would publish cycles whose
+     * facts carry kRoleUnassigned -- and it would be publishing them continuously, not once.
+     *
+     * Nothing about the cycle counter is touched here: the first cycle of a new epoch must carry
+     * cycle_seq 0, and begin_epoch() already did that inside the commit. */
+    acq::thread_config tcfg{};
+
+    tcfg.stack = stack_;
+    tcfg.stack_size = stack_size_;
+    tcfg.priority = cfg_.thread_priority;
+    tcfg.join_timeout_ms = cfg_.stop_join_timeout_ms;
+    return acq::start(tcfg);
 }
 
 #ifdef CONFIG_ZTEST
+void set_thread_stack_for_test(k_thread_stack_t *stack, size_t size)
+{
+    stack_ = stack;
+    stack_size_ = size;
+}
+
 void reset_for_test()
 {
     acq::teardown();

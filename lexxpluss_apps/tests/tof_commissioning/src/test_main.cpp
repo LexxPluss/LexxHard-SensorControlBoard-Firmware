@@ -219,6 +219,7 @@ bool another_thread_can_take_the_chain()
  * cases drive the real acquisition layer with fake devices and a holder thread. */
 
 struct fake_source {
+    uint32_t read_delay_ms{0};   // a sensor that blocks: what a bounded join has to give up on
     int stop_calls{0};
     int start_calls{0};
     int pulses_at_stop{-1};
@@ -256,10 +257,14 @@ int src_start(void *dev, acq::op_status *st)
     ++static_cast<fake_source *>(dev)->start_calls;
     return 0;
 }
-int src_read(void *, void *, struct tof_cliff_sample *out, acq::op_status *st)
+int src_read(void *dev, void *, struct tof_cliff_sample *out, acq::op_status *st)
 {
+    auto &d{*static_cast<fake_source *>(dev)};
+
     *st = acq::op_status{};
     *out = tof_cliff_sample{};
+    if (d.read_delay_ms != 0)
+        k_msleep(d.read_delay_ms);
     return 0;
 }
 int src_stop(void *dev, acq::op_status *st)
@@ -626,4 +631,64 @@ ZTEST(tof_commissioning, test_the_real_quiesce_stops_acquisition_before_the_firs
     zassert_true(acq_health_beats >= beats_before + 3,
                  "the heartbeat stopped during commissioning: %d -> %d", beats_before,
                  acq_health_beats);
+}
+
+/* The stack for the cases that need a real acquisition THREAD rather than a hand-driven cycle. Owned
+ * by the suite, because the module sizes its own from a devicetree that does not exist here. */
+K_THREAD_STACK_DEFINE(cm_acq_stack, 2048);
+
+static acq::thread_config acq_thread(uint32_t join_timeout_ms)
+{
+    acq::thread_config t{};
+
+    t.stack = cm_acq_stack;
+    t.stack_size = K_THREAD_STACK_SIZEOF(cm_acq_stack);
+    t.priority = K_PRIO_PREEMPT(5);
+    t.join_timeout_ms = join_timeout_ms;
+    return t;
+}
+
+ZTEST(tof_commissioning, test_a_thread_that_will_not_join_keeps_the_gate_shut)
+{
+    /* The acceptance boundary for the timeout path, at the gate rather than in the primitive: a
+     * commissioning run that cannot get a clean stop must not start, must not revoke the mapping it
+     * has, and must not open an attempt. Nothing is killed -- a thread inside a vendor driver holds
+     * the chain lock and a half-finished transfer, so aborting it is strictly worse than refusing.
+     *
+     * Staged with a sensor read that blocks for far longer than the injected join timeout, which is
+     * the real shape of this failure. */
+    arrange(provable_spec());
+    use_the_real_quiesce();
+    arrange_running_acquisition();
+    acq::stop();   // the hand-driven bring-up in the fixture; the thread does its own
+
+    sources[0].read_delay_ms = 400;
+    /* Baseline taken AFTER the fixture's own stop, which has already counted one: the property is
+     * that the REFUSAL stops nothing, not that nothing has ever been stopped. */
+    const int stops_before{sources[0].stop_calls};
+
+    zassert_equal(acq::start(acq_thread(20)), 0);
+    k_msleep(30);   // inside the blocking read by now
+
+    const au::snapshot before{au::current()};
+    const int64_t started{k_uptime_get()};
+    const cm::outcome r{cm::prove(21)};
+    const int64_t elapsed{k_uptime_get() - started};
+
+    zassert_equal(r.failed_at, cm::stage::quiesce_failed, "the run started without a clean stop");
+    zassert_equal(r.rc, -EBUSY);
+    zassert_true(elapsed < 300, "the refusal waited for the thread instead of its timeout (%lld ms)",
+                 elapsed);
+    zassert_equal(au::attempt_nonce(), 0u, "a refused quiesce opened an attempt");
+    zassert_equal(au::current().state, before.state, "a refused quiesce revoked the mapping");
+    zassert_equal(chain.pulses_seen, 0, "the chain was walked without a clean stop");
+    zassert_true(acq::thread_running(), "the timeout killed the thread");
+    zassert_equal(sources[0].stop_calls, stops_before,
+                  "something stopped the devices from outside the thread");
+
+    /* Unblocked, it exits on the request that was already made. */
+    sources[0].read_delay_ms = 0;
+    zassert_equal(acq::join(500), 0);
+    zassert_equal(sources[0].stop_calls, stops_before + 1,
+                  "the thread did not stop its own devices on the way out");
 }

@@ -57,6 +57,8 @@ struct fake_dev {
     bool rearm_failed{false};
     uint32_t open_delay_ms{0};
 
+    uint32_t read_delay_ms{0};
+
     int open_calls{0};
     int start_calls{0};
     int read_calls{0};
@@ -64,6 +66,34 @@ struct fake_dev {
     bool lock_held_in_open{false};
     bool lock_held_in_read{false};
 };
+
+/* Every device op records who called it. The ownership rule -- while a thread owns the ULD, only that
+ * thread may drive it -- is not observable any other way: the chain lock serialises callers but says
+ * nothing about how many there were, and the ULD's port keeps ONE transport record, so two callers
+ * inside it produce a transport error reported as a good sample. */
+k_tid_t uld_callers[16];
+int uld_call_count;
+
+/* Given from inside a cycle, so a test can tell where in the cadence the thread is. Without it,
+ * "between cycles" can only be approximated by sleeping, and a test that requests a stop at an
+ * unknown point cannot distinguish "no cycle began after the request" from "the cycle in flight
+ * finished" -- which is exactly the distinction the acceptance boundary is about. */
+K_SEM_DEFINE(cycle_read_seen, 0, 1);
+
+void record_caller()
+{
+    if (uld_call_count < static_cast<int>(sizeof uld_callers / sizeof uld_callers[0]))
+        uld_callers[uld_call_count++] = k_current_get();
+}
+
+bool every_uld_call_came_from(k_tid_t who)
+{
+    for (int i{0}; i < uld_call_count; ++i) {
+        if (uld_callers[i] != who)
+            return false;
+    }
+    return uld_call_count > 0;
+}
 
 fake_dev devs[acq::kMaxSources];
 
@@ -77,6 +107,7 @@ int fake_open(void *dev, uint8_t, acq::op_status *st)
     auto &d{*static_cast<fake_dev *>(dev)};
 
     ++d.open_calls;
+    record_caller();
     d.lock_held_in_open = lock_is_held();
     memset(st, 0, sizeof(*st));
     if (d.open_delay_ms != 0) {
@@ -109,7 +140,11 @@ int fake_read(void *dev, void *, struct tof_cliff_sample *out, acq::op_status *s
     auto &d{*static_cast<fake_dev *>(dev)};
 
     ++d.read_calls;
+    record_caller();
+    k_sem_give(&cycle_read_seen);
     d.lock_held_in_read = lock_is_held();
+    if (d.read_delay_ms != 0)
+        k_msleep(d.read_delay_ms);   // a sensor that blocks: what a join timeout has to cover
     memset(st, 0, sizeof(*st));
     memset(out, 0, sizeof(*out));
     if (d.fresh) {
@@ -129,6 +164,7 @@ int fake_read(void *dev, void *, struct tof_cliff_sample *out, acq::op_status *s
 int fake_stop(void *dev, acq::op_status *st)
 {
     memset(st, 0, sizeof(*st));
+    record_caller();
     ++static_cast<fake_dev *>(dev)->stop_calls;
     return 0;
 }
@@ -145,6 +181,11 @@ struct {
     int health_beats{0};
     int cycle_begins{0};
     uint32_t last_begin_cycle{0};
+    /* The FIRST cycle number seen since this was armed. "The first cycle of a new epoch carries 0" is
+     * about the first one, and the last one of a multi-cycle run is a different number -- which is
+     * how the first version of that assertion managed to fail against correct behaviour. */
+    uint32_t first_begin_cycle{0};
+    bool saw_begin{false};
     uint32_t last_health_snapshot{0};
     acq::mapping_state last_health_state{acq::mapping_state::not_ready};
 } rec;
@@ -175,6 +216,10 @@ void on_cycle_begin(uint32_t cycle_seq)
 {
     ++rec.cycle_begins;
     rec.last_begin_cycle = cycle_seq;
+    if (!rec.saw_begin) {
+        rec.saw_begin = true;
+        rec.first_begin_cycle = cycle_seq;
+    }
 }
 
 void on_cliff_health(uint32_t snapshot, acq::mapping_state state)
@@ -232,6 +277,8 @@ void before(void *)
 
     acq::stop();
     memset(devs, 0, sizeof(devs));
+    k_sem_reset(&cycle_read_seen);
+    uld_call_count = 0;
     rec = {};
     sample_cycle_count = 0;
     provider_state = acq::mapping_state::not_ready;
@@ -1190,4 +1237,203 @@ ZTEST(tof_acquisition, test_a_cycle_that_lost_the_race_to_a_quiesce_does_not_run
     zassert_equal(acq::bring_up(), 0);
     acq::run_cycle();
     zassert_equal(rec.last.cycle_seq, 0u, "the cancelled cycle consumed a cycle_seq");
+}
+
+
+/* ----------------------------------------------- the acquisition thread ------------- */
+
+/* The stack is the SUITE's, because there is no devicetree here to size one from and a fallback
+ * compiled into the module would be a size nobody chose -- in the product image as well as this one. */
+K_THREAD_STACK_DEFINE(acq_thread_stack, 2048);
+
+acq::thread_config thread_cfg(uint32_t join_timeout_ms)
+{
+    acq::thread_config t{};
+
+    t.stack = acq_thread_stack;
+    t.stack_size = K_THREAD_STACK_SIZEOF(acq_thread_stack);
+    t.priority = K_PRIO_PREEMPT(5);
+    t.join_timeout_ms = join_timeout_ms;
+    return t;
+}
+
+ZTEST(tof_acquisition, test_the_thread_brings_up_and_then_cycles_at_the_cadence)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    zassert_true(acq::thread_running());
+
+    k_msleep(kCyclePeriodMs * 4);
+    const int cycles{rec.cycles};
+
+    zassert_true(cycles >= 2, "cycles in four periods: %d", cycles);
+    zassert_equal(devs[0].start_calls, 1, "bring-up did not happen exactly once");
+    zassert_equal(acq::try_stop(), 0);
+    zassert_false(acq::thread_running());
+}
+
+ZTEST(tof_acquisition, test_a_stop_request_ends_the_cycles_and_the_thread_stops_the_devices)
+{
+    /* The first acceptance boundary: after a stop request nothing enters a new cycle, and the STOP
+     * came from the thread rather than from whoever asked. */
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+
+    /* Wait until the thread is provably BETWEEN cycles: a read has happened, and the count has then
+     * stopped moving for a fraction of the cadence. Requesting the stop from an unknown point in the
+     * cadence is what let an earlier version of this case pass against an implementation that ran one
+     * more cycle after the request -- by the time join() returned, cycles had stopped either way. */
+    zassert_equal(k_sem_take(&cycle_read_seen, K_MSEC(kCyclePeriodMs * 4)), 0,
+                  "the thread never read a sensor");
+    k_msleep(5);
+    const int begins_before_request{rec.cycle_begins};
+    k_msleep(5);
+    zassert_equal(rec.cycle_begins, begins_before_request,
+                  "the thread was still mid-cadence; the request point is not known");
+
+    acq::request_stop();
+    zassert_equal(acq::join(500), 0);
+
+    const int cycles_at_stop{rec.cycles};
+    const int begins_at_stop{rec.cycle_begins};
+
+    zassert_equal(begins_at_stop, begins_before_request,
+                  "a cycle BEGAN after the stop request (%d -> %d)", begins_before_request,
+                  begins_at_stop);
+
+    zassert_equal(devs[0].stop_calls, 1, "the thread did not stop its devices on the way out");
+    zassert_equal(devs[1].stop_calls, 1);
+    zassert_false(acq::thread_running());
+
+    k_msleep(kCyclePeriodMs * 4);
+    zassert_equal(rec.cycles, cycles_at_stop, "a cycle ran after the stop request");
+    zassert_equal(rec.cycle_begins, begins_at_stop, "a cycle BEGAN after the stop request");
+}
+
+ZTEST(tof_acquisition, test_every_uld_call_comes_from_the_acquisition_thread)
+{
+    /* The second acceptance boundary. Recorded per call rather than argued from the lock: serialised
+     * is not single-owner, and the ULD's one transport record is what cannot survive two callers. */
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 3);
+
+    const k_tid_t owner{acq::thread_id_for_test()};
+
+    zassert_not_null(owner);
+    zassert_true(every_uld_call_came_from(owner),
+                 "%d ULD calls recorded, not all from the acquisition thread", uld_call_count);
+
+    /* And a foreign attempt is refused rather than merely discouraged. This test thread is not the
+     * owner, so all three lifecycle calls must do nothing and be counted. */
+    const int cycles_before{rec.cycles};
+    const int stops_before{devs[0].stop_calls};
+
+    zassert_equal(acq::bring_up(), -EPERM, "a foreign bring_up() was allowed");
+    acq::run_cycle();
+    acq::stop();
+    zassert_true(acq::foreign_lifecycle_calls() >= 2, "foreign calls went uncounted: %u",
+                 acq::foreign_lifecycle_calls());
+    zassert_equal(devs[0].stop_calls, stops_before, "a foreign stop() stopped a device");
+    zassert_true(acq::thread_running(), "a foreign stop() ended the thread");
+
+    zassert_equal(acq::try_stop(), 0);
+    zassert_true(rec.cycles >= cycles_before);
+}
+
+ZTEST(tof_acquisition, test_a_join_that_times_out_changes_nothing_and_kills_nothing)
+{
+    /* The third acceptance boundary: the timeout path must leave the subsystem exactly as it was, so
+     * that a caller which cannot get a clean stop can only refuse. Nothing is aborted -- a thread
+     * inside a vendor driver holds the chain lock and a half-finished transfer, and killing it would
+     * leave both. */
+    zassert_equal(acq::init(make_config(2)), 0);
+    devs[0].read_delay_ms = kCyclePeriodMs * 8;
+    zassert_equal(acq::start(thread_cfg(kCyclePeriodMs)), 0);
+    k_msleep(kCyclePeriodMs);   // let it get inside the blocking read
+
+    const int64_t started{k_uptime_get()};
+    const int rc{acq::try_stop()};
+    const int64_t elapsed{k_uptime_get() - started};
+
+    zassert_equal(rc, -EBUSY, "a thread stuck in a read reported a clean stop");
+    zassert_true(elapsed < kCyclePeriodMs * 6, "the bounded join was not bounded (%lld ms)", elapsed);
+    zassert_true(acq::thread_running(), "the timeout killed the thread");
+    zassert_equal(devs[0].stop_calls, 0, "the timeout path stopped devices anyway");
+
+    /* It does finish eventually -- the stop request is still set, so this is a clean exit, not a
+     * rescue. */
+    devs[0].read_delay_ms = 0;
+    zassert_equal(acq::join(kCyclePeriodMs * 20), 0);
+    zassert_equal(devs[0].stop_calls, 1);
+}
+
+ZTEST(tof_acquisition, test_starting_the_thread_does_not_renumber_the_cycles)
+{
+    /* cycle_seq belongs to the mapping epoch, not to the thread. begin_epoch() resets it as one step
+     * of the authority's commit; a reset on start would either renumber a sequence a consumer is
+     * part-way through or reissue a triple that has already been used. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::begin_epoch(), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 3);
+    zassert_equal(acq::try_stop(), 0);
+
+    const uint32_t last{rec.last.cycle_seq};
+
+    zassert_true(rec.cycles >= 2);
+    zassert_equal(rec.last_begin_cycle, last);
+
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+    zassert_equal(acq::try_stop(), 0);
+    zassert_true(rec.last.cycle_seq > last, "restarting the thread renumbered the cycles: %u -> %u",
+                 last, rec.last.cycle_seq);
+
+    /* And a new epoch does start at 0, which is the other half of the same rule. Armed first, and
+     * checked against the FIRST cycle of the run: the last one of several is a later number. */
+    rec.saw_begin = false;
+    zassert_equal(acq::begin_epoch(), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+    zassert_equal(acq::try_stop(), 0);
+    zassert_true(rec.saw_begin);
+    zassert_equal(rec.first_begin_cycle, 0u, "the first cycle of a new epoch was not 0");
+}
+
+ZTEST(tof_acquisition, test_the_thread_configuration_has_no_defaults_either)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+
+    acq::thread_config no_stack{thread_cfg(500)};
+    no_stack.stack = nullptr;
+    zassert_equal(acq::start(no_stack), -EINVAL);
+
+    acq::thread_config no_size{thread_cfg(500)};
+    no_size.stack_size = 0;
+    zassert_equal(acq::start(no_size), -EINVAL);
+
+    /* The join timeout has no default because it decides how long commissioning waits before it
+     * refuses -- a deployment decision, and one nobody would find if it were invented here. */
+    zassert_equal(acq::start(thread_cfg(0)), -EINVAL);
+
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), -EALREADY, "a second thread was created");
+    zassert_equal(acq::try_stop(), 0);
+}
+
+ZTEST(tof_acquisition, test_a_thread_that_exited_but_was_not_joined_cannot_be_restarted)
+{
+    /* k_thread_create() over a kernel object whose previous thread has not been joined reuses a live
+     * structure. -EALREADY is also the honest answer to the caller: it has not finished stopping. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    acq::request_stop();
+    k_msleep(kCyclePeriodMs * 3);   // it has exited by now, but nobody has joined it
+
+    zassert_false(acq::thread_running());
+    zassert_equal(acq::start(thread_cfg(500)), -EALREADY);
+    zassert_equal(acq::join(500), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0, "a joined thread must be restartable");
+    zassert_equal(acq::try_stop(), 0);
 }

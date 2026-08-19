@@ -46,6 +46,40 @@ bool active_{false};
  * treatment as the two above. */
 bool running_{false};
 bool in_cycle_{false};
+
+/* The acquisition thread, and the fact of its existence.
+ *
+ * thread_active_ and owner_ are written only by start() and by the thread's own exit path, both
+ * before/after the thread can be contended, and read by the ownership guard. owner_ is what makes
+ * the guard possible at all: "is this call coming from the thread that owns the ULD" cannot be
+ * answered by a flag. */
+k_thread thread_;
+k_tid_t owner_{nullptr};
+/* Two flags, because they answer different questions. thread_active_ is "is a thread driving the
+ * ULD right now", which is what the ownership guard and try_stop() need. thread_created_ is "does
+ * the kernel thread object still belong to a thread nobody has joined", which is what makes
+ * restarting safe: k_thread_create() on an object whose previous thread has not been joined reuses a
+ * live kernel structure. The thread itself clears the first; only join() clears the second. */
+bool thread_active_{false};
+bool thread_created_{false};
+thread_config tcfg_{};
+atomic_t stop_requested_{ATOMIC_INIT(0)};
+/* Doubles as the cadence sleep. A stop request gives it, so the thread leaves its inter-cycle wait
+ * immediately instead of finishing a full period first -- the difference between commissioning
+ * waiting one cadence and waiting for a timeout it then reports as a refusal. */
+K_SEM_DEFINE(stop_sem_, 0, 1);
+atomic_t foreign_calls_{ATOMIC_INIT(0)};
+
+/* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
+ * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
+ * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed. */
+bool may_touch_devices()
+{
+    if (!thread_active_ || owner_ == k_current_get())
+        return true;
+    atomic_inc(&foreign_calls_);
+    return false;
+}
 cycle_facts facts_;
 
 /* The cycle number the NEXT cycle will carry.
@@ -307,32 +341,28 @@ mapping_state clamp_mapping_state(mapping_state reported)
         //     by rule: the masks the wire contract keys by source_id cannot be filled from a
         //     position without that table, and electrical enumeration cannot prove which of
         //     four identical carriers is mounted where.
-        //   - No acquisition thread. tof_cliff_runtime::bootstrap() now wires the subsystem
-        //     up from main(), so a shipping image DOES call acq::init() and the heartbeat
-        //     does run from power-on -- that half of this entry is closed. What is not: only
-        //     the commissioning command drives run_cycle(), so no image produces cycles on
-        //     its own yet.
         //   - No on-machine acceptance. Nothing above has been observed on hardware end to
-        //     end: no 0x216 capture, no boot timing, no stack watermark.
+        //     end: no 0x216 capture, no boot timing, and no stack watermark for the acquisition
+        //     thread -- whose stack size is therefore a devicetree number chosen without a
+        //     measurement.
         //
         // What WAS on this list and is now closed, because a list that only grows stops being
         // read: the mapping authority, the epoch plus cycle-reset transaction, the cycle
-        // health frame, the single runtime bootstrap, and role_id being built from the
-        // authority's installed mapping rather than from the descriptor's index
-        // (tof_cliff_runtime::apply_installed_mapping, which refuses unless the authority
-        // reports PROVEN and the addresses match). None of them lifts this clamp, and the log
-        // line below has to keep naming what is actually left -- a stale diagnostic sends
-        // whoever reads it to the wrong place.
+        // health frame, the single runtime bootstrap, role_id being keyed from the authority's
+        // installed mapping inside the commit transaction rather than from the descriptor's
+        // index, and the acquisition thread with its request-stop plus bounded join. None of
+        // them lifts this clamp, and the log line below has to keep naming what is actually
+        // left -- a stale diagnostic sends whoever reads it to the wrong place.
         //
         // Unconditional, with no build flag to lift it. A conditional safety bypass is
         // one careless -D away from shipping and would not show up in a diff of the code
-        // it disables; lifting this is an edit here, in its own commit, once all three of
-        // the above are closed.
+        // it disables; lifting this is an edit here, in its own commit, once both of the
+        // above are closed.
         static bool warned{false};
         if (!warned) {
             warned = true;
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role table, "
-                    "no acquisition thread, no on-machine acceptance yet");
+            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role table and "
+                    "no on-machine acceptance yet");
         }
         return mapping_state::not_ready;
     }
@@ -483,6 +513,8 @@ int bring_up()
 {
     if (!configured_)
         return -EINVAL;
+    if (!may_touch_devices())
+        return -EPERM;
 
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
     in_cycle_ = true;
@@ -552,6 +584,9 @@ void run_cycle()
      * Returning here leaves the cycle NOT BEGUN: no on_cycle_begin, no on_cycle, and
      * next_cycle_seq_ untouched. That is the correct account of what happened -- the cycle did not
      * happen, so it owes no health frame and must not consume a cycle number. */
+    if (!may_touch_devices())
+        return;
+
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
 
     if (!running_) {
@@ -620,6 +655,16 @@ void teardown()
      * replace. */
     if (!configured_)
         return;
+    /* The thread first, and through the same request-and-join path: retiring the subsystem while a
+     * thread is still driving sensors would tear cfg_ out from under it. An unbounded wait is
+     * correct HERE and only here -- teardown means the subsystem is going away, so there is nothing
+     * left to stay responsive for, and a thread that never exits is a hang worth having rather than
+     * a half-retired subsystem still touching a bus. */
+    if (thread_created_) {
+        request_stop();
+        (void)k_thread_join(&thread_, K_FOREVER);
+        thread_created_ = false;
+    }
     stop();
     k_timer_stop(&health_timer_);
     static k_work_sync sync;
@@ -638,6 +683,8 @@ void teardown()
 void stop()
 {
     if (!configured_)
+        return;
+    if (!may_touch_devices())
         return;
 
     // Quiesce, then release. Commissioning may only enumerate once this returns: the
@@ -659,6 +706,102 @@ void stop()
     publish_snapshot();
 }
 
+static void thread_entry(void *, void *, void *)
+{
+    /* The whole ULD lifecycle, on one thread, in one place.
+     *
+     * bring_up() failures are per source and deliberately not fatal here: one dead cliff sensor must
+     * not stop the other three from ranging, and the facts say which one it was. A total failure
+     * still produces cycles -- empty ones -- and the health frame is what reports that, which is
+     * better than a thread that exits and leaves a consumer to infer why. */
+    (void)bring_up();
+
+    while (atomic_get(&stop_requested_) == 0) {
+        run_cycle();
+        /* The cadence, and the stop signal, in one wait. Sleeping for the period and checking the
+         * flag afterwards would make every stop request cost up to a full period before it was even
+         * noticed -- and that period is what a caller's join timeout would then have to cover. */
+        (void)k_sem_take(&stop_sem_, K_MSEC(cfg_.periods.cycle_period_ms));
+    }
+
+    /* At a cycle boundary, from the thread that owns the devices. This is the reason try_stop() no
+     * longer stops devices itself: a foreign thread doing it while this one is mid-cycle interleaves
+     * two callers inside the ULD, whose port keeps ONE transport record. */
+    stop();
+    thread_active_ = false;
+    owner_ = nullptr;
+}
+
+int start(const thread_config &tcfg)
+{
+    if (!configured_)
+        return -EINVAL;
+    /* thread_created_ as well as thread_active_: a thread that has exited but has not been joined
+     * still owns the kernel object, and creating over it is undefined. A caller that requested a
+     * stop and never joined gets -EALREADY, which is the honest answer -- it has not finished
+     * stopping. */
+    if (thread_active_ || thread_created_)
+        return -EALREADY;
+    /* No defaults, the same rule the periods follow. A join timeout invented here would decide how
+     * long commissioning waits before refusing, which is a deployment decision. */
+    if (tcfg.stack == nullptr || tcfg.stack_size == 0 || tcfg.join_timeout_ms == 0)
+        return -EINVAL;
+
+    tcfg_ = tcfg;
+    atomic_set(&stop_requested_, 0);
+    k_sem_reset(&stop_sem_);
+
+    /* NOT touching next_cycle_seq_. Starting a thread is not the start of an epoch: the contract
+     * numbers cycles from 0 per mapping_epoch, begin_epoch() does that as one step of the
+     * authority's commit, and a reset here would either renumber a sequence a consumer is part-way
+     * through or reissue a (source_id, epoch, cycle_seq) triple that has already been used. */
+    thread_active_ = true;
+    thread_created_ = true;
+    owner_ = k_thread_create(&thread_, tcfg_.stack, tcfg_.stack_size, thread_entry, nullptr, nullptr,
+                             nullptr, tcfg_.priority, 0, K_NO_WAIT);
+    return 0;
+}
+
+void request_stop()
+{
+    /* Safe from any thread and idempotent: the flag is atomic and the semaphore has a limit of one.
+     * It does not wait, because the caller may be a shell thread that must stay responsive; join()
+     * is where waiting is bounded and reported. */
+    atomic_set(&stop_requested_, 1);
+    k_sem_give(&stop_sem_);
+}
+
+int join(uint32_t timeout_ms)
+{
+    if (!thread_created_)
+        return 0;
+    /* Bounded, and a timeout is the end of it. There is no way to abort a thread that may be inside
+     * a vendor driver holding the chain lock with a half-finished transfer -- k_thread_abort() would
+     * leave the lock held and the bus mid-transaction, which is strictly worse than refusing to
+     * commission. So the answer to a timeout is -EBUSY and the caller's refusal. */
+    if (k_thread_join(&thread_, K_MSEC(timeout_ms)) != 0)
+        return -EBUSY;
+    thread_created_ = false;
+    return 0;
+}
+
+bool thread_running()
+{
+    return thread_active_;
+}
+
+uint32_t foreign_lifecycle_calls()
+{
+    return static_cast<uint32_t>(atomic_get(&foreign_calls_));
+}
+
+#ifdef CONFIG_ZTEST
+k_tid_t thread_id_for_test()
+{
+    return owner_;
+}
+#endif
+
 int try_stop()
 {
     /* Nothing configured is not a failure to quiesce: there is no acquisition to stop and this
@@ -667,6 +810,17 @@ int try_stop()
      * without the bring-up probe, i.e. the common case today. */
     if (!configured_)
         return 0;
+
+    /* With a thread running, this function touches no device: it asks, then waits with the injected
+     * bound, and the THREAD is what stops the sensors. Stopping them from here would put a second
+     * caller inside the ULD while the thread is mid-cycle.
+     *
+     * A timeout leaves everything exactly as it was -- thread running, devices ranging -- and says
+     * -EBUSY. Nothing is killed: see join(). */
+    if (thread_active_) {
+        request_stop();
+        return join(tcfg_.join_timeout_ms);
+    }
 
     if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_NO_WAIT) != 0)
         return -EBUSY;   // somebody else owns the chain; nothing touched, so refusing is safe

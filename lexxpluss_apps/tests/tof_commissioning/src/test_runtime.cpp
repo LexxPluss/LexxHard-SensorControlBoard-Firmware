@@ -105,7 +105,14 @@ bool glue_ready()
 
 namespace {
 
-constexpr rt::config kTiming{50, 20};   // injected, as production injects it from the devicetree
+/* Injected, as production injects it from the devicetree: cadence, health period, join timeout,
+ * thread priority. Nothing here has a default anywhere in the module. */
+constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5)};
+
+/* The acquisition thread's stack. The runtime sizes its own from a devicetree property; there is no
+ * devicetree here, and a fallback compiled into the module for tests would be a size nobody chose
+ * that shipped anyway -- so the suite hands one over. */
+K_THREAD_STACK_DEFINE(runtime_acq_stack, 2048);
 
 int quiesce_via_acquisition()
 {
@@ -116,6 +123,7 @@ void before(void *)
 {
     glue_is_ready = true;
     rt::reset_for_test();
+    rt::set_thread_stack_for_test(runtime_acq_stack, K_THREAD_STACK_SIZEOF(runtime_acq_stack));
     au::reset_epoch_history_for_test();
     chain = fake::fake_chain{};
     can_init_rc = 0;
@@ -297,8 +305,12 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_equal(d[0].role_id, rt::kRoleUnassigned);
     zassert_equal(d[1].role_id, rt::kRoleUnassigned);
 
-    /* Only now may the sensors be brought up. */
+    /* Only now may the acquisition thread start -- and from here on it is the only thing allowed to
+     * touch a sensor. */
     zassert_equal(rt::start_acquisition(), 0);
+    zassert_true(acq::thread_running());
+    k_msleep(kTiming.cycle_period_ms * 2);
+    zassert_equal(acq::try_stop(), 0, "the thread did not stop cleanly");
 }
 
 ZTEST(tof_cliff_runtime, test_nothing_is_keyed_or_started_before_a_proof)
@@ -370,7 +382,7 @@ ZTEST(tof_cliff_runtime, test_a_failed_re_proof_does_not_leave_the_old_mapping_s
     zassert_true(prove_over_the_fake_chain(7).proven());
     zassert_true(rt::mapping_applied());
     zassert_equal(rt::start_acquisition(), 0);
-    acq::stop();
+    zassert_equal(acq::try_stop(), 0);
 
     make_the_descriptors_stale_at(3, 0x3D);
     zassert_equal(prove_over_the_fake_chain(8).commit, au::commit_refusal::mapping_install_failed);
@@ -401,4 +413,35 @@ ZTEST(tof_cliff_runtime, test_the_bootstrap_refuses_before_the_chain_glue_is_up)
     glue_is_ready = true;
     zassert_equal(rt::bootstrap(kTiming), 0);
     zassert_true(rt::ready());
+}
+
+ZTEST(tof_cliff_runtime, test_a_re_proof_stops_the_thread_through_request_and_join)
+{
+    /* Rule 8: losing or re-proving a mapping goes down the same stop-and-join path as anything else.
+     * The commissioning quiesce is tof_acq::try_stop, which with a thread running asks and waits
+     * rather than stopping devices itself -- so the thread is what stops them, at a cycle boundary,
+     * from the thread that owns them. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    freeze_the_roles();
+    zassert_true(prove_over_the_fake_chain(7).proven());
+    zassert_equal(rt::start_acquisition(), 0);
+    k_msleep(kTiming.cycle_period_ms * 2);
+    zassert_true(acq::thread_running());
+
+    const uint32_t foreign_before{acq::foreign_lifecycle_calls()};
+
+    /* A second proof. Its quiesce has to bring the thread down on its own terms. */
+    zassert_true(prove_over_the_fake_chain(8).proven(), "the re-proof could not quiesce the thread");
+
+    zassert_false(acq::thread_running(), "the thread survived a re-proof");
+    zassert_equal(acq::foreign_lifecycle_calls(), foreign_before,
+                  "something other than the thread drove the ULD during the re-proof");
+    zassert_true(rt::mapping_applied());
+    zassert_equal(au::current().epoch, 8);
+
+    /* And the new epoch's first cycle starts from 0, because begin_epoch() ran inside that commit and
+     * starting the thread again does not renumber. */
+    zassert_equal(rt::start_acquisition(), 0);
+    k_msleep(kTiming.cycle_period_ms * 2);
+    zassert_equal(acq::try_stop(), 0);
 }
