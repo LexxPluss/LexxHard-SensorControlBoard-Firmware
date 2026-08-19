@@ -36,13 +36,17 @@ namespace {
 uint8_t region[blob::golden::kRecordLen + 64];
 size_t region_size;
 int forced_read_rc;
+size_t fail_at_offset;
 int reads_seen;
+blob::expectation accepted[2];
 
 int read_region(void *, size_t offset, void *dst, size_t len)
 {
     ++reads_seen;
     if (forced_read_rc != 0)
         return forced_read_rc;
+    if (offset >= fail_at_offset)
+        return -EIO;
     if (offset + len > sizeof region)
         return -EIO;
     memcpy(dst, region + offset, len);
@@ -58,7 +62,7 @@ blob::reader make_reader()
     return r;
 }
 
-blob::expectation golden_expectation()
+blob::expectation make_golden_expectation()
 {
     blob::expectation e{};
 
@@ -67,13 +71,21 @@ blob::expectation golden_expectation()
     return e;
 }
 
+blob::accept_list golden_accept_list()
+{
+    return {accepted, 1};
+}
+
 void before(void *)
 {
     memset(region, 0, sizeof region);
     memcpy(region, blob::golden::kRecord, blob::golden::kRecordLen);
     region_size = blob::golden::kRecordLen;
     forced_read_rc = 0;
+    fail_at_offset = SIZE_MAX;
     reads_seen = 0;
+    accepted[0] = make_golden_expectation();
+    accepted[1] = blob::expectation{};
 }
 
 /* Recomputes the header CRC after a case has edited a header field, so that the case tests the field
@@ -96,7 +108,7 @@ ZTEST(tof_l7_blob, test_the_generators_record_verifies)
 {
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::ok, "the reader rejected the generator's own record");
     zassert_true(view.valid());
     zassert_equal(view.size(), blob::golden::kPayloadLen);
@@ -104,6 +116,56 @@ ZTEST(tof_l7_blob, test_the_generators_record_verifies)
      * off-by-one here would push the header into a sensor as though it were firmware. */
     zassert_equal(view.data(), region + 64);
     zassert_equal(view.data()[0], blob::golden::kRecord[64]);
+}
+
+ZTEST(tof_l7_blob, test_the_last_written_commit_marker_is_required)
+{
+    memset(region + blob::kHeaderSize + blob::golden::kPayloadLen, 0xFF,
+           blob::kCommitMarkerSize);
+
+    blob::blob_view view{};
+
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
+                  blob::status::uncommitted);
+    zassert_false(view.valid());
+}
+
+ZTEST(tof_l7_blob, test_verification_authorises_the_same_mapping_it_checked)
+{
+    uint8_t wrong_mapping[sizeof region];
+    memcpy(wrong_mapping, region, sizeof region);
+    wrong_mapping[blob::kHeaderSize + 10] ^= 0x01;
+
+    blob::blob_view view{};
+
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view,
+                               wrong_mapping),
+                  blob::status::mapping_mismatch);
+    zassert_false(view.valid());
+}
+
+ZTEST(tof_l7_blob, test_a_refusal_revokes_a_view_from_an_earlier_success)
+{
+    blob::blob_view view{};
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
+                  blob::status::ok);
+    zassert_true(view.valid());
+
+    region[blob::kHeaderSize + 7] ^= 0x01;
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
+                  blob::status::digest_mismatch);
+    zassert_false(view.valid(), "the old authorised pointer survived a failed verification");
+}
+
+ZTEST(tof_l7_blob, test_an_accept_list_can_authorise_a_rollback_compatible_blob)
+{
+    accepted[1] = accepted[0];
+    accepted[0].payload_digest[0] ^= 0xFF;
+    const blob::accept_list list{accepted, 2};
+    blob::blob_view view{};
+
+    zassert_equal(blob::verify(make_reader(), region_size, list, view, region), blob::status::ok);
+    zassert_true(view.valid());
 }
 
 ZTEST(tof_l7_blob, test_an_erased_partition_is_absent_not_corrupt)
@@ -114,7 +176,7 @@ ZTEST(tof_l7_blob, test_an_erased_partition_is_absent_not_corrupt)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::absent);
     zassert_false(view.valid());
 }
@@ -125,7 +187,7 @@ ZTEST(tof_l7_blob, test_a_region_with_other_contents_is_bad_magic)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::bad_magic);
     zassert_false(view.valid());
 }
@@ -139,19 +201,19 @@ ZTEST(tof_l7_blob, test_a_newer_format_is_refused_rather_than_parsed)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::unsupported_format);
 
     before(nullptr);
     region[6] = 128;   // a header this reader does not know the shape of
     refresh_header_crc();
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::unsupported_format);
 
     before(nullptr);
     region[44] = 1;    // a reserved byte in use
     refresh_header_crc();
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::unsupported_format);
 }
 
@@ -161,7 +223,7 @@ ZTEST(tof_l7_blob, test_a_torn_header_is_caught_by_its_crc)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::bad_header);
 }
 
@@ -178,7 +240,7 @@ ZTEST(tof_l7_blob, test_a_payload_that_cannot_fit_its_region_is_refused_before_i
     blob::blob_view view{};
     const int reads_before{reads_seen};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::length_out_of_range);
     zassert_equal(reads_seen, reads_before + 1, "the payload was read despite an impossible length");
 }
@@ -190,7 +252,7 @@ ZTEST(tof_l7_blob, test_a_zero_length_payload_is_refused)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::length_out_of_range);
 }
 
@@ -198,13 +260,14 @@ ZTEST(tof_l7_blob, test_a_different_length_than_expected_is_its_own_refusal)
 {
     /* Distinct from version_mismatch on purpose: "the record is 1023 bytes and this firmware wants
      * 1024" is a sentence somebody can act on, and it is the likely shape of a truncated write. */
-    blob::expectation want{golden_expectation()};
+    blob::expectation want{make_golden_expectation()};
 
     want.payload_len -= 1;
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, want, view, region),
+    const blob::accept_list list{&want, 1};
+    zassert_equal(blob::verify(make_reader(), region_size, list, view, region),
                   blob::status::length_mismatch);
 }
 
@@ -214,13 +277,14 @@ ZTEST(tof_l7_blob, test_an_intact_blob_from_another_release_is_a_version_mismatc
      * its own digest -- and it is not the blob this firmware was built against. A digest-only check
      * would pass it, and the ULD indexes fixed offsets inside the blob, so the failure would appear
      * as a sensor that does not range rather than as a provisioning mistake. */
-    blob::expectation want{golden_expectation()};
+    blob::expectation want{make_golden_expectation()};
 
     want.payload_digest[0] ^= 0xFF;
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, want, view, region),
+    const blob::accept_list list{&want, 1};
+    zassert_equal(blob::verify(make_reader(), region_size, list, view, region),
                   blob::status::version_mismatch);
     zassert_false(view.valid());
 }
@@ -231,9 +295,20 @@ ZTEST(tof_l7_blob, test_a_damaged_payload_is_a_digest_mismatch)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::digest_mismatch);
     zassert_false(view.valid());
+}
+
+ZTEST(tof_l7_blob, test_damage_wins_over_the_wrong_version_diagnosis)
+{
+    region[blob::kHeaderSize + 500] ^= 0x01;
+    accepted[0].payload_digest[0] ^= 0xFF;
+
+    blob::blob_view view{};
+
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
+                  blob::status::digest_mismatch);
 }
 
 ZTEST(tof_l7_blob, test_the_last_byte_of_the_payload_is_hashed)
@@ -245,7 +320,7 @@ ZTEST(tof_l7_blob, test_the_last_byte_of_the_payload_is_hashed)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::digest_mismatch);
 }
 
@@ -255,7 +330,7 @@ ZTEST(tof_l7_blob, test_a_read_failure_is_never_a_verified_blob)
 
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
                   blob::status::unreadable);
     zassert_false(view.valid());
 
@@ -263,8 +338,9 @@ ZTEST(tof_l7_blob, test_a_read_failure_is_never_a_verified_blob)
      * verification: the digest would be over the bytes that did arrive. */
     before(nullptr);
     forced_read_rc = 0;
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, region),
-                  blob::status::ok);
+    fail_at_offset = blob::kHeaderSize + 512;
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
+                  blob::status::unreadable);
 }
 
 ZTEST(tof_l7_blob, test_an_unmapped_region_verifies_but_hands_out_no_pointer)
@@ -273,7 +349,7 @@ ZTEST(tof_l7_blob, test_an_unmapped_region_verifies_but_hands_out_no_pointer)
      * What it must not get is a pointer nobody verified. */
     blob::blob_view view{};
 
-    zassert_equal(blob::verify(make_reader(), region_size, golden_expectation(), view, nullptr),
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, nullptr),
                   blob::status::ok);
     zassert_false(view.valid());
     zassert_is_null(view.data());
@@ -284,10 +360,10 @@ ZTEST(tof_l7_blob, test_a_caller_that_expects_nothing_gets_nothing)
     /* An empty expectation cannot be satisfied, and the refusal is not "ok". A firmware that has not
      * been told which blob it needs has no business pushing one. */
     blob::blob_view view{};
-    blob::expectation nothing{};
+    const blob::accept_list nothing{};
 
     zassert_equal(blob::verify(make_reader(), region_size, nothing, view, region),
-                  blob::status::length_mismatch);
+                  blob::status::no_expectation);
     zassert_false(view.valid());
 }
 
@@ -308,10 +384,12 @@ ZTEST(tof_l7_blob, test_every_status_has_a_name)
     /* A refusal that prints as "?" is a refusal somebody will guess at. */
     const blob::status all[]{
         blob::status::ok,                  blob::status::unreadable,
-        blob::status::absent,              blob::status::bad_magic,
-        blob::status::unsupported_format,  blob::status::bad_header,
-        blob::status::length_out_of_range, blob::status::length_mismatch,
-        blob::status::version_mismatch,    blob::status::digest_mismatch,
+        blob::status::absent,              blob::status::uncommitted,
+        blob::status::bad_magic,           blob::status::unsupported_format,
+        blob::status::bad_header,          blob::status::length_out_of_range,
+        blob::status::length_mismatch,     blob::status::version_mismatch,
+        blob::status::digest_mismatch,     blob::status::mapping_mismatch,
+        blob::status::no_expectation,
     };
 
     for (const blob::status s : all) {

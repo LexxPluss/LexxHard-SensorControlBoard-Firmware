@@ -63,10 +63,29 @@ bool same_digest(const uint8_t *a, const uint8_t *b)
     return memcmp(a, b, kDigestSize) == 0;
 }
 
+bool accepted_length(const accept_list &accepted, size_t payload_len)
+{
+    for (size_t i{0}; i < accepted.count; ++i) {
+        if (accepted.entries[i].payload_len == payload_len)
+            return true;
+    }
+    return false;
+}
+
+bool accepted_identity(const accept_list &accepted, size_t payload_len, const uint8_t *digest)
+{
+    for (size_t i{0}; i < accepted.count; ++i) {
+        if (accepted.entries[i].payload_len == payload_len &&
+            same_digest(accepted.entries[i].payload_digest, digest))
+            return true;
+    }
+    return false;
+}
+
 status parse_header(const reader &r, size_t region_size, uint8_t (&raw)[kHeaderSize],
                     header_info &info)
 {
-    if (region_size < kHeaderSize)
+    if (region_size < kHeaderSize + kCommitMarkerSize)
         return status::length_out_of_range;
     if (r.read == nullptr)
         return status::unreadable;
@@ -101,7 +120,8 @@ status parse_header(const reader &r, size_t region_size, uint8_t (&raw)[kHeaderS
     memcpy(info.payload_digest, raw + kDigestOffset, kDigestSize);
     info.parsed = true;
 
-    if (info.payload_len == 0 || info.payload_len > region_size - kHeaderSize)
+    if (info.payload_len == 0 ||
+        info.payload_len > region_size - kHeaderSize - kCommitMarkerSize)
         return status::length_out_of_range;
 
     return status::ok;
@@ -115,6 +135,7 @@ const char *status_name(status s)
     case status::ok:                  return "ok";
     case status::unreadable:          return "unreadable";
     case status::absent:              return "absent";
+    case status::uncommitted:         return "uncommitted";
     case status::bad_magic:           return "bad_magic";
     case status::unsupported_format:  return "unsupported_format";
     case status::bad_header:          return "bad_header";
@@ -122,6 +143,8 @@ const char *status_name(status s)
     case status::length_mismatch:     return "length_mismatch";
     case status::version_mismatch:    return "version_mismatch";
     case status::digest_mismatch:     return "digest_mismatch";
+    case status::mapping_mismatch:    return "mapping_mismatch";
+    case status::no_expectation:      return "no_expectation";
     }
     return "?";
 }
@@ -134,30 +157,35 @@ status read_header(const reader &r, size_t region_size, header_info &out)
     return parse_header(r, region_size, raw, out);
 }
 
-status verify(const reader &r, size_t region_size, const expectation &want, blob_view &out,
+status verify(const reader &r, size_t region_size, const accept_list &accepted, blob_view &out,
               const uint8_t *mapped_base)
 {
     uint8_t raw[kHeaderSize];
     header_info info{};
 
-    if (want.payload_len == 0)
-        return status::length_mismatch;   // a caller that does not know what it wants gets nothing
+    /* A refusal revokes any authority this object carried from an earlier successful call. Leaving
+     * an old pointer alive here would turn "verify failed" into "keep using the previously verified
+     * blob" for any caller that checked only view.valid(). */
+    out.data_ = nullptr;
+    out.size_ = 0;
+
+    if (accepted.entries == nullptr || accepted.count == 0)
+        return status::no_expectation;
 
     if (const status st{parse_header(r, region_size, raw, info)}; st != status::ok)
         return st;
 
-    if (info.payload_len != want.payload_len)
-        return status::length_mismatch;
-
-    /* IDENTITY, before spending 84 KiB of hashing on it. The stored record's own digest against the
-     * one this firmware was built against: equal means the right blob is here, different means the
-     * flash is fine and somebody provisioned another release. Checking it first also means the
-     * expensive integrity pass only ever runs on a blob we actually want. */
-    if (!same_digest(info.payload_digest, want.payload_digest))
-        return status::version_mismatch;
+    /* The commit marker is physically after the payload and is the last thing a provisioner writes.
+     * A valid header without it is an interrupted provisioning attempt, not an intact old version. */
+    uint8_t marker[kCommitMarkerSize];
+    if (r.read(r.ctx, kHeaderSize + info.payload_len, marker, sizeof marker) != 0)
+        return status::unreadable;
+    if (le32(marker) != kCommitMarker)
+        return status::uncommitted;
 
     /* INTEGRITY. Streamed in chunks: there is no 84 KiB buffer to do otherwise, which is the whole
-     * reason this record exists. */
+     * reason this record exists. This deliberately happens before the identity verdict. Until the
+     * payload hashes to its own header, "intact but another version" has not been proved. */
     struct tc_sha256_state_struct sha{};
 
     if (tc_sha256_init(&sha) != TC_CRYPTO_SUCCESS)
@@ -171,6 +199,12 @@ status verify(const reader &r, size_t region_size, const expectation &want, blob
 
         if (r.read(r.ctx, kHeaderSize + done, chunk, take) != 0)
             return status::unreadable;
+        /* The bytes being proved must be the bytes the returned pointer will expose. flash_area_read
+         * and the memory-mapped address are two independently-derived access paths; checking only
+         * the first and authorising the second would let a wrong mapped base pass verification. */
+        if (mapped_base != nullptr &&
+            memcmp(chunk, mapped_base + kHeaderSize + done, take) != 0)
+            return status::mapping_mismatch;
         if (tc_sha256_update(&sha, chunk, take) != TC_CRYPTO_SUCCESS)
             return status::unreadable;
         done += take;
@@ -180,12 +214,19 @@ status verify(const reader &r, size_t region_size, const expectation &want, blob
 
     if (tc_sha256_final(computed, &sha) != TC_CRYPTO_SUCCESS)
         return status::unreadable;
-    /* Against the HEADER's digest, which the identity check above has already proved equal to the
-     * expectation. Comparing against the expectation here instead would give the same answer today
-     * and would stop being a check of "the stored bytes match their own record" the moment the two
-     * comparisons drift apart. */
+    /* Against the HEADER's digest. Comparing against an accepted digest here would conflate two
+     * questions again: first establish that the bytes match their own record, then establish that
+     * the signed image accepts that intact identity. */
     if (!same_digest(computed, info.payload_digest))
         return status::digest_mismatch;
+
+    /* IDENTITY, now that "intact" is established. Length and digest membership are separate so a
+     * diagnostic can distinguish a truncated/wrong-shaped artefact from another compatible-shape
+     * release. The authority is the accept-list in the signed image, never the adjacent header. */
+    if (!accepted_length(accepted, info.payload_len))
+        return status::length_mismatch;
+    if (!accepted_identity(accepted, info.payload_len, info.payload_digest))
+        return status::version_mismatch;
 
     /* Only now, and only if the region is mapped. A caller with no mapping still gets `ok` and can
      * stream the payload itself; what it must not get is a pointer that was never verified. */

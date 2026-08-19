@@ -23,16 +23,18 @@ namespace {
 
 /* The partition the blob lives in, and the address it is visible at.
  *
- * The base comes from the devicetree rather than from a constant, because a wrong base here does not
- * fail: it reads whatever is at some other address, and 84 KiB of the wrong flash would be pushed
- * into a sensor as device firmware. The offset comes from the same partition label the reads use, so
- * the two cannot describe different regions.
+ * The base comes from the devicetree rather than from a constant, and verify() compares the mapped
+ * bytes against flash_area_read before returning the pointer. A wrong but in-range base therefore
+ * refuses with mapping_mismatch instead of pushing unrelated flash into a sensor. The compile-time
+ * bound below also prevents a partition outside the mapped flash region.
  *
  * Why this is sound at all: internal flash on this part is memory-mapped and readable while code
  * executes from it. Only erase and program stall the bus, and nothing in this path does either. */
 constexpr size_t kPartitionOffset{FIXED_PARTITION_OFFSET(storage_partition)};
 constexpr size_t kPartitionSize{FIXED_PARTITION_SIZE(storage_partition)};
 constexpr uintptr_t kFlashBase{DT_REG_ADDR(DT_NODELABEL(flash0))};
+static_assert(kPartitionOffset + kPartitionSize <= DT_REG_SIZE(DT_NODELABEL(flash0)),
+              "storage_partition falls outside the memory-mapped flash0 region");
 
 const uint8_t *mapped_base()
 {
@@ -49,10 +51,9 @@ int read_area(void *ctx, size_t offset, void *dst, size_t len)
 
     if (a == nullptr || a->fa == nullptr)
         return -EINVAL;
-    /* flash_area_read rather than the mapped pointer, deliberately. The verification must not depend
-     * on the mapping being right: reading through the API that owns the partition is what makes a
-     * wrong base address show up as a digest mismatch here instead of as a sensor that will not
-     * range. The mapping is used only after the bytes have been proven, and for the payload only. */
+    /* flash_area_read is one side of a two-path check. verify() compares every payload chunk read
+     * here with the memory-mapped bytes it is about to authorise, so a wrong base cannot pass by
+     * proving one access path and handing out another. */
     return flash_area_read(a->fa, offset, dst, len);
 }
 
@@ -83,14 +84,14 @@ report with_area(Fn &&fn)
 
 }  // namespace
 
-report verify_stored(const expectation &want, blob_view &out)
+report verify_stored(const accept_list &accepted, blob_view &out)
 {
     return with_area([&](const reader &r, report &rep) {
         /* The header first and separately, so that `stored` is populated even when the verdict is a
          * refusal. "wanted 86,016 with digest ab.., found 84,992 with digest cd.." is the sentence
          * somebody needs; the status alone cannot say it. */
         (void)read_header(r, kPartitionSize, rep.stored);
-        rep.st = verify(r, kPartitionSize, want, out, mapped_base());
+        rep.st = verify(r, kPartitionSize, accepted, out, mapped_base());
         if (rep.st != status::ok)
             LOG_ERR("stored L7 blob refused: %s", status_name(rep.st));
     });

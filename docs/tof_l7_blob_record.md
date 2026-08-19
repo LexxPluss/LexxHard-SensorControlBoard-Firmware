@@ -31,18 +31,19 @@ referenced. **One blob fits; two do not**, which is the fact that decides the op
 
 ## The record
 
-Little-endian throughout. A 64-byte header followed by the payload, written at offset 0 of the
-region.
+Little-endian throughout. A 64-byte header, the payload, then a four-byte commit marker, written at
+offset 0 of the region. Format version 2 added the trailing marker before any board was provisioned.
 
 | offset | size | field |
 | --- | --- | --- |
 | 0 | 4 | magic, `'L' '7' 'B' '1'` (`0x3142374C` read as LE32) |
-| 4 | 2 | `format_version`, currently 1 |
+| 4 | 2 | `format_version`, currently 2 |
 | 6 | 2 | `header_size`, currently 64 |
 | 8 | 4 | `payload_len` |
 | 12 | 32 | `payload_digest`: SHA-256 of the payload **alone** |
 | 44 | 16 | reserved, all zero |
 | 60 | 4 | `header_crc32`: CRC-32/IEEE over bytes 0..59 |
+| `64 + payload_len` | 4 | commit marker, `'L' '7' 'O' 'K'`; written last |
 
 ### Why a CRC on the header and a SHA-256 on the payload
 
@@ -62,16 +63,20 @@ expected value can compute it from the vendor file with `sha256sum` and no knowl
 5. `header_crc32` → `bad_header`.
 6. Reserved bytes all zero → `unsupported_format`. Fail closed: a record using them is from a format
    this reader does not implement, whatever its version number says.
-7. `payload_len` non-zero and `64 + payload_len <= region_size` → `length_out_of_range`. Bounds
+7. `payload_len` non-zero and `64 + payload_len + 4 <= region_size` → `length_out_of_range`. Bounds
    before contents, so an impossible length is never hashed by reading past the region.
-8. `payload_len` equals what the caller expects → `length_mismatch`.
-9. `payload_digest` equals the digest the caller expects → `version_mismatch`.
-10. The payload hashes to `payload_digest` → `digest_mismatch`.
+8. The trailing commit marker is present → otherwise `uncommitted`.
+9. Every payload chunk read through `flash_area_read` equals the same bytes at the mapped address
+   that will be handed to the ULD → otherwise `mapping_mismatch`.
+10. The payload hashes to its own header's `payload_digest` → `digest_mismatch`.
+11. `payload_len` appears in the signed image's accept-list → `length_mismatch` otherwise.
+12. `(payload_len, payload_digest)` appears in that accept-list → `version_mismatch` otherwise.
 
 ### Identity and integrity are separate refusals
 
-Step 9 asks *is this the blob this firmware was built against*; step 10 asks *are the stored bytes
-intact*. A digest check alone answers the second and reads as though it answered both.
+Steps 9-10 establish that the stored and mapped bytes are intact. Steps 11-12 then ask *is this one
+of the blobs this signed image was built to accept*. Integrity deliberately comes first: before the
+payload hashes to its own header, “intact but another version” has not been proved.
 
 It matters because the ULD and its device firmware are a matched pair — the API indexes fixed
 offsets inside the blob (`0x8000`, `0x10000`, and a final write of `0x8000+0x8000+0x5000` = 86,016)
@@ -79,9 +84,11 @@ offsets inside the blob (`0x8000`, `0x10000`, and a final write of `0x8000+0x800
 prevents. The two also send whoever reads them to different places: `version_mismatch` means
 provision a different blob, `digest_mismatch` means the flash is damaged.
 
-The expectation (length plus digest) is compiled into the image, generated from the vendor file by
-`scripts/gen_l7_blob_record.py pack --expect-header`. It is never taken from the record being
-checked.
+The accept-list of `(length, digest)` pairs is compiled into the image, generated from bench-proven
+vendor files by `scripts/gen_l7_blob_record.py pack --expect-header` plus optional
+`--accept-blob`. It is never taken from the record being checked. A list rather than one value is
+required because rollback can pair an older application with a newer provisioned blob; every extra
+entry is therefore a compatibility claim that needs a bench result with that ULD.
 
 ## Handing out the payload
 
@@ -91,17 +98,24 @@ into transfers. There is no 84 KiB RAM copy, and there is no RAM to make one in.
 
 Two rules follow:
 
-- The verification reads through `flash_area_read`, **not** through the mapped pointer. A wrong
-  mapped base then shows up as a digest mismatch here rather than as a sensor that will not range.
+- The verification reads through `flash_area_read` and compares every chunk with the mapped bytes
+  it will authorise. A wrong mapped base therefore becomes `mapping_mismatch`; proving one access
+  path and handing out another is forbidden.
 - Nothing can obtain the pointer without the verification: `blob_view` has no public way to be
   filled in, and `verify()` is its only producer.
 
 ## Provisioning
 
-`scripts/gen_l7_blob_record.py pack <blob.bin> --out record.img --expect-header <header>` produces
-the image and the expectation. The image is written to `0x20000` (`storage_partition`) — for now by
-the same SWD path that programs the board, since 86 KiB over the shell console is not a serious
-proposition.
+`scripts/gen_l7_blob_record.py pack <blob.bin> --out record.uncommitted.img
+--commit-marker-out marker.bin --expect-header <header>` produces three deliberately separate
+artefacts: header+payload, the four commit bytes, and the signed-image accept-list. The safe ordering
+is therefore the natural use of the tool rather than a comment attached to an already-committed
+image. A provisioner must erase, write `record.uncommitted.img`, read it back and verify the payload
+digest, then write `marker.bin` at offset `64 + payload_len`.
+
+The initial manufacturing path uses SWD at `0x20000` (`storage_partition`); 86 KiB over the shell
+console is not a serious proposition. A future in-field writer must preserve exactly the same
+ordering.
 
 **Open, and deliberately not decided here:** the blob is not part of the A/B image pair. One copy
 fits the partition and two do not, so a firmware update cannot carry a new blob the way it carries a

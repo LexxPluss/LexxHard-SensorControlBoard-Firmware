@@ -41,6 +41,8 @@
  *   12  32  payload_digest, SHA-256 of the payload alone
  *   44  16  reserved, all zero
  *   60  4   header_crc32, CRC-32/IEEE over bytes 0..59
+ *   64..    payload
+ *   end 4   commit marker 'L','7','O','K', written last
  *
  * The header carries a CRC and the payload carries a SHA-256 on purpose. The digest is the thing
  * that matters and is over the payload only, so a caller can compute the expected value from the
@@ -51,9 +53,9 @@
 
 #pragma once
 
-/* Guarded like every other file in this family, and for the same reason: src/*.cpp is globbed, so
- * without it this module would compile into the production image and drag SHA-256 and CRC-32 in with
- * it. The production image is byte-identical until the chain is enabled, and it stays that way. */
+/* Guarded like every other file in this family, and for the same reason: every source cpp is
+ * globbed, so without it this module would compile into the production image and drag SHA-256 and
+ * CRC-32 in with it. The production image is byte-identical until the chain is enabled. */
 #if defined(ENABLE_TOF_CHAIN)
 
 #include <stddef.h>
@@ -63,8 +65,10 @@ namespace lexxhard::tof_l7_blob {
 
 inline constexpr size_t kHeaderSize{64};
 inline constexpr size_t kDigestSize{32};
+inline constexpr size_t kCommitMarkerSize{4};
 inline constexpr uint32_t kMagic{0x3142374CU};   // 'L','7','B','1' little-endian
-inline constexpr uint16_t kFormatVersion{1};
+inline constexpr uint32_t kCommitMarker{0x4B4F374CU}; // 'L','7','O','K' little-endian
+inline constexpr uint16_t kFormatVersion{2};
 
 /* One value per distinct diagnosis. The list is longer than a bool because every entry sends
  * whoever reads it somewhere different: `absent` means provision the board, `version_mismatch`
@@ -75,6 +79,7 @@ enum class status : uint8_t {
     ok = 0,
     unreadable,          // the reader failed; nothing can be said about the contents
     absent,              // erased flash: nothing has ever been provisioned here
+    uncommitted,         // header/payload may exist, but the last-written marker does not
     bad_magic,           // something is there and it is not one of these records
     unsupported_format,  // a record, from a format this firmware does not implement
     bad_header,          // header CRC failed: a torn or damaged write
@@ -82,6 +87,8 @@ enum class status : uint8_t {
     length_mismatch,     // intact, but not the length this firmware expects
     version_mismatch,    // intact, and NOT the blob this firmware was built against
     digest_mismatch,     // the payload does not hash to what its own header says
+    mapping_mismatch,    // flash_area bytes differ from the pointer that would be handed out
+    no_expectation,      // the signed image carries no accepted blob identity
 };
 
 const char *status_name(status s);
@@ -91,6 +98,14 @@ const char *status_name(status s);
 struct expectation {
     size_t payload_len{0};
     uint8_t payload_digest[kDigestSize]{};
+};
+
+/* Compatibility is a set, not a single digest. A rollback can pair an older application with a
+ * newer provisioned blob, so a release may deliberately accept more than one bench-proven payload.
+ * The list itself lives in the signed image; no identity beside the stored blob is authoritative. */
+struct accept_list {
+    const expectation *entries{nullptr};
+    size_t count{0};
 };
 
 /* Reads bytes out of wherever the record lives. Injected so that the logic in this file is testable
@@ -117,7 +132,7 @@ public:
     bool valid() const { return data_ != nullptr && size_ != 0; }
 
 private:
-    friend status verify(const reader &, size_t, const expectation &, blob_view &,
+    friend status verify(const reader &, size_t, const accept_list &, blob_view &,
                          const uint8_t *);
     const uint8_t *data_{nullptr};
     size_t size_{0};
@@ -130,10 +145,10 @@ private:
  * mapped_base + kHeaderSize. Pass null when the region is not mapped; the status is then still
  * meaningful and `out` stays empty.
  *
- * On any refusal `out` is left untouched, so a caller that ignores the status still has nothing to
- * push to a sensor.
+ * On any refusal `out` is cleared, including when it carried a view from an earlier success. A
+ * caller that checks only valid() therefore cannot reuse stale authorisation after a failed check.
  */
-status verify(const reader &r, size_t region_size, const expectation &want, blob_view &out,
+status verify(const reader &r, size_t region_size, const accept_list &accepted, blob_view &out,
               const uint8_t *mapped_base);
 
 /* The header fields, for a diagnostic that wants to say what IS stored when it does not match --

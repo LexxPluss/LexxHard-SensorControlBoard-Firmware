@@ -123,6 +123,7 @@ test_tof_mapping_authority:
 # manufacture and read at every boot, and a disagreement has to fail in CI rather than on a board.
 .PHONY: test_tof_l7_blob
 test_tof_l7_blob:
+	python3 scripts/gen_l7_blob_record.py golden --out lexxpluss_apps/tests/tof_l7_blob/src/golden_record.h --check
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
@@ -235,4 +236,3 @@ firmware_interlock_initial:
 	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
 	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
 	cat out/bl_with_ff.bin out/zephyr_interlock.signed.bin > out/firmware_interlock.bin
-

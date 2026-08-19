@@ -45,9 +45,9 @@ struct report {
 /* Reads and checks the record in storage_partition against what the caller was built for.
  *
  * On status::ok, and only then, `out` carries a pointer into mapped flash and the payload length.
- * Every other status leaves it empty.
+ * Every other status clears it, including a view left by an earlier successful call.
  */
-report verify_stored(const expectation &want, blob_view &out);
+report verify_stored(const accept_list &accepted, blob_view &out);
 
 // The header alone, for a bring-up diagnostic that has no expectation to compare against yet.
 report stored_header();
