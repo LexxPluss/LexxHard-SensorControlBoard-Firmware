@@ -19,6 +19,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
 
+#include "tof_acquisition.hpp"
+#include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
 #include "tof_commissioning.hpp"
 #include "tof_tail_isolation.hpp"
@@ -35,6 +37,56 @@ constexpr enm::id_bytes kL4Id{0xeb, 0xaa};
 constexpr enm::id_bytes kL7Id{0xf0, 0x02};
 
 K_MUTEX_DEFINE(chain_mutex);
+
+}  // namespace
+
+/* The acquisition layer reaches for the chain through this, so it has to be the SAME mutex the
+ * session takes -- the whole question being tested is what happens when the two contend. The chain
+ * controller itself is not linked here: it drags in the bus and the shell, and the mutex is the only
+ * part of it this suite is about. */
+namespace lexxhard::tof_chain_controller {
+k_mutex &chain_lock()
+{
+    return chain_mutex;
+}
+}  // namespace lexxhard::tof_chain_controller
+
+/* tof_acquisition.cpp binds l4_cliff_ops() to these, so linking it needs them -- and NOTHING in this
+ * suite may call them: the sources are configured with the fake ops below. Stubbed rather than
+ * satisfied by linking the real sensor layer, which would pull the vendor ULD and an emulated I2C
+ * controller into a suite about lock ordering. -ENOSYS is the fail-loud direction: if a test ever
+ * does reach the real ops table, it gets an error rather than a plausible-looking sample. */
+extern "C" {
+int tof_cliff_sensor_open(VL53L4CX_Object_t *, uint8_t, struct tof_cliff_read_status *)
+{
+    return -ENOSYS;
+}
+int tof_cliff_sensor_configure(VL53L4CX_Object_t *, VL53LX_DistanceModes, uint32_t,
+                               struct tof_cliff_read_status *)
+{
+    return -ENOSYS;
+}
+int tof_cliff_sensor_start(VL53L4CX_Object_t *, struct tof_cliff_read_status *)
+{
+    return -ENOSYS;
+}
+int tof_cliff_sensor_stop(VL53L4CX_Object_t *, struct tof_cliff_read_status *)
+{
+    return -ENOSYS;
+}
+int tof_cliff_read_once(VL53L4CX_Object_t *, struct tof_cliff_scratch *, struct tof_cliff_sample *,
+                        struct tof_cliff_read_status *)
+{
+    return -ENOSYS;
+}
+/* Reached for real: acquisition logs the stage name when a source fails to come up. */
+const char *tof_cliff_stage_name(enum tof_cliff_stage)
+{
+    return "stub";
+}
+}  // extern "C"
+
+namespace {
 
 /* The chain as the hardware behaves, enough of it for a full enumeration plus an isolation: a shift
  * register of enables, one device per stage, each with an address that a disabled L4 loses. */
@@ -213,7 +265,10 @@ void holder_entry(void *, void *, void *)
     if (k_mutex_lock(&chain_mutex, K_MSEC(500)) != 0)
         return;
     k_sem_give(&holder_has_it);
-    (void)k_sem_take(&holder_may_release, K_FOREVER);
+    /* Bounded, not K_FOREVER. A quiesce that waits for the chain would otherwise hang the whole
+     * suite with no output; with a cap it returns late instead, and the elapsed-time assertion in
+     * the busy test reports what actually went wrong. */
+    (void)k_sem_take(&holder_may_release, K_MSEC(3000));
     k_mutex_unlock(&chain_mutex);
 }
 
@@ -255,9 +310,137 @@ bool another_thread_can_take_the_chain()
     return probe_got_lock;
 }
 
+
+/* ------------------------------------------- the REAL acquisition quiesce ----------- */
+
+/* The production quiesce is tof_acq::try_stop, and the reason it exists is that the previous one
+ * blocked: the shell called tof_acq::stop(), which takes the chain with K_FOREVER, so a run that
+ * collided with a live chain user would hang one step BEFORE the session's K_NO_WAIT acquire. A fake
+ * quiesce cannot show that -- an int-returning hook is non-blocking by construction -- so these
+ * cases drive the real acquisition layer with fake devices and a holder thread. */
+
+struct fake_source {
+    int stop_calls{0};
+    int start_calls{0};
+    int pulses_at_stop{-1};
+    struct tof_cliff_scratch scratch{};   // never used by the fake ops; init() requires one
+};
+
+uint32_t fake_now_ms()
+{
+    return static_cast<uint32_t>(k_uptime_get_32());
+}
+
+acq::mapping_state reported_state()
+{
+    /* Straight from the authority, as production wires it. The clamp inside acquisition is what
+     * turns a PROVEN mapping into NOT_READY on the wire; nothing here needs to care, because these
+     * cases are about the chain, not the frame. */
+    return au::current().state;
+}
+
+fake_source sources[2];
+
+int src_open(void *, uint8_t, acq::op_status *st)
+{
+    *st = acq::op_status{};
+    return 0;
+}
+int src_configure(void *, acq::op_status *st)
+{
+    *st = acq::op_status{};
+    return 0;
+}
+int src_start(void *dev, acq::op_status *st)
+{
+    *st = acq::op_status{};
+    ++static_cast<fake_source *>(dev)->start_calls;
+    return 0;
+}
+int src_read(void *, void *, struct tof_cliff_sample *out, acq::op_status *st)
+{
+    *st = acq::op_status{};
+    *out = tof_cliff_sample{};
+    return 0;
+}
+int src_stop(void *dev, acq::op_status *st)
+{
+    *st = acq::op_status{};
+    auto &d{*static_cast<fake_source *>(dev)};
+    ++d.stop_calls;
+    /* When the stop happened, measured in the only clock this suite has: how far the enumeration had
+     * got. Zero means the quiesce finished before the first walk touched the chain, which is the
+     * ordering the whole session depends on -- enumeration drops enable lines, and a device still
+     * ranging through that is reading parts mid-re-address. */
+    d.pulses_at_stop = chain.pulses_seen;
+    return 0;
+}
+
+const acq::source_ops kFakeSourceOps{src_open, src_configure, src_start, src_read, src_stop};
+
+acq::source_desc descs[2];
+int acq_health_beats{0};
+
+void on_health(uint32_t, acq::mapping_state) { ++acq_health_beats; }
+void on_cycle_begin(uint32_t) {}
+void on_cycle(const acq::cycle_facts &) {}
+void on_sample(int, uint32_t, const acq::source_facts &, const struct tof_cliff_sample &) {}
+
+/* Acquisition brought up for real and left RUNNING, which is the state that makes the quiesce
+ * necessary in the first place. */
+void arrange_running_acquisition()
+{
+    acq::teardown();
+    sources[0] = fake_source{};
+    sources[1] = fake_source{};
+    acq_health_beats = 0;
+
+    for (int i{0}; i < 2; ++i) {
+        descs[i] = acq::source_desc{};
+        descs[i].kind = acq::model::l4_cliff;
+        descs[i].addr_7bit = static_cast<uint8_t>(0x2a + i);
+        descs[i].dev = &sources[i];
+        descs[i].scratch = &sources[i].scratch;
+        descs[i].ops = &kFakeSourceOps;
+    }
+
+    acq::config c{};
+    c.sources = descs;
+    c.source_count = 2;
+    c.periods.cycle_period_ms = 50;
+    c.periods.health_period_ms = 20;
+    c.hooks.on_cycle_begin = on_cycle_begin;
+    c.hooks.on_cycle = on_cycle;
+    c.hooks.on_cliff_sample = on_sample;
+    c.hooks.on_cliff_health = on_health;
+    c.now_ms = fake_now_ms;
+    c.mapping_state_provider = reported_state;
+    zassert_equal(acq::init(c), 0);
+    zassert_equal(acq::bring_up(), 0);
+    zassert_false(acq::is_idle(), "acquisition has to be running for the quiesce to mean anything");
+}
+
+void use_the_real_quiesce()
+{
+    cm::config ccfg{};
+    ccfg.chain = &chain_mutex;
+    ccfg.ops = &chain;
+    ccfg.spec = &runtime_spec;
+    ccfg.quiesce = acq::try_stop;   // the production wiring, not a stand-in
+    zassert_equal(cm::init(ccfg), 0);
+}
+
 } // namespace
 
-ZTEST_SUITE(tof_commissioning, NULL, NULL, NULL, NULL, NULL);
+/* Retires acquisition after every case. Most of them never bring it up, and teardown() on an
+ * unconfigured subsystem is a no-op; the ones that do would otherwise leave a live health timer
+ * reading a configuration the next case is entitled to replace. */
+static void retire_acquisition(void *)
+{
+    acq::teardown();
+}
+
+ZTEST_SUITE(tof_commissioning, NULL, NULL, NULL, retire_acquisition, NULL);
 
 ZTEST(tof_commissioning, test_a_healthy_chain_with_frozen_roles_is_proven)
 {
@@ -479,4 +662,69 @@ ZTEST(tof_commissioning, test_nothing_runs_before_init)
     no_quiesce.ops = &chain;
     no_quiesce.spec = &runtime_spec;
     zassert_equal(cm::init(no_quiesce), -EINVAL);
+}
+
+/* ------------------------------------------- the REAL acquisition quiesce ----------- */
+
+ZTEST(tof_commissioning, test_the_real_quiesce_refuses_a_busy_chain_instead_of_waiting)
+{
+    /* The P1 this pair of cases exists for. Every other busy-chain case here fakes the quiesce, so
+     * they all prove things about the session's K_NO_WAIT acquire and nothing about the step before
+     * it -- and the step before it was the one that blocked. */
+    arrange(provable_spec());
+    use_the_real_quiesce();
+    arrange_running_acquisition();
+
+    const au::snapshot before{au::current()};
+
+    hold_the_chain_elsewhere();
+    const int64_t started{k_uptime_get()};
+    const cm::outcome r{cm::prove(9)};
+    const int64_t elapsed{k_uptime_get() - started};
+    release_the_chain_elsewhere();
+
+    zassert_equal(r.failed_at, cm::stage::quiesce_failed, "the busy chain was not refused here");
+    zassert_equal(r.rc, -EBUSY);
+    /* The holder releases on its own after 3 s, so a quiesce that WAITED would still return a
+     * result -- just late. This is the assertion that tells the two apart. */
+    zassert_true(elapsed < 500, "the quiesce waited for the chain (%lld ms)", elapsed);
+
+    /* Refused before anything was spent: no attempt, no revoke, and no enumeration. */
+    zassert_equal(au::attempt_nonce(), 0u, "a refused quiesce left an attempt open");
+    zassert_equal(au::current().state, before.state, "a refused quiesce revoked the mapping");
+    zassert_equal(au::current().epoch, before.epoch);
+    zassert_equal(chain.pulses_seen, 0, "the chain was walked after the quiesce had refused");
+
+    /* And acquisition is untouched, which is what makes the refusal free: it is still running, with
+     * no device stopped. */
+    zassert_false(acq::is_idle(), "the refused quiesce stopped acquisition anyway");
+    zassert_equal(sources[0].stop_calls, 0);
+    zassert_equal(sources[1].stop_calls, 0);
+}
+
+ZTEST(tof_commissioning, test_the_real_quiesce_stops_acquisition_before_the_first_walk)
+{
+    /* The other half: when the chain IS free, the real quiesce has to actually quiesce -- and do it
+     * before the first pulse, not merely at some point during the session. */
+    arrange(provable_spec());
+    use_the_real_quiesce();
+    arrange_running_acquisition();
+
+    const int beats_before{acq_health_beats};
+
+    zassert_true(cm::prove(11).proven());
+
+    zassert_true(acq::is_idle(), "the session ran with acquisition still live");
+    zassert_equal(sources[0].stop_calls, 1);
+    zassert_equal(sources[1].stop_calls, 1);
+    zassert_equal(sources[0].pulses_at_stop, 0,
+                  "a device was still ranging when the enumeration started pulsing");
+    zassert_equal(sources[1].pulses_at_stop, 0);
+    zassert_true(chain.pulses_seen > 0, "nothing was enumerated, so the ordering proves nothing");
+
+    /* stop(), not teardown(): the heartbeat has to have survived the whole run. */
+    k_msleep(80);
+    zassert_true(acq_health_beats >= beats_before + 3,
+                 "the heartbeat stopped during commissioning: %d -> %d", beats_before,
+                 acq_health_beats);
 }

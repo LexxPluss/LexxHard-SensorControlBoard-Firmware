@@ -211,6 +211,36 @@ void clear_outcomes(source_facts &f)
 // because folding them together would decide health semantics by accident - a stubbed
 // model would arrive at the cliff health frame as a broken sensor, and a bug in our own
 // call would arrive as a bus fault.
+/* The quiescing itself, with the chain lock ALREADY HELD.
+ *
+ * Factored out because there are now two ways in -- stop(), which waits for the chain, and
+ * try_stop(), which refuses to -- and they must differ in exactly one respect: how they acquire
+ * the lock. A second copy of "clear running_, stop every started device, clear in_cycle_" would
+ * be free to drift, and the direction it would drift in is a device left ranging while the
+ * subsystem believes it is quiesced -- during an enumeration that re-addresses parts underneath
+ * it.
+ *
+ * Callers publish the snapshot after releasing, not here: publishing under the chain lock would
+ * put a lock between the health path and the acquisition path, and the heartbeat is required to
+ * keep running while the chain is busy for seconds at a time. */
+void stop_locked()
+{
+    running_ = false;
+
+    for (int i{0}; i < facts_.source_count; ++i) {
+        const source_desc &d{cfg_.sources[i]};
+        source_facts &f{facts_.sources[i]};
+        op_status st{};
+
+        if (!f.started)
+            continue;
+        (void)d.ops->stop(d.dev, &st);
+        f.started = false;
+    }
+
+    in_cycle_ = false;
+}
+
 void record(source_facts &f, int rc, const op_status &st)
 {
     f.status = st;
@@ -489,10 +519,30 @@ int bring_up()
 
 void run_cycle()
 {
+    /* Advisory only: it saves taking the chain every period while stopped, and it is allowed to be
+     * stale. The check that decides is the one below, under the lock. */
     if (!running_)
         return;
 
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+
+    /* Re-checked under the lock, because the check above is not a decision.
+     *
+     * The window is real as soon as there is an acquisition thread: the thread reads running_ as
+     * true, then waits here for whoever holds the chain -- and that holder may be try_stop()
+     * setting running_ to false. Without this the thread would then run a full cycle AFTER the
+     * quiesce returned success, reading devices that stop_locked() has just stopped, in a window
+     * commissioning has been told is safe to enumerate in. Enumeration drops enable lines, so the
+     * cycle would be reading parts that are being re-addressed underneath it.
+     *
+     * Returning here leaves the cycle NOT BEGUN: no on_cycle_begin, no on_cycle, and
+     * next_cycle_seq_ untouched. That is the correct account of what happened -- the cycle did not
+     * happen, so it owes no health frame and must not consume a cycle number. */
+    if (!running_) {
+        k_mutex_unlock(&tof_chain_controller::chain_lock());
+        return;
+    }
+
     in_cycle_ = true;
 
     facts_.cycle_seq = next_cycle_seq_;
@@ -577,20 +627,7 @@ void stop()
     // Quiesce, then release. Commissioning may only enumerate once this returns: the
     // enumeration drops enable lines, which re-addresses parts underneath a reader.
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-    running_ = false;
-
-    for (int i{0}; i < facts_.source_count; ++i) {
-        const source_desc &d{cfg_.sources[i]};
-        source_facts &f{facts_.sources[i]};
-        op_status st{};
-
-        if (!f.started)
-            continue;
-        (void)d.ops->stop(d.dev, &st);
-        f.started = false;
-    }
-
-    in_cycle_ = false;
+    stop_locked();
     /* The health timer is deliberately NOT stopped here.
      *
      * stop() means "stop reading sensors", and the contract requires health to keep flowing
@@ -604,6 +641,28 @@ void stop()
      * is a separate, deliberate act. */
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     publish_snapshot();
+}
+
+int try_stop()
+{
+    /* Nothing configured is not a failure to quiesce: there is no acquisition to stop and this
+     * layer is holding nothing. Answering -EBUSY here would make commissioning refuse on a board
+     * where acquisition was never brought up at all -- which is every build that enables the ULD
+     * without the bring-up probe, i.e. the common case today. */
+    if (!configured_)
+        return 0;
+
+    if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_NO_WAIT) != 0)
+        return -EBUSY;   // somebody else owns the chain; nothing touched, so refusing is safe
+
+    stop_locked();
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    publish_snapshot();
+
+    /* Idle by construction rather than by a second query: the state was set under the lock we
+     * just held, and re-reading it through is_idle() would take the chain again with K_FOREVER --
+     * reintroducing the block this function exists to remove. */
+    return 0;
 }
 
 }  // namespace lexxhard::tof_acq

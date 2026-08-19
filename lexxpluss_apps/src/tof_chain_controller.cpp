@@ -282,18 +282,6 @@ const char *stage_label(tof_commissioning::stage st)
     return "?";
 }
 
-/* Stops acquisition without retiring the subsystem.
- *
- * stop(), never teardown(): the heartbeat has to keep running for the whole run, because it is the
- * only channel telling a consumer that the subsystem is alive and that its mapping is being
- * re-proven. Nothing to join yet -- there is no acquisition thread; when there is, joining it belongs
- * here and the assertion below is what will catch its absence. */
-int quiesce_acquisition()
-{
-    tof_acq::stop();
-    return tof_acq::is_idle() ? 0 : -EBUSY;
-}
-
 int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
 {
     if (int const st{init_status.load()}; st != 0) {
@@ -322,7 +310,20 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
     cfg.chain = &chain_mutex;
     cfg.ops = &ops;
     cfg.spec = &spec;
-    cfg.quiesce = quiesce_acquisition;
+    /* The tested primitive itself, with no wrapper in between.
+     *
+     * try_stop(), not stop(): stop() takes the chain with K_FOREVER, so a wrapper around it would
+     * block right here and the session's K_NO_WAIT acquire -- the whole reason a busy chain is a
+     * refusal rather than a wait -- would never be reached. And try_stop(), not "try_stop plus a
+     * check": is_idle() also takes the chain with K_FOREVER, so verifying the quiesce that way
+     * would put the block back one line later.
+     *
+     * Pointing the hook straight at it is deliberate. A one-line wrapper here would be production
+     * glue that no host suite links, i.e. exactly where a K_FOREVER could reappear unnoticed;
+     * assigning the function under test leaves nothing to drift. It is also the right home for the
+     * bounded join once there is an acquisition thread: quiescing is acquisition's business, not
+     * the shell's. */
+    cfg.quiesce = tof_acq::try_stop;
     if (int const rc{tof_commissioning::init(cfg)}; rc != 0) {
         shell_error(shell, "commissioning not configurable (%d)", rc);
         return rc;

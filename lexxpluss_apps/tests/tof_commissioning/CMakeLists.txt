@@ -34,8 +34,13 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 # commit is about -- lock ordering, recursion, which exit paths release, what stays open on failure --
 # is a property of the real components' interaction and a fake of any of them would assume the
 # answer.
+# tof_acquisition.cpp is linked because the quiesce is now the real one: the step before the session
+# takes the chain used to block on it, and only the real acquisition layer can show that it no longer
+# does. Its dependency on the vendor sensor entry points is stubbed in the test rather than satisfied
+# by linking the ULD, which belongs to the sensor suite.
 target_sources(app PRIVATE
     src/test_main.cpp
+    ${APP_SRC_DIR}/tof_acquisition.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp
@@ -43,4 +48,11 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_enumerator.cpp
 )
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
-target_include_directories(app PRIVATE ${APP_SRC_DIR})
+set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
+target_include_directories(app PRIVATE
+    ${APP_SRC_DIR}
+    ${ULD_DIR}/zephyr
+    ${ULD_DIR}/upstream
+    ${ULD_DIR}/upstream/modules
+    ${ULD_DIR}/upstream/porting
+)

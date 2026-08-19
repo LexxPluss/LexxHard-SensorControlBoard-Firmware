@@ -234,7 +234,29 @@ void run_cycle();
 // the contract requires health to keep flowing while no acquisition runs, which is exactly when
 // a consumer needs to know the subsystem is alive and why it is idle. Use teardown() to stop the
 // heartbeat as well.
+//
+// BLOCKS on the chain lock. Fine for a shutdown path that has nothing better to do; wrong for
+// commissioning, which must fail fast rather than queue up behind whoever holds the chain.
 void stop();
+
+// The commissioning quiesce: the same thing stop() does, except that it never waits for the
+// chain.
+//
+// Returns 0 when acquisition is quiesced and the chain was free to do it in, -EBUSY when the
+// chain is held by somebody else -- and in that case NOTHING has been changed, so a caller that
+// gets -EBUSY can simply refuse.
+//
+// This exists because the whole point of the commissioning session taking the chain with
+// K_NO_WAIT is defeated if the step BEFORE it blocks. The first version of the shell command
+// called stop(), which takes the chain with K_FOREVER: a run that collided with a live chain
+// user would hang in the quiesce and never reach the non-blocking acquire it was written to
+// rely on. The refusal has to start here or it does not exist.
+//
+// Note for the acquisition thread (Step 4B): stopping is not the same as the thread having
+// stopped. When there is a thread, this is where request_stop() and a BOUNDED join belong --
+// commissioning must not wait on it indefinitely, and the thread lifecycle is acquisition's
+// business, not the shell's.
+int try_stop();
 
 // The real shutdown: stop(), then the heartbeat, then a SYNCHRONOUS cancel of any health work
 // already submitted. Separate from stop() so that pausing acquisition and retiring the

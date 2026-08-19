@@ -1031,6 +1031,27 @@ ZTEST(tof_acquisition, test_teardown_retires_the_subsystem_rather_than_pausing_i
  * consumer that the subsystem is alive and that its mapping is being re-proven. The health work item
  * takes no lock and reads one atomic word, so this holds by construction; "by construction" is what
  * gets verified, not asserted. */
+K_THREAD_STACK_DEFINE(cycle_runner_stack, 2048);
+static k_thread cycle_runner;
+K_SEM_DEFINE(cycle_thread_started, 0, 1);
+
+static void cycle_runner_entry(void *, void *, void *)
+{
+    /* Signals BEFORE the call, and the PRIORITY is what makes that sound.
+     *
+     * The interleaving being staged is a cycle that has already read running_ as true and is now
+     * waiting for the chain. The first version of this thread ran one band BELOW the ztest thread
+     * (which is cooperative at -1), so k_sem_give() handed control straight back to the test before
+     * this thread had read running_ at all: try_stop() then ran, and the cycle returned at its
+     * unlocked check instead of the locked one. The test passed, and went on passing with the
+     * locked re-check deleted -- it was staging nothing.
+     *
+     * Created one band ABOVE the test thread instead, so giving the semaphore does not yield: this
+     * thread runs on until it blocks on the chain, which is exactly the state the race needs. */
+    k_sem_give(&cycle_thread_started);
+    acq::run_cycle();
+}
+
 K_THREAD_STACK_DEFINE(chain_holder_stack, 1024);
 static k_thread chain_holder;
 K_SEM_DEFINE(holder_took_it, 0, 1);
@@ -1064,4 +1085,108 @@ ZTEST(tof_acquisition, test_the_heartbeat_survives_a_long_chain_session)
 
     zassert_true(during >= before + 3,
                  "the heartbeat stalled while the chain was held: %d -> %d", before, during);
+}
+
+/* --------------------------------------------------- the commissioning quiesce ------ */
+
+/* try_stop() is the quiesce commissioning actually calls, and the only thing that distinguishes it
+ * from stop() is that it will not wait for the chain. That difference is the whole point: the
+ * session that follows takes the chain with K_NO_WAIT, so a quiesce that blocks moves the hang one
+ * step earlier instead of removing it. Tested with a holder thread, because a K_NO_WAIT acquire
+ * from the thread that already owns a Zephyr mutex SUCCEEDS -- the mutex is recursive for its
+ * owner, so "busy" cannot be staged from the test thread itself. */
+
+ZTEST(tof_acquisition, test_try_stop_refuses_a_busy_chain_and_changes_nothing)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    k_sem_reset(&holder_took_it);
+    k_sem_reset(&holder_release);
+    k_thread_create(&chain_holder, chain_holder_stack, K_THREAD_STACK_SIZEOF(chain_holder_stack),
+                    chain_holder_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(1), 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&holder_took_it, K_MSEC(500)), 0, "the holder never took the chain");
+
+    const int stops_before{devs[0].stop_calls};
+    zassert_equal(acq::try_stop(), -EBUSY, "a held chain has to be a refusal, not a wait");
+
+    /* Refused means untouched, which is what makes refusing safe: the caller gets to give up
+     * without having half-quiesced a subsystem it no longer intends to commission. */
+    zassert_equal(devs[0].stop_calls, stops_before, "the refusal still stopped a device");
+
+    k_sem_give(&holder_release);
+    zassert_equal(k_thread_join(&chain_holder, K_MSEC(500)), 0);
+
+    /* Still running, so the refusal cost nothing: a cycle runs on demand exactly as before. */
+    const int begins_before{rec.cycle_begins};
+    acq::run_cycle();
+    zassert_equal(rec.cycle_begins, begins_before + 1, "the refusal left acquisition stopped");
+
+    zassert_equal(acq::try_stop(), 0, "a free chain has to be quiesced");
+    zassert_true(devs[0].stop_calls > stops_before);
+    zassert_true(acq::is_idle());
+}
+
+ZTEST(tof_acquisition, test_try_stop_leaves_the_heartbeat_running)
+{
+    /* The same rule stop() obeys, for the same reason: commissioning takes seconds, and the
+     * heartbeat is the only channel that says the subsystem is alive while it does. A quiesce that
+     * silenced it would make a controlled pause indistinguishable from a dead producer. */
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    zassert_equal(acq::try_stop(), 0);
+
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 4);
+    zassert_true(rec.health_beats >= before + 3,
+                 "try_stop() stopped the heartbeat: %d -> %d", before, rec.health_beats);
+}
+
+ZTEST(tof_acquisition, test_a_cycle_that_lost_the_race_to_a_quiesce_does_not_run)
+{
+    /* The race that arrives with the acquisition thread, staged deterministically.
+     *
+     * A cycle reads running_ before taking the chain. Here it reads true, then blocks on the lock
+     * this test thread is holding -- and while it waits, try_stop() (recursive on the same thread,
+     * so it succeeds) sets running_ false. When the cycle finally gets the lock, the quiesce it is
+     * about to ignore has already returned success to a commissioner who has been told the chain is
+     * safe to enumerate in. Enumeration drops enable lines, so the cycle would be reading parts
+     * mid-re-address.
+     *
+     * The cycle must therefore not begin: no on_cycle_begin, no reads, and no cycle number spent
+     * on something that did not happen. */
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    const int begins_before{rec.cycle_begins};
+    const int reads_before{devs[0].read_calls};
+
+    k_mutex_lock(&lexxhard::tof_chain_controller::chain_lock(), K_FOREVER);
+
+    k_sem_reset(&cycle_thread_started);
+    /* One band above whatever the test thread is running at, read rather than hardcoded: the
+     * staging depends on this thread NOT yielding when it signals, and a hardcoded number would
+     * silently stop staging anything if CONFIG_ZTEST_THREAD_PRIORITY changed. */
+    const int racing_prio{k_thread_priority_get(k_current_get()) - 1};
+    k_thread_create(&cycle_runner, cycle_runner_stack, K_THREAD_STACK_SIZEOF(cycle_runner_stack),
+                    cycle_runner_entry, nullptr, nullptr, nullptr, racing_prio, 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&cycle_thread_started, K_MSEC(500)), 0,
+                  "the cycle thread never got as far as the lock");
+
+    zassert_equal(acq::try_stop(), 0, "recursive acquire by the lock owner has to succeed");
+    k_mutex_unlock(&lexxhard::tof_chain_controller::chain_lock());
+
+    zassert_equal(k_thread_join(&cycle_runner, K_MSEC(500)), 0);
+
+    zassert_equal(rec.cycle_begins, begins_before,
+                  "a cycle began after the quiesce had already reported success");
+    zassert_equal(devs[0].read_calls, reads_before, "a device was read after the quiesce");
+
+    /* And the cycle number was not spent. No cycle has completed in this test, so the next real one
+     * still owes cycle_seq 0; had the cancelled cycle counted, this would be 1. Checked through the
+     * facts rather than the counter, because the counter is private and the wire is what a consumer
+     * correlates a measurement with its health frame on. */
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+    zassert_equal(rec.last.cycle_seq, 0u, "the cancelled cycle consumed a cycle_seq");
 }
