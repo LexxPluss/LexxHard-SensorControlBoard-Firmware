@@ -123,23 +123,23 @@ struct msg_bmu {
 // 8 bytes per the datasheet). On dlc != 8 they leave msg untouched and return false,
 // so a stale cached value is kept rather than mixing in hardware-register residue
 // from a short frame (STM32 bxcan always copies 8 bytes regardless of dlc).
-bool decode_0x100(const uint8_t data[8], uint8_t dlc, msg_0x100 &msg);
-bool decode_0x101(const uint8_t data[8], uint8_t dlc, msg_0x101 &msg);
-bool decode_0x103(const uint8_t data[8], uint8_t dlc, msg_0x103 &msg);
-bool decode_0x110(const uint8_t data[8], uint8_t dlc, msg_0x110 &msg);
-bool decode_0x111(const uint8_t data[8], uint8_t dlc, msg_0x111 &msg);
-bool decode_0x112(const uint8_t data[8], uint8_t dlc, msg_0x112 &msg);
-bool decode_0x113(const uint8_t data[8], uint8_t dlc, msg_0x113 &msg);
-bool decode_0x120(const uint8_t data[8], uint8_t dlc, msg_0x120 &msg);
-bool decode_0x130(const uint8_t data[8], uint8_t dlc, msg_0x130 &msg);
-bool decode_0x131(const uint8_t data[8], uint8_t dlc, msg_0x131 &msg);
+bool decode_0x100(const uint8_t (&data)[8], uint8_t dlc, msg_0x100 &msg);
+bool decode_0x101(const uint8_t (&data)[8], uint8_t dlc, msg_0x101 &msg);
+bool decode_0x103(const uint8_t (&data)[8], uint8_t dlc, msg_0x103 &msg);
+bool decode_0x110(const uint8_t (&data)[8], uint8_t dlc, msg_0x110 &msg);
+bool decode_0x111(const uint8_t (&data)[8], uint8_t dlc, msg_0x111 &msg);
+bool decode_0x112(const uint8_t (&data)[8], uint8_t dlc, msg_0x112 &msg);
+bool decode_0x113(const uint8_t (&data)[8], uint8_t dlc, msg_0x113 &msg);
+bool decode_0x120(const uint8_t (&data)[8], uint8_t dlc, msg_0x120 &msg);
+bool decode_0x130(const uint8_t (&data)[8], uint8_t dlc, msg_0x130 &msg);
+bool decode_0x131(const uint8_t (&data)[8], uint8_t dlc, msg_0x131 &msg);
 
 // ID -> decoder dispatch, one function per caller. Returns false only when id is
 // recognized but dlc is invalid (the caller should log this); an unrecognized id
 // returns true (nothing to decode, not an error -- matches the pre-existing
 // silently-ignore-unknown-id behavior).
-bool decode_frame_bmu_info(uint32_t id, const uint8_t data[8], uint8_t dlc, msg_bmu &msg);
-bool decode_frame_power_sequence(uint32_t id, const uint8_t data[8], uint8_t dlc,
+bool decode_frame_bmu_info(uint32_t id, const uint8_t (&data)[8], uint8_t dlc, msg_bmu &msg);
+bool decode_frame_power_sequence(uint32_t id, const uint8_t (&data)[8], uint8_t dlc,
                                   msg_0x100 &f100, msg_0x101 &f101, msg_0x113 &f113);
 
 bool is_ok(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113);

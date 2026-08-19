@@ -32,7 +32,7 @@ namespace {
 constexpr uint8_t EXPECTED_DLC{8};
 }
 
-bool decode_0x100(const uint8_t data[8], uint8_t dlc, msg_0x100 &msg) {
+bool decode_0x100(const uint8_t (&data)[8], uint8_t dlc, msg_0x100 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -45,7 +45,7 @@ bool decode_0x100(const uint8_t data[8], uint8_t dlc, msg_0x100 &msg) {
     return true;
 }
 
-bool decode_0x101(const uint8_t data[8], uint8_t dlc, msg_0x101 &msg) {
+bool decode_0x101(const uint8_t (&data)[8], uint8_t dlc, msg_0x101 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -56,7 +56,7 @@ bool decode_0x101(const uint8_t data[8], uint8_t dlc, msg_0x101 &msg) {
     return true;
 }
 
-bool decode_0x103(const uint8_t data[8], uint8_t dlc, msg_0x103 &msg) {
+bool decode_0x103(const uint8_t (&data)[8], uint8_t dlc, msg_0x103 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -67,7 +67,7 @@ bool decode_0x103(const uint8_t data[8], uint8_t dlc, msg_0x103 &msg) {
     return true;
 }
 
-bool decode_0x110(const uint8_t data[8], uint8_t dlc, msg_0x110 &msg) {
+bool decode_0x110(const uint8_t (&data)[8], uint8_t dlc, msg_0x110 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -78,7 +78,7 @@ bool decode_0x110(const uint8_t data[8], uint8_t dlc, msg_0x110 &msg) {
     return true;
 }
 
-bool decode_0x111(const uint8_t data[8], uint8_t dlc, msg_0x111 &msg) {
+bool decode_0x111(const uint8_t (&data)[8], uint8_t dlc, msg_0x111 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -89,7 +89,7 @@ bool decode_0x111(const uint8_t data[8], uint8_t dlc, msg_0x111 &msg) {
     return true;
 }
 
-bool decode_0x112(const uint8_t data[8], uint8_t dlc, msg_0x112 &msg) {
+bool decode_0x112(const uint8_t (&data)[8], uint8_t dlc, msg_0x112 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -100,7 +100,7 @@ bool decode_0x112(const uint8_t data[8], uint8_t dlc, msg_0x112 &msg) {
     return true;
 }
 
-bool decode_0x113(const uint8_t data[8], uint8_t dlc, msg_0x113 &msg) {
+bool decode_0x113(const uint8_t (&data)[8], uint8_t dlc, msg_0x113 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -114,7 +114,7 @@ bool decode_0x113(const uint8_t data[8], uint8_t dlc, msg_0x113 &msg) {
     return true;
 }
 
-bool decode_0x120(const uint8_t data[8], uint8_t dlc, msg_0x120 &msg) {
+bool decode_0x120(const uint8_t (&data)[8], uint8_t dlc, msg_0x120 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -125,7 +125,7 @@ bool decode_0x120(const uint8_t data[8], uint8_t dlc, msg_0x120 &msg) {
     return true;
 }
 
-bool decode_0x130(const uint8_t data[8], uint8_t dlc, msg_0x130 &msg) {
+bool decode_0x130(const uint8_t (&data)[8], uint8_t dlc, msg_0x130 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -135,7 +135,7 @@ bool decode_0x130(const uint8_t data[8], uint8_t dlc, msg_0x130 &msg) {
     return true;
 }
 
-bool decode_0x131(const uint8_t data[8], uint8_t dlc, msg_0x131 &msg) {
+bool decode_0x131(const uint8_t (&data)[8], uint8_t dlc, msg_0x131 &msg) {
     if (dlc != EXPECTED_DLC) {
         return false;
     }
@@ -146,7 +146,7 @@ bool decode_0x131(const uint8_t data[8], uint8_t dlc, msg_0x131 &msg) {
     return true;
 }
 
-bool decode_frame_bmu_info(uint32_t id, const uint8_t data[8], uint8_t dlc, msg_bmu &msg) {
+bool decode_frame_bmu_info(uint32_t id, const uint8_t (&data)[8], uint8_t dlc, msg_bmu &msg) {
     if (id == 0x100) {
         return decode_0x100(data, dlc, msg.f100);
     } else if (id == 0x101) {
@@ -171,7 +171,7 @@ bool decode_frame_bmu_info(uint32_t id, const uint8_t data[8], uint8_t dlc, msg_
     return true;  // unrecognized id: nothing to decode, not an error
 }
 
-bool decode_frame_power_sequence(uint32_t id, const uint8_t data[8], uint8_t dlc,
+bool decode_frame_power_sequence(uint32_t id, const uint8_t (&data)[8], uint8_t dlc,
                                   msg_0x100 &f100, msg_0x101 &f101, msg_0x113 &f113) {
     if (id == 0x100) {
         return decode_0x100(data, dlc, f100);
