@@ -354,6 +354,25 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
         queued_ = 0;
         latched_ = false;
         cycle_invalid_ = false;
+
+        /* A STRUCTURAL failure is known before anything is sent, so nothing is sent.
+         *
+         * This is the difference between dropping a cycle and dropping it ON THE WIRE. The first
+         * version queued the measurements, sent them, and then withheld the health frame -- safe
+         * only because a conforming consumer refuses an unauthorised measurement, which made
+         * "the whole cycle is dropped" true at the consumer and false on the bus. Two reasons to
+         * do it here instead: a claim that is only true one layer away is the kind that gets
+         * quoted without the qualifier, and a non-conforming or half-written consumer would
+         * happily take the frames.
+         *
+         * A send FAILURE is the one case that cannot be handled this way -- it is not knowable
+         * until the send is attempted -- so that path alone can leave measurements on the bus
+         * with no authorising health frame. */
+        if (invalid) {
+            counters_.cycles_invalid++;
+            count = 0;
+            return;
+        }
         sink = cfg_.sink;
         /* Carried out of the lock as a VALUE. The cycle health frame is built from what was
          * latched for this cycle and never from a fresh read -- that is what lets it arrive
@@ -389,16 +408,18 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
      * would be a frame asserting four samples with three on the wire -- the contradiction the
      * contract forbids outright, and one a consumer would wait on forever.
      *
-     * A structural failure costs the cycle its health frame for a different and sharper reason.
-     * A packer refusal or a full queue drops one measurement, and the health frame that followed
-     * would be perfectly well formed with one bit missing -- indistinguishable from a sensor
-     * that had nothing to report. That disguises a producer defect as ordinary quiet, which is
-     * worse than a malformed frame: the bug becomes invisible BECAUSE the frame looks right.
+     * A structural failure -- a packer refusal, a full queue, a stale queue entry, a role or
+     * model mismatch -- is caught earlier, above, and costs the cycle every frame rather than
+     * only its health frame. The sharper reason: a health frame with one bit missing is
+     * perfectly well formed and indistinguishable from a sensor that had nothing to report, so
+     * publishing the rest of the cycle would disguise a producer defect as ordinary quiet. The
+     * bug becomes invisible BECAUSE the frame looks right.
      *
-     * Withholding is the safe direction in both cases. The measurements that did go out are left
-     * without their authorising health frame, and a conforming consumer accepts no measurement
-     * whose cycle has no cycle_valid health -- so the cycle is dropped as a unit, exactly as the
-     * revocation path drops it.
+     * The transport case is the residue. A failed send is not knowable until it is attempted, so
+     * this path alone can leave measurements on the bus with no authorising health frame. That
+     * is still the safe direction -- a conforming consumer accepts no measurement whose cycle has
+     * no cycle_valid health -- but it is a revocation at the CONSUMER, not on the wire, and it is
+     * worth saying so rather than describing both cases with one sentence.
      *
      * A cycle with NO measurements at all is not one of these cases. The contract allows a cycle
      * to carry between zero and four, and such a cycle still owes its health frame with both
@@ -410,13 +431,13 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
         counters_.measurements_sent += sent;
         counters_.send_failed_measurement += failed;
 
-        if (failed != 0 || invalid) {
-            /* Under the lock with the rest of the counters, not after it: the timer heartbeat
-             * and copy_counters() touch these from other contexts. */
-            if (failed != 0)
-                counters_.cycle_health_withheld++;
-            if (invalid)
-                counters_.cycles_invalid++;
+        if (failed != 0) {
+            /* Under the lock with the rest of the counters, not after it: the timer heartbeat and
+             * copy_counters() touch these from other contexts.
+             *
+             * Only the transport case reaches here. A structural failure already returned above,
+             * before anything was offered to the bus. */
+            counters_.cycle_health_withheld++;
             return;
         }
 

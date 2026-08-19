@@ -1004,3 +1004,24 @@ ZTEST(tof_acquisition, test_no_health_frame_escapes_after_teardown_returns)
     k_msleep(kHealthPeriodMs * 4);
     zassert_equal(rec.health_beats, after_teardown, "a health frame escaped after teardown");
 }
+
+ZTEST(tof_acquisition, test_teardown_retires_the_subsystem_rather_than_pausing_it)
+{
+    /* The path commissioning walks on every attempt. teardown() used to leave the configuration
+     * in place, so bring_up() and begin_epoch() still accepted it -- and restarted acquisition
+     * with the heartbeat already stopped. A producer emitting measurements with no liveness
+     * channel is the one combination the consumer cannot reason about. */
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::teardown();
+
+    zassert_equal(acq::bring_up(), -EINVAL, "a retired subsystem restarted acquisition");
+    zassert_equal(acq::begin_epoch(), -EINVAL, "a retired subsystem accepted an epoch");
+
+    /* And a fresh configuration is the only way back -- which also restarts the heartbeat. */
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 3);
+    zassert_true(rec.health_beats >= before + 2);
+}

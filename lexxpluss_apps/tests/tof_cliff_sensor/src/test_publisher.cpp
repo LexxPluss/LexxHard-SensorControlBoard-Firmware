@@ -1189,8 +1189,12 @@ ZTEST(tof_cliff_publisher, test_a_packer_refusal_invalidates_the_whole_cycle)
     pub::on_cliff_sample(1, 7, cliff_facts(1), bad);
     flush(7);
 
-    zassert_equal(count_id(ctr::kMeasId), 1, "the good measurement still went out");
-    zassert_equal(count_id(ctr::kHealthId), 0, "and it is left unauthorised, on purpose");
+    /* Nothing at all reaches the bus. An earlier version sent the good measurement and only
+     * withheld the health frame, which was safe -- a conforming consumer refuses an unauthorised
+     * measurement -- but it made "the whole cycle is dropped" true at the consumer and false on
+     * the wire. A claim that holds only one layer away gets quoted without the qualifier. */
+    zassert_equal(bus.count, 0, "a structural failure must not put anything on the bus");
+    zassert_equal(bus.send_calls, 0, "and must not even offer it");
 
     pub::counters c{};
     pub::copy_counters(c);
@@ -1211,7 +1215,7 @@ ZTEST(tof_cliff_publisher, test_a_role_mismatch_invalidates_the_whole_cycle)
     pub::on_cliff_sample(0, 8, wrong, one_valid_target(500));
     flush(8);
 
-    zassert_equal(count_id(ctr::kHealthId), 0);
+    zassert_equal(bus.count, 0, "the whole cycle goes, on the wire and not just in the consumer");
     pub::counters c{};
     pub::copy_counters(c);
     zassert_equal(c.cycles_invalid, 1);
@@ -1252,4 +1256,25 @@ ZTEST(tof_cliff_publisher, test_a_sample_for_a_cycle_nobody_announced_is_refused
     pub::counters c{};
     pub::copy_counters(c);
     zassert_true(c.suppressed_cycle_not_begun >= 2, "the sample and the completion both count");
+}
+
+ZTEST(tof_cliff_publisher, test_only_a_send_failure_can_leave_measurements_unauthorised)
+{
+    /* The residue, and the reason the two cases are described separately. A failed send is not
+     * knowable until it is attempted, so this path alone can put measurements on the bus with no
+     * authorising health frame -- a revocation at the CONSUMER rather than on the wire. */
+    gate_open = true;
+    bus.fail_after = 2;
+    begin(40);
+    for (int i = 0; i < kCliffSources; ++i)
+        pub::on_cliff_sample(i, 40, cliff_facts(static_cast<uint8_t>(i)), one_valid_target(400));
+    flush(40);
+
+    zassert_equal(count_id(ctr::kMeasId), 2, "the sends that succeeded are on the bus");
+    zassert_equal(count_id(ctr::kHealthId), 0, "and nothing authorises them");
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.cycle_health_withheld, 1);
+    zassert_equal(c.cycles_invalid, 0, "a transport failure is not a structural defect");
 }

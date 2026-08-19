@@ -558,7 +558,15 @@ void teardown()
     k_timer_stop(&health_timer_);
     static k_work_sync sync;
     (void)k_work_cancel_sync(&health_work_, &sync);
+
+    /* RETIRED, not merely paused. Clearing configured_ is the point of the whole call: it used
+     * to be left set, so after a teardown bring_up() and begin_epoch() still accepted the OLD
+     * configuration and would restart acquisition with the heartbeat already stopped -- a
+     * producer emitting measurements with no liveness channel, which is the one combination the
+     * consumer cannot reason about. Commissioning walks this path on every attempt, so it would
+     * not have stayed theoretical for long. A fresh init() is now the only way back. */
     active_ = false;
+    configured_ = false;
 }
 
 void stop()
