@@ -20,7 +20,7 @@ Measured 2026-08-11/12, on this board and this toolchain:
 | unpadded signed-image ceiling | 261,712 |
 | B6 signed image before this L7 work | 239,516 |
 | B6 after the record gate, vendor import and expectation | 243,604 |
-| B6 with init/start/ready/fetch/stop forced reachable | 250,936 |
+| B6 with the minimal grid fields and lifecycle forced reachable | 250,728 |
 
 The pre-L7 B6 point had 22,196 B left under the measured MCUboot-aware ceiling; embedding the
 86,016-byte payload would exceed it by at least 63,820 B before adding the L7 adapter. Compression
@@ -28,11 +28,13 @@ does not rescue the design: LZMA 61,848 and `xz -9e` 62,168 would consume nearly
 before a decompressor or the remaining L7 path. Garbage collection cannot help either — init needs
 every byte.
 
-The 2026-08-19 forced-reachability build is the current planning bound for the next phase. Making the
-ULD lifecycle plus port and retained configuration/xtalk arrays reachable adds 7,332 B over the
-Phase 1 image and leaves 10,776 B. That is below the agreed 15 KiB stop line, before the adapter,
-two live L7 objects, scheduling code or CAN glue. Phase 1 may land, but the data path must not simply
-continue from here without a capacity decision or a measured reduction.
+The 2026-08-19 forced-reachability build is the current planning bound for the next phase. Only the
+three result fields consumed by the frozen grid contract are enabled; this reduces one result read
+from 1,452 to exactly 328 bytes. Even so, making the ULD lifecycle plus port and retained
+configuration/xtalk arrays reachable adds 7,124 B over the Phase 1 image and leaves 10,984 B. That
+is below the agreed 15 KiB stop line, before the adapter, two live L7 objects, scheduling code or CAN
+glue. Phase 1 may land, but the data path must not simply continue from here without a capacity
+decision or a measured reduction.
 
 Only the 86,016-byte device-firmware blob moves out of the image. The 972-byte default
 configuration and 776-byte xtalk table remain with the ULD in the signed image, because rolling

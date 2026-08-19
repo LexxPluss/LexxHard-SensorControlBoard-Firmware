@@ -16,6 +16,23 @@
 #include <stdint.h>
 #include <string.h>
 
+/* The frozen grid contract consumes exactly these ULD outputs:
+ *
+ *   nb_target_detected, distance_mm, target_status.
+ *
+ * Do not ask the sensor to send fields that are discarded immediately. Besides shrinking
+ * VL53L7CX_ResultsData by about 1.1 KiB, this makes VL53L7CX_MAX_RESULTS_SIZE exactly 328 bytes:
+ * one transaction at the hardware-proven port bound instead of five segmented transactions for
+ * the upstream 1,452-byte default. These defines live in platform.h because vl53l7cx_api.h includes
+ * it before declaring either the result structure or the output block list; every consumer
+ * therefore sees one ABI rather than relying on a matching build-system definition. */
+#define VL53L7CX_DISABLE_AMBIENT_PER_SPAD
+#define VL53L7CX_DISABLE_NB_SPADS_ENABLED
+#define VL53L7CX_DISABLE_SIGNAL_PER_SPAD
+#define VL53L7CX_DISABLE_RANGE_SIGMA_MM
+#define VL53L7CX_DISABLE_REFLECTANCE_PERCENT
+#define VL53L7CX_DISABLE_MOTION_INDICATOR
+
 typedef struct {
     /* ST stores the 8-bit wire address here (default 0x52). The Zephyr port validates it and
      * converts exactly once to the 7-bit controller address. */
@@ -34,7 +51,7 @@ enum { VL53L7CX_FIRMWARE_DOWNLOAD_SIZE = 0x15000U };
 #define VL53L7CX_NB_TARGET_PER_ZONE (1U)
 #endif
 
-/* Keep ULD conversion enabled and every field used by the frozen grid contract present. */
+/* Keep ULD conversion enabled. The three fields used by the frozen contract remain present. */
 #define PROCESSOR_LITTLE_ENDIAN
 #define SWAP_UINT16(x) (x)
 #define SWAP_UINT32(x) (x)

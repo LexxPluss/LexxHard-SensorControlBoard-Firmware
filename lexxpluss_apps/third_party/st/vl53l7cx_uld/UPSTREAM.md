@@ -64,6 +64,12 @@ The Zephyr platform keeps the ST 8-bit address convention at the ULD boundary an
 Zephyr's 7-bit address. Every transfer carries a 16-bit big-endian index; requests larger than 328
 bytes are split into independently indexed transactions. The port has no bounce buffer.
 
+Only `nb_target_detected`, `distance_mm` and `target_status` are enabled in the ULD result ABI,
+because those are the only fields consumed by the frozen grid contract. This reduces the maximum
+result read from the upstream default 1,452 bytes to exactly 328 bytes. A compile-time assertion
+binds that value to the hardware-proven port limit, so one grid fetch is one transaction; adding a
+field cannot silently turn it back into a segmented read.
+
 The ULD collapses transport failures into an 8-bit status, so the original errno is recorded as a
 sticky first error. Because the ST callback surface has no per-device context for that record, all
 ULD lifecycle and ranging calls must remain on the one acquisition thread.
