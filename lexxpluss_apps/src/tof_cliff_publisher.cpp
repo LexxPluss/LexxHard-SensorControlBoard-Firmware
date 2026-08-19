@@ -72,10 +72,23 @@ struct pending_frame {
 pending_frame queue_[tof_acq::kMaxSources]{};
 int queued_{0};
 
-/* Latched once per cycle and shared by every frame it produces. */
+/* Latched at the START of a cycle -- by on_cycle_begin, never by the first sample. A cycle may
+ * legally produce zero measurements, and latching on the first one would mean such a cycle was
+ * never latched and therefore never reported. */
 bool latched_{false};
 uint32_t latched_cycle_{0};
 authorisation latched_auth_{};
+
+/* Something structural went wrong in this cycle: a packer refusal, a full queue, a stale queue
+ * entry, a model or role mismatch. Not a sensor outcome -- a NO_SAMPLE is an ordinary empty bit
+ * and leaves the cycle valid.
+ *
+ * It exists because withholding only on a transport failure was not enough. A packer refusal
+ * drops one measurement and would otherwise leave a perfectly legal-looking health frame with
+ * one bit missing, which is indistinguishable from a sensor that had nothing to report. That
+ * disguises a producer defect as ordinary quiet, which is the worst of the three outcomes: the
+ * bug becomes invisible precisely because the frame is well formed. */
+bool cycle_invalid_{false};
 
 /* The health sequence counter.
  *
@@ -171,6 +184,25 @@ int init(const struct config &cfg)
     return 0;
 }
 
+void on_cycle_begin(uint32_t cycle_seq)
+{
+    const guard held;
+    if (!ready_)
+        return;
+
+    /* Anything still queued belongs to a cycle that never got flushed. Dropping it is the same
+     * rule as everywhere else: an unsent range is a stale range. */
+    if (queued_ > 0) {
+        counters_.discarded_stale_cycle += static_cast<uint32_t>(queued_);
+        queued_ = 0;
+    }
+
+    latched_ = true;
+    latched_cycle_ = cycle_seq;
+    latched_auth_ = cfg_.authorise();
+    cycle_invalid_ = false;
+}
+
 void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts &facts,
                      const struct tof_cliff_sample &sample)
 {
@@ -184,8 +216,18 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
      * for a fresh sample of an l4_cliff source. Kept because the sink is a function pointer
      * -- a wiring mistake, or a future caller, would otherwise have an L7 stub sample
      * silently packed as a cliff range. */
+    /* The cycle must have been announced. This is not defensiveness for its own sake: the
+     * authorisation is latched by on_cycle_begin, so a sample for an unannounced cycle has no
+     * authorisation to be published under, and inventing one here is how the zero-measurement
+     * hole got created in the first place. */
+    if (!latched_ || latched_cycle_ != cycle_seq) {
+        counters_.suppressed_cycle_not_begun++;
+        return;
+    }
+
     if (facts.kind != tof_acq::model::l4_cliff) {
         counters_.suppressed_wrong_model++;
+        cycle_invalid_ = true;
         return;
     }
 
@@ -196,24 +238,13 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
     const tof_acq::source_desc &d{cfg_.sources[index]};
     if (d.kind != facts.kind || d.role_id != facts.role_id) {
         counters_.suppressed_role_mismatch++;
+        cycle_invalid_ = true;
         return;
     }
 
-    /* One authorisation for the whole cycle. Reading it per sensor would let four frames of
-     * one cycle carry different epochs, and the consumer correlates on exactly that. A new
-     * cycle number is the only signal available for "the cycle changed", because the
-     * acquisition layer has no begin-of-cycle hook. */
-    if (!latched_ || latched_cycle_ != cycle_seq) {
-        /* Anything still queued belongs to a cycle that never got flushed. Dropping it is
-         * the same rule as everywhere else: an unsent range is a stale range. */
-        if (queued_ > 0) {
-            counters_.discarded_stale_cycle += static_cast<uint32_t>(queued_);
-            queued_ = 0;
-        }
-        latched_ = true;
-        latched_cycle_ = cycle_seq;
-        latched_auth_ = cfg_.authorise();
-    }
+    /* One authorisation for the whole cycle, taken at its start. Reading it per sensor would let
+     * four frames of one cycle carry different epochs, and the consumer correlates on exactly
+     * that. */
     const authorisation auth{latched_auth_};
     if (!allowed(auth)) {
         /* Outside PROVEN a measurement frame carries a source_id that is this firmware's
@@ -232,6 +263,7 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
     if (r.outcome != pk::result::frame_ready) {
         counters_.suppressed_packer_refused++;
         counters_.last_refusal = r.why;
+        cycle_invalid_ = true;
         return;
     }
 
@@ -241,6 +273,7 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
                                 static_cast<uint8_t>(cycle_seq & 0xFF), frame, &why)) {
         counters_.suppressed_packer_refused++;
         counters_.last_refusal = why;
+        cycle_invalid_ = true;
         return;
     }
 
@@ -251,8 +284,10 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts 
      * gets here, because reduce() returns no_frame for it, so its bit stays clear by
      * construction rather than by a rule someone has to remember. */
     if (!enqueue(cycle_seq, ctr::kMeasId, frame, ctr::kDlc, facts.role_id,
-                 r.cls == ctr::status_class::sensor_fault))
+                 r.cls == ctr::status_class::sensor_fault)) {
         counters_.queue_full++;
+        cycle_invalid_ = true;
+    }
 }
 
 void on_cycle_complete(const tof_acq::cycle_facts &facts)
@@ -265,13 +300,25 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
     struct can_sink sink{};
     uint32_t stale{0};
     authorisation cycle_auth{};
+    bool invalid{false};
 
     {
         const guard held;
         if (!ready_)
             return;
-        if (queued_ == 0) {
+        /* A cycle nobody announced cannot be completed either. Deliberately NOT the same as an
+         * empty cycle: an empty ANNOUNCED cycle still owes a health frame, which is the whole
+         * point of the change that introduced on_cycle_begin. */
+        if (!latched_ || latched_cycle_ != facts.cycle_seq) {
+            /* Drop the cycle as a unit, and attribute the defect where it was detected. Anything
+             * queued belongs to a cycle whose completion is now past, so leaving it would let an
+             * unsent range wait for a later flush -- which is a stale range on the wire, the one
+             * thing every path here refuses to do. */
+            counters_.suppressed_cycle_not_begun++;
+            counters_.discarded_stale_cycle += static_cast<uint32_t>(queued_);
+            queued_ = 0;
             latched_ = false;
+            cycle_invalid_ = false;
             return;
         }
 
@@ -285,6 +332,7 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
             counters_.cycles_discarded_unauthorised++;
             queued_ = 0;
             latched_ = false;
+            cycle_invalid_ = false;
             return;
         }
 
@@ -298,8 +346,14 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
             outgoing[count++] = queue_[i];
         }
         counters_.discarded_stale_cycle += stale;
+        /* A queued frame from another cycle is a producer defect, so the cycle it landed in is
+         * not trustworthy either. */
+        if (stale != 0)
+            cycle_invalid_ = true;
+        invalid = cycle_invalid_;
         queued_ = 0;
         latched_ = false;
+        cycle_invalid_ = false;
         sink = cfg_.sink;
         /* Carried out of the lock as a VALUE. The cycle health frame is built from what was
          * latched for this cycle and never from a fresh read -- that is what lets it arrive
@@ -329,32 +383,43 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
             fault_mask |= static_cast<uint8_t>(1U << (f.source_id & 0x3));
     }
 
+    /* THE CYCLE HEALTH FRAME, AND THE TWO WAYS A CYCLE LOSES IT
+     *
+     * A measurement that did not reach the bus must not be claimed by a mask. The alternative
+     * would be a frame asserting four samples with three on the wire -- the contradiction the
+     * contract forbids outright, and one a consumer would wait on forever.
+     *
+     * A structural failure costs the cycle its health frame for a different and sharper reason.
+     * A packer refusal or a full queue drops one measurement, and the health frame that followed
+     * would be perfectly well formed with one bit missing -- indistinguishable from a sensor
+     * that had nothing to report. That disguises a producer defect as ordinary quiet, which is
+     * worse than a malformed frame: the bug becomes invisible BECAUSE the frame looks right.
+     *
+     * Withholding is the safe direction in both cases. The measurements that did go out are left
+     * without their authorising health frame, and a conforming consumer accepts no measurement
+     * whose cycle has no cycle_valid health -- so the cycle is dropped as a unit, exactly as the
+     * revocation path drops it.
+     *
+     * A cycle with NO measurements at all is not one of these cases. The contract allows a cycle
+     * to carry between zero and four, and such a cycle still owes its health frame with both
+     * per-cycle masks empty: without it, "completed, all four sources had nothing" and "the cycle
+     * never happened" are the same silence. */
+    uint8_t health[8]{};
     {
         const guard held;
         counters_.measurements_sent += sent;
         counters_.send_failed_measurement += failed;
-    }
 
-    /* THE CYCLE HEALTH FRAME, AND WHY IT IS WITHHELD ON ANY FAILURE
-     *
-     * A measurement that did not reach the bus must not be claimed by a mask. The alternative
-     * to withholding would be a frame asserting four samples with three on the wire, which is
-     * the contradiction the contract forbids outright -- and a consumer that trusted it would
-     * wait for a frame that is never coming.
-     *
-     * Withholding is the safe direction rather than merely the honest one: the measurements
-     * that DID go out are left without their authorising health frame, and a conforming
-     * consumer accepts no measurement whose cycle has no cycle_valid health. So the cycle is
-     * dropped as a unit, which is the same rule the revocation path uses. */
-    if (count == 0 || failed != 0) {
-        if (failed != 0)
-            counters_.cycle_health_withheld++;
-        return;
-    }
+        if (failed != 0 || invalid) {
+            /* Under the lock with the rest of the counters, not after it: the timer heartbeat
+             * and copy_counters() touch these from other contexts. */
+            if (failed != 0)
+                counters_.cycle_health_withheld++;
+            if (invalid)
+                counters_.cycles_invalid++;
+            return;
+        }
 
-    uint8_t health[8]{};
-    {
-        const guard held;
         if (!ready_)
             return;
 

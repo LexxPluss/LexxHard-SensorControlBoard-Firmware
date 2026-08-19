@@ -168,6 +168,14 @@ struct cycle_facts {
 // Sinks. The payload goes to the model's own sink, so no packer ever has to skip past
 // another model's data, and the neutral facts go to both.
 struct sinks {
+    // Fires ONCE at the top of a cycle, before the first sensor is read.
+    //
+    // It exists because a cycle can legally produce zero measurements -- the contract allows
+    // between zero and four -- and a sink that latched its per-cycle state on the first sample
+    // would never latch at all for such a cycle. The consumer must still be told that the cycle
+    // happened and produced nothing, otherwise "completed with no samples" and "never happened"
+    // are the same silence.
+    void (*on_cycle_begin)(uint32_t cycle_seq);
     void (*on_cycle)(const cycle_facts &facts);
     // Raw, unclassified, unreduced. index is the source index in the descriptor table.
     //
@@ -228,9 +236,17 @@ void run_cycle();
 // heartbeat as well.
 void stop();
 
-// The real shutdown: stop() plus the heartbeat. Separate so that pausing acquisition and
-// retiring the subsystem cannot be confused -- a consumer must be able to tell a controlled
-// pause from a silence that looks like a crashed producer.
+// The real shutdown: stop(), then the heartbeat, then a SYNCHRONOUS cancel of any health work
+// already submitted. Separate from stop() so that pausing acquisition and retiring the
+// subsystem cannot be confused -- a consumer must be able to tell a controlled pause from a
+// silence that looks like a crashed producer.
+//
+// After this returns, no further health frame can be emitted. Stopping the timer alone does not
+// give that: a work item submitted by the last tick may still be queued or running, so a frame
+// could go out after teardown claimed the subsystem was down.
+//
+// Until it is called, a second init() is refused with -EALREADY rather than overwriting a live
+// configuration underneath a work item that is reading it.
 void teardown();
 
 // True only when the chain is genuinely free: not mid-cycle AND not running. The

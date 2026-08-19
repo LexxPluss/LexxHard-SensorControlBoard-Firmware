@@ -26,6 +26,10 @@ namespace {
 
 config cfg_;
 bool configured_{false};
+/* Set by a successful init(), cleared only by teardown(). While it is set, a second init() is
+ * refused: the health work item reads cfg_ from another context, and overwriting the
+ * configuration underneath it is a data race with a function pointer in it. */
+bool active_{false};
 bool running_{false};
 bool in_cycle_{false};
 cycle_facts facts_;
@@ -61,6 +65,7 @@ uint32_t next_cycle_seq_{0};
 atomic_t snapshot_{ATOMIC_INIT(0)};
 k_timer health_timer_;
 bool health_timer_inited_{false};
+bool health_work_inited_{false};
 k_work health_work_;
 
 // Bit layout of the snapshot. One word, so the heartbeat reads it without the lock.
@@ -328,13 +333,21 @@ void copy_facts(cycle_facts &out)
 
 int init(const config &cfg)
 {
+    /* A live subsystem is not re-configurable. cfg_ is read by the health work item from another
+     * context, so replacing it here would be a data race on a struct full of function pointers.
+     * Retiring the subsystem is teardown()'s job and has to be asked for explicitly. */
+    if (active_)
+        return -EALREADY;
     if (cfg.source_count <= 0 || cfg.source_count > kMaxSources)
         return -EINVAL;
     if (cfg.sources == nullptr || cfg.now_ms == nullptr ||
         cfg.mapping_state_provider == nullptr)
         return -EINVAL;
-    if (cfg.hooks.on_cycle == nullptr || cfg.hooks.on_cliff_sample == nullptr ||
-        cfg.hooks.on_cliff_health == nullptr)
+    /* on_cycle_begin is required, not optional. A sink that never hears the start of a cycle
+     * cannot report a cycle that produced nothing, and a silently missing hook would turn every
+     * zero-sample cycle into a gap the consumer reads as "the producer stopped". */
+    if (cfg.hooks.on_cycle_begin == nullptr || cfg.hooks.on_cycle == nullptr ||
+        cfg.hooks.on_cliff_sample == nullptr || cfg.hooks.on_cliff_health == nullptr)
         return -EINVAL;
     // No defaults on purpose: an invented period would become the specification.
     if (cfg.periods.cycle_period_ms == 0 || cfg.periods.health_period_ms == 0)
@@ -370,7 +383,15 @@ int init(const config &cfg)
     // Armed before bring-up, so the heartbeat is already running while the sensors are
     // still being opened. That is the whole point: NOT_READY has to be audible during
     // exactly the window where something might hang.
-    k_work_init(&health_work_, health_work_handler);
+    //
+    // Initialised once, for the same reason as the timer below: while the heartbeat is alive
+    // this work item can be queued or running, and re-initialising it then is no safer than
+    // re-initialising a live timer. The timer bug was the one that spun; this one was simply
+    // waiting for a re-init to land in the wrong microsecond.
+    if (!health_work_inited_) {
+        k_work_init(&health_work_, health_work_handler);
+        health_work_inited_ = true;
+    }
     /* Initialised ONCE, and never again while it may be running.
      *
      * This used to be an unconditional k_timer_init() on every init(), which worked only
@@ -388,6 +409,7 @@ int init(const config &cfg)
     }
     k_timer_start(&health_timer_, K_MSEC(cfg.periods.health_period_ms),
                   K_MSEC(cfg.periods.health_period_ms));
+    active_ = true;
     return 0;
 }
 
@@ -476,6 +498,12 @@ void run_cycle()
     facts_.cycle_seq = next_cycle_seq_;
     facts_.began_ms = now();
 
+    /* Before the first sensor is touched. A cycle that produces no sample at all still has to be
+     * announced, and this is the only point at which that is possible: every later hook is
+     * per-sample. Under the chain lock, like the sample hook, so a sink sees one consistent
+     * ordering. */
+    cfg_.hooks.on_cycle_begin(facts_.cycle_seq);
+
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
         source_facts &f{facts_.sources[i]};
@@ -514,13 +542,23 @@ void run_cycle()
 
 void teardown()
 {
-    /* The real shutdown: quiesce acquisition AND stop the heartbeat. Separate from stop()
-     * because they answer different questions -- "pause reading" versus "this subsystem is
-     * going away" -- and because a consumer must be able to tell a pause from a silence. */
+    /* The real shutdown: quiesce acquisition, stop the heartbeat, then WAIT for any health work
+     * already submitted to finish. Separate from stop() because they answer different questions
+     * -- "pause reading" versus "this subsystem is going away".
+     *
+     * The cancel is the part that is easy to leave out and wrong to: k_timer_stop() only stops
+     * future ticks, and the last tick may already have submitted a work item that is queued or
+     * mid-flight. Without the synchronous cancel a health frame can be emitted AFTER teardown
+     * returned, which makes "the subsystem is down" false at exactly the moment something is
+     * relying on it -- and leaves the work item reading a cfg_ the next init() is entitled to
+     * replace. */
     if (!configured_)
         return;
     stop();
     k_timer_stop(&health_timer_);
+    static k_work_sync sync;
+    (void)k_work_cancel_sync(&health_work_, &sync);
+    active_ = false;
 }
 
 void stop()

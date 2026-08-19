@@ -143,6 +143,8 @@ struct {
     int last_sample_index{-1};
     int16_t last_sample_mm{0};
     int health_beats{0};
+    int cycle_begins{0};
+    uint32_t last_begin_cycle{0};
     uint32_t last_health_snapshot{0};
     acq::mapping_state last_health_state{acq::mapping_state::not_ready};
 } rec;
@@ -167,6 +169,12 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const acq::source_facts &,
     rec.last_sample_mm = s.entries[0].range_mm;
     if (sample_cycle_count < static_cast<int>(sizeof sample_cycles / sizeof sample_cycles[0]))
         sample_cycles[sample_cycle_count++] = cycle_seq;
+}
+
+void on_cycle_begin(uint32_t cycle_seq)
+{
+    ++rec.cycle_begins;
+    rec.last_begin_cycle = cycle_seq;
 }
 
 void on_cliff_health(uint32_t snapshot, acq::mapping_state state)
@@ -209,6 +217,7 @@ acq::config make_config(int count)
     c.hooks.on_cycle = on_cycle;
     c.hooks.on_cliff_sample = on_cliff_sample;
     c.hooks.on_cliff_health = on_cliff_health;
+    c.hooks.on_cycle_begin = on_cycle_begin;
     c.mapping_state_provider = mapping_provider;
     c.now_ms = clock_ms;
     return c;
@@ -216,6 +225,11 @@ acq::config make_config(int count)
 
 void before(void *)
 {
+    /* Retire whatever the previous case left running. init() now refuses -EALREADY while the
+     * subsystem is live -- because the health work item reads cfg_ from another context -- and
+     * several cases call before() themselves inside a loop to re-configure per iteration. */
+    acq::teardown();
+
     acq::stop();
     memset(devs, 0, sizeof(devs));
     rec = {};
@@ -226,7 +240,17 @@ void before(void *)
 
 }  // namespace
 
-ZTEST_SUITE(tof_acquisition, NULL, NULL, before, NULL, NULL);
+/* Every test re-configures, and a live subsystem now refuses that with -EALREADY -- because the
+ * health work item reads cfg_ from another context and overwriting it there is a data race with a
+ * function pointer in it. So the suite retires the subsystem after each test, which is what a
+ * caller has to do anyway. The old suite got away with having no teardown only because init()
+ * silently replaced a live configuration. */
+void retire(void *)
+{
+    acq::teardown();
+}
+
+ZTEST_SUITE(tof_acquisition, NULL, NULL, before, retire, NULL);
 
 /* --------------------------------------------------------------- configuration ----- */
 
@@ -899,4 +923,84 @@ ZTEST(tof_acquisition, test_teardown_is_what_stops_the_heartbeat)
     const int before{rec.health_beats};
     k_msleep(kHealthPeriodMs * 3);
     zassert_equal(rec.health_beats, before, "the heartbeat survived teardown");
+}
+
+ZTEST(tof_acquisition, test_every_cycle_is_announced_before_the_first_sensor_is_read)
+{
+    /* The hook exists so a cycle that produces nothing can still be reported, so it has to fire
+     * before any read -- if it fired with the first sample it would never fire for such a cycle,
+     * which is the whole hole it closes. */
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    for (int i = 0; i < acq::kMaxSources; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    rec.cycle_begins = 0;
+    acq::run_cycle();
+    zassert_equal(rec.cycle_begins, 1, "exactly one announcement per cycle");
+    zassert_equal(rec.last_begin_cycle, 0, "and it carries the cycle about to run");
+
+    acq::run_cycle();
+    zassert_equal(rec.cycle_begins, 2);
+    zassert_equal(rec.last_begin_cycle, 1);
+
+    acq::stop();
+}
+
+ZTEST(tof_acquisition, test_a_cycle_where_no_sensor_produces_is_still_announced)
+{
+    /* The case the hook was added for. Nothing to sample, so nothing but the announcement and the
+     * completion reach the sink -- and that pair is what tells a consumer the cycle happened. */
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    for (int i = 0; i < acq::kMaxSources; ++i)
+        devs[i].fresh = false;
+    zassert_equal(acq::bring_up(), 0);
+
+    rec.cycle_begins = 0;
+    rec.cliff_samples = 0;
+    acq::run_cycle();
+
+    zassert_equal(rec.cycle_begins, 1);
+    zassert_equal(rec.cliff_samples, 0, "no sensor had anything");
+    zassert_equal(rec.cycles, 1, "and the cycle still completed");
+
+    acq::stop();
+}
+
+ZTEST(tof_acquisition, test_a_missing_cycle_begin_hook_is_refused)
+{
+    /* Not optional. A sink that never hears the start of a cycle cannot report an empty one, and
+     * a silently missing hook would turn every empty cycle into a gap that reads as a stopped
+     * producer. */
+    acq::config c{make_config(4)};
+    c.hooks.on_cycle_begin = nullptr;
+    zassert_equal(acq::init(c), -EINVAL);
+}
+
+ZTEST(tof_acquisition, test_a_second_init_is_refused_while_the_subsystem_is_live)
+{
+    /* cfg_ is read by the health work item from another context, so replacing it under a live
+     * subsystem is a data race on a struct full of function pointers. Retiring is teardown()'s
+     * job and has to be asked for. */
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::init(make_config(4)), -EALREADY);
+
+    acq::teardown();
+    zassert_equal(acq::init(make_config(4)), 0, "after teardown it is configurable again");
+}
+
+ZTEST(tof_acquisition, test_no_health_frame_escapes_after_teardown_returns)
+{
+    /* Stopping the timer is not enough: the last tick may already have submitted a work item that
+     * is queued or running, so a frame could go out after teardown claimed the subsystem was
+     * down. teardown() cancels it synchronously, which is what makes "no more frames" true at the
+     * moment it returns rather than shortly after. */
+    zassert_equal(acq::init(make_config(4)), 0);
+    k_msleep(kHealthPeriodMs * 2);
+    zassert_true(rec.health_beats > 0, "the heartbeat has to be running for this to prove anything");
+
+    acq::teardown();
+    const int after_teardown{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 4);
+    zassert_equal(rec.health_beats, after_teardown, "a health frame escaped after teardown");
 }

@@ -204,6 +204,14 @@ void flush(uint32_t cycle_seq)
     pub::on_cycle_complete(f);
 }
 
+/* What the acquisition layer does at the top of every cycle. Tests announce cycles the same way
+ * production does -- the authorisation is latched here and nowhere else, so a test that skipped
+ * it would be exercising a path production cannot take. */
+void begin(uint32_t cycle_seq)
+{
+    pub::on_cycle_begin(cycle_seq);
+}
+
 void before(void *)
 {
     bus = {};
@@ -224,7 +232,14 @@ void before(void *)
 
 } // namespace
 
-ZTEST_SUITE(tof_cliff_publisher, NULL, NULL, before, NULL, NULL);
+/* The integration tests at the end of this file configure the acquisition layer, and a live one
+ * refuses a second init(). Retiring after every test keeps them independent of their order. */
+void retire_acquisition(void *)
+{
+    acq::teardown();
+}
+
+ZTEST_SUITE(tof_cliff_publisher, NULL, NULL, before, retire_acquisition, NULL);
 
 /* ------------------------------------------------------------ the safety gate ----- */
 
@@ -247,6 +262,7 @@ ZTEST(tof_cliff_publisher, test_no_measurement_is_sent_while_the_mapping_is_not_
      * physical position. */
     gate_open = false;
     const auto s{one_valid_target(900)};
+    begin(1);
     for (uint8_t role = 0; role < kCliffSources; ++role)
         pub::on_cliff_sample(role, 1, cliff_facts(role), s);
     flush(1);
@@ -307,6 +323,7 @@ ZTEST(tof_cliff_publisher, test_a_lost_mapping_authorises_no_measurement)
      * LOST or FAULT, and the reason is the same in all three: source_id outside PROVEN is
      * the firmware's guess rather than a physical position. */
     state_value = acq::mapping_state::lost;
+    begin(0);
     pub::on_cliff_sample(0, 0, cliff_facts(0), one_valid_target(400));
     flush(0);
     zassert_equal(bus.count, 0, "a measurement went out under LOST");
@@ -349,6 +366,7 @@ ZTEST(tof_cliff_publisher, test_measurement_bytes_match_the_named_vector)
     gate_open = true;
 
     /* The vector is source 0, epoch 1, cycle 0, range 1234, status 0, one target. */
+    begin(0);
     pub::on_cliff_sample(0, 0, cliff_facts(0), one_valid_target(1234));
     flush(0);
 
@@ -370,10 +388,13 @@ ZTEST(tof_cliff_publisher, test_the_cycle_the_sample_belongs_to_reaches_the_wire
     /* One cycle at a time, flushed each time. Queueing three cycles and flushing once --
      * which an earlier version of this test did -- contradicts the rule that a frame never
      * outlives its cycle. */
+    begin(0);
     pub::on_cliff_sample(0, 0, cliff_facts(0), one_valid_target(900));
     flush(0);
+    begin(1);
     pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
     flush(1);
+    begin(258);
     pub::on_cliff_sample(0, 258, cliff_facts(0), one_valid_target(900));
     flush(258);
 
@@ -394,6 +415,7 @@ ZTEST(tof_cliff_publisher, test_a_stale_sample_is_not_published)
     auto s{one_valid_target(900)};
     s.fresh = false;
 
+    begin(1);
     pub::on_cliff_sample(0, 1, cliff_facts(0), s);
     flush(1);
 
@@ -415,6 +437,7 @@ ZTEST(tof_cliff_publisher, test_a_packer_refusal_sends_nothing_at_all)
     s.entry_count = 1;
     s.entries[0].range_status = 5;
 
+    begin(1);
     pub::on_cliff_sample(0, 1, cliff_facts(0), s);
     flush(1);
 
@@ -435,6 +458,7 @@ ZTEST(tof_cliff_publisher, test_l7_stub_data_never_reaches_the_cliff_packer)
     acq::source_facts grid{cliff_facts(4)};
     grid.kind = acq::model::l7_grid;
 
+    begin(1);
     pub::on_cliff_sample(4, 1, grid, one_valid_target(900));
     flush(1);
 
@@ -454,6 +478,7 @@ ZTEST(tof_cliff_publisher, test_a_bus_failure_is_counted_apart_from_a_sensor_fai
     gate_open = true;
     bus.fail_after = 0; // every send fails
 
+    begin(1);
     pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
     flush(1);
     pub::on_cliff_health(0, acq::mapping_state::not_ready);
@@ -479,6 +504,7 @@ ZTEST(tof_cliff_publisher, test_health_keeps_flowing_after_a_measurement_bus_fai
     bus.fail_after = 1; // the first send succeeds, everything after fails
 
     pub::on_cliff_health(0, acq::mapping_state::not_ready); // succeeds
+    begin(1);
     pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
     flush(1);                                               // this send fails
     pub::on_cliff_health(0, acq::mapping_state::not_ready); // fails too, but is attempted
@@ -517,6 +543,7 @@ ZTEST(tof_cliff_publisher, test_nothing_reaches_the_bus_before_the_cycle_ends)
      * backpressure stall every sensor's next read, so the frame is queued and the bus is
      * only touched after the lock is released. */
     gate_open = true;
+    begin(3);
     for (uint8_t role = 0; role < kCliffSources; ++role)
         pub::on_cliff_sample(role, 3, cliff_facts(role), one_valid_target(700));
 
@@ -533,6 +560,7 @@ ZTEST(tof_cliff_publisher, test_a_failed_frame_is_never_carried_into_the_next_cy
      * and then dropped, whatever happened. */
     gate_open = true;
     bus.fail_after = 0; // every send fails
+    begin(1);
     pub::on_cliff_sample(0, 1, cliff_facts(0), one_valid_target(900));
     flush(1);
     zassert_equal(bus.send_calls, 1);
@@ -559,6 +587,7 @@ ZTEST(tof_cliff_publisher, test_facts_disagreeing_with_the_descriptor_are_refuse
     acq::source_facts wrong{cliff_facts(0)};
     wrong.role_id = 2; // descriptor 0 carries role 0
 
+    begin(1);
     pub::on_cliff_sample(0, 1, wrong, one_valid_target(900));
     flush(1);
 
@@ -578,6 +607,7 @@ ZTEST(tof_cliff_publisher, test_every_frame_of_a_cycle_shares_one_authorisation)
     epoch_value = 4;
     authorise_calls = 0;
 
+    begin(9);
     for (uint8_t role = 0; role < kCliffSources; ++role) {
         pub::on_cliff_sample(role, 9, cliff_facts(role), one_valid_target(600));
         epoch_value = static_cast<uint8_t>(epoch_value + 1); // moves under our feet
@@ -600,6 +630,7 @@ ZTEST(tof_cliff_publisher, test_losing_the_mapping_before_the_flush_discards_the
      * holds. The whole cycle goes, not the offending frame: a partly published cycle is a
      * broken correlation the consumer cannot detect. */
     gate_open = true;
+    begin(5);
     for (uint8_t role = 0; role < kCliffSources; ++role)
         pub::on_cliff_sample(role, 5, cliff_facts(role), one_valid_target(800));
 
@@ -619,6 +650,7 @@ ZTEST(tof_cliff_publisher, test_a_moved_epoch_before_the_flush_discards_the_cycl
      * that has been re-proven since they were built. */
     gate_open = true;
     epoch_value = 2;
+    begin(6);
     for (uint8_t role = 0; role < kCliffSources; ++role)
         pub::on_cliff_sample(role, 6, cliff_facts(role), one_valid_target(800));
 
@@ -637,6 +669,7 @@ ZTEST(tof_cliff_publisher, test_a_frame_never_outlives_its_cycle)
      * another; and a cycle that never got flushed is dropped when the next one starts,
      * rather than trailing along behind it. */
     gate_open = true;
+    begin(10);
     pub::on_cliff_sample(0, 10, cliff_facts(0), one_valid_target(900));
     flush(11); // the wrong cycle completes
 
@@ -646,7 +679,9 @@ ZTEST(tof_cliff_publisher, test_a_frame_never_outlives_its_cycle)
     zassert_equal(c.discarded_stale_cycle, 1);
 
     /* And an unflushed cycle does not survive into the next one. */
+    begin(12);
     pub::on_cliff_sample(0, 12, cliff_facts(0), one_valid_target(900));
+    begin(13);
     pub::on_cliff_sample(0, 13, cliff_facts(0), one_valid_target(900));
     flush(13);
 
@@ -705,6 +740,7 @@ acq::config make_acq_config()
     c.periods.health_period_ms = 100;
     /* The real wiring: the acquisition layer's sinks are the publisher's entry points, and
      * nothing sits in between to transform anything. */
+    c.hooks.on_cycle_begin = pub::on_cycle_begin;
     c.hooks.on_cycle = pub::on_cycle_complete;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
     c.hooks.on_cliff_health = pub::on_cliff_health;
@@ -838,6 +874,7 @@ ZTEST(tof_cliff_publisher, test_a_stalled_measurement_send_does_not_hold_the_hea
     gate_open = true;
     bus.block_measurements = true;
 
+    begin(21);
     for (uint8_t role = 0; role < kCliffSources; ++role)
         pub::on_cliff_sample(role, 21, cliff_facts(role), one_valid_target(1100));
 
@@ -880,6 +917,7 @@ ZTEST(tof_cliff_publisher, test_a_stalled_measurement_send_does_not_hold_the_hea
     zassert_equal(bus.measurements_inside, 0);
 
     /* The queue is empty again, so the next cycle starts clean. */
+    begin(22);
     pub::on_cliff_sample(0, 22, cliff_facts(0), one_valid_target(900));
     bus.block_measurements = false;
     flush(22);
@@ -926,6 +964,7 @@ uint8_t health_enumerated(const sent_frame *f) { return static_cast<uint8_t>(f->
 ZTEST(tof_cliff_publisher, test_a_completed_cycle_publishes_a_cycle_valid_health_frame)
 {
     gate_open = true;
+    begin(5);
     for (int i = 0; i < kCliffSources; ++i)
         pub::on_cliff_sample(i, 5, cliff_facts(static_cast<uint8_t>(i)), one_valid_target(400));
     flush(5);
@@ -957,6 +996,7 @@ ZTEST(tof_cliff_publisher, test_the_masks_come_from_the_reduction_not_from_the_s
      * four samples are `fresh`, so anything keyed off freshness would report 0xF produced -- the
      * mask has to follow what the packer decided a frame was owed for. */
     gate_open = true;
+    begin(9);
     pub::on_cliff_sample(0, 9, cliff_facts(0), one_valid_target(400));
     pub::on_cliff_sample(1, 9, cliff_facts(1), one_faulted_target());
     pub::on_cliff_sample(2, 9, cliff_facts(2), one_no_sample());
@@ -981,6 +1021,7 @@ ZTEST(tof_cliff_publisher, test_a_failed_measurement_send_withholds_the_cycle_he
      * direction and the same rule the revocation path uses. */
     gate_open = true;
     bus.fail_after = 2; // the third send onwards fails
+    begin(3);
     for (int i = 0; i < kCliffSources; ++i)
         pub::on_cliff_sample(i, 3, cliff_facts(static_cast<uint8_t>(i)), one_valid_target(400));
     flush(3);
@@ -1004,6 +1045,7 @@ ZTEST(tof_cliff_publisher, test_the_cycle_health_uses_the_values_latched_for_tha
     gate_open = true;
     enumerated_value = 0xF;
     model_verified_value = 0xF;
+    begin(11);
     pub::on_cliff_sample(0, 11, cliff_facts(0), one_valid_target(400));
 
     enumerated_value = 0x3; // the authority moved on mid-cycle
@@ -1067,6 +1109,7 @@ ZTEST(tof_cliff_publisher, test_the_two_health_producers_never_share_a_sequence_
      * the same number. Two producers deriving from one success counter would have. */
     gate_open = true;
     pub::on_cliff_health(0, acq::mapping_state::not_ready);
+    begin(2);
     for (int i = 0; i < kCliffSources; ++i)
         pub::on_cliff_sample(i, 2, cliff_facts(static_cast<uint8_t>(i)), one_valid_target(400));
     flush(2);
@@ -1081,4 +1124,132 @@ ZTEST(tof_cliff_publisher, test_the_two_health_producers_never_share_a_sequence_
     zassert_not_equal(seqs[0], seqs[1]);
     zassert_not_equal(seqs[1], seqs[2]);
     zassert_not_equal(seqs[0], seqs[2]);
+}
+
+/* ------------------------------------------- zero-measurement and invalid cycles --- */
+
+ZTEST(tof_cliff_publisher, test_a_cycle_with_no_measurements_still_publishes_its_health)
+{
+    /* The contract allows a cycle to carry between zero and four measurements. Without this
+     * frame, "completed, and all four sources had nothing to report" and "the cycle never
+     * happened" are the same silence -- and the consumer's only remaining signal would be a
+     * timeout, which means a stopped producer.
+     *
+     * This is also why the authorisation is latched by on_cycle_begin rather than by the first
+     * sample: for this cycle there is no first sample to latch on. */
+    gate_open = true;
+    begin(4);
+    flush(4);
+
+    zassert_equal(count_id(ctr::kMeasId), 0);
+    zassert_equal(count_id(ctr::kHealthId), 1, "an empty cycle owes a health frame too");
+
+    const sent_frame *h{last_of(ctr::kHealthId)};
+    zassert_not_null(h);
+    zassert_true((health_flags(h) & ctr::kCycleValidBit) != 0);
+    zassert_equal(h->data[7], 4, "it names the cycle that completed");
+    zassert_equal(health_produced(h), 0x0, "nothing was produced, and it says so");
+    zassert_equal(health_fault(h), 0x0);
+
+    /* The shape is one the contract's own vectors accept: cycle_valid set with an empty produced
+     * mask is `health_position_with_incomplete_mask`, so this is not a frame only we believe in. */
+    const auto *v{find_vector("health_position_with_incomplete_mask")};
+    zassert_not_null(v);
+    zassert_true((v->bytes[3] & ctr::kCycleValidBit) != 0);
+    zassert_equal(static_cast<uint8_t>(v->bytes[5] >> 4), 0);
+}
+
+ZTEST(tof_cliff_publisher, test_an_empty_cycle_outside_proven_publishes_nothing)
+{
+    /* The empty-cycle rule does not become a way around the gate. Outside PROVEN there is no
+     * trustworthy source_id at all, so there is no cycle worth naming -- liveness is the
+     * heartbeat's job, and it is still running. */
+    state_value = acq::mapping_state::not_ready;
+    begin(4);
+    flush(4);
+    zassert_equal(bus.count, 0);
+}
+
+ZTEST(tof_cliff_publisher, test_a_packer_refusal_invalidates_the_whole_cycle)
+{
+    /* The sharpest of the withholding cases. A refusal drops one measurement, and the health
+     * frame that followed would be well formed with one bit missing -- indistinguishable from a
+     * sensor with nothing to report. That disguises a producer defect as ordinary quiet: the bug
+     * becomes invisible BECAUSE the frame looks right. */
+    gate_open = true;
+    struct tof_cliff_sample bad{};
+    bad.fresh = true;
+    bad.target_count = 2;
+    bad.entry_count = 1; // count disagrees with the entries: the packer must refuse
+    bad.entries[0].range_mm = 400;
+    bad.entries[0].range_status = 0;
+
+    begin(7);
+    pub::on_cliff_sample(0, 7, cliff_facts(0), one_valid_target(400));
+    pub::on_cliff_sample(1, 7, cliff_facts(1), bad);
+    flush(7);
+
+    zassert_equal(count_id(ctr::kMeasId), 1, "the good measurement still went out");
+    zassert_equal(count_id(ctr::kHealthId), 0, "and it is left unauthorised, on purpose");
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.cycles_invalid, 1);
+    zassert_true(c.suppressed_packer_refused > 0);
+}
+
+ZTEST(tof_cliff_publisher, test_a_role_mismatch_invalidates_the_whole_cycle)
+{
+    /* A wiring defect, not a sensor outcome: the facts and the descriptor for that index do not
+     * belong together, so nothing about that cycle can be trusted. */
+    gate_open = true;
+    acq::source_facts wrong{cliff_facts(0)};
+    wrong.role_id = 3; // index 0's descriptor says role 0
+
+    begin(8);
+    pub::on_cliff_sample(0, 8, cliff_facts(0), one_valid_target(400));
+    pub::on_cliff_sample(0, 8, wrong, one_valid_target(500));
+    flush(8);
+
+    zassert_equal(count_id(ctr::kHealthId), 0);
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.cycles_invalid, 1);
+    zassert_true(c.suppressed_role_mismatch > 0);
+}
+
+ZTEST(tof_cliff_publisher, test_a_no_sample_read_leaves_the_cycle_valid)
+{
+    /* The line between "a defect happened" and "a sensor had nothing". A NO_SAMPLE is ordinary:
+     * its bit stays clear and the cycle keeps its health frame. Treating it as invalid would
+     * throw away every cycle in which one sensor was still warming up. */
+    gate_open = true;
+    begin(6);
+    pub::on_cliff_sample(0, 6, cliff_facts(0), one_valid_target(400));
+    pub::on_cliff_sample(1, 6, cliff_facts(1), one_no_sample());
+    flush(6);
+
+    zassert_equal(count_id(ctr::kMeasId), 1);
+    const sent_frame *h{last_of(ctr::kHealthId)};
+    zassert_not_null(h);
+    zassert_equal(health_produced(h), 0x1);
+
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.cycles_invalid, 0, "a quiet sensor is not a defect");
+}
+
+ZTEST(tof_cliff_publisher, test_a_sample_for_a_cycle_nobody_announced_is_refused)
+{
+    /* on_cycle_begin is what latches the authorisation, so a sample outside an announced cycle
+     * has nothing to be published under. Inventing one here is precisely how the empty-cycle
+     * hole was created: the latch used to happen on the first sample. */
+    gate_open = true;
+    pub::on_cliff_sample(0, 30, cliff_facts(0), one_valid_target(400));
+    flush(30);
+
+    zassert_equal(bus.count, 0);
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_true(c.suppressed_cycle_not_begun >= 2, "the sample and the completion both count");
 }

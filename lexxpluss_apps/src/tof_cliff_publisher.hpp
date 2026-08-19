@@ -195,6 +195,14 @@ struct counters {
     /* Frames found queued from a cycle other than the one being flushed. The queue is
      * per cycle by construction, so this counts a defect. */
     uint32_t discarded_stale_cycle{0};
+    /* A sample arrived for a cycle nobody announced. on_cycle_begin is what latches the
+     * authorisation, so this is a wiring defect rather than anything a sensor can cause. */
+    uint32_t suppressed_cycle_not_begun{0};
+    /* Cycles whose health frame was withheld because something STRUCTURAL went wrong in them:
+     * a packer refusal, a full queue, a stale queue entry, a role or model mismatch. Kept apart
+     * from cycle_health_withheld, which counts the transport case. Both drop the whole cycle;
+     * they differ in who has a defect. */
+    uint32_t cycles_invalid{0};
     /* The frame was built and the transport rejected it. Deliberately separate from every
      * counter above: "the sensor said something we will not send" and "the bus would not
      * take it" have nothing to do with each other. */
@@ -213,6 +221,7 @@ int init(const struct config &cfg);
 
 /* Wire these to tof_acq::sinks. Signatures match on purpose, so the wiring is a
  * one-liner and there is nowhere to insert a transformation. */
+void on_cycle_begin(uint32_t cycle_seq);
 void on_cliff_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts &facts,
                      const struct tof_cliff_sample &sample);
 /* Wire to tof_acq::sinks::on_cycle. Drains the pending buffer; this is where the bus is
