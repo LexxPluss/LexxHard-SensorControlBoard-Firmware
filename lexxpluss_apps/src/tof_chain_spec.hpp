@@ -56,10 +56,27 @@ inline constexpr tof_enum::chain_spec dasher_spec()
     s.positions = 6;
     s.at[0] = {tof_enum::model::l7cx, 0x2A, 0, tof_enum::l4_role::unknown};
     s.at[1] = {tof_enum::model::l7cx, 0x2B, 1, tof_enum::l4_role::unknown};
-    s.at[2] = {tof_enum::model::l4cx, 0x2C, -1, tof_enum::l4_role::unknown};
-    s.at[3] = {tof_enum::model::l4cx, 0x2D, -1, tof_enum::l4_role::unknown};
-    s.at[4] = {tof_enum::model::l4cx, 0x2E, -1, tof_enum::l4_role::unknown};
-    s.at[5] = {tof_enum::model::l4cx, 0x2F, -1, tof_enum::l4_role::unknown};
+    /* The four cliff roles, FROZEN from the assembly connectivity drawing (dasher_connectivity.png):
+     * PCB3 front-left, PCB4 rear-left, PCB5 rear-right, PCB6 front-right, in chain order.
+     *
+     * The source of this mapping matters more than its content. Electrical enumeration cannot
+     * establish it -- four identical carriers on one chain are indistinguishable to the bus, and the
+     * enable chain's own defect (one clock pulse lighting two boards) once made a "one pulse, one
+     * position" reading produce a position attribution that had to be retracted. So this comes from
+     * the drawing, and only from the drawing.
+     *
+     * PRECONDITION, and it is not checkable in software: the installed harness must match that
+     * drawing. Re-verify after any harness rework or board swap; a transposed connector produces a
+     * chain that enumerates perfectly and publishes one corner's range under another corner's
+     * source_id, which is invisible on the wire.
+     *
+     * source_id stays -1 here because that field is the GRID source table. A cliff measurement's
+     * source_id is derived from the role by tof_proof::source_id_of(), the contract's own table --
+     * never by arithmetic on the enum, and never written out a second time here. */
+    s.at[2] = {tof_enum::model::l4cx, 0x2C, -1, tof_enum::l4_role::front_left};
+    s.at[3] = {tof_enum::model::l4cx, 0x2D, -1, tof_enum::l4_role::rear_left};
+    s.at[4] = {tof_enum::model::l4cx, 0x2E, -1, tof_enum::l4_role::rear_right};
+    s.at[5] = {tof_enum::model::l4cx, 0x2F, -1, tof_enum::l4_role::front_right};
     s.alloff_pulses = 8;
     s.watch_count = 0;
     s.require_all_sources = true;

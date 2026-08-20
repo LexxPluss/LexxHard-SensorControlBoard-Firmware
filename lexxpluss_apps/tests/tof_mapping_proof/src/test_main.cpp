@@ -294,17 +294,29 @@ ZTEST(tof_mapping_proof, test_moving_a_token_empties_the_source)
     zassert_equal(v.token.nonce(), 0u);
 }
 
-ZTEST(tof_mapping_proof, test_the_production_spec_cannot_be_proven_today)
+ZTEST(tof_mapping_proof, test_the_production_spec_proves_with_the_frozen_role_table)
 {
-    /* Not a hypothetical. This is `dasher_spec()` exactly as production carries it, and the
-     * refusal is the missing role table -- the input this whole step is blocked on. If this
-     * test ever starts passing without that table being frozen, something has guessed. */
+    /* This case used to assert the opposite -- role_unknown -- and its comment said: if this ever
+     * starts passing without that table being frozen, something has guessed. The table is now frozen
+     * from dasher_connectivity.png, so the assertion flips, and what it has to pin flips with it:
+     * that the evaluator accepts the SHIPPED spec, and that the four roles it accepts are a
+     * permutation of the four corners rather than any four values that happen to parse. */
     transaction t;
     t.spec = lexxhard::tof_chain::dasher_spec();
     t.walk1 = clean_walk(t.spec, false);
     t.walk2 = clean_walk(t.spec, true);
     t.isolation = clean_isolation(t.spec);
-    zassert_equal(refused(t), pf::refusal::role_unknown);
+    zassert_equal(refused(t), pf::refusal::none, "the shipped spec no longer proves");
+
+    bool seen[4]{};
+    for (size_t i{2}; i < t.spec.positions; ++i) {
+        const int8_t src{pf::source_id_of(t.spec.at[i].role)};
+        zassert_true(src >= 0, "position %zu has no source id", i + 1);
+        zassert_false(seen[src], "source id %d claimed twice", src);
+        seen[src] = true;
+    }
+    for (int i{0}; i < 4; ++i)
+        zassert_true(seen[i], "source id %d unclaimed", i);
 }
 
 ZTEST(tof_mapping_proof, test_a_duplicated_role_is_refused)
@@ -595,11 +607,17 @@ ZTEST(tof_mapping_proof, test_the_profile_requires_the_grid_sensors_first)
 
 ZTEST(tof_mapping_proof, test_the_role_diagnostics_survive_the_profile_check)
 {
-    /* The reason the profile is checked in two halves. Production's chain has the right
-     * topology and no role table, and it must be told THAT -- not "not the commissioning
-     * profile", which would send someone looking at the hardware. */
+    /* The reason the profile is checked in two halves: a chain with the right topology but an
+     * incomplete role table must be told THAT, not "not the commissioning profile", which would
+     * send someone looking at the hardware.
+     *
+     * The unknown role is now injected explicitly. It used to come free from dasher_spec(), which
+     * carried l4_role::unknown -- but that made this refusal reachable only for as long as the
+     * shipped table stayed unfrozen, and it is frozen now. A safety refusal must not lose its
+     * coverage the moment the product configuration stops happening to trigger it. */
     transaction unknown_roles;
     unknown_roles.spec = lexxhard::tof_chain::dasher_spec();
+    unknown_roles.spec.at[4].role = enm::l4_role::unknown;
     unknown_roles.walk1 = clean_walk(unknown_roles.spec, false);
     unknown_roles.walk2 = clean_walk(unknown_roles.spec, true);
     unknown_roles.isolation = clean_isolation(unknown_roles.spec);

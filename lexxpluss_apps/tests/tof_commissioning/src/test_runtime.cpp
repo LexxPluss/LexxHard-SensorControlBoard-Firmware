@@ -134,19 +134,10 @@ void before(void *)
     last_can_id = 0;
 }
 
-/* Freezes the four cliff roles in THE spec -- the one object the authority compares against and
- * commissioning walks. This is what the pos3-6 role table will look like once it is frozen for
- * real; until then dasher_spec() carries `unknown` and PROVEN is unreachable by rule. */
-void freeze_the_roles()
-{
-    enm::chain_spec &s{rt::spec()};
-
-    s.at[2].role = enm::l4_role::front_left;
-    s.at[3].role = enm::l4_role::rear_left;
-    s.at[4].role = enm::l4_role::rear_right;
-    s.at[5].role = enm::l4_role::front_right;
-}
-
+/* The roles used to be injected here, because dasher_spec() carried l4_role::unknown and PROVEN was
+ * unreachable by rule. They are now frozen in the production spec itself (from
+ * dasher_connectivity.png), so these cases exercise the REAL configuration -- which is strictly
+ * better: a test that installs its own role table cannot notice the shipped one being wrong. */
 cm::outcome prove_over_the_fake_chain(uint32_t epoch)
 {
     cm::config ccfg{};
@@ -197,7 +188,6 @@ ZTEST(tof_cliff_runtime, test_a_second_bootstrap_does_not_re_initialise_the_auth
      * also bootstrapped would have a different authority state machine -- and it was the budget
      * build, whose numbers get quoted. */
     zassert_equal(rt::bootstrap(kTiming), 0);
-    freeze_the_roles();
 
     const au::attempt a{au::begin_proof()};
     zassert_true(a.opened(), "could not open an attempt to have something to lose");
@@ -280,7 +270,6 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
      * which is what makes the assertion worth making: position 3 is index 2 and front_left is
      * source 0. */
     zassert_equal(rt::bootstrap(kTiming), 0);
-    freeze_the_roles();
 
     const acq::source_desc *d{rt::descriptors_for_test()};
 
@@ -341,7 +330,6 @@ void make_the_descriptors_stale_at(size_t position_index, uint8_t built_addr)
 ZTEST(tof_cliff_runtime, test_a_refused_keying_is_never_observed_as_proven)
 {
     zassert_equal(rt::bootstrap(kTiming), 0);
-    freeze_the_roles();
     make_the_descriptors_stale_at(3, 0x3D);
 
     const cm::outcome r{prove_over_the_fake_chain(7)};
@@ -362,7 +350,6 @@ ZTEST(tof_cliff_runtime, test_a_keying_that_fails_late_leaves_no_earlier_role_wr
      * would have written positions 3, 4 and 5 before refusing -- a table where some corners are
      * keyed and the rest are not, with nothing on the wire to say which. */
     zassert_equal(rt::bootstrap(kTiming), 0);
-    freeze_the_roles();
     make_the_descriptors_stale_at(5, 0x3F);
 
     const acq::source_desc *d{rt::descriptors_for_test()};
@@ -381,7 +368,6 @@ ZTEST(tof_cliff_runtime, test_a_failed_re_proof_does_not_leave_the_old_mapping_s
      * revokes on the way in and then fails -- so those keys describe a mapping that is no longer
      * proven, and a latched "applied" flag would still be saying otherwise. */
     zassert_equal(rt::bootstrap(kTiming), 0);
-    freeze_the_roles();
     zassert_true(prove_over_the_fake_chain(7).proven());
     zassert_true(rt::mapping_applied());
     zassert_equal(rt::start_acquisition(), 0);
@@ -425,7 +411,6 @@ ZTEST(tof_cliff_runtime, test_a_re_proof_stops_the_thread_through_request_and_jo
      * rather than stopping devices itself -- so the thread is what stops them, at a cycle boundary,
      * from the thread that owns them. */
     zassert_equal(rt::bootstrap(kTiming), 0);
-    freeze_the_roles();
     zassert_true(prove_over_the_fake_chain(7).proven());
     zassert_equal(rt::start_acquisition(), 0);
     k_msleep(kTiming.cycle_period_ms * 2);

@@ -522,22 +522,52 @@ ZTEST(tof_commissioning, test_a_frozen_walk_one_skips_the_isolation)
     zassert_true(another_thread_can_take_the_chain());
 }
 
-ZTEST(tof_commissioning, test_the_production_spec_is_refused_because_no_roles_are_frozen)
+ZTEST(tof_commissioning, test_the_production_spec_now_proves_and_its_roles_are_the_frozen_ones)
 {
-    /* dasher_spec() exactly as production carries it. This is the honest state of the machine: the
-     * transaction is carried out, the chain is fine, and the proof refuses because nobody has frozen
-     * which physical corner each carrier is. If this ever starts passing, something has guessed. */
+    /* This case replaces "the production spec is refused because no roles are frozen", whose comment
+     * read: if this ever starts passing, something has guessed. It has started passing -- so the
+     * obligation moves rather than disappears. What it must now pin is WHAT was frozen, because a
+     * silently wrong role table is exactly the failure the old refusal was standing in for.
+     *
+     * The mapping comes from dasher_connectivity.png: PCB3 front-left, PCB4 rear-left,
+     * PCB5 rear-right, PCB6 front-right, in chain order. Asserted against the contract's own
+     * role -> source_id table rather than against literals derived here, so that a reordering of
+     * either the spec or the enum cannot make both sides agree on something wrong. */
     arrange(lexxhard::tof_chain::dasher_spec());
 
     const cm::outcome r{cm::prove(12)};
 
-    zassert_false(r.proven());
-    zassert_equal(r.failed_at, cm::stage::evidence_refused);
-    zassert_equal(r.proof, pf::refusal::role_unknown);
-    zassert_equal(au::current().state, acq::mapping_state::not_ready);
-    /* The clamp is untouched by any of this, and is asserted where it lives: clamp_mapping_state()
-     * is in the acquisition layer, which this image deliberately does not link -- it would drag the
-     * vendor ULD into a test about lock ordering. The sensor suite owns that assertion. */
+    zassert_true(r.proven(), "the frozen production spec no longer proves: stage %d proof %d",
+                 static_cast<int>(r.failed_at), static_cast<int>(r.proof));
+    zassert_equal(au::current().state, acq::mapping_state::proven);
+
+    /* Every cliff position carries a KNOWN role, and the four of them are exactly the four corners
+     * with no repeat -- which is what is_commissioning_profile() requires and what makes the four
+     * source ids a permutation rather than a guess. */
+    const enm::chain_spec spec{lexxhard::tof_chain::dasher_spec()};
+    bool seen[4]{};
+
+    for (size_t i{2}; i < spec.positions; ++i) {
+        const int8_t src{pf::source_id_of(spec.at[i].role)};
+
+        zassert_true(src >= 0, "position %zu still has an unknown role", i + 1);
+        zassert_false(seen[src], "source id %d is claimed by two positions", src);
+        seen[src] = true;
+    }
+    for (int i{0}; i < 4; ++i)
+        zassert_true(seen[i], "no position claims source id %d", i);
+
+    /* And the drawing's order, position by position. Spelled out so that a harness rework which
+     * transposes two connectors fails HERE, in a diff somebody has to justify, rather than silently
+     * publishing one corner's range under another corner's name. */
+    zassert_equal(spec.at[2].role, enm::l4_role::front_left);
+    zassert_equal(spec.at[3].role, enm::l4_role::rear_left);
+    zassert_equal(spec.at[4].role, enm::l4_role::rear_right);
+    zassert_equal(spec.at[5].role, enm::l4_role::front_right);
+    zassert_equal(pf::source_id_of(spec.at[2].role), 0);
+    zassert_equal(pf::source_id_of(spec.at[3].role), 1);
+    zassert_equal(pf::source_id_of(spec.at[4].role), 2);
+    zassert_equal(pf::source_id_of(spec.at[5].role), 3);
 }
 
 ZTEST(tof_commissioning, test_a_reused_epoch_is_refused_at_the_commit)

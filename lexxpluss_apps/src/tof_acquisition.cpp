@@ -371,21 +371,19 @@ mapping_state clamp_mapping_state(mapping_state reported)
         // A proven mapping is not something this firmware is entitled to claim yet, so
         // reporting NOT_READY keeps the consumer's own fail-safe path in charge.
         //
-        // WHAT IS ACTUALLY MISSING, as of 2026-08-19. This list has been wrong once
+        // WHAT IS ACTUALLY MISSING, as of 2026-08-20. This list has been wrong once
         // already: it used to say "until the two-board enable chain is fixed", and the
         // hardware was fixed on 08-17 -- a 50 ohm series resistor on the data line, gate
         // passed 5/5 on DS20001. Anyone reading the stale reason would have concluded the
         // condition was met. It is not, for these reasons, none of which is that resistor:
         //
-        //   - No role/source table. The four cliff positions in dasher_spec() carry
-        //     l4_role::unknown, so tof_mapping_proof refuses to reach PROVEN at all today,
-        //     by rule: the masks the wire contract keys by source_id cannot be filled from a
-        //     position without that table, and electrical enumeration cannot prove which of
-        //     four identical carriers is mounted where.
-        //   - No on-machine acceptance. Nothing above has been observed on hardware end to
-        //     end: no 0x216 capture, no boot timing, and no stack watermark for the acquisition
-        //     thread -- whose stack size is therefore a devicetree number chosen without a
-        //     measurement.
+        //   - No on-machine acceptance of the PROVEN path. The role table is now frozen from
+        //     dasher_connectivity.png, so PROVEN is reachable by rule for the first time -- but
+        //     nothing has been observed end to end on hardware: no 0x216 capture, no correlated
+        //     cycle health, and the chain currently enumerates only one of the four cliff
+        //     positions (pos4-6 absent), so a proof over the real machine must still fail.
+        //   - No boot timing and no stack watermark for the acquisition thread, whose stack
+        //     size is therefore a devicetree number chosen without a measurement.
         //
         // What WAS on this list and is now closed, because a list that only grows stops being
         // read: the mapping authority, the epoch plus cycle-reset transaction, the cycle
