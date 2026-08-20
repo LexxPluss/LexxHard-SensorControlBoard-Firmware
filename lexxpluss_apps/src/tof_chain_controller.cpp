@@ -387,7 +387,53 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+int cmd_cliff_start(const struct shell *shell, size_t, char **)
+{
+    /* Separate from `prove` on purpose. Proving a mapping and starting to produce measurements are
+     * two decisions, and an operator must be able to make the first without the second -- inspect
+     * the proof, then start. A prove that started acquisition implicitly would also mean any
+     * re-prove silently restarted production.
+     *
+     * Every refusal below comes from the runtime, not from re-checked conditions here: a command
+     * that re-implemented the gate could disagree with it. */
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d)", st);
+        return -ENODEV;
+    }
+    if (!tof_cliff_runtime::ready()) {
+        shell_error(shell, "cliff runtime not ready (%s)",
+                    tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+        return -EPERM;
+    }
+    if (tof_acq::thread_running()) {
+        shell_error(shell, "acquisition thread is already running; nothing to do");
+        return -EALREADY;
+    }
+    if (!tof_cliff_runtime::mapping_applied()) {
+        /* Either nothing was ever proven, or a later attempt revoked it. Both mean the descriptors
+         * are not keyed to the mapping the authority currently reports, and a cycle would produce
+         * facts nothing can be keyed by. */
+        shell_error(shell, "no proven mapping is installed: run `tof cliff prove <epoch>` first");
+        return -EPERM;
+    }
+
+    if (int const rc{tof_cliff_runtime::start_acquisition()}; rc != 0) {
+        shell_error(shell, "acquisition refused to start (%d)", rc);
+        return rc;
+    }
+
+    shell_print(shell, "acquisition thread started");
+    /* Said explicitly, because "started" and "measurements are on the wire" are different claims
+     * and only the clamp decides the second one. */
+    shell_print(shell, "measurement frames leave this board only if the PROVEN clamp is lifted; "
+                       "health frames were already flowing since boot");
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+    SHELL_CMD(start, NULL,
+              "start the acquisition thread (requires a proven, installed mapping)",
+              cmd_cliff_start),
     SHELL_CMD_ARG(prove, NULL,
                   "prove the cliff mapping: stop acquisition, walk -> isolate -> walk, install "
                   "under <host_epoch 0-255>",

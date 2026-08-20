@@ -433,3 +433,24 @@ ZTEST(tof_cliff_runtime, test_a_re_proof_stops_the_thread_through_request_and_jo
     k_msleep(kTiming.cycle_period_ms * 2);
     zassert_equal(acq::try_stop(), 0);
 }
+
+ZTEST(tof_cliff_runtime, test_starting_twice_is_refused_rather_than_creating_a_second_thread)
+{
+    /* `tof cliff start` is a separate operator action from `prove`, so it can be issued twice. The
+     * second one must be refused: a second thread on the same descriptors would put two callers
+     * inside the ULD, whose port keeps one transport record. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    zassert_true(prove_over_the_fake_chain(7).proven());
+    zassert_equal(rt::start_acquisition(), 0);
+    zassert_true(acq::thread_running());
+
+    zassert_equal(rt::start_acquisition(), -EALREADY, "a second acquisition thread was created");
+    zassert_true(acq::thread_running(), "the refused start disturbed the running thread");
+
+    zassert_equal(acq::try_stop(), 0);
+    /* And after a clean stop it can be started again -- the refusal is about concurrency, not a
+     * one-shot latch. */
+    zassert_equal(rt::start_acquisition(), 0);
+    zassert_equal(acq::try_stop(), 0);
+}
+
