@@ -20,6 +20,7 @@ extern "C" {
 }
 
 #include "tof_l7_sample.hpp"
+#include "tof_l7_status.hpp"
 
 namespace lexxhard::tof_l7 {
 
@@ -27,37 +28,15 @@ static_assert(kZoneCount == VL53L7CX_RESOLUTION_8X8,
               "tof_l7_sample.hpp and the ULD resolution have drifted");
 static_assert(VL53L7CX_NB_TARGET_PER_ZONE == 1U,
               "the L7 sample and grid contract require one target per zone");
+static_assert(
+    VL53L7CX_STATUS_OK == 0U,
+    "the vendor-free operation status assumes the ULD success code is zero");
 
 enum class lifecycle : uint8_t {
   empty,
   opened,
   configured,
   running,
-};
-
-enum class stage : uint8_t {
-  none,
-  arguments,
-  state,
-  address,
-  firmware,
-  initialise,
-  resolution,
-  frequency,
-  start,
-  stop,
-  ready_check,
-  fetch,
-  copy,
-};
-
-const char *stage_name(stage value);
-
-struct operation_status {
-  stage failed_stage{stage::none};
-  int port_errno{0};
-  uint8_t uld_status{VL53L7CX_STATUS_OK};
-  bool sample_present{false};
 };
 
 struct sensor {

@@ -73,38 +73,6 @@ int state_refusal(operation_status &status) {
 
 } // namespace
 
-const char *stage_name(stage value) {
-  switch (value) {
-  case stage::none:
-    return "none";
-  case stage::arguments:
-    return "arguments";
-  case stage::state:
-    return "state";
-  case stage::address:
-    return "address";
-  case stage::firmware:
-    return "firmware";
-  case stage::initialise:
-    return "initialise";
-  case stage::resolution:
-    return "resolution";
-  case stage::frequency:
-    return "frequency";
-  case stage::start:
-    return "start";
-  case stage::stop:
-    return "stop";
-  case stage::ready_check:
-    return "ready_check";
-  case stage::fetch:
-    return "fetch";
-  case stage::copy:
-    return "copy";
-  }
-  return "unknown";
-}
-
 int open(sensor *device, uint8_t address_7bit, operation_status *status) {
   if (status == nullptr)
     return -EINVAL;

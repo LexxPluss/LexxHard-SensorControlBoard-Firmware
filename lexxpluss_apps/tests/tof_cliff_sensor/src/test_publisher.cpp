@@ -710,14 +710,16 @@ int op_start(void *, acq::op_status *st)
     return 0;
 }
 int op_stop(void *, acq::op_status *) { return 0; }
-int op_read(void *, void *, struct tof_cliff_sample *out, acq::op_status *)
+int op_read(void *, void *, struct tof_cliff_sample *out, acq::op_status *st)
 {
+    *st = acq::op_status{};
     *out = tof_cliff_sample{};
     out->fresh = true;
     out->target_count = 1;
     out->entry_count = 1;
     out->entries[0].range_mm = canned_mm;
     out->entries[0].range_status = 0;
+    st->sample_present = true;
     return 0;
 }
 
@@ -725,14 +727,22 @@ const acq::source_ops kOps{op_open, op_configure, op_start, op_read, op_stop};
 
 acq::mapping_state provider() { return acq::mapping_state::proven; }
 uint32_t clock_ms() { return 0; }
+void on_grid(int, uint32_t, const acq::source_facts &, const lexxhard::tof_l7::sample &) {}
 
 acq::config make_acq_config()
 {
     acq::config c{};
     for (int i = 0; i < acq::kMaxSources; ++i) {
-        descs[i].dev = &fake_dev[i];
-        descs[i].scratch = &fake_scratch[i];
-        descs[i].ops = &kOps;
+        if (descs[i].kind == acq::model::l4_cliff) {
+            descs[i].dev = &fake_dev[i];
+            descs[i].scratch = &fake_scratch[i];
+            descs[i].ops = &kOps;
+        } else {
+            descs[i].dev = nullptr;
+            descs[i].scratch = nullptr;
+            descs[i].ops = nullptr;
+            descs[i].grid_ops = &acq::l7_grid_stub_ops();
+        }
     }
     c.sources = descs;
     c.source_count = acq::kMaxSources;
@@ -743,6 +753,7 @@ acq::config make_acq_config()
     c.hooks.on_cycle_begin = pub::on_cycle_begin;
     c.hooks.on_cycle = pub::on_cycle_complete;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
+    c.hooks.on_grid_sample = on_grid;
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = provider;
     c.now_ms = clock_ms;

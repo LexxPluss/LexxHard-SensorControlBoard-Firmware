@@ -40,6 +40,8 @@ namespace pf = lexxhard::tof_proof;
 namespace pub = lexxhard::tof_cliff_pub;
 namespace rt = lexxhard::tof_cliff_runtime;
 
+void ignore_grid(int, uint32_t, const acq::source_facts &, const lexxhard::tof_l7::sample &) {}
+
 namespace {
 
 int can_init_rc{0};
@@ -230,7 +232,7 @@ ZTEST(tof_cliff_runtime, test_a_failing_step_stops_the_sequence_and_is_named)
     acq::source_desc d{};
 
     d.kind = acq::model::l7_grid;
-    d.ops = &acq::l7_stub_ops();
+    d.grid_ops = &acq::l7_grid_stub_ops();
     c.sources = &d;
     c.source_count = 1;
     c.periods.cycle_period_ms = 50;
@@ -238,6 +240,7 @@ ZTEST(tof_cliff_runtime, test_a_failing_step_stops_the_sequence_and_is_named)
     c.hooks.on_cycle_begin = pub::on_cycle_begin;
     c.hooks.on_cycle = pub::on_cycle_complete;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
+    c.hooks.on_grid_sample = ignore_grid;
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = au::state_provider;
     c.now_ms = k_uptime_get_32;

@@ -117,11 +117,19 @@ void build_descriptors()
             d.ops = &acq::l4_cliff_ops();
             ++cliff_index;
         } else {
-            /* The grid path, and the explicit stub rather than a null table or a copy of the cliff
-             * ops: wiring L7 to the L4 driver has to be a deliberate act, not an oversight. */
-            d.ops = &acq::l7_stub_ops();
+            /* The grid path has its own typed table. The named stub keeps the unfinished adapter
+             * explicit without pretending an 8x8 payload fits through the cliff signature. */
+            d.grid_ops = &acq::l7_grid_stub_ops();
         }
     }
+}
+
+void on_grid_stub(int, uint32_t, const acq::source_facts &, const tof_l7::sample &)
+{
+    /* A fresh sample is structurally impossible while the table above is the -ENOSYS stub. This
+     * sink exists so the scheduler configuration already has its final typed shape; the commit
+     * that installs the real table must replace this at the same time, rather than silently reading
+     * and discarding grids. */
 }
 
 int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
@@ -201,6 +209,7 @@ int init_acquisition(const config &cfg)
     c.hooks.on_cycle_begin = pub::on_cycle_begin;
     c.hooks.on_cycle = pub::on_cycle_complete;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
+    c.hooks.on_grid_sample = on_grid_stub;
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = au::state_provider;
     c.now_ms = now_ms;

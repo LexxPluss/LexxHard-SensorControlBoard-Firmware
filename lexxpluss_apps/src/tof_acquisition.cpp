@@ -49,10 +49,11 @@ bool in_cycle_{false};
 
 /* The acquisition thread, and the fact of its existence.
  *
- * thread_active_ and owner_ are written only by start() and by the thread's own exit path, both
- * before/after the thread can be contended, and read by the ownership guard. owner_ is what makes
- * the guard possible at all: "is this call coming from the thread that owns the ULD" cannot be
- * answered by a flag. */
+ * thread_active_ and owner_ are written only by start() and by the thread's own
+ * exit path, both before/after the thread can be contended, and read by the
+ * ownership guard. owner_ is what makes the guard possible at all: "is this
+ * call coming from the thread that owns the ULD" cannot be answered by a flag.
+ */
 k_thread thread_;
 k_tid_t owner_{nullptr};
 /* Two flags, because they answer different questions. thread_active_ is "is a thread driving the
@@ -161,39 +162,39 @@ const source_ops kCliffOps{
     cliff_open, cliff_configure, cliff_start, cliff_read_sample, cliff_stop,
 };
 
-/* -------------------------------------------------------------------- L7 stub ------ */
+/* ------------------------------------------------------------- typed L7 grid
+ * stub -- */
 
-int l7_open(void *, uint8_t, op_status *st)
+int l7_open(void *, uint8_t, tof_l7::operation_status *st)
 {
-    memset(st, 0, sizeof(*st));
+    *st = tof_l7::operation_status{};
     return -ENOSYS;
 }
-int l7_configure(void *, op_status *st)
+int l7_configure(void *, uint8_t, tof_l7::operation_status *st)
 {
-    memset(st, 0, sizeof(*st));
+    *st = tof_l7::operation_status{};
     return -ENOSYS;
 }
-int l7_start(void *, op_status *st)
+int l7_start(void *, tof_l7::operation_status *st)
 {
-    memset(st, 0, sizeof(*st));
+    *st = tof_l7::operation_status{};
     return -ENOSYS;
 }
-int l7_read_cliff_sample(void *, void *, struct tof_cliff_sample *out, op_status *st)
+int l7_read_grid_sample(void *, void *, tof_l7::sample *out, tof_l7::operation_status *st)
 {
-    memset(st, 0, sizeof(*st));
-    if (out != nullptr) {
-        memset(out, 0, sizeof(*out));
-    }
+    *st = tof_l7::operation_status{};
+    if (out != nullptr)
+        *out = tof_l7::sample{};
     return -ENOSYS;
 }
-int l7_stop(void *, op_status *st)
+int l7_stop(void *, tof_l7::operation_status *st)
 {
-    memset(st, 0, sizeof(*st));
+    *st = tof_l7::operation_status{};
     return -ENOSYS;
 }
 
-const source_ops kL7StubOps{
-    l7_open, l7_configure, l7_start, l7_read_cliff_sample, l7_stop,
+const grid_source_ops kL7GridStubOps{
+    l7_open, l7_configure, l7_start, l7_read_grid_sample, l7_stop,
 };
 
 /* ------------------------------------------------------------------ internals ------ */
@@ -251,7 +252,7 @@ void clear_outcomes(source_facts &f)
     f.unsupported = false;
     f.usage_error = false;
     f.rearm_failed = false;
-    f.status = op_status{};
+    f.status = source_status{};
 }
 
 // Records an operation's outcome as a neutral fact. The only interpretation performed
@@ -278,23 +279,27 @@ void stop_locked()
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
         source_facts &f{facts_.sources[i]};
-        op_status st{};
 
         if (!f.started)
             continue;
-        (void)d.ops->stop(d.dev, &st);
+        if (d.kind == model::l4_cliff) {
+            op_status st{};
+            (void)d.ops->stop(d.dev, &st);
+        } else {
+            tof_l7::operation_status st{};
+            (void)d.grid_ops->stop(d.dev, &st);
+        }
         f.started = false;
     }
 
     in_cycle_ = false;
 }
 
-void record(source_facts &f, int rc, const op_status &st)
+void record_outcome(source_facts &f, int rc)
 {
-    f.status = st;
     if (rc == 0)
         return;
-    if (rc == -EPROTO)
+    if (rc == -EPROTO || rc == -EBADMSG)
         f.protocol_error = true;
     else if (rc == -ENOSYS)
         f.unsupported = true;
@@ -302,19 +307,55 @@ void record(source_facts &f, int rc, const op_status &st)
         f.usage_error = true;
     else
         f.transport_error = true;
+}
+
+void record(source_facts &f, int rc, const op_status &st)
+{
+    f.status.domain = status_domain::l4;
+    f.status.stage = static_cast<uint8_t>(st.stage);
+    f.status.port_errno = st.port_errno;
+    f.status.uld_status = st.uld_rc;
+    f.status.sample_present = st.sample_present;
+    f.status.rearm_failed = st.rearm_failed;
     f.rearm_failed = st.rearm_failed;
+    record_outcome(f, rc);
+}
+
+void record(source_facts &f, int rc, const tof_l7::operation_status &st)
+{
+    f.status.domain = status_domain::l7;
+    f.status.stage = static_cast<uint8_t>(st.failed_stage);
+    f.status.port_errno = st.port_errno;
+    f.status.uld_status = st.uld_status;
+    f.status.sample_present = st.sample_present;
+    f.status.rearm_failed = false;
+    f.rearm_failed = false;
+    record_outcome(f, rc);
 }
 
 }  // namespace
 
-const source_ops &l7_stub_ops()
+const grid_source_ops &l7_grid_stub_ops()
 {
-    return kL7StubOps;
+    return kL7GridStubOps;
 }
 
 const source_ops &l4_cliff_ops()
 {
     return kCliffOps;
+}
+
+const char *operation_stage_name(const source_status &status)
+{
+    switch (status.domain) {
+    case status_domain::none:
+        return "none";
+    case status_domain::l4:
+        return tof_cliff_stage_name(static_cast<enum tof_cliff_stage>(status.stage));
+    case status_domain::l7:
+        return tof_l7::stage_name(static_cast<tof_l7::stage>(status.stage));
+    }
+    return "unknown";
 }
 
 mapping_state effective_mapping_state()
@@ -361,7 +402,8 @@ mapping_state clamp_mapping_state(mapping_state reported)
         static bool warned{false};
         if (!warned) {
             warned = true;
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role table and "
+            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role "
+                    "table and "
                     "no on-machine acceptance yet");
         }
         return mapping_state::not_ready;
@@ -421,21 +463,40 @@ int init(const config &cfg)
      * cannot report a cycle that produced nothing, and a silently missing hook would turn every
      * zero-sample cycle into a gap the consumer reads as "the producer stopped". */
     if (cfg.hooks.on_cycle_begin == nullptr || cfg.hooks.on_cycle == nullptr ||
-        cfg.hooks.on_cliff_sample == nullptr || cfg.hooks.on_cliff_health == nullptr)
+        cfg.hooks.on_cliff_health == nullptr)
         return -EINVAL;
     // No defaults on purpose: an invented period would become the specification.
     if (cfg.periods.cycle_period_ms == 0 || cfg.periods.health_period_ms == 0)
         return -EINVAL;
+    bool has_cliff{false};
+    bool has_grid{false};
     for (int i{0}; i < cfg.source_count; ++i) {
         const source_desc &d{cfg.sources[i]};
 
-        if (d.ops == nullptr || d.ops->open == nullptr || d.ops->read_cliff_sample == nullptr)
-            return -EINVAL;
-        // The cliff path needs both a device object and a scratch; the stubbed grid
-        // path is allowed to have neither yet.
-        if (d.kind == model::l4_cliff && (d.dev == nullptr || d.scratch == nullptr))
-            return -EINVAL;
+        if (d.kind == model::l4_cliff) {
+            has_cliff = true;
+            if (d.ops == nullptr || d.ops->open == nullptr || d.ops->configure == nullptr ||
+                d.ops->start == nullptr || d.ops->read_cliff_sample == nullptr ||
+                d.ops->stop == nullptr || d.grid_ops != nullptr || d.dev == nullptr ||
+                d.scratch == nullptr)
+                return -EINVAL;
+        } else {
+            has_grid = true;
+            if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
+                d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
+                d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr ||
+                d.ops != nullptr)
+                return -EINVAL;
+            /* The explicit stub is allowed to have no object yet. Any real grid table
+             * must supply both; its implementation owns what those types are. */
+            if (d.grid_ops != &l7_grid_stub_ops() &&
+                (d.dev == nullptr || d.scratch == nullptr || d.grid_frequency_hz == 0))
+                return -EINVAL;
+        }
     }
+    if ((has_cliff && cfg.hooks.on_cliff_sample == nullptr) ||
+        (has_grid && cfg.hooks.on_grid_sample == nullptr))
+        return -EINVAL;
 
     cfg_ = cfg;
     configured_ = true;
@@ -527,30 +588,35 @@ int bring_up()
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
         source_facts &f{facts_.sources[i]};
-        op_status st{};
-        int rc;
 
         f.started = false;
         clear_outcomes(f);
 
-        rc = d.ops->open(d.dev, d.addr_7bit, &st);
-        if (rc != 0) {
+        int rc{0};
+        if (d.kind == model::l4_cliff) {
+            op_status st{};
+
+            rc = d.ops->open(d.dev, d.addr_7bit, &st);
+            if (rc == 0)
+                rc = d.ops->configure(d.dev, &st);
+            if (rc == 0)
+                rc = d.ops->start(d.dev, &st);
             record(f, rc, st);
-            LOG_WRN("source %d open failed at %s rc %d errno %d", i,
-                    tof_cliff_stage_name(st.stage), rc, st.port_errno);
-            // One sensor that will not open must not stop the others from ranging.
-            continue;
+        } else {
+            tof_l7::operation_status st{};
+
+            rc = d.grid_ops->open(d.dev, d.addr_7bit, &st);
+            if (rc == 0)
+                rc = d.grid_ops->configure(d.dev, d.grid_frequency_hz, &st);
+            if (rc == 0)
+                rc = d.grid_ops->start(d.dev, &st);
+            record(f, rc, st);
         }
 
-        rc = d.ops->configure(d.dev, &st);
         if (rc != 0) {
-            record(f, rc, st);
-            continue;
-        }
-
-        rc = d.ops->start(d.dev, &st);
-        if (rc != 0) {
-            record(f, rc, st);
+            LOG_WRN("source %d open/configure/start failed at %s rc %d errno %d", i,
+                    operation_stage_name(f.status), rc, f.status.port_errno);
+            /* One source that will not open must not stop the others from ranging. */
             continue;
         }
         f.started = true;
@@ -608,9 +674,6 @@ void run_cycle()
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
         source_facts &f{facts_.sources[i]};
-        struct tof_cliff_sample sample{};
-        op_status st{};
-        int rc;
 
         // A source that never started has nothing happening this cycle, and its
         // bring-up diagnosis is the only record of why. Clearing before this check -
@@ -621,14 +684,25 @@ void run_cycle()
 
         clear_outcomes(f);
 
-        rc = d.ops->read_cliff_sample(d.dev, d.scratch, &sample, &st);
-        record(f, rc, st);
-        f.sample_produced = sample.fresh;
+        if (d.kind == model::l4_cliff) {
+            struct tof_cliff_sample sample {};
+            op_status st{};
+            const int rc{d.ops->read_cliff_sample(d.dev, d.scratch, &sample, &st)};
 
-        // The payload goes to the model's own sink, so neither packer ever has to step
-        // over the other model's data, and the fail direction stays out of here.
-        if (f.sample_produced && d.kind == model::l4_cliff)
-            cfg_.hooks.on_cliff_sample(i, facts_.cycle_seq, f, sample);
+            record(f, rc, st);
+            f.sample_produced = st.sample_present && sample.fresh;
+            if (f.sample_produced)
+                cfg_.hooks.on_cliff_sample(i, facts_.cycle_seq, f, sample);
+        } else {
+            tof_l7::sample sample{};
+            tof_l7::operation_status st{};
+            const int rc{d.grid_ops->read_grid_sample(d.dev, d.scratch, &sample, &st)};
+
+            record(f, rc, st);
+            f.sample_produced = st.sample_present && sample.fresh;
+            if (f.sample_produced)
+                cfg_.hooks.on_grid_sample(i, facts_.cycle_seq, f, sample);
+        }
     }
 
     in_cycle_ = false;
@@ -775,10 +849,12 @@ int join(uint32_t timeout_ms)
 {
     if (!thread_created_)
         return 0;
-    /* Bounded, and a timeout is the end of it. There is no way to abort a thread that may be inside
-     * a vendor driver holding the chain lock with a half-finished transfer -- k_thread_abort() would
-     * leave the lock held and the bus mid-transaction, which is strictly worse than refusing to
-     * commission. So the answer to a timeout is -EBUSY and the caller's refusal. */
+    /* Bounded, and a timeout is the end of it. There is no way to abort a thread
+     * that may be inside a vendor driver holding the chain lock with a
+     * half-finished transfer -- k_thread_abort() would leave the lock held and
+     * the bus mid-transaction, which is strictly worse than refusing to
+     * commission. So the answer to a timeout is -EBUSY and the caller's refusal.
+     */
     if (k_thread_join(&thread_, K_MSEC(timeout_ms)) != 0)
         return -EBUSY;
     thread_created_ = false;
@@ -823,7 +899,8 @@ int try_stop()
     }
 
     if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_NO_WAIT) != 0)
-        return -EBUSY;   // somebody else owns the chain; nothing touched, so refusing is safe
+        return -EBUSY; // somebody else owns the chain; nothing touched, so refusing
+                       // is safe
 
     stop_locked();
     k_mutex_unlock(&tof_chain_controller::chain_lock());

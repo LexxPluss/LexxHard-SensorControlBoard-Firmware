@@ -63,6 +63,7 @@ struct fake_dev {
     int start_calls{0};
     int read_calls{0};
     int stop_calls{0};
+    uint8_t configured_frequency_hz{0};
     bool lock_held_in_open{false};
     bool lock_held_in_read{false};
 };
@@ -144,7 +145,8 @@ int fake_read(void *dev, void *, struct tof_cliff_sample *out, acq::op_status *s
     k_sem_give(&cycle_read_seen);
     d.lock_held_in_read = lock_is_held();
     if (d.read_delay_ms != 0)
-        k_msleep(d.read_delay_ms);   // a sensor that blocks: what a join timeout has to cover
+        k_msleep(d.read_delay_ms); // a sensor that blocks: what a join timeout has
+                                   // to cover
     memset(st, 0, sizeof(*st));
     memset(out, 0, sizeof(*out));
     if (d.fresh) {
@@ -153,7 +155,10 @@ int fake_read(void *dev, void *, struct tof_cliff_sample *out, acq::op_status *s
         out->entry_count = 1;
         out->entries[0].range_mm = d.mm;
         out->entries[0].range_status = d.status_code;
-        st->sample_present = true;
+        /* A re-arm failure returns an error but preserves the current sample. Any
+         * other error with `fresh` left set models stale output and must not earn
+         * sample_present. */
+        st->sample_present = d.read_rc == 0 || d.rearm_failed;
     }
     st->rearm_failed = d.rearm_failed;
     if (d.read_rc != 0)
@@ -171,13 +176,86 @@ int fake_stop(void *dev, acq::op_status *st)
 
 const acq::source_ops kFakeOps{fake_open, fake_configure, fake_start, fake_read, fake_stop};
 
+int fake_grid_open(void *dev, uint8_t, lexxhard::tof_l7::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.open_calls;
+    record_caller();
+    d.lock_held_in_open = lock_is_held();
+    *st = lexxhard::tof_l7::operation_status{};
+    if (d.open_delay_ms != 0)
+        k_msleep(d.open_delay_ms);
+    if (d.open_rc != 0)
+        st->failed_stage = lexxhard::tof_l7::stage::initialise;
+    return d.open_rc;
+}
+
+int fake_grid_configure(void *dev, uint8_t frequency_hz,
+                        lexxhard::tof_l7::operation_status *st)
+{
+    *st = lexxhard::tof_l7::operation_status{};
+    auto &d{*static_cast<fake_dev *>(dev)};
+    d.configured_frequency_hz = frequency_hz;
+    return d.configure_rc;
+}
+
+int fake_grid_start(void *dev, lexxhard::tof_l7::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.start_calls;
+    *st = lexxhard::tof_l7::operation_status{};
+    return d.start_rc;
+}
+
+int fake_grid_read(void *dev, void *, lexxhard::tof_l7::sample *out,
+                   lexxhard::tof_l7::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.read_calls;
+    record_caller();
+    k_sem_give(&cycle_read_seen);
+    d.lock_held_in_read = lock_is_held();
+    if (d.read_delay_ms != 0)
+        k_msleep(d.read_delay_ms);
+    *st = lexxhard::tof_l7::operation_status{};
+    *out = lexxhard::tof_l7::sample{};
+    if (d.fresh) {
+        out->fresh = true;
+        for (size_t zone{0}; zone < lexxhard::tof_l7::kZoneCount; ++zone) {
+            out->target_count[zone] = 1;
+            out->distance_mm[zone] = static_cast<uint16_t>(d.mm + zone);
+            out->target_status[zone] = d.status_code;
+        }
+        st->sample_present = d.read_rc == 0;
+    }
+    if (d.read_rc != 0)
+        st->failed_stage = lexxhard::tof_l7::stage::fetch;
+    return d.read_rc;
+}
+
+int fake_grid_stop(void *dev, lexxhard::tof_l7::operation_status *st)
+{
+    *st = lexxhard::tof_l7::operation_status{};
+    record_caller();
+    ++static_cast<fake_dev *>(dev)->stop_calls;
+    return 0;
+}
+
+const acq::grid_source_ops kFakeGridOps{fake_grid_open, fake_grid_configure, fake_grid_start,
+                                        fake_grid_read, fake_grid_stop};
+
 // Recorded sink activity.
 struct {
     int cycles{0};
     acq::cycle_facts last{};
     int cliff_samples{0};
+    int grid_samples{0};
     int last_sample_index{-1};
     int16_t last_sample_mm{0};
+    uint16_t last_grid_mm{0};
     int health_beats{0};
     int cycle_begins{0};
     uint32_t last_begin_cycle{0};
@@ -210,6 +288,14 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const acq::source_facts &,
     rec.last_sample_mm = s.entries[0].range_mm;
     if (sample_cycle_count < static_cast<int>(sizeof sample_cycles / sizeof sample_cycles[0]))
         sample_cycles[sample_cycle_count++] = cycle_seq;
+}
+
+void on_grid_sample(int index, uint32_t, const acq::source_facts &,
+                    const lexxhard::tof_l7::sample &s)
+{
+    ++rec.grid_samples;
+    rec.last_sample_index = index;
+    rec.last_grid_mm = s.distance_mm[63];
 }
 
 void on_cycle_begin(uint32_t cycle_seq)
@@ -248,12 +334,18 @@ acq::config make_config(int count)
     for (int i{0}; i < acq::kMaxSources; ++i) {
         auto &d{four_cliff_two_grid[i]};
 
+        d = acq::source_desc{};
         d.kind = (i < 4) ? acq::model::l4_cliff : acq::model::l7_grid;
         d.addr_7bit = static_cast<uint8_t>(0x30 + i);
         d.role_id = static_cast<uint8_t>(i);
         d.dev = &devs[i];
         d.scratch = &devs[i]; /* the fake ops ignore it; only non-null matters */
-        d.ops = &kFakeOps;
+        if (d.kind == acq::model::l4_cliff)
+            d.ops = &kFakeOps;
+        else
+            d.grid_ops = &kFakeGridOps;
+        if (d.kind == acq::model::l7_grid)
+            d.grid_frequency_hz = 15;
     }
     c.sources = four_cliff_two_grid;
     c.source_count = count;
@@ -261,6 +353,7 @@ acq::config make_config(int count)
     c.periods.health_period_ms = kHealthPeriodMs;
     c.hooks.on_cycle = on_cycle;
     c.hooks.on_cliff_sample = on_cliff_sample;
+    c.hooks.on_grid_sample = on_grid_sample;
     c.hooks.on_cliff_health = on_cliff_health;
     c.hooks.on_cycle_begin = on_cycle_begin;
     c.mapping_state_provider = mapping_provider;
@@ -276,7 +369,8 @@ void before(void *)
     acq::teardown();
 
     acq::stop();
-    memset(devs, 0, sizeof(devs));
+    for (auto &dev : devs)
+        dev = fake_dev{};
     k_sem_reset(&cycle_read_seen);
     uld_call_count = 0;
     rec = {};
@@ -329,6 +423,10 @@ ZTEST(tof_acquisition, test_missing_hooks_and_bad_source_tables_are_refused)
     c.hooks.on_cycle = nullptr;
     zassert_equal(acq::init(c), -EINVAL);
 
+    c = make_config(acq::kMaxSources);
+    c.hooks.on_grid_sample = nullptr;
+    zassert_equal(acq::init(c), -EINVAL, "a configured grid needs its typed sink");
+
     c = make_config(acq::kMaxSources + 1);
     zassert_equal(acq::init(c), -EINVAL);
 
@@ -338,6 +436,20 @@ ZTEST(tof_acquisition, test_missing_hooks_and_bad_source_tables_are_refused)
     c = make_config(4);
     four_cliff_two_grid[2].ops = nullptr;
     zassert_equal(acq::init(c), -EINVAL);
+
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[4].grid_ops = nullptr;
+    zassert_equal(acq::init(c), -EINVAL);
+
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[4].ops = &kFakeOps;
+    zassert_equal(acq::init(c), -EINVAL,
+                  "a grid descriptor must not carry the point-sensor table too");
+
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[4].grid_frequency_hz = 0;
+    zassert_equal(acq::init(c), -EINVAL,
+                  "a real grid table needs an explicit non-zero frequency");
 
     c = make_config(4);
     four_cliff_two_grid[1].scratch = nullptr;
@@ -351,6 +463,9 @@ ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
     // dropping an L4's enable returns it to 0x29 and destroys the chain's addressing.
     zassert_equal(sizeof(acq::source_ops), 5 * sizeof(void *),
                   "an operation was added to the device interface - if it is enable, "
+                  "the chain's addressing is now reachable from the scheduler");
+    zassert_equal(sizeof(acq::grid_source_ops), 5 * sizeof(void *),
+                  "an operation was added to the grid interface - if it is enable, "
                   "the chain's addressing is now reachable from the scheduler");
 }
 
@@ -435,6 +550,10 @@ ZTEST(tof_acquisition, test_the_same_failure_produces_the_same_facts_for_both_mo
     zassert_equal(cliff.sample_produced, grid.sample_produced);
     zassert_true(cliff.transport_error);
     zassert_false(cliff.protocol_error);
+    zassert_equal(cliff.status.domain, acq::status_domain::l4);
+    zassert_equal(grid.status.domain, acq::status_domain::l7);
+    zassert_equal(strcmp(acq::operation_stage_name(cliff.status), "fetch"), 0);
+    zassert_equal(strcmp(acq::operation_stage_name(grid.status), "fetch"), 0);
 }
 
 ZTEST(tof_acquisition, test_the_four_failure_shapes_stay_distinguishable)
@@ -449,11 +568,9 @@ ZTEST(tof_acquisition, test_the_four_failure_shapes_stay_distinguishable)
         bool unsupported;
         bool usage;
     } cases[] = {
-        {-EIO, true, false, false, false},
-        {-ETIMEDOUT, true, false, false, false},
-        {-EPROTO, false, true, false, false},
-        {-ENOSYS, false, false, true, false},
-        {-EINVAL, false, false, false, true},
+        {-EIO, true, false, false, false},     {-ETIMEDOUT, true, false, false, false},
+        {-EPROTO, false, true, false, false},  {-EBADMSG, false, true, false, false},
+        {-ENOSYS, false, false, true, false},  {-EINVAL, false, false, false, true},
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
@@ -735,36 +852,35 @@ ZTEST(tof_acquisition, test_stop_quiesces_and_leaves_the_chain_free_for_commissi
     zassert_equal(rec.cycles, cycles, "a stopped scheduler must not run a cycle");
 }
 
-/* ------------------------------------------------------------------ L7 stub -------- */
+/* ---------------------------------------------------------- typed L7 grid path
+ * ----- */
 
 ZTEST(tof_acquisition, test_the_grid_ops_are_an_explicit_stub)
 {
-    const acq::source_ops &ops{acq::l7_stub_ops()};
-    acq::op_status st{};
-    struct tof_cliff_sample sample{};
+    const acq::grid_source_ops &ops{acq::l7_grid_stub_ops()};
+    lexxhard::tof_l7::operation_status st{};
+    lexxhard::tof_l7::sample sample{};
 
-    // A named stub rather than a null pointer or a copy of the cliff ops, so wiring L7
-    // to the wrong driver has to be deliberate. Note what the refusal of
-    // read_cliff_sample actually says: the shared interface is still the shape of a point
-    // sensor, and an 8x8 zone frame cannot travel through it. That is prototype debt, and
-    // this assertion is where it is visible.
+    // A named stub rather than a null pointer. Unlike the old prototype stub, its
+    // read signature is a real 64-zone grid: an L7 descriptor can no longer be
+    // wired to the point-sensor operation table by accident.
     zassert_equal(ops.open(nullptr, 0x30, &st), -ENOSYS);
-    zassert_equal(ops.configure(nullptr, &st), -ENOSYS);
+    zassert_equal(ops.configure(nullptr, 15, &st), -ENOSYS);
     zassert_equal(ops.start(nullptr, &st), -ENOSYS);
-    zassert_equal(ops.read_cliff_sample(nullptr, nullptr, &sample, &st), -ENOSYS);
+    zassert_equal(ops.read_grid_sample(nullptr, nullptr, &sample, &st), -ENOSYS);
     zassert_equal(ops.stop(nullptr, &st), -ENOSYS);
     zassert_false(sample.fresh);
-
-    zassert_not_equal(&acq::l7_stub_ops(), &acq::l4_cliff_ops());
 }
 
-ZTEST(tof_acquisition, test_a_grid_source_never_produces_a_cliff_payload)
+ZTEST(tof_acquisition, test_payloads_can_only_reach_their_typed_sink)
 {
     zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
     zassert_equal(acq::bring_up(), 0);
+    zassert_equal(devs[4].configured_frequency_hz, 15);
+    zassert_equal(devs[5].configured_frequency_hz, 15);
 
-    // Even if the grid path did return a sample, it must not travel down the cliff
-    // sink: the two packers must never have to step over each other's data.
+    // The two packers must never have to step over or reinterpret each other's
+    // data.
     for (auto &d : devs) {
         d.fresh = true;
         d.mm = 500;
@@ -772,7 +888,28 @@ ZTEST(tof_acquisition, test_a_grid_source_never_produces_a_cliff_payload)
     acq::run_cycle();
 
     zassert_equal(rec.cliff_samples, 4, "only the four cliff sources may reach that sink");
-    zassert_true(rec.last_sample_index < 4);
+    zassert_equal(rec.grid_samples, 2, "both grids must reach only the grid sink");
+    zassert_true(rec.last_sample_index >= 4);
+    zassert_equal(rec.last_grid_mm, 563);
+}
+
+ZTEST(tof_acquisition, test_an_error_can_never_publish_even_if_an_adapter_leaves_fresh_set)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    for (auto &d : devs) {
+        d.fresh = true;
+        d.read_rc = -EIO;
+    }
+    acq::run_cycle();
+
+    zassert_equal(rec.cliff_samples, 0);
+    zassert_equal(rec.grid_samples, 0);
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        zassert_true(rec.last.sources[i].transport_error);
+        zassert_false(rec.last.sources[i].sample_produced);
+    }
 }
 
 /* ----------------------------------------------------------------- snapshot -------- */
@@ -1239,7 +1376,6 @@ ZTEST(tof_acquisition, test_a_cycle_that_lost_the_race_to_a_quiesce_does_not_run
     zassert_equal(rec.last.cycle_seq, 0u, "the cancelled cycle consumed a cycle_seq");
 }
 
-
 /* ----------------------------------------------- the acquisition thread ------------- */
 
 /* The stack is the SUITE's, because there is no devicetree here to size one from and a fallback
@@ -1343,10 +1479,11 @@ ZTEST(tof_acquisition, test_every_uld_call_comes_from_the_acquisition_thread)
 
 ZTEST(tof_acquisition, test_a_join_that_times_out_changes_nothing_and_kills_nothing)
 {
-    /* The third acceptance boundary: the timeout path must leave the subsystem exactly as it was, so
-     * that a caller which cannot get a clean stop can only refuse. Nothing is aborted -- a thread
-     * inside a vendor driver holds the chain lock and a half-finished transfer, and killing it would
-     * leave both. */
+    /* The third acceptance boundary: the timeout path must leave the subsystem
+     * exactly as it was, so that a caller which cannot get a clean stop can only
+     * refuse. Nothing is aborted -- a thread inside a vendor driver holds the
+     * chain lock and a half-finished transfer, and killing it would leave both.
+     */
     zassert_equal(acq::init(make_config(2)), 0);
     devs[0].read_delay_ms = kCyclePeriodMs * 8;
     zassert_equal(acq::start(thread_cfg(kCyclePeriodMs)), 0);

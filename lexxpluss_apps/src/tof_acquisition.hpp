@@ -12,11 +12,9 @@
 // It exists to establish the boundaries and to make the budget measurable with a
 // scheduler in the image. Known and deliberate limitations, all of which will change:
 //
-//   - The data interface is still L4-shaped. read_cliff_sample() hands back a
-//     tof_cliff_sample and there is one payload sink, which suits four point sensors and
-//     does not suit an 8x8 grid. When the real L7 path lands, the ops table and the sinks
-//     both change shape; the grid stub refusing a cliff-shaped read is the visible marker
-//     of that debt, not a design.
+//   - L4 and L7 have separate typed read operations and payload sinks. The L7 table is
+//     still a named -ENOSYS stub until the real adapter is wired into runtime; scheduler
+//     metadata and CAN publication for grids remain unfinished.
 //   - The packer, the publisher and the CAN glue all exist and are wired, and
 //     tof_cliff_runtime::bootstrap() is a production caller: a shipping image runs the heartbeat
 //     from power-on. Cycles need a proven mapping first, so today they happen only behind
@@ -82,6 +80,8 @@
 #include <zephyr/kernel.h>
 
 #include "tof_cliff_sensor.h"
+#include "tof_l7_sample.hpp"
+#include "tof_l7_status.hpp"
 #include "tof_mapping_state.h"
 
 namespace lexxhard::tof_acq {
@@ -97,18 +97,16 @@ enum class model : uint8_t {
 // mapping_state now lives in tof_mapping_state.h, included above: the authority needs the
 // enum without the vendor ULD this header drags in.
 
-// The diagnostic record is shared between models; the POLICY is not. Reusing one struct
-// for "where did it fail and with which errno" costs nothing and keeps one triage
-// vocabulary. It says nothing about what the failure means.
+// The L4 operation signature retains its adapter-owned status type.
+// source_facts below converts both adapters into a model-neutral diagnostic
+// without pretending their stage or ULD enums share a namespace.
 using op_status = struct tof_cliff_read_status;
 
-// One source's device operations. There is no enable, no address change and no reset:
-// the enable line is the chain's addressing mechanism and belongs to commissioning.
+// One source's device operations. There is no enable, no address change and no
+// reset: the enable line is the chain's addressing mechanism and belongs to
+// commissioning.
 //
-// read_cliff_sample is named for what it actually is. A generic name would hide that this
-// table is currently the shape of a point sensor, and the grid path cannot be expressed
-// through it: an 8x8 zone frame is not a tof_cliff_sample. The name is the reminder that
-// this signature has to change, rather than a claim that it is already general.
+// A point sensor operation table. It cannot carry a grid by construction.
 struct source_ops {
     int (*open)(void *dev, uint8_t addr_7bit, op_status *st);
     int (*configure)(void *dev, op_status *st);
@@ -118,10 +116,23 @@ struct source_ops {
     int (*stop)(void *dev, op_status *st);
 };
 
-// The grid ops, every one of which returns -ENOSYS. An explicit stub rather than a null
-// pointer or a copy of the cliff ops, so that wiring L7 to the wrong driver is a
-// deliberate act rather than an oversight.
-const source_ops &l7_stub_ops();
+// A grid operation table. Keeping a different type is load-bearing: a grid can
+// no longer be made to fit by reinterpreting it as a tof_cliff_sample or by
+// pointing a descriptor at the L4 table. Like the cliff table it deliberately
+// has exactly five operations and no enable/reset/address-change operation.
+struct grid_source_ops {
+    int (*open)(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st);
+    int (*configure)(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st);
+    int (*start)(void *dev, tof_l7::operation_status *st);
+    int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
+                            tof_l7::operation_status *st);
+    int (*stop)(void *dev, tof_l7::operation_status *st);
+};
+
+// Every operation returns -ENOSYS. It keeps an unfinished model explicit while
+// using the correct grid shape; the old stub's cliff-shaped read signature was
+// prototype debt.
+const grid_source_ops &l7_grid_stub_ops();
 
 // The cliff ops, bound to the real tof_cliff_sensor functions.
 const source_ops &l4_cliff_ops();
@@ -132,10 +143,33 @@ struct source_desc {
     // Opaque to this layer. The mapping owns what a role means; treating it as a number
     // here is what keeps position policy out of the scheduler.
     uint8_t role_id{0};
-    void *dev{nullptr};      // VL53L4CX_Object_t* for l4_cliff
-    void *scratch{nullptr};  // tof_cliff_scratch* for l4_cliff
-    const source_ops *ops{nullptr};
+    uint8_t grid_frequency_hz{0};             // explicit for l7_grid; no scheduler default
+    void *dev{nullptr};                       // VL53L4CX_Object_t* for l4_cliff
+    void *scratch{nullptr};                   // tof_cliff_scratch* for l4_cliff
+    const source_ops *ops{nullptr};           // required for l4_cliff
+    const grid_source_ops *grid_ops{nullptr}; // required for l7_grid
 };
+
+enum class status_domain : uint8_t {
+    none,
+    l4,
+    l7,
+};
+
+/* A model-neutral diagnostic snapshot. `stage` is interpreted only inside its
+ * `domain`; raw ULD values remain numbers because the two vendors' enums are
+ * unrelated. This replaces the old source_facts field that was literally a
+ * tof_cliff_read_status even for an L7 source. */
+struct source_status {
+    status_domain domain{status_domain::none};
+    uint8_t stage{0};
+    int port_errno{0};
+    int uld_status{0};
+    bool sample_present{false};
+    bool rearm_failed{false};
+};
+
+const char *operation_stage_name(const source_status &status);
 
 // What happened to one source in one cycle. No classification, no reduction, no alarm.
 struct source_facts {
@@ -151,12 +185,12 @@ struct source_facts {
     // a bus fault. At most one is set, all four are cleared together before each read of
     // a started source, and none of them is cleared for a source that never started.
     bool transport_error{false}; // -EIO and friends: the transfer or the driver failed
-    bool protocol_error{false};  // -EPROTO: the device's own metadata was impossible
+    bool protocol_error{false};  // -EPROTO/-EBADMSG: device metadata/frame was impossible
     bool unsupported{false};     // -ENOSYS: this model has no implementation yet
     bool usage_error{false};     // -EINVAL: this firmware called it wrongly
 
-    bool rearm_failed{false};    // this sample arrived but the next one will not
-    op_status status{};
+    bool rearm_failed{false}; // this sample arrived but the next one will not
+    source_status status{};
 };
 
 struct cycle_facts {
@@ -189,6 +223,8 @@ struct sinks {
     // through copy_facts() is worse -- this call happens under the chain lock.
     void (*on_cliff_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
                             const struct tof_cliff_sample &sample);
+    void (*on_grid_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
+                           const tof_l7::sample &sample);
     // Sent from startup, on its own timer, never from the acquisition path.
     void (*on_cliff_health)(uint32_t snapshot, mapping_state state);
 };
