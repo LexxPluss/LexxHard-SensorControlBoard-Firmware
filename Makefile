@@ -133,6 +133,11 @@ test_tof_l7_port:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_port -d build-test-tof-l7-port -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+.PHONY: test_tof_l7_sensor
+test_tof_l7_sensor:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_sensor -d build-test-tof-l7-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: test_tof_commissioning
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
