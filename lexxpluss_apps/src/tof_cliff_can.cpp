@@ -43,7 +43,20 @@ const device *dev_{nullptr};
  *
  * Not zero either: a momentary mailbox contention should not drop a frame that is still
  * fresh. One millisecond is well under any plausible cycle period and long enough for the
- * controller to finish a frame already in flight at 1 Mbit/s. */
+ * controller to finish a frame already in flight at 1 Mbit/s.
+ *
+ * WHAT THIS TIMEOUT ACTUALLY BOUNDS, because the obvious reading is wrong: it bounds only
+ * "wait for a free TX mailbox". z_impl_can_send() implements the callback == NULL form as
+ * api->send(...) followed by k_sem_take(&ctx.done, K_FOREVER) -- so waiting for the send to
+ * COMPLETE is unconditional and this value does not constrain it at all.
+ *
+ * That was not academic. Before the bxCAN mailbox-overwrite backport
+ * (patches/zephyr/0002-*), a second concurrent synchronous sender could have its completion
+ * object overwritten and then never wake up; on DS20001 that left zcan_main pending forever
+ * and took the whole legacy CAN telemetry plus the 0x20F control-frame consumer down with
+ * it. The patch removes the overwrite. What remains bounded-but-lossy is mailbox exhaustion:
+ * with all three busy, this 1 ms elapses and the frame is dropped with -EAGAIN, which the
+ * publisher counts as a send failure and answers by withholding that cycle's health frame. */
 constexpr k_timeout_t kSendTimeout{K_MSEC(1)};
 
 int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
@@ -58,9 +71,10 @@ int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
     frame.dlc = dlc;
     memcpy(frame.data, data, dlc);
 
-    /* Blocking form with a bounded timeout rather than the callback form: the publisher has
-     * already left every lock, and a completion callback would put the counter update in yet
-     * another context for no gain. */
+    /* Blocking form rather than the callback form: the publisher has already left every lock,
+     * and a completion callback would put the counter update in yet another context for no
+     * gain. Note that "blocking" here is unbounded on the completion side -- see kSendTimeout
+     * above for what the 1 ms does and does not cover. */
     return can_send(dev_, &frame, kSendTimeout, nullptr, nullptr);
 }
 
