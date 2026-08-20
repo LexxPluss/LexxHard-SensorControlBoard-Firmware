@@ -904,6 +904,7 @@ public:
     bool is_ok() const {
         LOG_DBG("data100.fail_status1 %d", (data100.fail_status1 & lexxhard::bmu_lipy041::FAIL_STATUS1_ABNORMAL_MASK) == 0);
         LOG_DBG("data101.fail_status2 %d", (data101.fail_status2 & lexxhard::bmu_lipy041::FAIL_STATUS2_ABNORMAL_MASK) == 0);
+        LOG_DBG("data113.fail_status3 %d", (data113.fail_status3 & lexxhard::bmu_lipy041::FAIL_STATUS3_ABNORMAL_MASK) == 0);
         LOG_DBG("data113.leader_alarm1 %d", (data113.leader_alarm1 & lexxhard::bmu_lipy041::LEADER_ALARM1_ABNORMAL_MASK) == 0);
         LOG_DBG("data113.leader_alarm2 %d", (data113.leader_alarm2 & lexxhard::bmu_lipy041::LEADER_ALARM2_ABNORMAL_MASK) == 0);
 
