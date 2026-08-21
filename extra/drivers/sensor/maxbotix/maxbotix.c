@@ -89,7 +89,7 @@ static int maxbotix_init(const struct device *dev)
     if (err != 0)
         return err;
 
-    err = gpio_pin_configure_dt(&cfg->echo_dev, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    err = gpio_pin_configure_dt(&cfg->echo_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     if (err != 0)
         return err;
 
