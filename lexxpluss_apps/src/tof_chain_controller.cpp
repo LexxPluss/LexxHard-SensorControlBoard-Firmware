@@ -59,6 +59,7 @@
 #endif
 #if defined(ENABLE_TOF_CLIFF_ULD)
 #include "tof_acquisition.hpp"
+#include "tof_cliff_packer.hpp"
 #include "tof_cliff_runtime.hpp"
 #include "tof_commissioning.hpp"
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
@@ -511,7 +512,127 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+/* BENCH ONLY. Encodes one real sample into the contract's measurement payload and prints it.
+ *
+ * WHY THIS IS NOT A GATE BYPASS. It transmits nothing. The publisher, the authorisation callback
+ * and the PROVEN clamp are all untouched, so no unauthorised measurement can reach the bus from
+ * this board -- the end of this path is an operator's terminal. Verifying the CAN hop and the
+ * SCBDriver decoder is a separate, deliberate act: the operator injects these bytes with cansend.
+ * Giving the firmware itself the ability to emit an unproven measurement would create that code
+ * path permanently, and "the downstream is isolated" is a runtime property; "the firmware cannot
+ * emit it" is a structural one.
+ *
+ * WHY source_id IS AN ARGUMENT. encode_measurement() refuses source_id >= 4, and an unproven
+ * mapping keys every descriptor to kRoleUnassigned (255) -- correctly, because without a proof
+ * there IS no legitimate source_id. So the operator has to declare one, which puts the fact that
+ * nothing was proven at the call site instead of hiding it. The output says so on every line that
+ * carries bytes, because those bytes are byte-identical to a production frame's payload and must
+ * never be quoted as evidence that this board published one.
+ *
+ * attempts/gap_ms default to one immediate check, the same as `read`: the default reproduces what
+ * one acquisition cycle sees, which is usually "no sample yet". Asking for a frame means asking
+ * for the wait. */
+int cmd_cliff_pack(const struct shell *shell, size_t argc, char **argv)
+{
+    namespace pk = tof_cliff_packer;
+
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d)", st);
+        return -ENODEV;
+    }
+
+    char *end{nullptr};
+    auto const num{[&](const char *s, unsigned long limit, unsigned long &out) {
+        out = strtoul(s, &end, 0);
+        return end != s && *end == '\0' && out <= limit;
+    }};
+
+    unsigned long pos{0}, source_id{0}, epoch{0}, cyc{0}, attempts{1}, gap_ms{0};
+
+    if (!num(argv[1], 6, pos) || pos < 1) {
+        shell_error(shell, "usage: tof cliff pack <pos 1-6> <source_id 0-3> "
+                           "[epoch] [cycle_seq] [attempts] [gap_ms]");
+        return -EINVAL;
+    }
+    /* Range-checked here as well as in the packer, so the refusal names the argument rather than
+     * arriving as an opaque encode failure. */
+    if (!num(argv[2], tof_cliff_contract::kSourceCount - 1, source_id)) {
+        shell_error(shell, "source_id must be 0-%u", tof_cliff_contract::kSourceCount - 1);
+        return -EINVAL;
+    }
+    if (argc >= 4 && !num(argv[3], 255, epoch)) {
+        shell_error(shell, "epoch must be 0-255");
+        return -EINVAL;
+    }
+    if (argc >= 5 && !num(argv[4], 255, cyc)) {
+        shell_error(shell, "cycle_seq must be 0-255");
+        return -EINVAL;
+    }
+    if (argc >= 6 && (!num(argv[5], tof_cliff_runtime::kMaxProbeAttempts, attempts) ||
+                      attempts < 1)) {
+        shell_error(shell, "attempts must be 1-%u", tof_cliff_runtime::kMaxProbeAttempts);
+        return -EINVAL;
+    }
+    if (argc == 7 && !num(argv[6], tof_cliff_runtime::kMaxProbeGapMs, gap_ms)) {
+        shell_error(shell, "gap_ms must be 0-%u", tof_cliff_runtime::kMaxProbeGapMs);
+        return -EINVAL;
+    }
+
+    tof_cliff_runtime::probe_result r{};
+    if (int const rc{tof_cliff_runtime::probe_position(pos, r, attempts, gap_ms)}; rc != 0) {
+        shell_error(shell, "probe refused (%d)%s", rc,
+                    rc == -EBUSY   ? ": the acquisition thread owns the ULD" :
+                    rc == -ENOTSUP ? ": that position is not a cliff sensor" :
+                    rc == -EPERM   ? ": the cliff runtime is not ready" : "");
+        return rc;
+    }
+    if (r.open_rc != 0 || r.start_rc != 0) {
+        shell_error(shell, "pos%lu open=%d start=%d stage=%s errno=%d (run `tof enum` first)", pos,
+                    r.open_rc, r.start_rc, tof_cliff_stage_name(r.status.stage),
+                    r.status.port_errno);
+        return -EIO;
+    }
+
+    shell_print(shell, "sample: fresh=%d targets=%u entries=%u attempts_used=%u", r.sample.fresh,
+                r.sample.target_count, r.sample.entry_count, r.attempts_used);
+
+    pk::reduction const red{pk::reduce(r.sample)};
+    shell_print(shell, "reduction: outcome=%u class=%u range_mm=%u raw_status=%u observed=%u why=%u",
+                static_cast<unsigned>(red.outcome), static_cast<unsigned>(red.cls), red.range_mm,
+                red.raw_status, red.observed_status, static_cast<unsigned>(red.why));
+
+    if (red.outcome != pk::result::frame_ready) {
+        /* Not an error. no_frame is the contract's correct answer for a cycle that produced
+         * nothing, and unencodable names a defect the reduction already reported in `why`. */
+        shell_print(shell, "no frame from this sample -- transmitting nothing is the correct "
+                           "outcome here, so there is nothing to encode");
+        return 0;
+    }
+
+    uint8_t frame[8]{};
+    pk::reason why{pk::reason::none};
+    if (!pk::encode_measurement(red, static_cast<uint8_t>(source_id),
+                                static_cast<uint8_t>(epoch), static_cast<uint8_t>(cyc), frame,
+                                &why)) {
+        shell_error(shell, "packer refused the encode (why=%u)", static_cast<unsigned>(why));
+        return -EIO;
+    }
+
+    shell_print(shell, "BENCH-ONLY payload, source_id=%lu DECLARED BY OPERATOR (no proof exists):",
+                source_id);
+    shell_print(shell, "  %02x %02x %02x %02x %02x %02x %02x %02x", frame[0], frame[1], frame[2],
+                frame[3], frame[4], frame[5], frame[6], frame[7]);
+    shell_print(shell, "NOT TRANSMITTED: no CAN frame was sent, the publisher was not used, the "
+                       "mapping state is unchanged and the PROVEN clamp is untouched. These bytes "
+                       "are not evidence that this board published a measurement.");
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+    SHELL_CMD_ARG(pack, NULL,
+                  "BENCH ONLY: <pos> <source_id> [epoch] [cycle_seq] [attempts] [gap_ms] -- "
+                  "encode one real sample and PRINT it; transmits nothing",
+                  cmd_cliff_pack, 3, 4),
     SHELL_CMD_ARG(read, NULL,
                   "diagnostic: <pos> [attempts] [gap_ms] -- does this sensor range? "
                   "(default 1 check = what one acquisition cycle sees)",
