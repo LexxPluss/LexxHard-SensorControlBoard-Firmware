@@ -657,6 +657,118 @@ ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_unknown_id_passthrough)
     zassert_equal(msg.f101.average_current, 42);
 }
 
+// The remaining tests in this group each route one of the other 9 known IDs through
+// decode_frame_bmu_info() and check two things: (1) the ID's own field decoded
+// correctly, and (2) fields belonging to OTHER frames -- especially the ones with an
+// identical extreme_pair_u16/i16 layout (0x110/0x111/0x112/0x120) -- stay at their
+// default. A case=>decoder mix-up (e.g. "case 0x111: decode_0x112(...)") would either
+// leave (1) at its default or corrupt (2), so both checks are needed to catch it.
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x100_routes_to_0x100)
+{
+    uint8_t data[8] = {0x11, 0, 0, 0, 0, 0, 0, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x100, data, 8, msg));
+    zassert_equal(msg.f100.fail_status1, 0x11);
+    zassert_equal(msg.f101.fail_status2, 0xff);  // still default: not touched by 0x100
+    zassert_equal(msg.f113.fail_status3, 0xff);  // still default: not touched by 0x100
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x103_routes_to_0x103)
+{
+    uint8_t data[8] = {0, 0, 0, 0, 0, 0, 0x07, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x103, data, 8, msg));
+    zassert_equal(msg.f103.fet_status, 0x07);
+    zassert_equal(msg.f101.fail_status2, 0xff);  // still default: not touched by 0x103
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x110_routes_to_0x110)
+{
+    uint8_t data[8] = {0x10, 0x00, 0xaa, 0, 0x05, 0x00, 0xbb, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x110, data, 8, msg));
+    zassert_equal(msg.f110.max_voltage.id, 0xaa);
+    zassert_equal(msg.f110.min_voltage.id, 0xbb);
+    // 0x111/0x112/0x120 share the same extreme_pair byte layout -- a mix-up would
+    // route this data into one of them instead, leaving f110 at 0 and one of these at
+    // 0xaa/0xbb.
+    zassert_equal(msg.f111.max_temp.id, 0);
+    zassert_equal(msg.f112.max_current.id, 0);
+    zassert_equal(msg.f120.max_cell_voltage.id, 0);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x111_routes_to_0x111)
+{
+    uint8_t data[8] = {0x11, 0x00, 0xcc, 0, 0x06, 0x00, 0xdd, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x111, data, 8, msg));
+    zassert_equal(msg.f111.max_temp.id, 0xcc);
+    zassert_equal(msg.f111.min_temp.id, 0xdd);
+    zassert_equal(msg.f110.max_voltage.id, 0);
+    zassert_equal(msg.f112.max_current.id, 0);
+    zassert_equal(msg.f120.max_cell_voltage.id, 0);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x112_routes_to_0x112)
+{
+    uint8_t data[8] = {0x12, 0x00, 0xee, 0, 0x07, 0x00, 0xff, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x112, data, 8, msg));
+    zassert_equal(msg.f112.max_current.id, 0xee);
+    zassert_equal(msg.f112.min_current.id, 0xff);
+    zassert_equal(msg.f110.max_voltage.id, 0);
+    zassert_equal(msg.f111.max_temp.id, 0);
+    zassert_equal(msg.f120.max_cell_voltage.id, 0);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x113_routes_to_0x113)
+{
+    uint8_t data[8] = {0x01, 0x02, 0, 0x04, 0x05, 0x06, 0x07, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x113, data, 8, msg));
+    zassert_equal(msg.f113.fw_ver, 0x01);
+    zassert_equal(msg.f113.data_ver, 0x02);
+    zassert_equal(msg.f113.connected_bm_count, 0x04);
+    zassert_equal(msg.f113.leader_alarm1, 0x05);
+    zassert_equal(msg.f113.leader_alarm2, 0x06);
+    zassert_equal(msg.f113.fail_status3, 0x07);
+    zassert_equal(msg.f100.fail_status1, 0xff);  // still default: not touched by 0x113
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x120_routes_to_0x120)
+{
+    uint8_t data[8] = {0x20, 0x00, 0x21, 0, 0x03, 0x00, 0x31, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x120, data, 8, msg));
+    zassert_equal(msg.f120.max_cell_voltage.id, 0x21);
+    zassert_equal(msg.f120.min_cell_voltage.id, 0x31);
+    // 0x110/0x111/0x112 share the same extreme_pair byte layout as 0x120.
+    zassert_equal(msg.f110.max_voltage.id, 0);
+    zassert_equal(msg.f111.max_temp.id, 0);
+    zassert_equal(msg.f112.max_current.id, 0);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x130_routes_to_0x130)
+{
+    uint8_t data[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x130, data, 8, msg));
+    zassert_equal(msg.f130.manufacturing, 0x0102);
+    zassert_equal(msg.f130.inspection, 0x0304);
+    zassert_equal(msg.f130.serial, 0x0506);
+    zassert_equal(msg.f131.accumulated_capacity, 0u);  // still default: not touched by 0x130
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_bmu_info_id_0x131_routes_to_0x131)
+{
+    uint8_t data[8] = {0x00, 0x00, 0x01, 0x00, 0, 0, 0, 0};
+    msg_bmu msg{};
+    zassert_true(decode_frame_bmu_info(0x131, data, 8, msg));
+    zassert_equal(msg.f131.accumulated_capacity, 256u);
+    zassert_equal(msg.f130.manufacturing, 0);  // still default: not touched by 0x131
+}
+
 ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_known_id_dlc_8_decodes)
 {
     uint8_t data[8] = {0x00, 0x64, 0x00, 0xc8, 0x30, 0x39, 0x00, 0};
@@ -693,6 +805,32 @@ ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_unknown_id_passthroug
     zassert_equal(f100.fail_status1, 0x11);
     zassert_equal(f101.average_current, 22);
     zassert_equal(f113.fail_status3, 0x33);
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_id_0x100_routes_to_0x100)
+{
+    uint8_t data[8] = {0x11, 0, 0, 0, 0, 0, 0, 0};
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    zassert_true(decode_frame_power_sequence(0x100, data, 8, f100, f101, f113));
+    zassert_equal(f100.fail_status1, 0x11);
+    zassert_equal(f101.fail_status2, 0xff);  // still default: not touched by 0x100
+    zassert_equal(f113.fail_status3, 0xff);  // still default: not touched by 0x100
+}
+
+ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_id_0x113_routes_to_0x113)
+{
+    uint8_t data[8] = {0x01, 0x02, 0, 0x04, 0x05, 0x06, 0x07, 0};
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    zassert_true(decode_frame_power_sequence(0x113, data, 8, f100, f101, f113));
+    zassert_equal(f113.leader_alarm1, 0x05);
+    zassert_equal(f113.leader_alarm2, 0x06);
+    zassert_equal(f113.fail_status3, 0x07);
+    zassert_equal(f100.fail_status1, 0xff);  // still default: not touched by 0x113
+    zassert_equal(f101.fail_status2, 0xff);  // still default: not touched by 0x113
 }
 
 // bmu_info()'s output formatting is not unit-tested: it calls shell_print() with the
