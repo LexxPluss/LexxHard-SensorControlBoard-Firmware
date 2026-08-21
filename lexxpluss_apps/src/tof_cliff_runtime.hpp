@@ -150,19 +150,35 @@ int start_acquisition();
  * one file-scope transport record, and a second caller inside it turns a transport error into a
  * good-looking sample. Requires the position to have been enumerated first (`tof enum`), because it
  * opens the descriptor's assigned address, not the factory default.
+ *
+ * ON attempts/gap_ms. tof_cliff_read_once() is by contract a single non-blocking data-ready check:
+ * it never loops and never waits, because in production the scheduler -- not the sensor call -- owns
+ * the decision about a cycle that produced no sample. A start immediately followed by one check
+ * therefore reports "not ready" essentially always, which is the honest answer for one acquisition
+ * cycle but a useless one for the bench question "does this sensor range".
+ *
+ * So the waiting lives here, in the diagnostic, and only here. attempts=1 with gap_ms=0 is the
+ * default precisely because it reproduces what one acquisition cycle sees; an operator who wants a
+ * distance has to ask for the wait explicitly. Both are bounded (see kMaxProbeAttempts and
+ * kMaxProbeGapMs) because this loop sleeps while holding the chain lock.
  */
+constexpr unsigned kMaxProbeAttempts{50};
+constexpr unsigned kMaxProbeGapMs{200};
+
 struct probe_result {
     bool attempted{false};
     int open_rc{0};
     int start_rc{0};
     int read_rc{0};
+    unsigned attempts_used{0};
     tof_acq::op_status status{};
     struct tof_cliff_sample sample{};
     uint8_t addr_7bit{0};
     uint8_t role_id{0};
 };
 
-int probe_position(size_t position_1based, probe_result &out);
+int probe_position(size_t position_1based, probe_result &out, unsigned attempts = 1,
+                   unsigned gap_ms = 0);
 
 #ifdef CONFIG_ZTEST
 // Lets a suite exercise the single-shot rule more than once per image.

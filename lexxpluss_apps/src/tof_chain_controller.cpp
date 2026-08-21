@@ -445,52 +445,64 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
     unsigned long const pos{strtoul(argv[1], &end, 0)};
 
     if (end == argv[1] || *end != '\0' || pos < 1 || pos > 6) {
-        shell_error(shell, "usage: tof cliff read <position 1-6> [count]");
+        shell_error(shell, "usage: tof cliff read <position 1-6> [attempts] [gap_ms]");
         return -EINVAL;
     }
 
-    unsigned long count{1};
+    /* attempts/gap_ms default to one immediate check, which is exactly what one acquisition cycle
+     * sees. Asking for a measured distance means asking for the wait explicitly. */
+    unsigned long attempts{1};
+    unsigned long gap_ms{0};
 
-    if (argc == 3) {
-        count = strtoul(argv[2], &end, 0);
-        if (end == argv[2] || *end != '\0' || count < 1 || count > 20) {
-            shell_error(shell, "count must be 1-20");
+    if (argc >= 3) {
+        attempts = strtoul(argv[2], &end, 0);
+        if (end == argv[2] || *end != '\0' || attempts < 1 ||
+            attempts > tof_cliff_runtime::kMaxProbeAttempts) {
+            shell_error(shell, "attempts must be 1-%u", tof_cliff_runtime::kMaxProbeAttempts);
+            return -EINVAL;
+        }
+    }
+    if (argc == 4) {
+        gap_ms = strtoul(argv[3], &end, 0);
+        if (end == argv[3] || *end != '\0' || gap_ms > tof_cliff_runtime::kMaxProbeGapMs) {
+            shell_error(shell, "gap_ms must be 0-%u", tof_cliff_runtime::kMaxProbeGapMs);
             return -EINVAL;
         }
     }
 
-    for (unsigned long n{0}; n < count; ++n) {
-        tof_cliff_runtime::probe_result r{};
-        int const rc{tof_cliff_runtime::probe_position(pos, r)};
+    tof_cliff_runtime::probe_result r{};
+    int const rc{tof_cliff_runtime::probe_position(pos, r, attempts, gap_ms)};
 
-        if (rc != 0) {
-            /* Named, because each one sends the reader somewhere different: EBUSY means stop the
-             * acquisition thread, ENOTSUP means that position is a grid sensor, EPERM means the
-             * bootstrap never completed. */
-            shell_error(shell, "probe refused (%d)%s", rc,
-                        rc == -EBUSY    ? ": the acquisition thread owns the ULD" :
-                        rc == -ENOTSUP  ? ": that position is not a cliff sensor" :
-                        rc == -EPERM    ? ": the cliff runtime is not ready" : "");
-            return rc;
-        }
-
-        shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d start=%d read=%d",
-                    pos, r.addr_7bit, r.role_id, r.open_rc, r.start_rc, r.read_rc);
-        if (r.open_rc != 0 || r.start_rc != 0) {
-            shell_print(shell, "  stage=%s errno=%d (has this position been enumerated? run "
-                               "`tof enum` first)",
-                        tof_cliff_stage_name(r.status.stage), r.status.port_errno);
-            return -EIO;
-        }
-        shell_print(shell, "  fresh=%d targets=%u entries=%u rearm_failed=%d stage=%s errno=%d",
-                    r.sample.fresh, r.sample.target_count, r.sample.entry_count,
-                    r.status.rearm_failed, tof_cliff_stage_name(r.status.stage),
-                    r.status.port_errno);
-        for (uint8_t e{0}; e < r.sample.entry_count && e < TOF_CLIFF_MAX_TARGETS; ++e) {
-            shell_print(shell, "  target[%u] range=%d mm status=%u", e,
-                        r.sample.entries[e].range_mm, r.sample.entries[e].range_status);
-        }
+    if (rc != 0) {
+        /* Named, because each one sends the reader somewhere different: EBUSY means stop the
+         * acquisition thread, ENOTSUP means that position is a grid sensor, EPERM means the
+         * bootstrap never completed. */
+        shell_error(shell, "probe refused (%d)%s", rc,
+                    rc == -EBUSY    ? ": the acquisition thread owns the ULD" :
+                    rc == -ENOTSUP  ? ": that position is not a cliff sensor" :
+                    rc == -EPERM    ? ": the cliff runtime is not ready" : "");
+        return rc;
     }
+
+    shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d start=%d read=%d attempts_used=%u",
+                pos, r.addr_7bit, r.role_id, r.open_rc, r.start_rc, r.read_rc, r.attempts_used);
+    if (r.open_rc != 0 || r.start_rc != 0) {
+        shell_print(shell, "  stage=%s errno=%d (has this position been enumerated? run "
+                           "`tof enum` first)",
+                    tof_cliff_stage_name(r.status.stage), r.status.port_errno);
+        return -EIO;
+    }
+    shell_print(shell, "  fresh=%d targets=%u entries=%u rearm_failed=%d stage=%s errno=%d",
+                r.sample.fresh, r.sample.target_count, r.sample.entry_count,
+                r.status.rearm_failed, tof_cliff_stage_name(r.status.stage),
+                r.status.port_errno);
+    for (uint8_t e{0}; e < r.sample.entry_count && e < TOF_CLIFF_MAX_TARGETS; ++e) {
+        shell_print(shell, "  target[%u] range=%d mm status=%u", e,
+                    r.sample.entries[e].range_mm, r.sample.entries[e].range_status);
+    }
+    if (!r.sample.fresh)
+        shell_print(shell, "  no frame within %lu check(s): retry with more attempts and a gap, "
+                           "e.g. `tof cliff read %lu 20 20`", attempts, pos);
 
     /* Stated so that a good reading is not mistaken for a validated data path. */
     shell_print(shell, "diagnostic only: configure() is a no-op (distance mode and timing budget "
@@ -501,8 +513,9 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
     SHELL_CMD_ARG(read, NULL,
-                  "diagnostic: read one cliff position once (does this sensor range?)",
-                  cmd_cliff_read, 2, 1),
+                  "diagnostic: <pos> [attempts] [gap_ms] -- does this sensor range? "
+                  "(default 1 check = what one acquisition cycle sees)",
+                  cmd_cliff_read, 2, 2),
     SHELL_CMD(start, NULL,
               "start the acquisition thread (requires a proven, installed mapping)",
               cmd_cliff_start),

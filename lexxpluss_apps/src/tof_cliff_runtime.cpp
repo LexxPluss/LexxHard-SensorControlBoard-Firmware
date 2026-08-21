@@ -367,10 +367,12 @@ int start_acquisition()
     return acq::start(tcfg);
 }
 
-int probe_position(size_t position_1based, probe_result &out)
+int probe_position(size_t position_1based, probe_result &out, unsigned attempts, unsigned gap_ms)
 {
     out = probe_result{};
 
+    if (attempts == 0 || attempts > kMaxProbeAttempts || gap_ms > kMaxProbeGapMs)
+        return -EINVAL;
     if (!ready())
         return -EPERM;
     /* The acquisition thread owns the ULD while it runs. Refusing rather than interleaving is the
@@ -398,8 +400,20 @@ int probe_position(size_t position_1based, probe_result &out)
     if (out.open_rc == 0) {
         (void)ops.configure(dev, &out.status);
         out.start_rc = ops.start(dev, &out.status);
-        if (out.start_rc == 0)
-            out.read_rc = ops.read_cliff_sample(dev, descs_[i].scratch, &out.sample, &out.status);
+        if (out.start_rc == 0) {
+            /* One start, then re-check. Restarting between checks -- which is what looping over the
+             * whole open/start/stop sequence does -- puts the sensor back at "just started" every
+             * time and can never observe a first frame. */
+            for (unsigned n{0}; n < attempts; ++n) {
+                out.attempts_used = n + 1;
+                out.read_rc =
+                    ops.read_cliff_sample(dev, descs_[i].scratch, &out.sample, &out.status);
+                if (out.read_rc != 0 || out.sample.fresh)
+                    break;
+                if (gap_ms != 0 && n + 1 < attempts)
+                    k_msleep(gap_ms);
+            }
+        }
         acq::op_status ignored{};
         (void)ops.stop(dev, &ignored);
     }
