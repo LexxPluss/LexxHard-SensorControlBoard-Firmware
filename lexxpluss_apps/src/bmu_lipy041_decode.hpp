@@ -169,6 +169,7 @@ enum class field_health { ok, not_received, abnormal };
 
 field_health describe_fail_status1(const msg_0x100 &f100);
 field_health describe_fail_status2(const msg_0x101 &f101);
+field_health describe_fail_status3(const msg_0x113 &f113);
 field_health describe_leader_alarm1(const msg_0x113 &f113);
 field_health describe_leader_alarm2(const msg_0x113 &f113);
 

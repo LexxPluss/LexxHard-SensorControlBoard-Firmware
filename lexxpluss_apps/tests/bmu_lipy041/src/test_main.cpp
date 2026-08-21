@@ -853,6 +853,7 @@ ZTEST(bmu_lipy041_decode, test_decide_post_transition_happy_path_before_timeout)
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0;
     zassert_equal(decide_post_transition(f100, f101, f113, true, 0), post_result::standby);
@@ -882,6 +883,7 @@ ZTEST(bmu_lipy041_decode, test_decide_post_transition_ok_but_switch_not_released
     msg_0x113 f113{};
     f100.fail_status1 = 0;
     f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
     f113.leader_alarm1 = 0;
     f113.leader_alarm2 = 0;
     zassert_equal(decide_post_transition(f100, f101, f113, false, 0), post_result::wait);
@@ -917,6 +919,16 @@ ZTEST(bmu_lipy041_decode, test_describe_fail_status2_not_received_ok_abnormal)
     zassert_equal(describe_fail_status2(f101), field_health::ok);
     f101.fail_status2 = 0b00000001;
     zassert_equal(describe_fail_status2(f101), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status3_not_received_ok_abnormal)
+{
+    msg_0x113 f113{};
+    zassert_equal(describe_fail_status3(f113), field_health::not_received);
+    f113.fail_status3 = 0;
+    zassert_equal(describe_fail_status3(f113), field_health::ok);
+    f113.fail_status3 = 0b00000001;
+    zassert_equal(describe_fail_status3(f113), field_health::abnormal);
 }
 
 ZTEST(bmu_lipy041_decode, test_describe_leader_alarm1_not_received_ok_abnormal)

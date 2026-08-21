@@ -240,6 +240,13 @@ field_health describe_fail_status2(const msg_0x101 &f101) {
     return (f101.fail_status2 & FAIL_STATUS2_ABNORMAL_MASK) == 0 ? field_health::ok : field_health::abnormal;
 }
 
+field_health describe_fail_status3(const msg_0x113 &f113) {
+    if (f113.fail_status3 == NOT_RECEIVED_SENTINEL) {
+        return field_health::not_received;
+    }
+    return (f113.fail_status3 & FAIL_STATUS3_ABNORMAL_MASK) == 0 ? field_health::ok : field_health::abnormal;
+}
+
 field_health describe_leader_alarm1(const msg_0x113 &f113) {
     if (f113.leader_alarm1 == NOT_RECEIVED_SENTINEL) {
         return field_health::not_received;

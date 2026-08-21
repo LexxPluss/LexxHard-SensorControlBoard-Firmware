@@ -946,9 +946,10 @@ public:
         return lexxhard::bmu_lipy041::decide_post_transition(data100, data101, data113, switch_released, elapsed_ms);
     }
     void log_post_diagnostics() const {
-        LOG_WRN("bmu not ok: fail_status1=%d fail_status2=%d leader_alarm1=%d leader_alarm2=%d",
+        LOG_WRN("bmu not ok: fail_status1=%d fail_status2=%d fail_status3=%d leader_alarm1=%d leader_alarm2=%d",
                 static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status1(data100)),
                 static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status2(data101)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status3(data113)),
                 static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm1(data113)),
                 static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm2(data113)));
     }
