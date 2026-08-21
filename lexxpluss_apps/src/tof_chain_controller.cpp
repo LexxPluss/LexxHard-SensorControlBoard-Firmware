@@ -430,7 +430,79 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
     return 0;
 }
 
+int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
+{
+    /* Answers "does this sensor range", nothing more. A partial chain cannot reach PROVEN by rule,
+     * so no measurement frame exists to inspect on the bus -- but whether a given L4 produces a
+     * plausible distance through the real ULD and the real I2C port is a separate and answerable
+     * question, and this is where it gets answered. Output goes to the operator, not to CAN. */
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d)", st);
+        return -ENODEV;
+    }
+
+    char *end{nullptr};
+    unsigned long const pos{strtoul(argv[1], &end, 0)};
+
+    if (end == argv[1] || *end != '\0' || pos < 1 || pos > 6) {
+        shell_error(shell, "usage: tof cliff read <position 1-6> [count]");
+        return -EINVAL;
+    }
+
+    unsigned long count{1};
+
+    if (argc == 3) {
+        count = strtoul(argv[2], &end, 0);
+        if (end == argv[2] || *end != '\0' || count < 1 || count > 20) {
+            shell_error(shell, "count must be 1-20");
+            return -EINVAL;
+        }
+    }
+
+    for (unsigned long n{0}; n < count; ++n) {
+        tof_cliff_runtime::probe_result r{};
+        int const rc{tof_cliff_runtime::probe_position(pos, r)};
+
+        if (rc != 0) {
+            /* Named, because each one sends the reader somewhere different: EBUSY means stop the
+             * acquisition thread, ENOTSUP means that position is a grid sensor, EPERM means the
+             * bootstrap never completed. */
+            shell_error(shell, "probe refused (%d)%s", rc,
+                        rc == -EBUSY    ? ": the acquisition thread owns the ULD" :
+                        rc == -ENOTSUP  ? ": that position is not a cliff sensor" :
+                        rc == -EPERM    ? ": the cliff runtime is not ready" : "");
+            return rc;
+        }
+
+        shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d start=%d read=%d",
+                    pos, r.addr_7bit, r.role_id, r.open_rc, r.start_rc, r.read_rc);
+        if (r.open_rc != 0 || r.start_rc != 0) {
+            shell_print(shell, "  stage=%s errno=%d (has this position been enumerated? run "
+                               "`tof enum` first)",
+                        tof_cliff_stage_name(r.status.stage), r.status.port_errno);
+            return -EIO;
+        }
+        shell_print(shell, "  fresh=%d targets=%u entries=%u rearm_failed=%d stage=%s errno=%d",
+                    r.sample.fresh, r.sample.target_count, r.sample.entry_count,
+                    r.status.rearm_failed, tof_cliff_stage_name(r.status.stage),
+                    r.status.port_errno);
+        for (uint8_t e{0}; e < r.sample.entry_count && e < TOF_CLIFF_MAX_TARGETS; ++e) {
+            shell_print(shell, "  target[%u] range=%d mm status=%u", e,
+                        r.sample.entries[e].range_mm, r.sample.entries[e].range_status);
+        }
+    }
+
+    /* Stated so that a good reading is not mistaken for a validated data path. */
+    shell_print(shell, "diagnostic only: configure() is a no-op (distance mode and timing budget "
+                       "are unresolved in the contract), nothing was published, and the mapping "
+                       "state is unchanged");
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+    SHELL_CMD_ARG(read, NULL,
+                  "diagnostic: read one cliff position once (does this sensor range?)",
+                  cmd_cliff_read, 2, 1),
     SHELL_CMD(start, NULL,
               "start the acquisition thread (requires a proven, installed mapping)",
               cmd_cliff_start),

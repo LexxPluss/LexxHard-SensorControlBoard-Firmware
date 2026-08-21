@@ -129,6 +129,41 @@ constexpr uint8_t kRoleUnassigned{0xFF};
  * or keys from a mapping that has since been revoked, produces facts nothing can be keyed by. */
 int start_acquisition();
 
+/* One diagnostic read of one already-enumerated cliff position.
+ *
+ * WHY THIS EXISTS AND WHAT IT IS NOT. A chain with fewer than four cliff sensors cannot reach
+ * PROVEN -- is_commissioning_profile() requires six positions with all four corners present exactly
+ * once -- so no measurement frame can be produced or published on a partial chain, and that is
+ * deliberate. This answers a different and legitimate question: does THIS sensor range at all.
+ *
+ * It publishes nothing, claims nothing about the mapping, and touches neither the authority nor the
+ * clamp. It is the sensor-layer counterpart of `tof enum`: a commissioning diagnostic whose output
+ * goes to the operator, not to the bus.
+ *
+ * It drives the PRODUCTION ops table (acq::l4_cliff_ops via the installed descriptor), so it
+ * exercises the same open/configure/start/read/stop path acquisition uses rather than a second
+ * route to the device. Note that configure is currently a no-op by design -- distance mode and
+ * timing budget are unresolved in the wire contract -- so the reading reflects the vendor ULD's
+ * default parameters.
+ *
+ * Refuses with -EBUSY while the acquisition thread runs: that thread owns the ULD, whose port keeps
+ * one file-scope transport record, and a second caller inside it turns a transport error into a
+ * good-looking sample. Requires the position to have been enumerated first (`tof enum`), because it
+ * opens the descriptor's assigned address, not the factory default.
+ */
+struct probe_result {
+    bool attempted{false};
+    int open_rc{0};
+    int start_rc{0};
+    int read_rc{0};
+    tof_acq::op_status status{};
+    struct tof_cliff_sample sample{};
+    uint8_t addr_7bit{0};
+    uint8_t role_id{0};
+};
+
+int probe_position(size_t position_1based, probe_result &out);
+
 #ifdef CONFIG_ZTEST
 // Lets a suite exercise the single-shot rule more than once per image.
 void reset_for_test();

@@ -367,6 +367,46 @@ int start_acquisition()
     return acq::start(tcfg);
 }
 
+int probe_position(size_t position_1based, probe_result &out)
+{
+    out = probe_result{};
+
+    if (!ready())
+        return -EPERM;
+    /* The acquisition thread owns the ULD while it runs. Refusing rather than interleaving is the
+     * same rule tof_acq's own guard enforces; this path bypasses that guard by driving the ops table
+     * directly, so it has to check for itself. */
+    if (acq::thread_running())
+        return -EBUSY;
+    if (position_1based == 0 || position_1based > spec_.positions)
+        return -EINVAL;
+
+    const size_t i{position_1based - 1};
+
+    if (descs_[i].kind != acq::model::l4_cliff || descs_[i].ops == nullptr)
+        return -ENOTSUP;
+
+    out.addr_7bit = descs_[i].addr_7bit;
+    out.role_id = descs_[i].role_id;
+
+    const acq::source_ops &ops{*descs_[i].ops};
+    void *dev{descs_[i].dev};
+
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    out.attempted = true;
+    out.open_rc = ops.open(dev, descs_[i].addr_7bit, &out.status);
+    if (out.open_rc == 0) {
+        (void)ops.configure(dev, &out.status);
+        out.start_rc = ops.start(dev, &out.status);
+        if (out.start_rc == 0)
+            out.read_rc = ops.read_cliff_sample(dev, descs_[i].scratch, &out.sample, &out.status);
+        acq::op_status ignored{};
+        (void)ops.stop(dev, &ignored);
+    }
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    return 0;
+}
+
 #ifdef CONFIG_ZTEST
 void set_thread_stack_for_test(k_thread_stack_t *stack, size_t size)
 {
