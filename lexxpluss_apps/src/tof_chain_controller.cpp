@@ -512,6 +512,58 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+#if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
+
+/* This command may only exist in a build the contract already forbids releasing. If that flag ever
+ * flips, this assertion stops the build and forces someone to decide deliberately whether a
+ * command that prints a production-shaped payload belongs in a releasable image. */
+static_assert(tof_cliff_contract::kReleaseForbidden,
+              "tof cliff pack is bench-only: it must not exist in a releasable contract build");
+
+/* Named rather than numeric, because the whole point of these three enumerations is that the
+ * follow-up differs per value; a transcript full of small integers sends the reader back to the
+ * header to find out which finding it recorded. */
+const char *result_name(tof_cliff_packer::result r)
+{
+    switch (r) {
+    case tof_cliff_packer::result::frame_ready: return "frame_ready";
+    case tof_cliff_packer::result::no_frame:    return "no_frame";
+    case tof_cliff_packer::result::unencodable: return "unencodable";
+    }
+    return "?";
+}
+
+const char *status_class_name(tof_cliff_contract::status_class c)
+{
+    switch (c) {
+    case tof_cliff_contract::status_class::valid_range:  return "valid_range";
+    case tof_cliff_contract::status_class::no_target:    return "no_target";
+    case tof_cliff_contract::status_class::sensor_fault: return "sensor_fault";
+    case tof_cliff_contract::status_class::no_sample:    return "no_sample";
+    }
+    return "?";
+}
+
+const char *reason_name(tof_cliff_packer::reason w)
+{
+    using tof_cliff_packer::reason;
+    switch (w) {
+    case reason::none:                                return "none";
+    case reason::zero_targets_with_unexpected_status: return "zero_targets_with_unexpected_status";
+    case reason::zero_targets_entry_count_not_one:    return "zero_targets_entry_count_not_one";
+    case reason::entry_count_mismatch:                return "entry_count_mismatch";
+    case reason::none_status_among_targets:           return "none_status_among_targets";
+    case reason::valid_range_negative:                return "valid_range_negative";
+    case reason::valid_range_is_sentinel:             return "valid_range_is_sentinel";
+    case reason::status_undefined:                    return "status_undefined";
+    case reason::target_count_malformed:              return "target_count_malformed";
+    case reason::no_entries:                          return "no_entries";
+    case reason::source_id_out_of_range:              return "source_id_out_of_range";
+    case reason::reduction_inconsistent:              return "reduction_inconsistent";
+    }
+    return "?";
+}
+
 /* BENCH ONLY. Encodes one real sample into the contract's measurement payload and prints it.
  *
  * WHY THIS IS NOT A GATE BYPASS. It transmits nothing. The publisher, the authorisation callback
@@ -592,21 +644,44 @@ int cmd_cliff_pack(const struct shell *shell, size_t argc, char **argv)
                     r.status.port_errno);
         return -EIO;
     }
+    /* A failed read leaves the sample at its default, which reduces to no_frame -- so without this
+     * check a real transport or protocol error would be reported as "nothing was produced this
+     * cycle, which is correct", and the command would exit successfully. The two are opposite
+     * findings and must not share an exit path. */
+    if (r.read_rc != 0) {
+        shell_error(shell, "pos%lu read failed (%d) stage=%s errno=%d uld=%d: refusing to reduce a "
+                           "sample that was never read", pos, r.read_rc,
+                    tof_cliff_stage_name(r.status.stage), r.status.port_errno, r.status.uld_rc);
+        return -EIO;
+    }
 
-    shell_print(shell, "sample: fresh=%d targets=%u entries=%u attempts_used=%u", r.sample.fresh,
-                r.sample.target_count, r.sample.entry_count, r.attempts_used);
+    shell_print(shell, "pack: pos%lu addr=0x%02x attempts_used=%u", pos, r.addr_7bit,
+                r.attempts_used);
+    shell_print(shell, "sample: fresh=%d targets=%u entries=%u", r.sample.fresh,
+                r.sample.target_count, r.sample.entry_count);
 
     pk::reduction const red{pk::reduce(r.sample)};
-    shell_print(shell, "reduction: outcome=%u class=%u range_mm=%u raw_status=%u observed=%u why=%u",
-                static_cast<unsigned>(red.outcome), static_cast<unsigned>(red.cls), red.range_mm,
-                red.raw_status, red.observed_status, static_cast<unsigned>(red.why));
+    shell_print(shell, "reduction: outcome=%s class=%s range_mm=%u raw_status=%u observed=%u",
+                result_name(red.outcome), status_class_name(red.cls), red.range_mm, red.raw_status,
+                red.observed_status);
 
-    if (red.outcome != pk::result::frame_ready) {
-        /* Not an error. no_frame is the contract's correct answer for a cycle that produced
-         * nothing, and unencodable names a defect the reduction already reported in `why`. */
-        shell_print(shell, "no frame from this sample -- transmitting nothing is the correct "
-                           "outcome here, so there is nothing to encode");
+    /* no_frame and unencodable are opposite findings and the packer's own header says so:
+     * no_frame is the contract's correct answer for a cycle that produced nothing, while
+     * unencodable means the input has no representation on the wire -- a defect in the read layer
+     * or the ULD, named by `why`. Collapsing them, as this command first did, reports a protocol
+     * anomaly as normal operation. */
+    if (red.outcome == pk::result::no_frame) {
+        shell_print(shell, "no frame: no new sample this read, and transmitting nothing is the "
+                           "contract's correct outcome -- ask for the wait (attempts/gap_ms) to "
+                           "observe a frame");
         return 0;
+    }
+    if (red.outcome != pk::result::frame_ready) {
+        shell_error(shell, "unencodable: this sample has no representation on the wire "
+                           "(why=%s, observed_status=%u) -- an anomaly in the read layer or the "
+                           "ULD, not a quiet cycle",
+                    reason_name(red.why), red.observed_status);
+        return -EPROTO;
     }
 
     uint8_t frame[8]{};
@@ -614,25 +689,37 @@ int cmd_cliff_pack(const struct shell *shell, size_t argc, char **argv)
     if (!pk::encode_measurement(red, static_cast<uint8_t>(source_id),
                                 static_cast<uint8_t>(epoch), static_cast<uint8_t>(cyc), frame,
                                 &why)) {
-        shell_error(shell, "packer refused the encode (why=%u)", static_cast<unsigned>(why));
+        shell_error(shell, "packer refused the encode (why=%s)", reason_name(why));
         return -EIO;
     }
 
-    shell_print(shell, "BENCH-ONLY payload, source_id=%lu DECLARED BY OPERATOR (no proof exists):",
-                source_id);
+    /* Printed so the transcript is self-contained evidence: which position and address produced
+     * it, which identity fields the operator declared, which frame kind and length it would be,
+     * and which contract text and generated artefact set define that layout. Without the last two
+     * a captured payload cannot be replayed against the right decoder a month later. */
+    shell_print(shell, "BENCH-ONLY payload for can_id=0x%03x dlc=%u, source_id=%lu DECLARED BY "
+                       "OPERATOR (no proof exists):",
+                tof_cliff_contract::kMeasId, tof_cliff_contract::kDlc, source_id);
     shell_print(shell, "  %02x %02x %02x %02x %02x %02x %02x %02x", frame[0], frame[1], frame[2],
                 frame[3], frame[4], frame[5], frame[6], frame[7]);
+    shell_print(shell, "fields: source_id=%lu epoch=%lu cycle_seq=%lu", source_id, epoch, cyc);
+    shell_print(shell, "contract: sha=%s", tof_cliff_contract::kContractSha256);
+    shell_print(shell, "artefact: %s", tof_cliff_contract::kArtefactSetId);
     shell_print(shell, "NOT TRANSMITTED: no CAN frame was sent, the publisher was not used, the "
                        "mapping state is unchanged and the PROVEN clamp is untouched. These bytes "
                        "are not evidence that this board published a measurement.");
     return 0;
 }
 
+#endif // ENABLE_TOF_CLIFF_BENCH_PACK
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+#if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
     SHELL_CMD_ARG(pack, NULL,
                   "BENCH ONLY: <pos> <source_id> [epoch] [cycle_seq] [attempts] [gap_ms] -- "
                   "encode one real sample and PRINT it; transmits nothing",
                   cmd_cliff_pack, 3, 4),
+#endif
     SHELL_CMD_ARG(read, NULL,
                   "diagnostic: <pos> [attempts] [gap_ms] -- does this sensor range? "
                   "(default 1 check = what one acquisition cycle sees)",

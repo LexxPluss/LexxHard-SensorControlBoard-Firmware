@@ -84,6 +84,16 @@ if(ENABLE_TOF_CLIFF_ULD)
     # ULD's include directories a chain build without the cliff sensors failed on
     # vl53l4cx.h, which is exactly what the guard prevents.
     add_definitions(-DENABLE_TOF_CLIFF_ULD)
+    # The bench-only `tof cliff pack` command, which encodes one real sample with the
+    # production packer and PRINTS the payload. Off unless asked for, and deliberately a
+    # separate flag rather than something the cliff ULD implies: an image that can print a
+    # production-shaped payload should have said so on its build line. It transmits nothing
+    # and cannot authorise anything -- see the command's own comment for why that makes it a
+    # diagnostic rather than a gate bypass -- but the contract still forbids releasing any
+    # cliff build, and the command asserts that flag at compile time.
+    if(ENABLE_TOF_CLIFF_BENCH_PACK)
+        add_definitions(-DENABLE_TOF_CLIFF_BENCH_PACK)
+    endif()
     if(TOF_CLIFF_BUDGET)
         target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_budget_probe.c)
         add_definitions(-DTOF_CLIFF_BUDGET=${TOF_CLIFF_BUDGET})
