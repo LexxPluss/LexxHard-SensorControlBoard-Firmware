@@ -602,11 +602,6 @@ int cmd_cliff_i2cspeed(const struct shell *shell, size_t, char **argv)
         shell_error(shell, "chain glue not initialised (rc=%d)", st);
         return -ENODEV;
     }
-    if (tof_acq::thread_running()) {
-        shell_error(shell, "acquisition thread is running: it owns the chain, and retiming the bus "
-                           "under a cycle in flight would corrupt a read rather than fail it");
-        return -EBUSY;
-    }
 
     char *end{nullptr};
     unsigned long const khz{strtoul(argv[1], &end, 0)};
@@ -633,7 +628,19 @@ int cmd_cliff_i2cspeed(const struct shell *shell, size_t, char **argv)
         return -ENODEV;
     }
 
+    /* The acquisition check lives INSIDE the lock, and that placement is the whole point. Checked
+     * before the lock, it is a time-of-check-to-time-of-use hole: the thread can start after the
+     * check, this command then waits out the cycle in flight, acquires the lock the scheduler
+     * released at the cycle boundary, and retimes the bus while acquisition is still running --
+     * exactly what the check exists to prevent. Under the lock the answer cannot change before it
+     * is used, and it is also the context the flag is written in. */
     k_mutex_lock(&chain_mutex, K_FOREVER);
+    if (tof_acq::thread_running()) {
+        k_mutex_unlock(&chain_mutex);
+        shell_error(shell, "acquisition thread is running: it owns the chain, and retiming the bus "
+                           "under a cycle in flight would corrupt a read rather than fail it");
+        return -EBUSY;
+    }
     int const rc{i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed))};
     k_mutex_unlock(&chain_mutex);
 
