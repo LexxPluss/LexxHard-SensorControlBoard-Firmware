@@ -371,19 +371,38 @@ mapping_state clamp_mapping_state(mapping_state reported)
         // A proven mapping is not something this firmware is entitled to claim yet, so
         // reporting NOT_READY keeps the consumer's own fail-safe path in charge.
         //
-        // WHAT IS ACTUALLY MISSING, as of 2026-08-20. This list has been wrong once
-        // already: it used to say "until the two-board enable chain is fixed", and the
-        // hardware was fixed on 08-17 -- a 50 ohm series resistor on the data line, gate
-        // passed 5/5 on DS20001. Anyone reading the stale reason would have concluded the
-        // condition was met. It is not, for these reasons, none of which is that resistor:
+        // WHAT IS ACTUALLY MISSING, as of 2026-08-21. This list has now been wrong TWICE.
+        // First it said "until the two-board enable chain is fixed", and the hardware was
+        // fixed on 08-17 (a 50 ohm series resistor on the data line). Then it said the chain
+        // enumerates only one of four cliff positions so a real-machine proof "must still
+        // fail" -- and on 08-21 dasher1 enumerated all six positions and proved them. Both
+        // times a stale reason would have sent the reader to the wrong conclusion, so keep
+        // this current or delete it; a clamp whose stated reason is false is worse than one
+        // with no comment.
         //
-        //   - No on-machine acceptance of the PROVEN path. The role table is now frozen from
-        //     dasher_connectivity.png, so PROVEN is reachable by rule for the first time -- but
-        //     nothing has been observed end to end on hardware: no 0x216 capture, no correlated
-        //     cycle health, and the chain currently enumerates only one of the four cliff
-        //     positions (pos4-6 absent), so a proof over the real machine must still fail.
+        // What HAS been accepted on hardware (dasher1, 2026-08-21): a full proof at
+        // epoch 2 with walk1 and walk2 both COMPLETE, refusal none -- so all 28 proof
+        // checks passed on real data, including the four frozen roles, address distinctness,
+        // fingerprint equality across the two walks, and every isolation rule
+        // (tail 0x2f answered, neighbour 0x2e proven silent). The descriptors were keyed
+        // from that mapping: positions 3-6 report role_id 0,1,2,3.
+        //
+        // What is still missing:
+        //
+        //   - That proof required I2C2 at 100 kHz (diagnostic overlay). At the product's
+        //     400 kHz, walk1 has never once reached COMPLETE on this machine, and a proof
+        //     needs two COMPLETE walks. So there is no acceptance of the PROVEN path at the
+        //     speed the product runs, and lifting the clamp would open a path proven only at
+        //     a speed the final acquisition schedule cannot use. This is now an I2C signal
+        //     integrity question for hardware, not a firmware one.
         //   - No boot timing and no stack watermark for the acquisition thread, whose stack
-        //     size is therefore a devicetree number chosen without a measurement.
+        //     size is therefore a devicetree number chosen without a measurement
+        //     (acq-stack-size = 2048, acq-thread-priority = 7; the overlay says as much).
+        //
+        // Deliberately NOT on this list, because it cannot be: "no 0x216 capture" and "no
+        // correlated cycle health". This clamp is what prevents both, so requiring them
+        // before lifting it is circular. They are what must be verified IMMEDIATELY AFTER
+        // it is lifted, on the same image, before that image is used for anything else.
         //
         // What WAS on this list and is now closed, because a list that only grows stops being
         // read: the mapping authority, the epoch plus cycle-reset transaction, the cycle
@@ -400,9 +419,9 @@ mapping_state clamp_mapping_state(mapping_state reported)
         static bool warned{false};
         if (!warned) {
             warned = true;
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- no frozen role "
-                    "table and "
-                    "no on-machine acceptance yet");
+            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- proven on hardware "
+                    "only at 100 kHz, never at the product's 400 kHz, and the acquisition "
+                    "thread has no stack watermark");
         }
         return mapping_state::not_ready;
     }
