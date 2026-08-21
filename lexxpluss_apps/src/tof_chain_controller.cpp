@@ -485,14 +485,26 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
         return rc;
     }
 
-    shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d start=%d read=%d attempts_used=%u",
-                pos, r.addr_7bit, r.role_id, r.open_rc, r.start_rc, r.read_rc, r.attempts_used);
-    if (r.open_rc != 0 || r.start_rc != 0) {
-        shell_print(shell, "  stage=%s errno=%d (has this position been enumerated? run "
-                           "`tof enum` first)",
-                    tof_cliff_stage_name(r.status.stage), r.status.port_errno);
+    /* Only the steps that actually ran are printed with a result. probe_position stops at the
+     * first failure, so "open=-116 start=0" would report a zero that is the initialiser rather
+     * than a success -- and a reader would conclude start worked. */
+    if (r.open_rc != 0) {
+        shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d stage=%s errno=%d uld=%d", pos,
+                    r.addr_7bit, r.role_id, r.open_rc, tof_cliff_stage_name(r.status.stage),
+                    r.status.port_errno, r.status.uld_rc);
+        shell_print(shell, "  configure/start/read NOT attempted (has this position been "
+                           "enumerated? run `tof enum` first)");
         return -EIO;
     }
+    if (r.start_rc != 0) {
+        shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=0 start=%d stage=%s errno=%d uld=%d",
+                    pos, r.addr_7bit, r.role_id, r.start_rc,
+                    tof_cliff_stage_name(r.status.stage), r.status.port_errno, r.status.uld_rc);
+        shell_print(shell, "  read NOT attempted");
+        return -EIO;
+    }
+    shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=0 start=0 read=%d attempts_used=%u",
+                pos, r.addr_7bit, r.role_id, r.read_rc, r.attempts_used);
     shell_print(shell, "  fresh=%d targets=%u entries=%u rearm_failed=%d stage=%s errno=%d",
                 r.sample.fresh, r.sample.target_count, r.sample.entry_count,
                 r.status.rearm_failed, tof_cliff_stage_name(r.status.stage),
@@ -562,6 +574,81 @@ const char *reason_name(tof_cliff_packer::reason w)
     case reason::reduction_inconsistent:              return "reduction_inconsistent";
     }
     return "?";
+}
+
+/* BENCH ONLY. Reconfigures i2c2's bitrate at runtime.
+ *
+ * WHY THIS EXISTS. Enumeration and sensor bring-up have turned out to want different bitrates on
+ * this machine: at 400 kHz a commissioning walk has never once reached COMPLETE, while at 100 kHz
+ * every walk completes but VL53L4CX bring-up fails with -ETIMEDOUT in boot/data_init. The
+ * devicetree bitrate is only the boot default -- i2c_stm32_runtime_configure() is the driver's
+ * .configure entry point, and the driver's own init reaches the initial speed through it -- so one
+ * image can do the walk at one speed and the reads at another without rebooting, which is the only
+ * way to join the two halves that have each been verified separately.
+ *
+ * WHAT IT DOES NOT DO. It does not touch the mapping, the clamp, the publisher or the acquisition
+ * thread, and it refuses while acquisition runs: that thread owns the chain, and changing the bus
+ * timing underneath a cycle in flight would corrupt a read rather than fail it. It takes the chain
+ * lock so a commissioning walk cannot be halfway through either.
+ *
+ * WHAT THE OPERATOR STILL OWES. A bitrate change is not a proof. If bring-up succeeds at the new
+ * speed, that says the sensors answer there -- it does not re-establish that the mapping proved at
+ * the other speed still describes this chain. Probe the identities before trusting it, and if
+ * anything fails, revoke rather than proceed: a mapping that cannot be read at the acquisition
+ * speed must not stay PROVEN. */
+int cmd_cliff_i2cspeed(const struct shell *shell, size_t, char **argv)
+{
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d)", st);
+        return -ENODEV;
+    }
+    if (tof_acq::thread_running()) {
+        shell_error(shell, "acquisition thread is running: it owns the chain, and retiming the bus "
+                           "under a cycle in flight would corrupt a read rather than fail it");
+        return -EBUSY;
+    }
+
+    char *end{nullptr};
+    unsigned long const khz{strtoul(argv[1], &end, 0)};
+    uint32_t speed{0};
+
+    if (end == argv[1] || *end != '\0') {
+        shell_error(shell, "usage: tof cliff i2cspeed <100|400>");
+        return -EINVAL;
+    }
+    if (khz == 100)
+        speed = I2C_SPEED_STANDARD;
+    else if (khz == 400)
+        speed = I2C_SPEED_FAST;
+    else {
+        /* Only the two the contract and the diagnostic overlay actually use. A free-form kHz field
+         * would invite a value nobody has characterised on this harness. */
+        shell_error(shell, "only 100 or 400 kHz: %lu is not a speed this chain is characterised at",
+                    khz);
+        return -EINVAL;
+    }
+
+    if (!device_is_ready(i2c2_dev)) {
+        shell_error(shell, "i2c2 not ready");
+        return -ENODEV;
+    }
+
+    k_mutex_lock(&chain_mutex, K_FOREVER);
+    int const rc{i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed))};
+    k_mutex_unlock(&chain_mutex);
+
+    if (rc != 0) {
+        shell_error(shell, "i2c_configure failed (%d): the bus is left at whatever the driver did "
+                           "with it, so re-run this before trusting any read",
+                    rc);
+        return rc;
+    }
+    shell_print(shell, "i2c2 reconfigured to %lu kHz. The mapping, the clamp and the acquisition "
+                       "thread were NOT touched; a bitrate change is not a proof, so probe the "
+                       "identities before trusting a read, and revoke rather than proceed if "
+                       "anything fails at this speed.",
+                khz);
+    return 0;
 }
 
 /* BENCH ONLY. Encodes one real sample into the contract's measurement payload and prints it.
@@ -638,10 +725,20 @@ int cmd_cliff_pack(const struct shell *shell, size_t argc, char **argv)
                     rc == -EPERM   ? ": the cliff runtime is not ready" : "");
         return rc;
     }
-    if (r.open_rc != 0 || r.start_rc != 0) {
-        shell_error(shell, "pos%lu open=%d start=%d stage=%s errno=%d (run `tof enum` first)", pos,
-                    r.open_rc, r.start_rc, tof_cliff_stage_name(r.status.stage),
-                    r.status.port_errno);
+    /* Reported one stage at a time. Printing "open=-116 start=0" reads as though start succeeded,
+     * but probe_position never calls start when open fails: that zero is the initialiser, not a
+     * result. Naming the un-attempted steps is the same distinction as no_frame vs unencodable. */
+    if (r.open_rc != 0) {
+        shell_error(shell, "pos%lu open=%d stage=%s errno=%d uld=%d -- configure/start/read NOT "
+                           "attempted (has this position been enumerated? run `tof enum` first)",
+                    pos, r.open_rc, tof_cliff_stage_name(r.status.stage), r.status.port_errno,
+                    r.status.uld_rc);
+        return -EIO;
+    }
+    if (r.start_rc != 0) {
+        shell_error(shell, "pos%lu start=%d stage=%s errno=%d uld=%d -- read NOT attempted", pos,
+                    r.start_rc, tof_cliff_stage_name(r.status.stage), r.status.port_errno,
+                    r.status.uld_rc);
         return -EIO;
     }
     /* A failed read leaves the sample at its default, which reduces to no_frame -- so without this
@@ -715,6 +812,10 @@ int cmd_cliff_pack(const struct shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
 #if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
+    SHELL_CMD_ARG(i2cspeed, NULL,
+                  "BENCH ONLY: <100|400> -- retime i2c2 at runtime (walk and bring-up want "
+                  "different speeds on this harness); touches no mapping and is not a proof",
+                  cmd_cliff_i2cspeed, 2, 0),
     SHELL_CMD_ARG(pack, NULL,
                   "BENCH ONLY: <pos> <source_id> [epoch] [cycle_seq] [attempts] [gap_ms] -- "
                   "encode one real sample and PRINT it; transmits nothing",
