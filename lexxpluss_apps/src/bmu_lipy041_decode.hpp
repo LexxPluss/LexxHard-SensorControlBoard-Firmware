@@ -148,6 +148,30 @@ bool is_full_charge(const msg_0x100 &f100);
 bool is_chargable(const msg_0x100 &f100, const msg_0x101 &f101);
 bool is_charging(const msg_0x101 &f101);
 
+// POST-state power-on timeout. Named to record its basis: the LIPY041 datasheet's
+// own "BM communication error" detection window is 30-90 seconds; this is not a
+// completeness check (is_ok()'s 0xff defaults already make "not yet received"
+// abnormal) -- it is purely a give-up backstop for "genuinely broken, or Leader BM
+// never elected" cases.
+inline constexpr int64_t POST_TIMEOUT_MS{90000};
+
+enum class post_result { wait, standby, off };
+
+// Pure decision for board_controller.cpp's POWER_STATE::POST handling. Does not
+// consider should_turn_off() (a separate, orthogonal input handled by the caller).
+post_result decide_post_transition(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113,
+                                    bool switch_released, int64_t elapsed_ms);
+
+// Per-field diagnostic distinguishing "not yet received" (still at its 0xff startup
+// default) from "received but showing an abnormal bit", so a stuck POST state can be
+// explained rather than just timing out silently.
+enum class field_health { ok, not_received, abnormal };
+
+field_health describe_fail_status1(const msg_0x100 &f100);
+field_health describe_fail_status2(const msg_0x101 &f101);
+field_health describe_leader_alarm1(const msg_0x113 &f113);
+field_health describe_leader_alarm2(const msg_0x113 &f113);
+
 }
 
 // vim: set expandtab shiftwidth=4:
