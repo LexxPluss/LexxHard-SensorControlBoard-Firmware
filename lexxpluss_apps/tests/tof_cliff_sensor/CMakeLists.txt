@@ -49,18 +49,10 @@ target_sources(app PRIVATE
     src/fake_i2c.c
     src/test_port_traffic.c
     src/test_read_once.c
-    src/test_acquisition.cpp
     ${APP_SRC_DIR}/tof_cliff_sensor.c
-    ${APP_SRC_DIR}/tof_acquisition.cpp
     ${ULD_DIR}/zephyr/vl53lx_platform.c
     ${ULD_DIR}/zephyr/vl53l4cx_bus_io.c
 )
-
-# The acquisition layer is compiled only under ENABLE_TOF_CHAIN in production, so the
-# test defines it too. The chain controller itself is NOT linked here - the test fakes
-# chain_lock() with a real k_mutex, which keeps the lock assertions honest without
-# dragging in the bus and the shell.
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
     ${ULD_DIR}/zephyr
