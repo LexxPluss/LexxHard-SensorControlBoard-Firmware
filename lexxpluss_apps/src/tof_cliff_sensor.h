@@ -126,6 +126,15 @@ struct tof_cliff_read_status {
 	 * and "the next one will not arrive" into one return value is how a chain
 	 * silently stops ranging while every read still looks fine. */
 	bool rearm_failed;
+
+	/* The fetch succeeded and handed back this device's previous stream count, so the
+	 * bytes are a replay of an already-published sample rather than a new one. Kept
+	 * distinct from the impossible-metadata -EPROTO on purpose: both refuse to
+	 * publish, but a replaying device is wedged and needs a fresh bring-up, while a
+	 * corrupt target count is a transfer defect. Without the separation the two arrive
+	 * as the same -EPROTO at the same stage and nothing downstream can name either.
+	 * Stays set when the re-arm that follows a replay also fails. */
+	bool stale_replay;
 };
 
 /*
@@ -152,6 +161,21 @@ struct tof_cliff_scratch {
 	VL53LX_MultiRangingData_t data;
 };
 
+/* Freshness history for one device. The caller must keep exactly one of these per sensor
+ * and pass the same one every cycle; this interface cannot prove the binding, it can only
+ * avoid forcing a shared one. It must NOT live in tof_cliff_scratch, which is deliberately
+ * shared by all four L4s - a count there would let one sensor's number invalidate its
+ * neighbour's reading - and it must not live anywhere that is cleared per cycle, because
+ * the whole point is that it outlives the cycle.
+ *
+ * A successful start resets it, since the device restarts its numbering. A FAILED start
+ * deliberately leaves it alone: reading after one is a caller error, and an armed guard
+ * refuses the pre-restart sample instead of accepting one stale reading first. */
+struct tof_cliff_stream_state {
+	bool valid;
+	uint8_t last_stream_count;
+};
+
 /*
  * Lifecycle. Separate from reading on purpose: bringing a sensor up is a chain-wide
  * ordered operation, reading is per cycle, and the two must not interleave.
@@ -175,7 +199,8 @@ int tof_cliff_sensor_configure(VL53L4CX_Object_t *obj, VL53LX_DistanceModes mode
 /* Starts continuous ranging. The scheduler calls this once per sensor per bring-up.
  * There is no per-cycle stop/start: cycling four L4s every period would cost a full
  * re-arm sequence per sensor per period and would make the timing budget meaningless. */
-int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *st);
+int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_stream_state *stream,
+			   struct tof_cliff_read_status *st);
 
 /* Only for shutdown and for recovering a sensor that faulted. Not a per-cycle call. */
 int tof_cliff_sensor_stop(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *st);
@@ -194,13 +219,19 @@ int tof_cliff_sensor_stop(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *
  * is the fail-safe direction, and a caller that reads st still gets the reading.
  *
  * Returns -EPROTO, with no sample, when the device's own metadata is impossible: a
- * target count above TOF_CLIFF_MAX_TARGETS, or a data-ready flag that is neither 0 nor
- * 1. Those cannot be repaired by truncation. Handing up a count the entries do not
- * support invites the caller to iterate off the end of the array, and treating an
- * out-of-range ready flag as "not ready" would let a confused device look like a quiet
- * one indefinitely.
+ * target count above TOF_CLIFF_MAX_TARGETS, a data-ready flag that is neither 0 nor 1,
+ * or a ready fetch that repeats this device's previous stream count. Those cannot be
+ * repaired by truncation or by calling stale bytes fresh. Handing up a count the entries
+ * do not support invites the caller to iterate off the end of the array, and treating an
+ * out-of-range ready flag or a replay as "not ready" would let a confused device look
+ * like a quiet one indefinitely. The three arrive as the same errno, so which one it was
+ * is read from st: stage READY_CHECK for the flag, and stale_replay for the replay.
+ *
+ * A replay is still re-armed before it is refused, so one recoverable replay does not
+ * leave the ready flag asserted and turn every later read into the same failure.
  */
 int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratch,
+			struct tof_cliff_stream_state *stream,
 			struct tof_cliff_sample *sample, struct tof_cliff_read_status *st);
 
 /* The copy step, exposed because it is where the three preservation rules live -

@@ -180,6 +180,7 @@ int32_t VL53L4CX_RegisterBusIO(VL53L4CX_Object_t *pObj, VL53L4CX_IO_t *pIO)
 
 static VL53L4CX_Object_t obj;
 static struct tof_cliff_scratch scratch;
+static struct tof_cliff_stream_state stream;
 static struct tof_cliff_sample sample;
 static struct tof_cliff_read_status st;
 
@@ -201,6 +202,7 @@ static void before(void *fixture)
 	memset(&f, 0, sizeof(f));
 	memset(&obj, 0, sizeof(obj));
 	memset(&scratch, 0, sizeof(scratch));
+	memset(&stream, 0, sizeof(stream));
 	memset(&sample, 0, sizeof(sample));
 	memset(&st, 0, sizeof(st));
 	obj.IO.Address = TEST_ADDR7 << 1; /* ST's 8-bit wire convention */
@@ -224,7 +226,7 @@ ZTEST(tof_cliff_adapter, test_zero_targets_keeps_the_synthetic_entry_and_a_true_
 
 	canned_targets(0, mm, status, 1);
 
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_true(sample.fresh);
 	zassert_equal(sample.target_count, 0, "a real zero must stay zero");
 	zassert_equal(sample.entry_count, 1,
@@ -240,7 +242,7 @@ ZTEST(tof_cliff_adapter, test_four_targets_are_all_copied_in_order)
 
 	canned_targets(4, mm, status, 4);
 
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(sample.target_count, 4);
 	zassert_equal(sample.entry_count, 4);
 	for (int i = 0; i < 4; i++) {
@@ -260,7 +262,7 @@ ZTEST(tof_cliff_adapter, test_negative_range_survives_unclamped)
 
 	canned_targets(2, mm, status, 2);
 
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(sample.entries[0].range_mm, -37);
 	zassert_equal(sample.entries[1].range_mm, -1);
 }
@@ -276,7 +278,7 @@ ZTEST(tof_cliff_adapter, test_no_status_is_reclassified_or_reduced_here)
 
 	canned_targets(3, mm, status, 3);
 
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(sample.entry_count, 3, "no entry may be dropped by this layer");
 	zassert_equal(sample.entries[0].range_status, 3);
 	zassert_equal(sample.entries[1].range_status, 11);
@@ -298,7 +300,7 @@ ZTEST(tof_cliff_adapter, test_count_above_the_array_is_a_protocol_error_not_a_tr
 	 * published. */
 	canned_targets(9, mm, status, 4);
 
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), -EPROTO);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
 	zassert_false(st.sample_present);
 	zassert_false(sample.fresh);
@@ -312,7 +314,7 @@ ZTEST(tof_cliff_adapter, test_count_above_the_array_is_a_protocol_error_not_a_tr
 	/* The largest count the array does hold is still accepted. */
 	before(NULL);
 	canned_targets(TOF_CLIFF_MAX_TARGETS, mm, status, 4);
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(sample.target_count, TOF_CLIFF_MAX_TARGETS);
 }
 
@@ -325,7 +327,7 @@ ZTEST(tof_cliff_adapter, test_a_ready_flag_outside_zero_and_one_is_a_protocol_er
 		before(NULL);
 		f.ready = bogus;
 
-		zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), -EPROTO,
+		zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO,
 			      "ready = %u was accepted", bogus);
 		zassert_equal(st.stage, TOF_CLIFF_STAGE_READY_CHECK);
 		zassert_false(sample.fresh);
@@ -335,7 +337,7 @@ ZTEST(tof_cliff_adapter, test_a_ready_flag_outside_zero_and_one_is_a_protocol_er
 	/* 0 and 1 keep their ordinary meanings. */
 	before(NULL);
 	f.ready = 0;
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_false(sample.fresh);
 }
 
@@ -345,7 +347,7 @@ ZTEST(tof_cliff_adapter, test_not_ready_is_not_an_error_and_never_waits)
 {
 	f.ready = 0;
 
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_false(sample.fresh);
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_NONE);
 	zassert_false(st.sample_present);
@@ -364,7 +366,7 @@ ZTEST(tof_cliff_adapter, test_ready_check_failure_reports_its_own_stage)
 {
 	f.ready_rc = VL53LX_ERROR_CONTROL_INTERFACE;
 
-	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_READY_CHECK);
 	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE);
 	zassert_false(st.sample_present);
@@ -379,7 +381,7 @@ ZTEST(tof_cliff_adapter, test_fetch_failure_yields_no_sample)
 	canned_targets(1, mm, status, 1);
 	f.fetch_rc = VL53LX_ERROR_CONTROL_INTERFACE;
 
-	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
 	zassert_false(st.sample_present);
 	zassert_false(sample.fresh, "a failed fetch must not hand up a half-copied sample");
@@ -401,7 +403,7 @@ ZTEST(tof_cliff_adapter, test_bus_failure_masked_by_a_successful_return_code_is_
 		f.fetch_rc = VL53LX_ERROR_NONE;
 		fake_i2c_fail_on(at[i], -EIO);
 
-		zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0,
+		zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0,
 				  "transfer %d failed and the read still reported success",
 				  at[i]);
 		zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
@@ -426,7 +428,7 @@ ZTEST(tof_cliff_adapter, test_sticky_from_an_earlier_operation_cannot_leak_into_
 	fake_i2c_fail_on(0, 0);
 
 	/* The read clears before each ULD call, so a stale record must not fail it. */
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(st.port_errno, 0);
 	zassert_true(st.sample_present);
 }
@@ -441,7 +443,7 @@ ZTEST(tof_cliff_adapter, test_rearm_failure_keeps_the_sample_and_says_so_separat
 
 	/* Non-zero, so a caller that checks only the return value stops trusting this
 	 * sensor - the fail-safe direction. */
-	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_REARM);
 	zassert_true(st.rearm_failed, "the next cycle will not arrive, and that is distinct");
 	zassert_true(st.sample_present, "but this cycle's reading is real and must survive");
@@ -466,7 +468,7 @@ ZTEST(tof_cliff_adapter, test_the_sticky_record_is_scoped_to_one_operation)
 	 * ULD operation clears the record before it starts and reads it back afterwards,
 	 * so a failure belonging to nobody must not be attributed to this read. */
 	fake_i2c_fail_on(4, -EBUSY);
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_equal(st.port_errno, 0);
 	zassert_true(st.sample_present);
 	zassert_false(st.rearm_failed);
@@ -594,9 +596,10 @@ ZTEST(tof_cliff_adapter, test_reading_never_stops_or_restarts_the_device)
 	const uint8_t status[1] = {0};
 
 	canned_targets(1, mm, status, 1);
-	zassert_equal(tof_cliff_sensor_start(&obj, &st), 0);
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
 	for (int i = 0; i < 5; i++) {
-		zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+		f.canned.StreamCount++;
+		zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	}
 
 	/* Cycling four L4s every period would pay a full start sequence per sensor per
@@ -607,14 +610,158 @@ ZTEST(tof_cliff_adapter, test_reading_never_stops_or_restarts_the_device)
 	zassert_equal(f.rearm_calls, 5);
 }
 
+/* C1. GetMultiRangingData can fail internally, overwrite its own status with the copy
+ * step's success and leave the PREVIOUS result in its output buffer. The sticky port
+ * record catches that only when the bus was involved, so a healthy-bus internal failure
+ * would otherwise republish the last range with fresh == true - the floor read while
+ * still on the floor, handed up every cycle as current while the robot drives off a
+ * ledge. The stream count is the only material already being carried that can tell the
+ * two apart. */
+ZTEST(tof_cliff_adapter, test_an_unchanged_stream_count_is_a_replay_not_a_fresh_sample)
+{
+	const int16_t mm[1] = {120};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+
+	/* First read establishes the history and must be accepted. */
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_true(sample.fresh);
+	zassert_equal(sample.entries[0].range_mm, 120);
+
+	/* Same count again, with the bus and the ULD both reporting success. */
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
+	zassert_false(sample.fresh, "stale bytes must not be handed up as a reading");
+	zassert_false(st.sample_present);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
+	zassert_true(st.stale_replay, "a replay must be nameable, not just an -EPROTO");
+	zassert_equal(st.port_errno, 0, "the bus was healthy; this is not a transport fault");
+
+	/* And the device is re-armed anyway, or one recoverable replay would leave ready
+	 * asserted and turn every later read into the same failure. */
+	zassert_equal(f.rearm_calls, 2);
+}
+
+/* The replay verdict and a failing re-arm are separate facts and both must survive. */
+ZTEST(tof_cliff_adapter, test_a_replay_whose_rearm_also_fails_reports_both)
+{
+	const int16_t mm[1] = {120};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_true(st.stale_replay, "the replay is why the payload was refused");
+	zassert_true(st.rearm_failed, "and the next sample will not arrive either");
+	zassert_false(st.sample_present);
+	zassert_false(sample.fresh);
+}
+
+/* A replay is refused; an advancing count is not. The wrap is 0xFF -> 0x80, not 0xFF -> 0:
+ * upstream vl53lx_core.c does that explicitly, so 128 is an advance from 255 and must not
+ * read as a repeat. */
+ZTEST(tof_cliff_adapter, test_an_advancing_stream_count_is_accepted_including_the_wrap)
+{
+	const uint8_t seq[] = {254, 255, 0x80, 0x81};
+	const int16_t mm[1] = {200};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+
+	for (size_t i = 0; i < ARRAY_SIZE(seq); i++) {
+		f.canned.StreamCount = seq[i];
+		zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0,
+			      "count %u was refused", seq[i]);
+		zassert_true(sample.fresh);
+		zassert_false(st.stale_replay);
+	}
+}
+
+/* The history belongs to one stream state, and the caller is required to keep exactly one
+ * per device - the API cannot prove that binding, it can only avoid making a shared one
+ * mandatory. Four L4s share one scratch deliberately, so had the count lived there a
+ * quiet sensor reporting the same number as its neighbour would be refused as a replay.
+ * Two stream states, one scratch, same count: both accepted. */
+ZTEST(tof_cliff_adapter, test_the_stream_history_is_per_state_not_per_shared_scratch)
+{
+	struct tof_cliff_stream_state a = {0};
+	struct tof_cliff_stream_state b = {0};
+	const int16_t mm[1] = {90};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &a, &sample, &st), 0);
+	zassert_true(sample.fresh);
+
+	/* Same shared scratch, same StreamCount, different device. */
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &b, &sample, &st), 0,
+		      "one sensor's count must not invalidate another's");
+	zassert_true(sample.fresh);
+	zassert_false(st.stale_replay);
+
+	/* But each device still catches its own repeat. */
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &a, &sample, &st), -EPROTO);
+	zassert_true(st.stale_replay);
+}
+
+/* A new ranging session starts a new count sequence, so the history has to be dropped
+ * or the first read after a restart would be refused as a replay of the old session. */
+ZTEST(tof_cliff_adapter, test_start_resets_the_stream_history)
+{
+	const int16_t mm[1] = {75};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
+
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0,
+		      "the same count is a new sample after a restart");
+	zassert_true(sample.fresh);
+	zassert_false(st.stale_replay);
+}
+
+/* A failed start must NOT clear the history. The caller is not allowed to read after one,
+ * but if it does anyway, an armed guard still refuses the pre-restart sample. Clearing
+ * would let exactly one stale reading through - the opposite of what this guard is for. */
+ZTEST(tof_cliff_adapter, test_a_failed_start_preserves_the_guard)
+{
+	const int16_t mm[1] = {75};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+
+	f.start_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+
+	/* Same count as before the failed start: still a replay, still refused. */
+	f.start_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
+	zassert_true(st.stale_replay);
+	zassert_false(sample.fresh);
+}
+
 ZTEST(tof_cliff_adapter, test_null_arguments_are_rejected_without_touching_the_device)
 {
-	zassert_equal(tof_cliff_read_once(NULL, &scratch, &sample, &st), -EINVAL);
-	zassert_equal(tof_cliff_read_once(&obj, NULL, &sample, &st), -EINVAL);
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, NULL, &st), -EINVAL);
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, NULL), -EINVAL);
+	zassert_equal(tof_cliff_read_once(NULL, &scratch, &stream, &sample, &st), -EINVAL);
+	zassert_equal(tof_cliff_read_once(&obj, NULL, &stream, &sample, &st), -EINVAL);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, NULL, &sample, &st), -EINVAL);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, NULL, &st), -EINVAL);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, NULL), -EINVAL);
 	zassert_equal(f.ready_calls, 0);
 	zassert_equal(f.fetch_calls, 0);
+
+	/* start() gained the same obligation: without a stream state it cannot invalidate
+	 * the history, so accepting NULL would silently leave the old count in force. */
+	zassert_equal(tof_cliff_sensor_start(NULL, &stream, &st), -EINVAL);
+	zassert_equal(tof_cliff_sensor_start(&obj, NULL, &st), -EINVAL);
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, NULL), -EINVAL);
+	zassert_equal(f.start_calls, 0);
 }
 
 ZTEST(tof_cliff_adapter, test_copy_raw_is_pure_and_handles_a_null_input)
@@ -641,9 +788,10 @@ ZTEST(tof_cliff_adapter, test_placeholder_transport_is_never_reached_by_the_read
 	canned_targets(1, mm, status, 1);
 	zassert_equal(tof_cliff_sensor_open(&obj, TEST_ADDR7, &st), 0);
 	zassert_equal(tof_cliff_sensor_configure(&obj, VL53LX_DISTANCEMODE_LONG, 33000, &st), 0);
-	zassert_equal(tof_cliff_sensor_start(&obj, &st), 0);
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
 	for (int i = 0; i < 3; i++) {
-		zassert_equal(tof_cliff_read_once(&obj, &scratch, &sample, &st), 0);
+		f.canned.StreamCount++;
+		zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	}
 
 	/* Defence in depth behind the fact that this interface has no enable operation to

@@ -55,6 +55,7 @@ LOG_MODULE_REGISTER(tof_cliff_budget, CONFIG_LOG_DEFAULT_LEVEL);
 struct cliff_source {
 	struct tof_cliff_sample sample;
 	struct tof_cliff_read_status status;
+	struct tof_cliff_stream_state stream;
 	uint8_t addr_7bit;
 	uint8_t consecutive_misses;
 	bool proven;
@@ -109,9 +110,10 @@ static void cliff_walk_one(int i)
 	 * are unresolved symbols in the wire contract and must not be frozen anywhere. */
 	cliff_sink_rc = tof_cliff_sensor_configure(obj, VL53LX_DISTANCEMODE_LONG, 33000,
 						   &src->status);
-	cliff_sink_rc = tof_cliff_sensor_start(obj, &src->status);
+	cliff_sink_rc = tof_cliff_sensor_start(obj, &src->stream, &src->status);
 
-	rc = tof_cliff_read_once(obj, cliff_scratch_ref, &src->sample, &src->status);
+	rc = tof_cliff_read_once(obj, cliff_scratch_ref, &src->stream, &src->sample,
+				 &src->status);
 	cliff_sink_rc = rc;
 	if (src->sample.fresh) {
 		src->consecutive_misses = 0;

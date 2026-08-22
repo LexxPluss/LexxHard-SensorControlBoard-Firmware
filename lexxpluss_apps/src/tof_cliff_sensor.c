@@ -48,6 +48,7 @@ static void tof_cliff_status_reset(struct tof_cliff_read_status *st)
 	st->uld_rc = 0;
 	st->sample_present = false;
 	st->rearm_failed = false;
+	st->stale_replay = false;
 }
 
 const char *tof_cliff_stage_name(enum tof_cliff_stage stage)
@@ -165,15 +166,30 @@ int tof_cliff_sensor_configure(VL53L4CX_Object_t *obj, VL53LX_DistanceModes mode
 		VL53LX_SetMeasurementTimingBudgetMicroSeconds(obj, timing_budget_us));
 }
 
-int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *st)
+int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_stream_state *stream,
+			   struct tof_cliff_read_status *st)
 {
-	if (obj == NULL || st == NULL) {
+	int ret;
+
+	if (obj == NULL || stream == NULL || st == NULL) {
 		return -EINVAL;
 	}
 	tof_cliff_status_reset(st);
 
 	vl53l4cx_port_sticky_reset();
-	return tof_cliff_finish(st, TOF_CLIFF_STAGE_START, VL53LX_StartMeasurement(obj));
+	ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_START, VL53LX_StartMeasurement(obj));
+	if (ret != 0) {
+		/* The old history is deliberately KEPT. A caller must not read after a failed
+		 * start, but if it does anyway, an armed guard still refuses the pre-restart
+		 * sample; clearing here would let exactly one stale reading through first. */
+		return ret;
+	}
+
+	/* A successful start begins a new numbering - the ULD zeroes rd_stream_count when
+	 * the mode is set - so the previous session's count is no longer a basis for
+	 * comparison and keeping it could refuse a genuinely new sample. */
+	memset(stream, 0, sizeof(*stream));
+	return 0;
 }
 
 int tof_cliff_sensor_stop(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *st)
@@ -236,12 +252,14 @@ int tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sam
 }
 
 int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratch,
+			struct tof_cliff_stream_state *stream,
 			struct tof_cliff_sample *sample, struct tof_cliff_read_status *st)
 {
 	uint8_t ready = 0;
+	bool replay;
 	int ret;
 
-	if (obj == NULL || scratch == NULL || sample == NULL || st == NULL) {
+	if (obj == NULL || scratch == NULL || stream == NULL || sample == NULL || st == NULL) {
 		return -EINVAL;
 	}
 	tof_cliff_status_reset(st);
@@ -275,6 +293,37 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 		return ret;
 	}
 
+	/* GetMultiRangingData can return success after an internal failure and leave the
+	 * previous result in its output. The sticky port errno catches transport failures,
+	 * but not every ULD-internal failure. A ready result whose stream count did not
+	 * advance is therefore a replay, never a fresh sample. The comparison is per device;
+	 * different sensors are allowed to report the same count, which is also why this
+	 * history cannot live in the scratch - one scratch is shared by all four L4s.
+	 *
+	 * The alias period is 128 frames, not 256: upstream vl53lx_core.c wraps the counter
+	 * 0xFF -> 0x80 rather than to 0, so after the first pass it only ever cycles through
+	 * 0x80..0xFF. Exactly 128 device measurements between two reads therefore alias to
+	 * the same value and a genuinely new sample is refused - about 4.2 s of uninterrupted
+	 * ranging with nobody reading at a 33 ms budget, which a commissioning session
+	 * holding the chain lock can produce. The direction is deliberate: a refused real
+	 * sample costs one cycle and a fault bit, while an accepted replay reports the floor
+	 * from four seconds ago as the floor now. */
+	replay = stream->valid && scratch->data.StreamCount == stream->last_stream_count;
+	if (replay) {
+		st->stale_replay = true;
+		/* Re-arm even though this payload is rejected. Otherwise a recoverable replay
+		 * would leave ready asserted forever and guarantee every later read also fails. */
+		vl53l4cx_port_sticky_reset();
+		ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_REARM,
+				       VL53LX_ClearInterruptAndStartMeasurement(obj));
+		if (ret != 0) {
+			st->rearm_failed = true;
+			return ret;
+		}
+		st->stage = TOF_CLIFF_STAGE_FETCH;
+		return -EPROTO;
+	}
+
 	ret = tof_cliff_copy_raw(&scratch->data, sample);
 	if (ret != 0) {
 		/* Impossible metadata. The fetch itself succeeded, so the stage stays
@@ -284,6 +333,11 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 		memset(sample, 0, sizeof(*sample));
 		return ret;
 	}
+	/* Recorded from the same expression the comparison above reads, not from the copied
+	 * sample: if the copy step ever transformed the value the two would drift apart and
+	 * the replay check would start comparing against something else. */
+	stream->last_stream_count = scratch->data.StreamCount;
+	stream->valid = true;
 	st->sample_present = true;
 
 	/* Re-arm. Its failure is reported as an error so a caller that checks only the
