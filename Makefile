@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer build-test-tof-cliff-packer build-test-tof-tail-isolation build-test-tof-mapping-proof
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer build-test-tof-cliff-packer build-test-tof-mapping-authority build-test-tof-tail-isolation build-test-tof-mapping-proof
 
 .PHONY: distclean
 distclean: clean
@@ -104,6 +104,12 @@ test_tof_cliff_sensor:
 test_tof_enumerator:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the mapping authority: every way a challenge, an epoch or a proof can fail to authorise, and the guarantee that a refusal costs nothing.
+.PHONY: test_tof_mapping_authority
+test_tof_mapping_authority:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
 .PHONY: test_tof_tail_isolation
