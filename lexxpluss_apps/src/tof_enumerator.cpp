@@ -169,13 +169,6 @@ census run_census(chain_ops &ops, const chain_spec &spec, const bool owned[],
     return c;
 }
 
-bool id_matches(model m, const id_bytes &b)
-{
-    if (m == model::l7cx)
-        return b.first == 0xf0 && b.second == 0x02;
-    return b.first == 0xeb && b.second == 0xaa;
-}
-
 }  // namespace
 
 chain_result enumerate(chain_ops &ops, const chain_spec &spec)
