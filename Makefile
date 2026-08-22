@@ -76,6 +76,16 @@ test_tof_packer:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the cliff (VL53L4CX) sensor layer. Two levels in one image:
+# the port's wire shape and errno path through an emulated I2C controller, and the
+# read_once adapter against fakes that reproduce the ULD's own defects. The ULD's
+# sources are deliberately absent from this build -- driving the real ULD would mean
+# freezing a vendor-internal register sequence into our tests.
+.PHONY: test_tof_cliff_sensor
+test_tof_cliff_sensor:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_cliff_sensor -d build-test-tof-cliff-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the ToF enumeration layer: currently the production
 # guarded readdress (exact-traffic properties the enumerator fakes cannot
 # prove, above all zero-writes-after-transport-error); the enumeration state
