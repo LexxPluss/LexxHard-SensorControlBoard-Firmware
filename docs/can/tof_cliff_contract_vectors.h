@@ -1,3 +1,4 @@
+// clang-format off
 /*
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
@@ -11,7 +12,7 @@
  * Contract : tof_cliff_wire_contract.md
  * Version  : commissioning-2026-08-18c
  * SHA-256  : fb94706a4d2488aa9acdc7c7defcd7fac92379cba01964ab31f949fa50955188
- * ArtefactSet : db9cae649df6de64d78a16576de475ed605423d443bb2c3a31f2adfe0b426af2
+ * ArtefactSet : 3db018e9f0be3ae85a295240a8314fff97491b587ec909021b8e478745caf9aa
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
@@ -24,14 +25,14 @@
  *
  * Zero dependencies on purpose: the SCBDriver tests have no JSON parser.
  *
- * clang-format is disabled for the whole file, starting above the include guard.
+ * clang-format is disabled for the whole file, from its very first line -- above
+ * this licence block, not merely above the include guard.
  * SCBDriver's CI reformats every .h in the repository with an explicitly named
  * style file, which overrides any directory .clang-format -- so a generated file
  * can only stay byte-identical across the two repositories by opting out here, in
  * the generator, rather than per checkout.
  */
 
-// clang-format off
 #pragma once
 
 #include "tof_cliff_contract.h"
