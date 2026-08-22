@@ -57,12 +57,6 @@
 #include "tof_acquisition.hpp"
 #include "tof_cliff_runtime.hpp"
 #include "tof_commissioning.hpp"
-#if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
-/* The budget probe is C, and this is the whole of its interface: one call, made after the bootstrap
- * this file performs. Declared here rather than in a header of its own because there is exactly one
- * caller and it must stay that way. */
-extern "C" int tof_cliff_budget_run_after_bootstrap(void);
-#endif
 #endif
 #include "tof_enumerator.hpp"
 #include "tof_readdress.hpp"
@@ -505,18 +499,6 @@ void init()
         LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
                 tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), rc);
     }
-#if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
-    /* The budget probe's walk, from HERE rather than from its own SYS_INIT.
-     *
-     * It used to run at APPLICATION init level, before main() -- so it brought sensors up against
-     * pins this function had not configured yet, and it bootstrapped the subsystem a second time,
-     * whose -EALREADY main() then logged as a bootstrap failure. Measuring an image is not a reason
-     * to wire it differently from the product: the probe now runs after the same bootstrap
-     * production uses, in the same order, and its only remaining job is to drive one cycle so the
-     * path cannot be collected. */
-    if (const int rc{tof_cliff_budget_run_after_bootstrap()}; rc != 0)
-        LOG_ERR("cliff budget walk failed (%d)", rc);
-#endif
 #endif
 }
 

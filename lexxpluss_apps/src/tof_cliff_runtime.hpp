@@ -16,7 +16,12 @@
  * attempt, so the subsystem would behave differently in a budget build than in a product build --
  * the worst kind of difference, because the budget build is what gets measured and believed.
  *
- * So: ONE bootstrap, ONE set of static storage, ONE order. Both callers go through here.
+ * So: ONE bootstrap, ONE set of static storage, ONE order.
+ *
+ * The budget probe has since been retired along with the whole staged ladder, so the second wiring
+ * described above exists in no build any more and this is the only one. That does not make the
+ * indirection redundant -- it is what stops the next caller from growing a second machine, which is
+ * how the first one appeared.
  *
  * ORDER, and why it is this one:
  *

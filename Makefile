@@ -183,9 +183,10 @@ firmware_bypass_safety_lidar:
 # safety-lidar bypass like the diagnostic build. Dedicated build directory
 # for the usual cache-leak reason.
 # The on-machine cliff build: the chain PLUS the L4 cliff ULD, acquisition, packer, publisher and
-# CAN glue. Distinct from firmware_tof_chain (chain only, no cliff data path) and from the
-# TOF_CLIFF_BUDGET points (those link a measurement probe that drives one cycle itself and must
-# never reach a robot).
+# CAN glue. Distinct from firmware_tof_chain, which is the chain only, with no cliff data path.
+# This is the single cliff capacity number now: the staged TOF_CLIFF_BUDGET probe was retired in
+# the same commit that made this path reachable, because its per-step storage double-counted
+# against the production storage and its increments no longer isolated anything.
 #
 # Delivered as a padded TEST image, like firmware_tof_chain and for the same measured reason: the
 # CAN DFU writes raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer
