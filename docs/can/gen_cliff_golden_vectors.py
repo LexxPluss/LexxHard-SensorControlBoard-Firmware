@@ -1013,6 +1013,13 @@ def render_json(vectors, version, sha):
 
 def _licence_and_provenance(version, sha, what):
     return [
+        # FIRST line of the file, before the licence block. It used to sit just above
+        # `#pragma once`, which is "above the include guard" as the note below says, but
+        # BELOW these comment blocks -- so the RELEASE_FORBIDDEN banner, a single long line,
+        # was outside the guard and SCBDriver's CI reformatted it. The generated file could
+        # then never be byte-identical across the two repositories, which is the one thing
+        # this guard exists to guarantee.
+        "// clang-format off",
         "/*",
         " * Copyright (c) 2026, LexxPluss Inc.",
         " * All rights reserved.",
@@ -1033,14 +1040,14 @@ def _licence_and_provenance(version, sha, what):
         " *",
         f" * {what}",
         " *",
-        " * clang-format is disabled for the whole file, starting above the include guard.",
+        " * clang-format is disabled for the whole file, from its very first line -- above",
+        " * this licence block, not merely above the include guard.",
         " * SCBDriver's CI reformats every .h in the repository with an explicitly named",
         " * style file, which overrides any directory .clang-format -- so a generated file",
         " * can only stay byte-identical across the two repositories by opting out here, in",
         " * the generator, rather than per checkout.",
         " */",
         "",
-        "// clang-format off",
         "#pragma once",
         "",
     ]
