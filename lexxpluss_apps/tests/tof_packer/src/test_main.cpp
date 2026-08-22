@@ -27,6 +27,7 @@
 
 #include <zephyr/ztest.h>
 
+#include "tof_cliff_contract.h"
 #include "tof_contract_vectors.h"
 #include "tof_grid_packer.hpp"
 #include "tof_can_ids.hpp"
@@ -53,13 +54,28 @@ ZTEST(tof_grid_packer, test_contract_sha_pin)
 ZTEST(tof_grid_packer, test_can_id_assignment)
 {
     namespace ids = lexxhard::tof_can_ids;
+    // Every identifier the two ToF transports actually put on the bus. The
+    // cliff pair is read from the generated contract rather than copied here,
+    // so this check cannot pass against a stale duplicate of those values.
+    //
+    // 0x217 used to be missing from this test altogether: tof_can_ids.hpp knew
+    // only about 0x214-0x216, so the health identifier the publisher has been
+    // emitting all along was neither checked against the existing allocation
+    // nor available for a future identifier to be checked against.
+    static constexpr uint16_t kAssigned[]{
+        ids::TOF_GRID_DATA_ID,        // 0x214 grid data
+        ids::TOF_GRID_HEALTH_ID,      // 0x215 grid health
+        tof_cliff_contract::kMeasId,  // 0x216 cliff measurement
+        tof_cliff_contract::kHealthId,// 0x217 cliff health
+    };
+    constexpr size_t kAssignedCount{sizeof kAssigned / sizeof kAssigned[0]};
+
     // Pairwise distinct, standard 11-bit identifiers.
-    zassert_not_equal(ids::TOF_GRID_DATA_ID, ids::TOF_GRID_HEALTH_ID);
-    zassert_not_equal(ids::TOF_GRID_DATA_ID, ids::TOF_DROP_SENSE_RESERVED_ID);
-    zassert_not_equal(ids::TOF_GRID_HEALTH_ID, ids::TOF_DROP_SENSE_RESERVED_ID);
-    zassert_true(ids::TOF_GRID_DATA_ID <= 0x7ff);
-    zassert_true(ids::TOF_GRID_HEALTH_ID <= 0x7ff);
-    zassert_true(ids::TOF_DROP_SENSE_RESERVED_ID <= 0x7ff);
+    for (size_t i = 0; i < kAssignedCount; ++i) {
+        zassert_true(kAssigned[i] <= 0x7ff);
+        for (size_t j = i + 1; j < kAssignedCount; ++j)
+            zassert_not_equal(kAssigned[i], kAssigned[j]);
+    }
     // No collision with any identifier either repository uses today, in
     // either direction. This list is the 2026-08-06 sweep the assignment was
     // based on (firmware zcan_*/CAN_ID_* defines, SCBDriver can_ids.hpp and a
@@ -72,11 +88,9 @@ ZTEST(tof_grid_packer, test_can_id_assignment)
         0x20c, 0x20d, 0x20e, 0x20f,                                            // board, DFU
         0x210, 0x211, 0x212, 0x213,                                            // tug encoder, GPIO, actuator service
     };
-    for (auto const existing : kExisting) {
-        zassert_not_equal(ids::TOF_GRID_DATA_ID, existing);
-        zassert_not_equal(ids::TOF_GRID_HEALTH_ID, existing);
-        zassert_not_equal(ids::TOF_DROP_SENSE_RESERVED_ID, existing);
-    }
+    for (auto const existing : kExisting)
+        for (auto const assigned : kAssigned)
+            zassert_not_equal(assigned, existing);
 }
 
 namespace {
