@@ -61,7 +61,7 @@ bootloader:
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
 .PHONY: test
-test:
+test: check_language_boundary
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
@@ -94,6 +94,14 @@ test_tof_cliff_sensor:
 test_tof_enumerator:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The golden-vector generators are Python and live in docs/can/ as offline tooling, so
+# they do enter the production Git branch. This gate is what keeps that from becoming
+# Python in the product: it fails if any .py appears outside docs/can/, or if any build
+# description or application file references one. Runs on the host, needs only git.
+.PHONY: check_language_boundary
+check_language_boundary:
+	./scripts/check_language_boundary.sh
 
 .PHONY: firmware
 firmware:
