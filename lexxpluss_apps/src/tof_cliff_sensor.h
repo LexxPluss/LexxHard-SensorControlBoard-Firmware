@@ -46,6 +46,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "tof_cliff_sample.h"
 #include "vl53l4cx.h"
 #include "vl53lx_api.h"
 
@@ -53,9 +54,17 @@
 extern "C" {
 #endif
 
-/* VL53LX_MAX_RANGE_RESULTS, restated so a caller need not include the ULD's
- * platform_user_config.h to size a buffer. */
-#define TOF_CLIFF_MAX_TARGETS VL53LX_MAX_RANGE_RESULTS
+/* TOF_CLIFF_MAX_TARGETS and the sample structures now live in tof_cliff_sample.h, which
+ * is free of the vendor headers so the packer and its host tests can use them without
+ * the ULD. This is the one place both definitions are visible, so it is where the
+ * restated constant is checked against the array the ULD actually fills. */
+#ifdef __cplusplus
+static_assert(TOF_CLIFF_MAX_TARGETS == VL53LX_MAX_RANGE_RESULTS,
+	      "tof_cliff_sample.h restates VL53LX_MAX_RANGE_RESULTS; they have drifted");
+#else
+_Static_assert(TOF_CLIFF_MAX_TARGETS == VL53LX_MAX_RANGE_RESULTS,
+	       "tof_cliff_sample.h restates VL53LX_MAX_RANGE_RESULTS; they have drifted");
+#endif
 
 /* Where an operation failed. Never collapsed into one error code: the BSP's own
  * VL53L4CX_Init turns three different failures into VL53L4CX_ERROR, and that is the
@@ -80,33 +89,6 @@ enum tof_cliff_stage {
 const char *tof_cliff_stage_name(enum tof_cliff_stage stage);
 
 /* One target as the ULD reported it. Both fields are raw. */
-struct tof_cliff_target {
-	int16_t range_mm;    /* signed and unclamped; negative is a real reading */
-	uint8_t range_status; /* raw ULD range status, classified one layer up */
-};
-
-struct tof_cliff_sample {
-	bool fresh; /* false means no new sample was ready; not an error */
-
-	/* The true NumberOfObjectsFound. Zero stays zero. */
-	uint8_t target_count;
-
-	/* Populated entries, which is NOT the same as target_count. When the ULD finds
-	 * nothing it still writes RangeData[0] - SetMeasurementData forces
-	 * `iteration = 1` when active_results < 1 - and that synthetic entry carries the
-	 * status explaining the absence. Dropping it would leave the layer above unable
-	 * to tell NO_TARGET from a sensor that never answered, so it is kept and
-	 * entry_count is 1 while target_count is 0.
-	 *
-	 * Where target_count is valid, entry_count is max(target_count, 1). A count above
-	 * TOF_CLIFF_MAX_TARGETS never reaches a caller at all: see the -EPROTO rule on
-	 * tof_cliff_read_once. */
-	uint8_t entry_count;
-
-	uint8_t stream_count;
-	struct tof_cliff_target entries[TOF_CLIFF_MAX_TARGETS];
-};
-
 struct tof_cliff_read_status {
 	enum tof_cliff_stage stage;
 

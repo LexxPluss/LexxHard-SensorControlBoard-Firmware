@@ -43,8 +43,18 @@ namespace lexxhard::tof_can_ids {
 inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
 inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
 
-// Reserved for the four-channel drop-sense frame. Its payload contract does
-// not exist yet: no filter or handler may claim this value until it does.
-inline constexpr uint16_t TOF_DROP_SENSE_RESERVED_ID{0x216};
+// The cliff/drop-sense frames at 0x216 (measurement) and 0x217 (health) are
+// deliberately NOT declared here. They are owned by the generated cliff wire
+// contract -- docs/can/tof_cliff_contract.h, kMeasId and kHealthId -- and a
+// second literal for a value another header already defines is exactly the
+// kind of duplicate that drifts apart while both sides keep compiling.
+//
+// This header previously carried TOF_DROP_SENSE_RESERVED_ID{0x216} with a
+// comment saying its payload contract did not exist and no handler could
+// claim the value. That contract exists now and the publisher emits both
+// frames, so the placeholder said the opposite of the truth to anyone reading
+// this file for the allocation. It also left 0x217 unmentioned entirely,
+// which is why the collision test below had never checked it. That test now
+// pulls the cliff pair straight from the contract.
 
 }  // namespace lexxhard::tof_can_ids

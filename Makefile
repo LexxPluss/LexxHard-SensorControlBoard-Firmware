@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer build-test-tof-cliff-packer
 
 .PHONY: distclean
 distclean: clean
@@ -61,7 +61,7 @@ bootloader:
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
 .PHONY: test
-test:
+test: check_language_boundary
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
@@ -75,6 +75,16 @@ test_tof_packer:
 	$(RUNNER) python3 docs/can/gen_golden_vectors.py --check
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the cliff measurement packer: the contract SHA pin (the firmware
+# half of the cross-repository lock) and the normative reduction, which the layout
+# vectors cannot cover because the pre-reduction target list never reaches the wire.
+# The generator check runs first, for the same reason the grid target does it.
+.PHONY: test_tof_cliff_packer
+test_tof_cliff_packer:
+	$(RUNNER) python3 docs/can/gen_cliff_golden_vectors.py --check
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_cliff_packer -d build-test-tof-cliff-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # Host-side tests for the cliff (VL53L4CX) sensor layer. Two levels in one image:
 # the port's wire shape and errno path through an emulated I2C controller, and the
@@ -94,6 +104,14 @@ test_tof_cliff_sensor:
 test_tof_enumerator:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The golden-vector generators are Python and live in docs/can/ as offline tooling, so
+# they do enter the production Git branch. This gate is what keeps that from becoming
+# Python in the product: it fails if any .py appears outside docs/can/, or if any build
+# description or application file references one. Runs on the host, needs only git.
+.PHONY: check_language_boundary
+check_language_boundary:
+	./scripts/check_language_boundary.sh
 
 .PHONY: firmware
 firmware:
