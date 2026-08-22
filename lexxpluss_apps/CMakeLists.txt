@@ -79,6 +79,11 @@ if(ENABLE_TOF_CLIFF_ULD)
     # The sensor layer itself. Compiled whenever the ULD is, so the budget series
     # measures the real production file rather than a probe-local copy of it.
     target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_sensor.c)
+    # src/*.cpp is globbed at the top of this file, so tof_acquisition.cpp is already a
+    # source of every build. It needs this definition to compile its body: without the
+    # ULD's include directories a chain build without the cliff sensors failed on
+    # vl53l4cx.h, which is exactly what its guard prevents.
+    add_definitions(-DENABLE_TOF_CLIFF_ULD)
     if(TOF_CLIFF_BUDGET)
         target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_budget_probe.c)
         add_definitions(-DTOF_CLIFF_BUDGET=${TOF_CLIFF_BUDGET})
