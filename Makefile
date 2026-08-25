@@ -66,11 +66,6 @@ bootloader:
 	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=${WORKDIR}/extra
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
-.PHONY: test
-test:
-      $(RUNNER) west zephyr-export
-      $(RUNNER) west twister -T lexxpluss_apps/tests --platform native_sim -v -A ${WORKDIR}/extra
-
 .PHONY: firmware
 firmware:
 	$(RUNNER) west zephyr-export
