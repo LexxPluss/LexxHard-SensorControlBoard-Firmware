@@ -839,3 +839,144 @@ ZTEST(bmu_lipy041_decode, test_decode_frame_power_sequence_id_0x113_routes_to_0x
 // name correctness is covered indirectly by the decode tests above (#1-24 etc.);
 // verifying the exact shell_print() format string requires a real/fake shell context,
 // which is out of scope here (matches the pre-existing untested state).
+
+// ---- decide_post_transition(): POST-state timeout (datasheet-based 90s backstop) ----
+// timer_post's non-reset lifecycle (TESTPLAN #47) is not separately tested here: this
+// function is a pure decision over (bmu status, elapsed_ms) with no internal state of
+// its own, so "the timer isn't reset mid-POST" is a property of board_controller.cpp's
+// existing (unchanged) call site, not of this function.
+
+ZTEST(bmu_lipy041_decode, test_decide_post_transition_happy_path_before_timeout)
+{
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    f100.fail_status1 = 0;
+    f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
+    f113.leader_alarm1 = 0;
+    f113.leader_alarm2 = 0;
+    zassert_equal(decide_post_transition(f100, f101, f113, true, 0), post_result::standby);
+}
+
+ZTEST(bmu_lipy041_decode, test_decide_post_transition_not_ok_waits_before_timeout)
+{
+    msg_0x100 f100{};  // defaults: fail_status1 = 0xff, not yet received
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    zassert_equal(decide_post_transition(f100, f101, f113, true, POST_TIMEOUT_MS - 1), post_result::wait);
+}
+
+ZTEST(bmu_lipy041_decode, test_decide_post_transition_backstop_at_timeout_boundary)
+{
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    zassert_equal(decide_post_transition(f100, f101, f113, true, POST_TIMEOUT_MS), post_result::wait);
+    zassert_equal(decide_post_transition(f100, f101, f113, true, POST_TIMEOUT_MS + 1), post_result::off);
+}
+
+ZTEST(bmu_lipy041_decode, test_decide_post_transition_ok_but_switch_not_released_waits)
+{
+    msg_0x100 f100{};
+    msg_0x101 f101{};
+    msg_0x113 f113{};
+    f100.fail_status1 = 0;
+    f101.fail_status2 = 0;
+    f113.fail_status3 = 0;
+    f113.leader_alarm1 = 0;
+    f113.leader_alarm2 = 0;
+    zassert_equal(decide_post_transition(f100, f101, f113, false, 0), post_result::wait);
+}
+
+// ---- describe_*(): distinguishes "not yet received" from "abnormal" via a `received`
+// bool the caller passes in (board_controller.cpp's own bookkeeping), not by comparing
+// the raw byte against a 0xff sentinel. fail_status1/2/3 can legitimately BE 0xff once
+// received (all fault bits set, no reserved bits per the datasheet for status2/3) --
+// comparing the raw byte would misreport that real worst-case reading as "not received"
+// (kokosabu, PR #99 review). Each suite below adds a *_received_with_all_bits_set case to
+// cover exactly that scenario. ----
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status1_not_received)
+{
+    msg_0x100 f100{};
+    zassert_equal(describe_fail_status1(f100, false), field_health::not_received);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status1_ok)
+{
+    msg_0x100 f100{};
+    f100.fail_status1 = 0;
+    zassert_equal(describe_fail_status1(f100, true), field_health::ok);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status1_abnormal)
+{
+    msg_0x100 f100{};
+    f100.fail_status1 = 0b00000001;
+    zassert_equal(describe_fail_status1(f100, true), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status1_received_with_all_bits_set)
+{
+    msg_0x100 f100{};
+    f100.fail_status1 = 0xff;  // legitimate reading: every fault bit set
+    zassert_equal(describe_fail_status1(f100, true), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status2_not_received_ok_abnormal)
+{
+    msg_0x101 f101{};
+    zassert_equal(describe_fail_status2(f101, false), field_health::not_received);
+    f101.fail_status2 = 0;
+    zassert_equal(describe_fail_status2(f101, true), field_health::ok);
+    f101.fail_status2 = 0b00000001;
+    zassert_equal(describe_fail_status2(f101, true), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status2_received_with_all_bits_set)
+{
+    msg_0x101 f101{};
+    f101.fail_status2 = 0xff;
+    zassert_equal(describe_fail_status2(f101, true), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status3_not_received_ok_abnormal)
+{
+    msg_0x113 f113{};
+    zassert_equal(describe_fail_status3(f113, false), field_health::not_received);
+    f113.fail_status3 = 0;
+    zassert_equal(describe_fail_status3(f113, true), field_health::ok);
+    f113.fail_status3 = 0b00000001;
+    zassert_equal(describe_fail_status3(f113, true), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_fail_status3_received_with_all_bits_set)
+{
+    msg_0x113 f113{};
+    f113.fail_status3 = 0xff;
+    zassert_equal(describe_fail_status3(f113, true), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_leader_alarm1_not_received_ok_abnormal)
+{
+    msg_0x113 f113{};
+    zassert_equal(describe_leader_alarm1(f113, false), field_health::not_received);
+    f113.leader_alarm1 = 0;
+    zassert_equal(describe_leader_alarm1(f113, true), field_health::ok);
+    f113.leader_alarm1 = 0b00000001;
+    zassert_equal(describe_leader_alarm1(f113, true), field_health::abnormal);
+}
+
+ZTEST(bmu_lipy041_decode, test_describe_leader_alarm2_not_received_ok_abnormal)
+{
+    msg_0x113 f113{};
+    zassert_equal(describe_leader_alarm2(f113, false), field_health::not_received);
+    f113.leader_alarm2 = 0;
+    zassert_equal(describe_leader_alarm2(f113, true), field_health::ok);
+    f113.leader_alarm2 = 0b00000001;
+    zassert_equal(describe_leader_alarm2(f113, true), field_health::abnormal);
+}
+
+// No received_with_all_bits_set case for leader_alarm1/2: their masks exclude reserved
+// bits, so a real 0xff would require the sender to set those, unlike fail_status3.

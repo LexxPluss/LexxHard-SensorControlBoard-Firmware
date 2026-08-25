@@ -211,6 +211,52 @@ bool is_charging(const msg_0x101 &f101) {
     return f101.average_current > 0;
 }
 
+post_result decide_post_transition(const msg_0x100 &f100, const msg_0x101 &f101, const msg_0x113 &f113,
+                                    bool switch_released, int64_t elapsed_ms) {
+    if (is_ok(f100, f101, f113) && switch_released) {
+        return post_result::standby;
+    }
+    if (!is_ok(f100, f101, f113) && elapsed_ms > POST_TIMEOUT_MS) {
+        return post_result::off;
+    }
+    return post_result::wait;
+}
+
+field_health describe_fail_status1(const msg_0x100 &f100, bool received) {
+    if (!received) {
+        return field_health::not_received;
+    }
+    return (f100.fail_status1 & FAIL_STATUS1_ABNORMAL_MASK) == 0 ? field_health::ok : field_health::abnormal;
+}
+
+field_health describe_fail_status2(const msg_0x101 &f101, bool received) {
+    if (!received) {
+        return field_health::not_received;
+    }
+    return (f101.fail_status2 & FAIL_STATUS2_ABNORMAL_MASK) == 0 ? field_health::ok : field_health::abnormal;
+}
+
+field_health describe_fail_status3(const msg_0x113 &f113, bool received) {
+    if (!received) {
+        return field_health::not_received;
+    }
+    return (f113.fail_status3 & FAIL_STATUS3_ABNORMAL_MASK) == 0 ? field_health::ok : field_health::abnormal;
+}
+
+field_health describe_leader_alarm1(const msg_0x113 &f113, bool received) {
+    if (!received) {
+        return field_health::not_received;
+    }
+    return (f113.leader_alarm1 & LEADER_ALARM1_ABNORMAL_MASK) == 0 ? field_health::ok : field_health::abnormal;
+}
+
+field_health describe_leader_alarm2(const msg_0x113 &f113, bool received) {
+    if (!received) {
+        return field_health::not_received;
+    }
+    return (f113.leader_alarm2 & LEADER_ALARM2_ABNORMAL_MASK) == 0 ? field_health::ok : field_health::abnormal;
+}
+
 }
 
 // vim: set expandtab shiftwidth=4:

@@ -942,17 +942,40 @@ public:
     uint8_t get_rsoc() const {
         return data100.rsoc_min;
     }
+    lexxhard::bmu_lipy041::post_result decide_post_transition(bool switch_released, int64_t elapsed_ms) const {
+        return lexxhard::bmu_lipy041::decide_post_transition(data100, data101, data113, switch_released, elapsed_ms);
+    }
+    void log_post_diagnostics() const {
+        LOG_WRN("bmu not ok: fail_status1=%d fail_status2=%d fail_status3=%d leader_alarm1=%d leader_alarm2=%d",
+                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status1(data100, data100_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status2(data101, data101_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status3(data113, data113_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm1(data113, data113_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm2(data113, data113_received)));
+    }
 private:
     void handle_can(can_frame &frame) {
         if (!lexxhard::bmu_lipy041::decode_frame_power_sequence(frame.id, frame.data, frame.dlc,
                                                                  data100, data101, data113)) {
             LOG_WRN("bmu decode failed (power sequence): id=0x%03x dlc=%u", frame.id, frame.dlc);
+            return;
+        }
+        // Tracked here (not on msg_0x1XX itself) because only this diagnostic path cares
+        // whether a frame has ever arrived; msg_bmu (bmu_controller.cpp's shell-display
+        // aggregate) reuses the same structs and has no use for a receipt flag.
+        if (frame.id == 0x100) {
+            data100_received = true;
+        } else if (frame.id == 0x101) {
+            data101_received = true;
+        } else if (frame.id == 0x113) {
+            data113_received = true;
         }
     }
     const device *dev{nullptr};
     lexxhard::bmu_lipy041::msg_0x100 data100;
     lexxhard::bmu_lipy041::msg_0x101 data101;
     lexxhard::bmu_lipy041::msg_0x113 data113;
+    bool data100_received{false}, data101_received{false}, data113_received{false};
 };
 
 class dcdc_converter { // Variables Implemented
@@ -1282,6 +1305,7 @@ public:
         k_timer_user_data_set(&charge_guard_timeout, this);
 
         timer_post = k_uptime_get();
+        last_post_diag_log = timer_post;
         timer_shutdown = k_uptime_get();
         timer_poweroff = k_uptime_get();
 
@@ -1453,17 +1477,28 @@ private:
                 set_new_state(POWER_STATE::POST);
             }
             break;
-        case POWER_STATE::POST:
+        case POWER_STATE::POST: {
             if (should_turn_off()) {
                 set_new_state(POWER_STATE::OFF);
-            } else if (bmu.is_ok() && psw.get_state() == power_switch::STATE::RELEASED) {
+                break;
+            }
+            auto const post_decision{bmu.decide_post_transition(psw.get_state() == power_switch::STATE::RELEASED,
+                                                                  k_uptime_get() - timer_post)};
+            if (post_decision == lexxhard::bmu_lipy041::post_result::standby) {
                 LOG_DBG("BMU and temperature OK\n");
                 set_new_state(POWER_STATE::STANDBY);
-            } else if (!bmu.is_ok() && ((k_uptime_get() - timer_post) > 3000)) {
-                LOG_DBG("timer_post > 3000\n");
+            } else if (post_decision == lexxhard::bmu_lipy041::post_result::off) {
+                LOG_WRN("timer_post > %lld\n", lexxhard::bmu_lipy041::POST_TIMEOUT_MS);
                 set_new_state(POWER_STATE::OFF);
+            } else if (!bmu.is_ok() && (k_uptime_get() - last_post_diag_log) > 5000) {
+                // post_result::wait also covers "bmu is_ok() but switch not yet
+                // released" (original code silently did nothing in that case); only
+                // log diagnostics when bmu itself is the reason POST hasn't advanced.
+                last_post_diag_log = k_uptime_get();
+                bmu.log_post_diagnostics();
             }
             break;
+        }
         case POWER_STATE::STANDBY: {
             wheel_relay_control();
             auto psw_state{psw.get_state()};
@@ -1761,6 +1796,7 @@ private:
             }
             gpio_pin_set_dt(&gpio_dev, 0);
             timer_post = k_uptime_get();    // timer reset
+            last_post_diag_log = timer_post;
             // Set LED
             led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 0};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
@@ -1971,6 +2007,7 @@ private:
 
     lexxhard::can_controller::msg_board board2ros;
     int64_t timer_post{0}, timer_shutdown{0}, timer_poweroff{0};
+    int64_t last_post_diag_log{0};
     k_timer timer_poll_20ms, timer_poll_100ms, timer_poll_1s;
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
