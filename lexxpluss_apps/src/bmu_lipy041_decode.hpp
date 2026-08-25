@@ -167,11 +167,15 @@ post_result decide_post_transition(const msg_0x100 &f100, const msg_0x101 &f101,
 // explained rather than just timing out silently.
 enum class field_health { ok, not_received, abnormal };
 
-field_health describe_fail_status1(const msg_0x100 &f100);
-field_health describe_fail_status2(const msg_0x101 &f101);
-field_health describe_fail_status3(const msg_0x113 &f113);
-field_health describe_leader_alarm1(const msg_0x113 &f113);
-field_health describe_leader_alarm2(const msg_0x113 &f113);
+// `received` is the caller's own bookkeeping (e.g. board_controller.cpp tracks whether
+// decode_frame_power_sequence() has ever succeeded for this frame's id) rather than a
+// field on msg_0x1XX itself: msg_bmu (bmu_controller.cpp's shell-display aggregate)
+// reuses these same structs and has no use for a receipt flag, so it stays out of L2.
+field_health describe_fail_status1(const msg_0x100 &f100, bool received);
+field_health describe_fail_status2(const msg_0x101 &f101, bool received);
+field_health describe_fail_status3(const msg_0x113 &f113, bool received);
+field_health describe_leader_alarm1(const msg_0x113 &f113, bool received);
+field_health describe_leader_alarm2(const msg_0x113 &f113, bool received);
 
 }
 

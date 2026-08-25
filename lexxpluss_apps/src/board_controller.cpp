@@ -947,23 +947,35 @@ public:
     }
     void log_post_diagnostics() const {
         LOG_WRN("bmu not ok: fail_status1=%d fail_status2=%d fail_status3=%d leader_alarm1=%d leader_alarm2=%d",
-                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status1(data100)),
-                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status2(data101)),
-                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status3(data113)),
-                static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm1(data113)),
-                static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm2(data113)));
+                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status1(data100, data100_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status2(data101, data101_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_fail_status3(data113, data113_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm1(data113, data113_received)),
+                static_cast<int>(lexxhard::bmu_lipy041::describe_leader_alarm2(data113, data113_received)));
     }
 private:
     void handle_can(can_frame &frame) {
         if (!lexxhard::bmu_lipy041::decode_frame_power_sequence(frame.id, frame.data, frame.dlc,
                                                                  data100, data101, data113)) {
             LOG_WRN("bmu decode failed (power sequence): id=0x%03x dlc=%u", frame.id, frame.dlc);
+            return;
+        }
+        // Tracked here (not on msg_0x1XX itself) because only this diagnostic path cares
+        // whether a frame has ever arrived; msg_bmu (bmu_controller.cpp's shell-display
+        // aggregate) reuses the same structs and has no use for a receipt flag.
+        if (frame.id == 0x100) {
+            data100_received = true;
+        } else if (frame.id == 0x101) {
+            data101_received = true;
+        } else if (frame.id == 0x113) {
+            data113_received = true;
         }
     }
     const device *dev{nullptr};
     lexxhard::bmu_lipy041::msg_0x100 data100;
     lexxhard::bmu_lipy041::msg_0x101 data101;
     lexxhard::bmu_lipy041::msg_0x113 data113;
+    bool data100_received{false}, data101_received{false}, data113_received{false};
 };
 
 class dcdc_converter { // Variables Implemented
