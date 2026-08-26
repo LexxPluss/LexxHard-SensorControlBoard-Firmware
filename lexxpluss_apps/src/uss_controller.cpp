@@ -52,9 +52,11 @@ public:
             case 3:
                 dev[0] = DEVICE_DT_GET(DT_NODELABEL(uss3));
                 break;
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(uss4), okay)
             case 4:
                 dev[0] = DEVICE_DT_GET(DT_NODELABEL(uss4));
                 break;
+#endif
             default:
                 return -1;
         }
@@ -75,9 +77,11 @@ public:
                 case 3:
                     dev[1] = DEVICE_DT_GET(DT_NODELABEL(uss3));
                     break;
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(uss4), okay)
                 case 4:
                     dev[1] = DEVICE_DT_GET(DT_NODELABEL(uss4));
                     break;
+#endif
                 default:
                     return -1;
             }

@@ -90,11 +90,12 @@
 		status = "okay";
 	};
 
+	/* uss4 (back) is unpopulated on Dasher. See uss4_echo_unused/uss4_trig_unused below. */
 	uss4: mb1604-4 {
 		compatible = "maxbotix,maxbotix";
 		trig_gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>;
 		echo_gpios = <&gpioc 0 GPIO_ACTIVE_HIGH>;
-		status = "okay";
+		status = "disabled";
 	};
 
 	leds {
@@ -460,6 +461,16 @@
 		spare_gpio_9: spare_gpio_9 {
 			compatible = "gpio-pin";
 			gpios = <&gpiob 3 GPIO_ACTIVE_HIGH>;
+		};
+		/* uss4 (back) unpopulated on Dasher: former echo pin, R12 provides external pull-down */
+		uss4_echo_unused: uss4_echo_unused {
+			compatible = "gpio-pin";
+			gpios = <&gpioc 0 GPIO_ACTIVE_HIGH>;
+		};
+		/* uss4 (back) unpopulated on Dasher: former trig pin, feeds level-shifter U8 */
+		uss4_trig_unused: uss4_trig_unused {
+			compatible = "gpio-pin";
+			gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>;
 		};
 		/* Shutter Limit Switch (EMX4-T12C) */
 		shutter_limit_open: shutter_limit_open {

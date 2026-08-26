@@ -137,7 +137,11 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(comm_mode), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    
+    // uss4 trig (PB5), unpopulated on Dasher: drive low, feeds level-shifter U8
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(uss4_trig_unused), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+
     // Input
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_sw_in), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
@@ -206,6 +210,10 @@ void init_gpio() {
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_res_req2), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    // uss4 echo (PC0), unpopulated on Dasher: no internal pull, R12 already provides an external pull-down
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(uss4_echo_unused), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
 
