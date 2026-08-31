@@ -56,6 +56,12 @@ static constexpr fetcher_cfg_entry fetcher_cfg[] = {
 
 class uss_fetcher {
 public:
+    // k_mutex has no "is initialized" query, so lock must never be reachable
+    // in an uninitialized state. init() can return early on any of several
+    // paths (invalid label, device not ready), so the constructor -- which
+    // always runs for this namespace-scope array before main() -- is the
+    // only place that can make that guarantee unconditionally.
+    uss_fetcher() { k_mutex_init(&lock); }
     int init(int label0, int label1) {
         switch (label0) {
             case 0:
@@ -109,7 +115,6 @@ public:
             }
         }
 
-        k_mutex_init(&lock);
         return 0;
     }
     void get_distance(uint32_t (&distance)[2]) const {
