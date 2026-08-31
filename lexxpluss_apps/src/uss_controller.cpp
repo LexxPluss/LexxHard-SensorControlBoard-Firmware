@@ -36,6 +36,24 @@ LOG_MODULE_REGISTER(uss);
 
 char __aligned(4) msgq_buffer[8 * sizeof (msg)];
 
+// One entry per fetcher slot: which uss labels it drives, and which message
+// field(s) its distance value(s) are packed into (field1 is null when the
+// slot only drives one sensor). This table's size is the number of fetchers
+// actually needed, so it tracks devicetree status directly: on a board
+// where uss4/back is unpopulated (status "disabled"), it simply has no
+// entry, rather than an entry that's expected to fail. A message field with
+// no entry here (only ever "back" today) keeps whatever run()/info()
+// zero-initialize it to.
+struct fetcher_cfg_entry { int label0, label1; uint32_t msg::*field0, msg::*field1; };
+static constexpr fetcher_cfg_entry fetcher_cfg[] = {
+    {0, 1, &msg::front_left, &msg::front_right}, // front: uss0 (left) + uss1 (right)
+    {2, -1, &msg::left, nullptr},                // left: uss2
+    {3, -1, &msg::right, nullptr},               // right: uss3
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(uss4), okay)
+    {4, -1, &msg::back, nullptr},                // back: uss4
+#endif
+};
+
 class uss_fetcher {
 public:
     int init(int label0, int label1) {
@@ -60,8 +78,9 @@ public:
             default:
                 return -1;
         }
-        if (!device_is_ready(dev[0]))
+        if (!device_is_ready(dev[0])) {
             return -1;
+        }
 
         if (label1 != -1) {
             switch (label1) {
@@ -85,8 +104,9 @@ public:
                 default:
                     return -1;
             }
-            if (!device_is_ready(dev[1]))
+            if (!device_is_ready(dev[1])) {
                 return -1;
+            }
         }
 
         k_mutex_init(&lock);
@@ -103,8 +123,9 @@ public:
         }
     }
     void update_once() {
-        if (!device_is_ready(dev[0]))
+        if (!device_is_ready(dev[0])) {
             return;
+        }
 
         if (sensor_sample_fetch_chan(dev[0], SENSOR_CHAN_ALL) == 0) {
             sensor_value v;
@@ -138,7 +159,7 @@ private:
     const device *dev[2]{nullptr, nullptr};
     uint32_t distance[2]{0, 0};
     mutable struct k_mutex lock;
-} fetcher[4];
+} fetcher[ARRAY_SIZE(fetcher_cfg)];
 
 static uint32_t fetch_delay_ms = 1; // Default delay of 1ms
 
@@ -156,14 +177,18 @@ static k_thread fetch_thr;
 
 int info(const shell *shell, size_t argc, char **argv)
 {
-    uint32_t front[2], left[2], right[2], back[2];
-    fetcher[0].get_distance(front);
-    fetcher[1].get_distance(left);
-    fetcher[2].get_distance(right);
-    fetcher[3].get_distance(back);
+    msg message{};
+    for (size_t i = 0; i < ARRAY_SIZE(fetcher_cfg); ++i) {
+        uint32_t distance[2];
+        fetcher[i].get_distance(distance);
+        message.*(fetcher_cfg[i].field0) = distance[0];
+        if (fetcher_cfg[i].field1) {
+            message.*(fetcher_cfg[i].field1) = distance[1];
+        }
+    }
     shell_print(shell, "FL:%umm FR:%umm L:%umm R:%umm B:%umm\n",
-                front[0], front[1],
-                left[0], right[0], back[0]);
+                message.front_left, message.front_right,
+                message.left, message.right, message.back);
     return 0;
 }
 
@@ -176,10 +201,9 @@ SHELL_CMD_REGISTER(uss, &sub, "USS commands", NULL);
 void init()
 {
     k_msgq_init(&msgq, msgq_buffer, sizeof (msg), 8);
-    fetcher[0].init(0, 1);
-    fetcher[1].init(2, -1);
-    fetcher[2].init(3, -1);
-    fetcher[3].init(4, -1);
+    for (size_t i = 0; i < ARRAY_SIZE(fetcher_cfg); ++i) {
+        fetcher[i].init(fetcher_cfg[i].label0, fetcher_cfg[i].label1);
+    }
 }
 
 void run_fetch()
@@ -196,19 +220,18 @@ void run(void *p1, void *p2, void *p3)
 
     run_fetch();
     while (true) {
-        msg message;
-        uint32_t distance[2];
-        fetcher[0].get_distance(distance);
-        message.front_left = distance[0];
-        message.front_right = distance[1];
-        fetcher[1].get_distance(distance);
-        message.left = distance[0];
-        fetcher[2].get_distance(distance);
-        message.right = distance[0];
-        fetcher[3].get_distance(distance);
-        message.back = distance[0];
-        while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0)
+        msg message{}; // fields with no fetcher (only "back", on boards without uss4) stay 0
+        for (size_t i = 0; i < ARRAY_SIZE(fetcher_cfg); ++i) {
+            uint32_t distance[2];
+            fetcher[i].get_distance(distance);
+            message.*(fetcher_cfg[i].field0) = distance[0];
+            if (fetcher_cfg[i].field1) {
+                message.*(fetcher_cfg[i].field1) = distance[1];
+            }
+        }
+        while (k_msgq_put(&msgq, &message, K_NO_WAIT) != 0) {
             k_msgq_purge(&msgq);
+        }
         k_msleep(100);
     }
 }
