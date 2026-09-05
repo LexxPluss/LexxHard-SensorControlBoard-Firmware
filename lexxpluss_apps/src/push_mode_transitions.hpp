@@ -84,4 +84,17 @@ inline POWER_STATE eval_normal_transitions(const normal_state_inputs& in) {
     return POWER_STATE::NORMAL;
 }
 
+// Returns true if the wheel motor driver's main DC-bus power (v_wheel) should
+// be cut in response to a ROS wheel-poweroff request.
+// Mirrors the wheel_relay_control() guard in board_controller.cpp
+// (state_controller::poll). Suppressed while esw_asserted is true (Push Mode
+// entry via ESW: the wheel motor driver's torque is already off and the
+// mechanical brake is force-released, so cutting v_wheel here would remove
+// the regenerative-braking current path while wheels can still be spun by
+// external force).
+// IMPORTANT: Keep in sync with board_controller.cpp when editing this guard.
+inline bool eval_wheel_power_cut(bool wheel_poweroff, bool esw_asserted) {
+    return wheel_poweroff && !esw_asserted;
+}
+
 }  // namespace lexxhard::board_controller

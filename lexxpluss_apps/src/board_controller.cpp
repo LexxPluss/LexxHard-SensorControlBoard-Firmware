@@ -1397,7 +1397,12 @@ private:
 
     void poll() {
         auto wheel_relay_control = [&](){
-            bool wheel_poweroff{mbd.is_wheel_poweroff()};
+            // Suppress the v_wheel cut while the ESW (Push Mode entry) is
+            // asserted: the wheel motor driver's torque is already off and
+            // the mechanical brake is force-released, so cutting the main DC
+            // bus here would remove the regenerative-braking current path
+            // while the wheel can still be spun by external force.
+            bool wheel_poweroff{mbd.is_wheel_poweroff() && !esw.is_asserted()};
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);

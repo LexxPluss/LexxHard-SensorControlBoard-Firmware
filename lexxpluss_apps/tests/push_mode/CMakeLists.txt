@@ -30,6 +30,14 @@ target_include_directories(test_normal_transitions_push_mode PRIVATE ${SRC_DIR})
 target_compile_definitions(test_normal_transitions_push_mode PRIVATE ENABLE_PUSH_MODE=1)
 target_link_libraries(test_normal_transitions_push_mode gtest gtest_main)
 
+# Wheel relay control guard (no push-mode compile-time branching)
+add_executable(test_wheel_relay_control
+    test_wheel_relay_control.cpp
+)
+target_include_directories(test_wheel_relay_control PRIVATE ${SRC_DIR})
+target_link_libraries(test_wheel_relay_control gtest gtest_main)
+
 enable_testing()
 add_test(NAME standard_mode COMMAND test_normal_transitions_standard)
 add_test(NAME push_mode     COMMAND test_normal_transitions_push_mode)
+add_test(NAME wheel_relay_control COMMAND test_wheel_relay_control)
