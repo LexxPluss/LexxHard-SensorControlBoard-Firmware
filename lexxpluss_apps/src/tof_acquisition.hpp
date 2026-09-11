@@ -82,7 +82,7 @@
 #include <zephyr/kernel.h>
 
 #include "tof_cliff_sensor.h"
-#include "tof_mapping_state.h"
+#include "tof_mapping_state.hpp"
 
 namespace lexxhard::tof_acq {
 
@@ -94,7 +94,7 @@ enum class model : uint8_t {
     l7_grid,
 };
 
-// mapping_state now lives in tof_mapping_state.h, included above: the authority needs the
+// mapping_state now lives in tof_mapping_state.hpp, included above: the authority needs the
 // enum without the vendor ULD this header drags in.
 
 // The diagnostic record is shared between models; the POLICY is not. Reusing one struct
