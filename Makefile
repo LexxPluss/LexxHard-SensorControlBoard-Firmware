@@ -30,7 +30,7 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer build-test-tof-cliff-packer build-test-tof-mapping-authority build-test-tof-tail-isolation build-test-tof-mapping-proof
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer build-test-tof-cliff-packer build-test-tof-mapping-authority build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof build-tof-cliff
 
 .PHONY: distclean
 distclean: clean
@@ -111,6 +111,14 @@ test_tof_mapping_authority:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the commissioning orchestrator: the transaction that quiesces
+# acquisition, runs two walks plus tail isolation, and asks the authority to commit.
+# 13 use an injected fake quiesce; 3 link the real acquisition layer.
+.PHONY: test_tof_commissioning
+test_tof_commissioning:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
 .PHONY: test_tof_tail_isolation
 test_tof_tail_isolation:
@@ -174,6 +182,31 @@ firmware_bypass_safety_lidar:
 # the NACK-classification patch (verified first) and stacks on the Dasher
 # safety-lidar bypass like the diagnostic build. Dedicated build directory
 # for the usual cache-leak reason.
+# The on-machine cliff build: the chain PLUS the L4 cliff ULD, acquisition, packer, publisher and
+# CAN glue. Distinct from firmware_tof_chain, which is the chain only, with no cliff data path.
+# This is the single cliff capacity number now: the staged TOF_CLIFF_BUDGET probe was retired in
+# the same commit that made this path reachable, because its per-step storage double-counted
+# against the production storage and its increments no longer isolated anything.
+#
+# Delivered as a padded TEST image, like firmware_tof_chain and for the same measured reason: the
+# CAN DFU writes raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer
+# embedded in the file can request a swap. An unpadded signed.bin therefore sits in slot1 doing
+# nothing while the machine keeps running the old firmware -- and that looks identical to a revert.
+# main.cpp confirms the image after thread creation, so a crash in main initialisation (which is
+# where the cliff bootstrap runs) rolls back on the next boot.
+#
+# PROVEN is still clamped and the four cliff roles are still unknown, so this image produces the
+# 0x217 health heartbeat and refuses `tof cliff prove`. It does NOT produce measurement frames.
+.PHONY: firmware_tof_cliff
+firmware_tof_cliff:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-cliff -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-cliff/zephyr/zephyr.signed.bin out/zephyr_tof_cliff.signed.bin
+	mv build-tof-cliff/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_cliff.signed.confirmed.bin
+	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
+	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
+
 .PHONY: firmware_tof_chain
 firmware_tof_chain:
 	./scripts/manage_zephyr_patches.sh verify

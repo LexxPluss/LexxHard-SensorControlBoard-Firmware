@@ -245,9 +245,9 @@ int init(const config &cfg);
  * reported as a good sample. The chain lock serialises them, but serialised is not the same as
  * single-owner: a second thread holding the lock in turn still interleaves bring-up with cycles.
  *
- * With no thread running, direct calls are allowed and are how the budget probe, the host suites
- * and a single commissioning cycle drive the chain. The rule is "while a thread owns the ULD,
- * nobody else touches it", not "these functions are private".
+ * With no thread running, direct calls are allowed and are how the host suites and a single
+ * commissioning cycle drive the chain. The rule is "while a thread owns the ULD, nobody else
+ * touches it", not "these functions are private".
  */
 
 // Bring-up: open, configure and start every source, in table order, under the lock.
@@ -363,8 +363,8 @@ void stop();
 // thread stopping devices out from under a thread that is mid-cycle is exactly the interleaving the
 // ULD's single transport record cannot survive. A join timeout returns -EBUSY and nothing is killed.
 //
-// WITH NO THREAD, it quiesces directly under the chain lock, which is how the budget probe and the
-// host suites use it: with no owner, there is nobody to interleave with.
+// WITH NO THREAD, it quiesces directly under the chain lock, which is how commissioning and the host
+// suites use it: with no owner, there is nobody to interleave with.
 int try_stop();
 
 // The real shutdown: stop(), then the heartbeat, then a SYNCHRONOUS cancel of any health work
