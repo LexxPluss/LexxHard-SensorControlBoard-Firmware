@@ -299,6 +299,52 @@ ZTEST(tof_cliff_publisher, test_health_flows_from_startup_and_through_bring_up_f
     zassert_equal(c.health_sent, 3);
 }
 
+/* The consequence side of the authority fix (#103 review). The authority now guarantees that
+ * note_chain_fault() cannot publish a snapshot the encoder refuses; these two assert what that
+ * guarantee is worth HERE, where the refusal would actually be felt.
+ *
+ * First half: the dangerous combination really does silence the heartbeat at this layer, so the
+ * guarantee is load-bearing rather than defensive. A named position, no chain-fault bit, complete
+ * masks -- exactly what the pre-fix note_chain_fault(0x0, 3) produced after a PROVEN commit. */
+ZTEST(tof_cliff_publisher, test_a_contradictory_authorisation_silences_the_heartbeat)
+{
+    state_value = acq::mapping_state::fault;
+    enumerated_value = 0x0F;
+    model_verified_value = 0x0F;
+    chain_flags_value = 0;
+    failing_position_value = 3;
+
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+
+    zassert_equal(count_id(ctr::kHealthId), 0, "no frame reaches the bus");
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.health_sent, 0);
+    zassert_equal(c.health_encode_refused, 1,
+                  "and the only trace is a counter with no production readout -- which is why the "
+                  "authority must never produce this snapshot");
+}
+
+/* Second half: what note_chain_fault() now produces for those same arguments -- a generic fault,
+ * masks untouched -- does reach the bus. */
+ZTEST(tof_cliff_publisher, test_the_degraded_generic_fault_still_reaches_the_bus)
+{
+    state_value = acq::mapping_state::fault;
+    enumerated_value = 0x0F;   // kept: the last enumeration result is still true
+    model_verified_value = 0x0F;
+    chain_flags_value = 0;
+    failing_position_value = ctr::kChainPositionNone;
+
+    pub::on_cliff_health(0, acq::mapping_state::not_ready);
+
+    zassert_equal(count_id(ctr::kHealthId), 1);
+    zassert_equal(static_cast<uint8_t>(bus.frames[0].data[3] >> 4), 0x3, "FAULT on the wire");
+    pub::counters c{};
+    pub::copy_counters(c);
+    zassert_equal(c.health_sent, 1);
+    zassert_equal(c.health_encode_refused, 0);
+}
+
 /* ------------------------------------------------- the wire mapping_state trap ---- */
 
 ZTEST(tof_cliff_publisher, test_the_two_mapping_state_enumerations_are_translated)
