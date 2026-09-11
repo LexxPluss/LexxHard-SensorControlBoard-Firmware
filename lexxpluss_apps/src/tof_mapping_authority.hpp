@@ -52,7 +52,7 @@
 
 #include "tof_enumerator.hpp"
 #include "tof_mapping_proof.hpp"
-#include "tof_mapping_state.h"
+#include "tof_mapping_state.hpp"
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
 
