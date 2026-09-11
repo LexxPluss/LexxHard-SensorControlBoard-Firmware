@@ -377,7 +377,7 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
      * masks a consumer reads are now derived from evidence rather than left at zero -- which
      * they were only for as long as nothing had proved a role at all. */
     masks_from(installed_, proven.enumerated_mask, proven.model_verified_mask);
-    proven.failing_position = 0xFF;
+    proven.failing_position = kNoFailingPosition;
     publish(proven);
 
     return commit_refusal::none;
@@ -408,17 +408,51 @@ void note_mapping_lost()
     installed_ = kNoMapping;
 }
 
-void note_chain_fault(uint8_t chain_flags, uint8_t failing_position)
+bool note_chain_fault(uint8_t chain_flags, uint8_t failing_position)
 {
     if (!initialised_)
-        return;
+        return false;
+
+    /* Validated HERE, at the publishing boundary, rather than stated in the header as a comment.
+     * A snapshot the wire encoder refuses does not become a logged error downstream -- it becomes
+     * SILENCE. Both health producers answer encode_health() == false by incrementing
+     * health_encode_refused and returning, so an argument mistake here stops the heartbeat at the
+     * exact moment a chain fault is supposed to be reported, and the only trace is a counter with
+     * no production readout. */
+    const bool flags_in_range = (chain_flags & 0xF8u) == 0;
+    const bool position_in_range =
+        failing_position == kNoFailingPosition || (failing_position >= 1 && failing_position <= 6);
+    /* DELIBERATELY STRICTER THAN THE WIRE CONTRACT, and this is an API invariant of this function
+     * rather than a restatement of the encoder's rule. The contract refuses a named position with
+     * no chain-fault bit only when the enumeration masks are complete, because an incomplete
+     * enumeration is itself a reason to name a position. As the PRODUCER we hold the stronger
+     * rule unconditionally: naming a position always requires a reason. It costs a caller nothing
+     * -- knowing which position failed means knowing why -- and it keeps this function's output
+     * encodable without having to reason about whichever masks it inherited. */
+    const bool position_has_a_reason = failing_position == kNoFailingPosition || (chain_flags & 0x7) != 0;
+
+    const bool acceptable = flags_in_range && position_in_range && position_has_a_reason;
 
     snapshot next{current()};
     next.state = tof_acq::mapping_state::fault;
-    next.chain_flags = static_cast<uint8_t>(chain_flags & 0x7);
-    next.failing_position = failing_position;
+    if (acceptable) {
+        next.chain_flags = static_cast<uint8_t>(chain_flags & 0x7);
+        next.failing_position = failing_position;
+    } else {
+        /* A generic fault, not a fabricated one. The caller's stated reason is unusable, so no
+         * reason is claimed -- but the fault itself is real and must still reach the consumer.
+         * Reporting nothing, or staying PROVEN because the arguments were wrong, would be the
+         * worse failure by far. */
+        next.chain_flags = 0;
+        next.failing_position = kNoFailingPosition;
+    }
+    /* The enumeration masks are deliberately NOT cleared, in either branch. The contract defines
+     * them as the last enumeration result, so zeroing them to satisfy the encoder would report
+     * "nothing enumerated" -- a different claim, and a false one. With no position named they
+     * cannot make the frame contradictory anyway. */
     publish(next);
     installed_ = kNoMapping;
+    return acceptable;
 }
 
 snapshot current()

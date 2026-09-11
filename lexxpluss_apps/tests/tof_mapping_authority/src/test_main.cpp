@@ -19,6 +19,11 @@
 
 #include "tof_mapping_authority.hpp"
 
+#include "tof_cliff_packer.hpp"
+
+namespace ctr = tof_cliff_contract;
+namespace pk = tof_cliff_packer;
+
 namespace enm = lexxhard::tof_enum;
 namespace pf = lexxhard::tof_proof;
 namespace au = lexxhard::tof_authority;
@@ -554,6 +559,158 @@ ZTEST(tof_mapping_authority, test_a_chain_fault_publishes_fault_with_its_positio
     zassert_equal(s.state, acq::mapping_state::fault);
     zassert_equal(s.chain_flags, 0x2);
     zassert_equal(s.failing_position, 5);
+}
+
+/* Builds the health frame the PUBLISHER would build from a snapshot, and asks the REAL encoder
+ * whether it is acceptable. The field copies mirror production: tof_cliff_can.cpp's
+ * production_authorisation() takes epoch, both masks, chain_flags and failing_position straight
+ * from the snapshot and clamps only the state, and the heartbeat in tof_cliff_publisher.cpp zeroes
+ * the per-cycle fields because it describes no cycle.
+ *
+ * What is deliberately NOT restated here is any of encode_health()'s refusal conditions. Copying
+ * those would pin what this test believes the contract says, and would go on passing on the day
+ * the contract changed -- which is the whole failure mode being guarded against. */
+bool the_publisher_could_send(const au::snapshot &s)
+{
+    pk::health_fields h{};
+    h.mapping_epoch = s.epoch;
+    h.health_seq = 1;
+    /* FAULT on the wire is 3, and the two enumerations agree on nothing but zero -- a cast would
+     * put PROVEN on the wire. clamp_mapping_state() rewrites only `proven`, so a faulted snapshot
+     * reaches the encoder unchanged. */
+    h.mapping_state = 0x3;
+    h.flags = static_cast<uint8_t>(s.chain_flags & 0x7);
+    h.enumerated_mask = s.enumerated_mask;
+    h.model_verified_mask = s.model_verified_mask;
+    h.failing_chain_position = s.failing_position;
+    h.sample_produced_mask = 0;
+    h.sensor_fault_mask = 0;
+    h.cycle_seq = 0;
+
+    uint8_t frame[8]{};
+    return pk::encode_health(h, frame);
+}
+
+ZTEST(tof_mapping_authority, test_the_no_position_constant_mirrors_the_wire_contract)
+{
+    /* The authority does not include the contract header on purpose -- it is wire-agnostic, and
+     * the publisher is where the two meet. This is the assertion that keeps the mirror honest. */
+    zassert_equal(au::kNoFailingPosition, ctr::kChainPositionNone);
+}
+
+/* THE INVARIANT, and the reason this suite links the packer.
+ *
+ * A snapshot the encoder refuses does not surface as an error. Both health producers answer
+ * encode_health() == false by incrementing a counter and returning, so it surfaces as SILENCE --
+ * the heartbeat stops at the exact moment a chain fault is meant to be reported. note_chain_fault()
+ * therefore has to guarantee an encodable result for EVERY argument, not merely for the arguments
+ * its callers are expected to pass. Swept exhaustively because "expected to pass" is precisely the
+ * assumption that failed. */
+ZTEST(tof_mapping_authority, test_every_possible_argument_still_leaves_an_encodable_snapshot)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 7), au::commit_refusal::none);
+    zassert_equal(au::current().enumerated_mask, 0x0F, "a proof must fill the masks, or the sweep "
+                                                       "below would never reach the refusing case");
+
+    for (unsigned flags = 0; flags <= 0xFF; ++flags) {
+        for (unsigned pos = 0; pos <= 0xFF; ++pos) {
+            const bool taken = au::note_chain_fault(static_cast<uint8_t>(flags), static_cast<uint8_t>(pos));
+            const au::snapshot s{au::current()};
+            zassert_equal(s.state, acq::mapping_state::fault, "flags=%u pos=%u left the authority "
+                                                              "somewhere other than FAULT", flags, pos);
+            zassert_true(the_publisher_could_send(s),
+                         "flags=%u pos=%u published a frame the encoder refuses, which silences "
+                         "the heartbeat", flags, pos);
+            if (!taken) {
+                zassert_equal(s.chain_flags, 0, "a rejected reason must not be half-published");
+                zassert_equal(s.failing_position, au::kNoFailingPosition);
+            }
+        }
+    }
+}
+
+/* Koko's case (#103 review): from PROVEN, a position named with no chain-fault bit. The masks are
+ * 0xF by then, which is what makes the encoder refuse -- and is why the pre-existing chain-fault
+ * test could not see this: it runs from a fresh authority, where the masks are still zero. */
+ZTEST(tof_mapping_authority, test_naming_a_position_with_no_reason_degrades_to_a_generic_fault)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 3), au::commit_refusal::none);
+
+    zassert_false(au::note_chain_fault(0x0, 3), "the arguments are contradictory and must be refused");
+    const au::snapshot s{au::current()};
+    zassert_equal(s.state, acq::mapping_state::fault);
+    zassert_equal(s.chain_flags, 0);
+    zassert_equal(s.failing_position, au::kNoFailingPosition);
+    zassert_equal(s.enumerated_mask, 0x0F, "the masks are the last enumeration result and are not "
+                                           "cleared to satisfy the encoder");
+    zassert_equal(s.model_verified_mask, 0x0F);
+    zassert_equal(s.epoch, 3, "the epoch is kept so the consumer can still correlate");
+    zassert_true(the_publisher_could_send(s));
+}
+
+/* The other half: a well-formed fault after PROVEN must pass through unchanged, masks and all. If
+ * the fix had simply cleared the masks to make everything encodable, this is the test that fails. */
+ZTEST(tof_mapping_authority, test_a_well_formed_fault_after_proven_keeps_its_reason_and_its_masks)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 4), au::commit_refusal::none);
+
+    zassert_true(au::note_chain_fault(0x2, 5));
+    const au::snapshot s{au::current()};
+    zassert_equal(s.chain_flags, 0x2);
+    zassert_equal(s.failing_position, 5);
+    zassert_equal(s.enumerated_mask, 0x0F);
+    zassert_equal(s.model_verified_mask, 0x0F);
+    zassert_true(the_publisher_could_send(s));
+}
+
+ZTEST(tof_mapping_authority, test_an_out_of_range_position_degrades_to_a_generic_fault)
+{
+    static constexpr uint8_t kBadPositions[]{0, 7, 0xFE};
+    for (const uint8_t pos : kBadPositions) {
+        fresh_authority();
+        const transaction t;
+        zassert_equal(prove(t, 2), au::commit_refusal::none);
+        zassert_false(au::note_chain_fault(0x1, pos), "position %u is outside 1-6 and not NONE", pos);
+        const au::snapshot s{au::current()};
+        zassert_equal(s.failing_position, au::kNoFailingPosition);
+        zassert_equal(s.chain_flags, 0);
+        zassert_true(the_publisher_could_send(s));
+    }
+}
+
+ZTEST(tof_mapping_authority, test_flags_outside_the_contract_bits_degrade_to_a_generic_fault)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 2), au::commit_refusal::none);
+
+    /* Previously masked with & 0x7, which silently turned a caller's bug into a different, legal
+     * fault reason. A reason nobody asked for is worse than no reason. */
+    zassert_false(au::note_chain_fault(0x18, 5));
+    const au::snapshot s{au::current()};
+    zassert_equal(s.chain_flags, 0);
+    zassert_equal(s.failing_position, au::kNoFailingPosition);
+    zassert_true(the_publisher_could_send(s));
+}
+
+ZTEST(tof_mapping_authority, test_a_chain_fault_clears_the_installed_mapping_even_when_refused)
+{
+    /* The arguments can be wrong; the fault is still real. Leaving a mapping installed because the
+     * caller mislabelled its reason would be the worst outcome available. */
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 6), au::commit_refusal::none);
+    zassert_not_equal(au::installed_mapping().positions, 0, "the proof must have installed one");
+
+    zassert_false(au::note_chain_fault(0x0, 3));
+    zassert_equal(au::installed_mapping().positions, 0,
+                  "a refused reason must not leave the mapping installed");
 }
 
 ZTEST(tof_mapping_authority, test_the_snapshot_survives_a_pack_and_unpack_round_trip)
