@@ -66,24 +66,29 @@ bootloader:
 	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=${WORKDIR}/extra
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
+# Optional: pass FEATURES_FILE=cmake/features_paco.cmake (or any other variant file)
+# to inject robot-variant-specific feature flags defined in that file.
+# Example: make firmware FEATURES_FILE=cmake/features_paco.cmake
+FEATURES_FILE_ARG:=$(if $(FEATURES_FILE),-DFEATURES_FILE=$(FEATURES_FILE))
+
 .PHONY: firmware
 firmware:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- $(FEATURES_FILE_ARG) -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr.signed.confirmed.bin
 
 .PHONY: firmware_two_state_ksw
 firmware_two_state_ksw:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- $(FEATURES_FILE_ARG) -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_two_state_ksw.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_two_state_ksw.signed.confirmed.bin
 
 .PHONY: firmware_interlock
 firmware_interlock:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- $(FEATURES_FILE_ARG) -DENABLE_INTERLOCK=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_interlock.signed.confirmed.bin
 
@@ -123,4 +128,5 @@ firmware_interlock_initial:
 	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
 	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
 	cat out/bl_with_ff.bin out/zephyr_interlock.signed.bin > out/firmware_interlock.bin
+
 
