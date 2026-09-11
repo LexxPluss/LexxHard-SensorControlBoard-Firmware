@@ -87,6 +87,11 @@ enum class commit_refusal : uint8_t {
     mapping_install_failed,
 };
 
+/* "No position implicated". Mirrors tof_cliff_contract::kChainPositionNone, which this layer
+ * deliberately does not include: the authority is wire-agnostic and the publisher is where the
+ * two meet. The authority suite asserts the two values are equal, so the mirror cannot drift. */
+inline constexpr uint8_t kNoFailingPosition{0xFF};
+
 // One consistent view of the authority's state. Decoded from a single atomic read.
 struct snapshot {
     tof_acq::mapping_state state{tof_acq::mapping_state::not_ready};
@@ -209,8 +214,22 @@ bool abort_proof(const pf::challenge &c);
 // the consumer can still correlate the measurements it already accepted.
 void note_mapping_lost();
 
-// A fault that prevents any trustworthy mapping. `failing_position` is 1-6 or 0xFF.
-void note_chain_fault(uint8_t chain_flags, uint8_t failing_position);
+// A fault that prevents any trustworthy mapping.
+//
+// `chain_flags` is bits 0-2; `failing_position` is 1-6 or kNoFailingPosition. Naming a position
+// REQUIRES at least one chain-fault bit -- an API invariant of this function, stricter than the
+// wire contract, which allows a named position without one while the enumeration masks are
+// incomplete. A caller that knows which position failed knows why, so the stricter rule costs
+// nothing and removes a whole class of unencodable output.
+//
+// Returns false when the arguments were rejected and a GENERIC fault -- no flags, no position --
+// was published in place of the one asked for. It is never a no-op on a live authority: whatever
+// the arguments, this leaves the authority non-PROVEN, clears the installed mapping, and
+// publishes a snapshot the wire encoder accepts. That last guarantee is the point. A refused
+// frame is not a logged error downstream, it is silence: both health producers count
+// health_encode_refused and return, so an argument mistake here would stop the heartbeat at the
+// exact moment a chain fault should be reported.
+bool note_chain_fault(uint8_t chain_flags, uint8_t failing_position);
 
 snapshot current();
 
