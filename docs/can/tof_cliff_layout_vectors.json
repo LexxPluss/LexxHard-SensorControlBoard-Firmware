@@ -1,0 +1,1575 @@
+{
+  "contract_file": "tof_cliff_wire_contract.md",
+  "contract_version": "commissioning-2026-08-18c",
+  "contract_sha256": "fb94706a4d2488aa9acdc7c7defcd7fac92379cba01964ab31f949fa50955188",
+  "artefact_set_id": "3db018e9f0be3ae85a295240a8314fff97491b587ec909021b8e478745caf9aa",
+  "profile_name": "commissioning-cliff-only-400k",
+  "release_forbidden": true,
+  "banner": "COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.",
+  "scope": "frame layout and validation rules only; the decoder state machine is not covered",
+  "comparison_rule": "age < T is fresh; age >= T has timed out",
+  "resolved": {
+    "TOF_CLIFF_MEAS_ID": 534,
+    "TOF_CLIFF_HEALTH_ID": 535,
+    "PROTOCOL_VERSION": 1,
+    "SENTINEL_INVALID": 65535,
+    "SOURCE_COUNT": 4,
+    "MAX_TARGETS": 4,
+    "CHAIN_POSITION_NONE": 255,
+    "N_cycle_miss_fault": 3,
+    "N_cycle_advance_max": 16,
+    "STATUS_CLASS_3": "SENSOR_FAULT",
+    "STATUS_CLASS_11": "NO_TARGET"
+  },
+  "validation_pending": {
+    "STATUS_CLASS_3": "min-range-clipped as SENSOR_FAULT: needs the as-mounted floor distance, the rate over a normal floor, and an occlusion injection",
+    "STATUS_CLASS_11": "merged-pulse as NO_TARGET: needs the rate over a real edge and over plain floor. Frequent on plain floor is a configuration problem",
+    "T_meas_max_gap": "the profile value is a PLACEHOLDER, not derived from stopping distance"
+  },
+  "commissioning_profile": {
+    "T_cycle_nominal_ms": 50,
+    "T_skew_max_ms": 20,
+    "T_health_delivery_max_ms": 20,
+    "T_health_nominal_ms": 100,
+    "T_health_max_gap_ms": 300,
+    "T_cycle_assembly_ms": 100,
+    "T_startup_health_grace_ms": 10000,
+    "T_meas_max_gap_ms": 200
+  },
+  "profile_provenance": "arithmetic from byte counts at 400 kHz (L4 read 133 B = 3.06 ms, re-arm 2 B = 0.11 ms, four sensors = 12.7 ms of bus time) plus stated design choices. Valid ONLY for four L4 reads and no L7 reads on the bus.",
+  "unresolved_for_release": {
+    "T_cycle_nominal": "output of the six-board schedule measurement",
+    "T_meas_max_gap": "derived from stopping distance, needs the schedule measurement",
+    "T_cycle_assembly": "bounded by T_skew_max + T_health_delivery_max and T_meas_max_gap",
+    "T_health_nominal": "output of the acquisition thread design",
+    "T_health_max_gap": "must exceed T_health_delivery_max, measured under full bus load",
+    "T_health_delivery_max": "worst-case health latency, measured or analysed on the real bus",
+    "T_startup_health_grace": "node start + SCB boot + worst-case first heartbeat arrival",
+    "T_skew_max": "worst-case intra-cycle phase skew across the four sensors"
+  },
+  "reject_reasons": [
+    "ACCEPT",
+    "DLC_NOT_8",
+    "FRAME_TYPE_MISMATCH",
+    "SOURCE_ID_OUT_OF_RANGE",
+    "RESERVED_FIELD_NONZERO",
+    "TARGET_COUNT_MALFORMED",
+    "STATUS_UNDEFINED",
+    "STATUS_NOT_TRANSMISSIBLE",
+    "RANGE_CONTRADICTS_STATUS",
+    "NO_TARGET_ENCODING_INCONSISTENT",
+    "PROTOCOL_VERSION_ZERO",
+    "PROTOCOL_VERSION_UNSUPPORTED",
+    "MAPPING_STATE_MALFORMED",
+    "CHAIN_POSITION_MALFORMED",
+    "CYCLE_FIELDS_INCONSISTENT",
+    "MASK_FAULT_WITHOUT_SAMPLE",
+    "CHAIN_POSITION_WITHOUT_FAULT"
+  ],
+  "status_classes": [
+    "VALID_RANGE",
+    "NO_TARGET",
+    "SENSOR_FAULT",
+    "NO_SAMPLE"
+  ],
+  "status_table": {
+    "0": "VALID_RANGE",
+    "1": "NO_TARGET",
+    "2": "NO_TARGET",
+    "3": "SENSOR_FAULT",
+    "4": "NO_TARGET",
+    "5": "SENSOR_FAULT",
+    "6": "NO_SAMPLE",
+    "7": "NO_TARGET",
+    "8": "SENSOR_FAULT",
+    "9": "SENSOR_FAULT",
+    "10": "NO_SAMPLE",
+    "11": "NO_TARGET",
+    "12": "NO_TARGET",
+    "13": "SENSOR_FAULT",
+    "14": "SENSOR_FAULT",
+    "255": "NO_TARGET"
+  },
+  "dlc": 8,
+  "vectors": [
+    {
+      "name": "meas_role_0_front_left",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "source_id is a stable logical role, not a chain position"
+    },
+    {
+      "name": "meas_role_1_rear_left",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        17,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "source_id is a stable logical role, not a chain position"
+    },
+    {
+      "name": "meas_role_2_rear_right",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        18,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "source_id is a stable logical role, not a chain position"
+    },
+    {
+      "name": "meas_role_3_front_right",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        19,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "source_id is a stable logical role, not a chain position"
+    },
+    {
+      "name": "meas_status_0_valid_range",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class VALID_RANGE; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_1_no_target",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        1,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class NO_TARGET; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_2_no_target",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        2,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class NO_TARGET; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_3_sensor_fault",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        3,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class SENSOR_FAULT; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_4_no_target",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        4,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class NO_TARGET; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_5_sensor_fault",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        5,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class SENSOR_FAULT; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_6_no_sample",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        6,
+        1,
+        0
+      ],
+      "verdict": "STATUS_NOT_TRANSMISSIBLE",
+      "why": "class NO_SAMPLE; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_7_no_target",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        7,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class NO_TARGET; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_8_sensor_fault",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        8,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class SENSOR_FAULT; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_9_sensor_fault",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        9,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class SENSOR_FAULT; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_10_no_sample",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        10,
+        1,
+        0
+      ],
+      "verdict": "STATUS_NOT_TRANSMISSIBLE",
+      "why": "class NO_SAMPLE; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_11_no_target",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        11,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class NO_TARGET; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_12_no_target",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        12,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class NO_TARGET; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_13_sensor_fault",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        13,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class SENSOR_FAULT; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_14_sensor_fault",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        14,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "class SENSOR_FAULT; raw status is transmitted unchanged"
+    },
+    {
+      "name": "meas_status_255_no_target",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        255,
+        0,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "the ULD forces 8191 mm when active_results == 0; the packer MUST send the sentinel instead and never forward 8191 as a finite range"
+    },
+    {
+      "name": "meas_reject_valid_status_with_sentinel",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        0,
+        1,
+        0
+      ],
+      "verdict": "RANGE_CONTRADICTS_STATUS",
+      "why": "RANGE_VALID cannot carry the invalid sentinel"
+    },
+    {
+      "name": "meas_reject_no_target_with_finite_range",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        2,
+        1,
+        0
+      ],
+      "verdict": "RANGE_CONTRADICTS_STATUS",
+      "why": "a NO_TARGET class is transmitted with 0xFFFF and its real status; a finite value here would publish an untrustworthy distance as a floor"
+    },
+    {
+      "name": "meas_reject_merged_pulse_with_finite_range",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        11,
+        1,
+        0
+      ],
+      "verdict": "RANGE_CONTRADICTS_STATUS",
+      "why": "status 11 has a device-valid range, and that is exactly why it must not be forwarded: a step edge merges returns and reads as an intermediate floor"
+    },
+    {
+      "name": "meas_reject_sensor_fault_with_finite_range",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        5,
+        1,
+        0
+      ],
+      "verdict": "RANGE_CONTRADICTS_STATUS",
+      "why": "a SENSOR_FAULT class has no trustworthy distance"
+    },
+    {
+      "name": "meas_reject_no_sample_status_6",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        6,
+        1,
+        0
+      ],
+      "verdict": "STATUS_NOT_TRANSMISSIBLE",
+      "why": "the two NO_SAMPLE statuses produce no frame at all; the frame existing is itself the defect"
+    },
+    {
+      "name": "meas_reject_no_sample_status_10",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        10,
+        1,
+        0
+      ],
+      "verdict": "STATUS_NOT_TRANSMISSIBLE",
+      "why": "the two NO_SAMPLE statuses produce no frame at all; the frame existing is itself the defect"
+    },
+    {
+      "name": "meas_reject_status_undefined_15",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        15,
+        1,
+        0
+      ],
+      "verdict": "STATUS_UNDEFINED",
+      "why": "a raw status outside the classification table cannot be classified, so it cannot be reduced to a safety outcome"
+    },
+    {
+      "name": "meas_reject_status_undefined_100",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        100,
+        1,
+        0
+      ],
+      "verdict": "STATUS_UNDEFINED",
+      "why": "a raw status outside the classification table cannot be classified, so it cannot be reduced to a safety outcome"
+    },
+    {
+      "name": "meas_reject_status_undefined_254",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        254,
+        1,
+        0
+      ],
+      "verdict": "STATUS_UNDEFINED",
+      "why": "a raw status outside the classification table cannot be classified, so it cannot be reduced to a safety outcome"
+    },
+    {
+      "name": "meas_range_0",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "zero is encodable and is not the sentinel"
+    },
+    {
+      "name": "meas_range_1",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "one millimetre"
+    },
+    {
+      "name": "meas_range_65534",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        254,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "largest encodable non-sentinel value"
+    },
+    {
+      "name": "meas_epoch_0",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        0,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "mapping_epoch wraps 255 -> 0"
+    },
+    {
+      "name": "meas_epoch_1",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "mapping_epoch wraps 255 -> 0"
+    },
+    {
+      "name": "meas_epoch_254",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        254,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "mapping_epoch wraps 255 -> 0"
+    },
+    {
+      "name": "meas_epoch_255",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        255,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "mapping_epoch wraps 255 -> 0"
+    },
+    {
+      "name": "meas_cycle_0",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "cycle_seq wraps 255 -> 0; equality, not ordering, prevents splicing"
+    },
+    {
+      "name": "meas_cycle_1",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        1,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "cycle_seq wraps 255 -> 0; equality, not ordering, prevents splicing"
+    },
+    {
+      "name": "meas_cycle_254",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        254,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "cycle_seq wraps 255 -> 0; equality, not ordering, prevents splicing"
+    },
+    {
+      "name": "meas_cycle_255",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        255,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "cycle_seq wraps 255 -> 0; equality, not ordering, prevents splicing"
+    },
+    {
+      "name": "meas_targets_1",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "target_count is pre-reduction and diagnostic only"
+    },
+    {
+      "name": "meas_targets_2",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        2,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "target_count is pre-reduction and diagnostic only"
+    },
+    {
+      "name": "meas_targets_3",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        3,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "target_count is pre-reduction and diagnostic only"
+    },
+    {
+      "name": "meas_targets_4",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        4,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "target_count is pre-reduction and diagnostic only"
+    },
+    {
+      "name": "meas_reject_frame_type",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        32,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "FRAME_TYPE_MISMATCH",
+      "why": "a mis-routed filter is otherwise a silent mis-decode"
+    },
+    {
+      "name": "meas_reject_source_id_4",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        20,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "SOURCE_ID_OUT_OF_RANGE",
+      "why": "source_id must be 0-3"
+    },
+    {
+      "name": "meas_reject_source_id_15",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        31,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "SOURCE_ID_OUT_OF_RANGE",
+      "why": "source_id must be 0-3"
+    },
+    {
+      "name": "meas_reject_reserved_nonzero",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        1
+      ],
+      "verdict": "RESERVED_FIELD_NONZERO",
+      "why": "byte 7 is reserved for a future capture tick; using it is a version bump"
+    },
+    {
+      "name": "meas_reject_target_count_5",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        5,
+        0
+      ],
+      "verdict": "TARGET_COUNT_MALFORMED",
+      "why": "target_count > 4 is malformed"
+    },
+    {
+      "name": "meas_reject_none_with_finite_range",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        255,
+        0,
+        0
+      ],
+      "verdict": "RANGE_CONTRADICTS_STATUS",
+      "why": "status 255 with a finite range; the class rule catches this first"
+    },
+    {
+      "name": "meas_reject_none_with_targets",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        255,
+        1,
+        0
+      ],
+      "verdict": "NO_TARGET_ENCODING_INCONSISTENT",
+      "why": "status 255 must carry target_count 0"
+    },
+    {
+      "name": "meas_reject_zero_targets_with_valid_status",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        0,
+        0
+      ],
+      "verdict": "NO_TARGET_ENCODING_INCONSISTENT",
+      "why": "target_count 0 is only legal as the status-255 encoding"
+    },
+    {
+      "name": "meas_reject_zero_targets_with_sentinel_not_255",
+      "kind": "meas",
+      "dlc": 8,
+      "bytes": [
+        16,
+        1,
+        0,
+        255,
+        255,
+        2,
+        0,
+        0
+      ],
+      "verdict": "NO_TARGET_ENCODING_INCONSISTENT",
+      "why": "the sentinel alone does not license target_count 0; the invariant needs status 255 as well"
+    },
+    {
+      "name": "meas_reject_dlc_7",
+      "kind": "meas",
+      "dlc": 7,
+      "bytes": [
+        16,
+        1,
+        0,
+        4,
+        210,
+        0,
+        1,
+        0
+      ],
+      "verdict": "DLC_NOT_8",
+      "why": "DLC is 8 always; a short frame must be rejected before any byte is read"
+    },
+    {
+      "name": "health_proven_cycle_valid",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        7,
+        24,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "the ready shape: PROVEN, no chain fault, all four enumerated and produced"
+    },
+    {
+      "name": "health_heartbeat_unknown",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        8,
+        0,
+        0,
+        0,
+        255,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "a heartbeat during UNKNOWN describes no cycle and depends on no measurement"
+    },
+    {
+      "name": "health_mapping_state_unknown",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        9,
+        8,
+        255,
+        240,
+        255,
+        3
+      ],
+      "verdict": "ACCEPT",
+      "why": "all four mapping states are encodable"
+    },
+    {
+      "name": "health_mapping_state_proven",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        9,
+        24,
+        255,
+        240,
+        255,
+        3
+      ],
+      "verdict": "ACCEPT",
+      "why": "all four mapping states are encodable"
+    },
+    {
+      "name": "health_mapping_state_lost",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        9,
+        40,
+        255,
+        240,
+        255,
+        3
+      ],
+      "verdict": "ACCEPT",
+      "why": "all four mapping states are encodable"
+    },
+    {
+      "name": "health_mapping_state_fault",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        9,
+        56,
+        255,
+        240,
+        255,
+        3
+      ],
+      "verdict": "ACCEPT",
+      "why": "all four mapping states are encodable"
+    },
+    {
+      "name": "health_chain_position_1",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        10,
+        58,
+        119,
+        0,
+        1,
+        4
+      ],
+      "verdict": "ACCEPT",
+      "why": "a failing position is reported with the chain fault that found it"
+    },
+    {
+      "name": "health_chain_position_2",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        10,
+        58,
+        119,
+        0,
+        2,
+        4
+      ],
+      "verdict": "ACCEPT",
+      "why": "a failing position is reported with the chain fault that found it"
+    },
+    {
+      "name": "health_chain_position_3",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        10,
+        58,
+        119,
+        0,
+        3,
+        4
+      ],
+      "verdict": "ACCEPT",
+      "why": "a failing position is reported with the chain fault that found it"
+    },
+    {
+      "name": "health_chain_position_4",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        10,
+        58,
+        119,
+        0,
+        4,
+        4
+      ],
+      "verdict": "ACCEPT",
+      "why": "a failing position is reported with the chain fault that found it"
+    },
+    {
+      "name": "health_chain_position_5",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        10,
+        58,
+        119,
+        0,
+        5,
+        4
+      ],
+      "verdict": "ACCEPT",
+      "why": "a failing position is reported with the chain fault that found it"
+    },
+    {
+      "name": "health_chain_position_6",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        10,
+        58,
+        119,
+        0,
+        6,
+        4
+      ],
+      "verdict": "ACCEPT",
+      "why": "a failing position is reported with the chain fault that found it"
+    },
+    {
+      "name": "health_chain_position_none",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        11,
+        24,
+        255,
+        240,
+        255,
+        5
+      ],
+      "verdict": "ACCEPT",
+      "why": "0xFF means no failing position"
+    },
+    {
+      "name": "health_seq_0",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        0,
+        24,
+        255,
+        240,
+        255,
+        1
+      ],
+      "verdict": "ACCEPT",
+      "why": "health_seq wraps 255 -> 0 and proves novelty, never age"
+    },
+    {
+      "name": "health_seq_1",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        24,
+        255,
+        240,
+        255,
+        1
+      ],
+      "verdict": "ACCEPT",
+      "why": "health_seq wraps 255 -> 0 and proves novelty, never age"
+    },
+    {
+      "name": "health_seq_254",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        254,
+        24,
+        255,
+        240,
+        255,
+        1
+      ],
+      "verdict": "ACCEPT",
+      "why": "health_seq wraps 255 -> 0 and proves novelty, never age"
+    },
+    {
+      "name": "health_seq_255",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        255,
+        24,
+        255,
+        240,
+        255,
+        1
+      ],
+      "verdict": "ACCEPT",
+      "why": "health_seq wraps 255 -> 0 and proves novelty, never age"
+    },
+    {
+      "name": "health_reject_frame_type",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        17,
+        1,
+        1,
+        24,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "FRAME_TYPE_MISMATCH",
+      "why": "frame_type must match the identifier it arrived on"
+    },
+    {
+      "name": "health_reject_protocol_version_zero",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        32,
+        1,
+        1,
+        24,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "PROTOCOL_VERSION_ZERO",
+      "why": "zero is not a valid version, so an all-zero byte cannot pass as one"
+    },
+    {
+      "name": "health_reject_protocol_version_2",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        34,
+        1,
+        1,
+        24,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "PROTOCOL_VERSION_UNSUPPORTED",
+      "why": "a decoder accepts only versions it implements"
+    },
+    {
+      "name": "health_reject_mapping_state_4",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        72,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "MAPPING_STATE_MALFORMED",
+      "why": "0x4-0xF are malformed mapping states"
+    },
+    {
+      "name": "health_reject_mapping_state_f",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        248,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "MAPPING_STATE_MALFORMED",
+      "why": "0x4-0xF are malformed mapping states"
+    },
+    {
+      "name": "health_reject_chain_position_0",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        57,
+        255,
+        240,
+        0,
+        0
+      ],
+      "verdict": "CHAIN_POSITION_MALFORMED",
+      "why": "a failing position is 1-6 or 0xFF"
+    },
+    {
+      "name": "health_reject_chain_position_7",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        57,
+        255,
+        240,
+        7,
+        0
+      ],
+      "verdict": "CHAIN_POSITION_MALFORMED",
+      "why": "a failing position is 1-6 or 0xFF"
+    },
+    {
+      "name": "health_reject_chain_position_254",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        57,
+        255,
+        240,
+        254,
+        0
+      ],
+      "verdict": "CHAIN_POSITION_MALFORMED",
+      "why": "a failing position is 1-6 or 0xFF"
+    },
+    {
+      "name": "health_reject_cycle_seq_without_cycle_valid",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        16,
+        255,
+        0,
+        255,
+        3
+      ],
+      "verdict": "CYCLE_FIELDS_INCONSISTENT",
+      "why": "with cycle_valid clear the frame describes no cycle"
+    },
+    {
+      "name": "health_reject_produced_mask_without_cycle_valid",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        16,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "CYCLE_FIELDS_INCONSISTENT",
+      "why": "sample_produced_mask is a per-cycle field"
+    },
+    {
+      "name": "health_reject_fault_mask_without_cycle_valid",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        16,
+        255,
+        1,
+        255,
+        0
+      ],
+      "verdict": "CYCLE_FIELDS_INCONSISTENT",
+      "why": "sensor_fault_mask is per cycle too, so it must also be empty in a heartbeat"
+    },
+    {
+      "name": "health_reject_fault_without_sample",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        24,
+        255,
+        52,
+        255,
+        1
+      ],
+      "verdict": "MASK_FAULT_WITHOUT_SAMPLE",
+      "why": "sensor_fault_mask classifies a produced sample, so a fault bit outside sample_produced_mask classifies a sample that does not exist"
+    },
+    {
+      "name": "health_reject_position_without_chain_fault",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        24,
+        255,
+        240,
+        3,
+        1
+      ],
+      "verdict": "CHAIN_POSITION_WITHOUT_FAULT",
+      "why": "naming a failing position with no chain fault and complete masks is contradictory"
+    },
+    {
+      "name": "health_position_with_incomplete_mask",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        8,
+        119,
+        0,
+        4,
+        0
+      ],
+      "verdict": "ACCEPT",
+      "why": "the complement of the case above, and the reason the contract's rule is compound: an incomplete enumeration is itself why a position can be named"
+    },
+    {
+      "name": "health_fault_mask_subset",
+      "kind": "health",
+      "dlc": 8,
+      "bytes": [
+        33,
+        1,
+        1,
+        24,
+        255,
+        245,
+        255,
+        2
+      ],
+      "verdict": "ACCEPT",
+      "why": "a strict subset is legal: two of four produced samples classified SENSOR_FAULT"
+    },
+    {
+      "name": "health_reject_dlc_0",
+      "kind": "health",
+      "dlc": 0,
+      "bytes": [
+        33,
+        1,
+        1,
+        24,
+        255,
+        240,
+        255,
+        0
+      ],
+      "verdict": "DLC_NOT_8",
+      "why": "DLC is 8 always"
+    }
+  ]
+}
