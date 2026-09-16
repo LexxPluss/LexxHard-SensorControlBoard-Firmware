@@ -50,6 +50,10 @@ struct fake_dev {
     int open_rc{0};
     int configure_rc{0};
     int start_rc{0};
+    /* Which half of arming failed, when start_rc is non-zero. Arming is two device
+     * calls and the second one failing leaves the device ranging, so the stage is the
+     * only thing distinguishing that from a start that never began. */
+    enum tof_cliff_stage start_stage{TOF_CLIFF_STAGE_START};
     int read_rc{0};
     bool fresh{false};
     int16_t mm{0};
@@ -134,6 +138,8 @@ int fake_start(void *dev, void *, acq::op_status *st)
 
     ++d.start_calls;
     memset(st, 0, sizeof(*st));
+    if (d.start_rc != 0)
+        st->stage = d.start_stage;
     return d.start_rc;
 }
 
@@ -678,6 +684,49 @@ ZTEST(tof_acquisition, test_a_recovery_that_fails_at_any_stage_keeps_the_rearm_s
          * way back -- see test_a_second_init_is_refused_while_the_subsystem_is_live. */
         acq::teardown();
     }
+}
+
+/* Arming an L4 is two device calls -- StartMeasurement, then
+ * ClearInterruptAndStartMeasurement -- and the second one failing leaves the device
+ * genuinely ranging while start() reports failure. Half-armed is the one state that must
+ * never be rounded up here: recording the source as started would put it into the read
+ * loop, where the first fetch returns the frame whose interrupt was never cleared -- the
+ * PREVIOUS session's measurement, published as this cycle's cliff distance, with every
+ * per-cycle outcome clean.
+ *
+ * Nothing in this layer can tell the two halves apart; it only has the return code, which
+ * is why the rule is simply that a non-zero start is not a start. The stage is carried
+ * through so a log can say which half failed, and the sensor layer is what stops the
+ * half-armed device -- stop_locked() walks only started sources, so if that cleanup were
+ * dropped there, nothing here would catch the device still ranging. */
+ZTEST(tof_acquisition, test_a_start_that_failed_on_its_second_half_is_not_a_started_source)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    devs[0].start_rc = -EIO;
+    devs[0].start_stage = TOF_CLIFF_STAGE_START_CLEAR;
+    zassert_equal(acq::bring_up(), 0);
+
+    acq::cycle_facts f{};
+    acq::copy_facts(f);
+    zassert_false(f.sources[0].started, "a half-armed device is not a started source");
+    zassert_true(f.sources[1].started, "one half-armed sensor must not stop the others");
+    zassert_equal(f.sources[0].status.stage, TOF_CLIFF_STAGE_START_CLEAR,
+                  "the stage must survive, or a log cannot say which half failed");
+    zassert_true(f.sources[0].transport_error);
+    zassert_not_equal(acq::snapshot() & error_bit(0), 0U);
+
+    devs[0].read_calls = 0;
+    devs[1].read_calls = 0;
+    devs[0].fresh = true;
+    devs[1].fresh = true;
+    acq::run_cycle();
+
+    zassert_equal(devs[0].read_calls, 0, "a source that was never started must not be read");
+    zassert_equal(devs[1].read_calls, 1);
+    acq::copy_facts(f);
+    zassert_false(f.sources[0].sample_produced,
+                  "the stale frame the second call exists to discard must not reach a sink");
+    zassert_true(f.sources[1].sample_produced);
 }
 
 ZTEST(tof_acquisition, test_only_a_complete_re_bring_up_clears_the_rearm_sticky)
