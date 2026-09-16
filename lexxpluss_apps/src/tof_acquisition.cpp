@@ -760,11 +760,21 @@ static void thread_entry(void *, void *, void *)
 {
     /* The whole ULD lifecycle, on one thread, in one place.
      *
-     * bring_up() failures are per source and deliberately not fatal here: one dead cliff sensor must
+     * Per-source bring_up() failures are deliberately not fatal here: one dead cliff sensor must
      * not stop the other three from ranging, and the facts say which one it was. A total failure
      * still produces cycles -- empty ones -- and the health frame is what reports that, which is
-     * better than a thread that exits and leaves a consumer to infer why. */
-    (void)bring_up();
+     * better than a thread that exits and leaves a consumer to infer why.
+     *
+     * A non-zero RETURN is a different thing entirely, and used to be discarded with it. It means
+     * bring_up() refused before reaching any source at all -- wrong configuration, or an ownership
+     * record this thread did not recognise as its own -- so no source was even attempted and
+     * running_ was never set. Every cycle after it is then a silent no-op. It is logged and
+     * deliberately NOT folded into sensor_fault_mask: no sensor failed, and the heartbeat already
+     * withholds cycle_valid while no cycle completes, so a consumer stays fail-closed on it. A
+     * named producer-internal wire reason is its own design, not something to smuggle in by
+     * reusing a sensor's bit. */
+    if (int const rc{bring_up()}; rc != 0)
+        LOG_ERR("acquisition bring-up refused before source bring-up: rc %d", rc);
 
     while (atomic_get(&stop_requested_) == 0) {
         run_cycle();
@@ -807,8 +817,31 @@ int start(const thread_config &tcfg)
      * through or reissue a (source_id, epoch, cycle_seq) triple that has already been used. */
     thread_active_ = true;
     thread_created_ = true;
+
+    /* K_FOREVER, then an explicit start, because the ownership record has to be COMPLETE before
+     * the new thread can run a single instruction.
+     *
+     * With K_NO_WAIT the thread becomes runnable inside k_thread_create(), so a priority higher
+     * than the caller's preempts right there -- before the return value has been assigned to
+     * owner_. The new thread then calls may_touch_devices(), finds thread_active_ already true and
+     * owner_ still null, and concludes that IT is the foreign thread. bring_up() returns -EPERM at
+     * the guard, running_ is never set, and every later run_cycle() takes the !running_ path
+     * forever: a live thread that owns the chain, reports itself running, and never touches a
+     * sensor. Nothing logged it, because the only evidence was a discarded return value.
+     *
+     * That is not a rare interleaving. The product configuration makes it certain: acquisition runs
+     * at priority 7 and the shell thread that issues the start runs at the Zephyr default 14, so the
+     * preemption is guaranteed rather than possible -- which is why it reproduced on the first
+     * machine it was tried on and why the existing tests, whose thread sits BELOW the ztest thread,
+     * never opened the window at all.
+     *
+     * Suspended creation makes the order a property of the code rather than of the scheduler. It is
+     * also why owner_ is not simply assigned &thread_ beforehand: that would work, but only because
+     * k_thread_create happens to return that pointer, which is a convention this file would then
+     * depend on silently. */
     owner_ = k_thread_create(&thread_, tcfg_.stack, tcfg_.stack_size, thread_entry, nullptr, nullptr,
-                             nullptr, tcfg_.priority, 0, K_NO_WAIT);
+                             nullptr, tcfg_.priority, 0, K_FOREVER);
+    k_thread_start(owner_);
     return 0;
 }
 
