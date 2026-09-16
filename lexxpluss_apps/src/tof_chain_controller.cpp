@@ -815,7 +815,91 @@ int cmd_cliff_pack(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+/* BENCH ONLY: read several frames from ONE sensor session.
+ *
+ * `tof cliff read` stops at the first fresh frame and then stops the sensor, so every L4 sample
+ * this project has recorded -- on every machine, across every run -- is the first frame after a
+ * restart, and every one of them reported no target. The existing evidence has therefore only
+ * ever observed frame one, and a first-frame effect cannot be ruled out. This command does not
+ * decide whether the sensors can range; it removes the reason we cannot tell.
+ *
+ * stream_count is printed per frame because on THIS image `fresh` means only that the device
+ * reported data ready -- the stream-count replay check is later work and is not in this build --
+ * so the counter is the only thing that shows whether successive frames are successive ranging
+ * sequences rather than one buffer read repeatedly.
+ *
+ * Frames are printed as they arrive. Nothing is buffered: the shell thread has a few hundred
+ * bytes of stack headroom on this board and assertions are not compiled in, so an array of
+ * frames here would corrupt memory rather than fail. */
+void stream_frame_to_shell(void *ctx, unsigned index, const struct tof_cliff_sample &s)
+{
+    const struct shell *shell{static_cast<const struct shell *>(ctx)};
+    shell_print(shell, "  frame[%u] stream_count=%u targets=%u entries=%u", index, s.stream_count,
+                s.target_count, s.entry_count);
+    for (unsigned e{0}; e < s.entry_count && e < TOF_CLIFF_MAX_TARGETS; ++e)
+        shell_print(shell, "    entry[%u] range=%d mm status=%u", e, s.entries[e].range_mm,
+                    s.entries[e].range_status);
+}
+
+int cmd_cliff_stream(const struct shell *shell, size_t argc, char **argv)
+{
+    unsigned long pos{0}, frames{10}, gap_ms{40}, max_attempts{tof_cliff_runtime::kMaxProbeAttempts};
+
+    const auto num = [](const char *s, unsigned long limit, unsigned long &out) {
+        char *end{nullptr};
+        out = strtoul(s, &end, 0);
+        return end != s && *end == '\0' && out <= limit;
+    };
+
+    if (!num(argv[1], 6, pos) || pos == 0) {
+        shell_error(shell, "usage: tof cliff stream <position 1-6> [frames] [gap_ms] [max_attempts]");
+        return -EINVAL;
+    }
+    if (argc >= 3 && (!num(argv[2], tof_cliff_runtime::kMaxProbeAttempts, frames) || frames == 0)) {
+        shell_error(shell, "frames must be 1-%u", tof_cliff_runtime::kMaxProbeAttempts);
+        return -EINVAL;
+    }
+    if (argc >= 4 && !num(argv[3], tof_cliff_runtime::kMaxProbeGapMs, gap_ms)) {
+        shell_error(shell, "gap_ms must be 0-%u", tof_cliff_runtime::kMaxProbeGapMs);
+        return -EINVAL;
+    }
+    if (argc >= 5 &&
+        (!num(argv[4], tof_cliff_runtime::kMaxProbeAttempts, max_attempts) || max_attempts == 0)) {
+        shell_error(shell, "max_attempts must be 1-%u", tof_cliff_runtime::kMaxProbeAttempts);
+        return -EINVAL;
+    }
+    if (max_attempts < frames) {
+        shell_error(shell, "max_attempts (%lu) must be at least frames (%lu)", max_attempts, frames);
+        return -EINVAL;
+    }
+
+    tof_cliff_runtime::stream_result r{};
+    shell_print(shell, "pos%lu: one open/configure/start, then %lu frame(s) without restarting",
+                pos, frames);
+    const int rc{tof_cliff_runtime::stream_position(pos, r, frames, gap_ms, max_attempts,
+                                                    stream_frame_to_shell,
+                                                    const_cast<struct shell *>(shell))};
+    if (rc != 0) {
+        shell_error(shell, "stream refused (%d)%s", rc,
+                    rc == -EBUSY ? " -- the acquisition thread owns the chain" : "");
+        return rc;
+    }
+
+    shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d start=%d last_read=%d", pos,
+                r.addr_7bit, r.role_id, r.open_rc, r.start_rc, r.last_read_rc);
+    shell_print(shell, "frames=%u/%lu attempts_used=%u gap_ms=%lu", r.frames_collected, frames,
+                r.attempts_used, gap_ms);
+    if (r.open_rc != 0 || r.start_rc != 0)
+        shell_print(shell, "  session did not start; nothing was read");
+    shell_print(shell, "diagnostic only: nothing was transmitted, the mapping is unchanged and the "
+                       "PROVEN clamp is untouched. configure() is a no-op, so the device runs the "
+                       "ULD DataInit defaults (MEDIUM, 33.3 ms, back-to-back).");
+    return 0;
+}
+
 #endif // ENABLE_TOF_CLIFF_BENCH_PACK
+
+
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
 #if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
@@ -823,6 +907,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
                   "BENCH ONLY: <100|400> -- retime i2c2 at runtime (walk and bring-up want "
                   "different speeds on this harness); touches no mapping and is not a proof",
                   cmd_cliff_i2cspeed, 2, 0),
+    SHELL_CMD_ARG(stream, NULL,
+                  "BENCH ONLY: <pos> [frames] [gap_ms] [max_attempts] -- read several frames from "
+                  "ONE session; `read` only ever shows the first frame after a restart",
+                  cmd_cliff_stream, 2, 3),
     SHELL_CMD_ARG(pack, NULL,
                   "BENCH ONLY: <pos> <source_id> [epoch] [cycle_seq] [attempts] [gap_ms] -- "
                   "encode one real sample and PRINT it; transmits nothing",

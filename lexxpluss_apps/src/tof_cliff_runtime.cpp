@@ -421,6 +421,57 @@ int probe_position(size_t position_1based, probe_result &out, unsigned attempts,
     return 0;
 }
 
+#if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
+int stream_position(size_t position_1based, stream_result &out, unsigned want_frames,
+                    unsigned gap_ms, unsigned max_attempts,
+                    lexxhard::tof_cliff_stream::frame_sink sink, void *ctx)
+{
+    out = stream_result{};
+    /* Same preconditions as probe_position, deliberately: this is that lifecycle with the break
+     * removed, not a second route to the device. */
+    if (want_frames == 0 || max_attempts == 0 || max_attempts > kMaxProbeAttempts ||
+        gap_ms > kMaxProbeGapMs || max_attempts < want_frames)
+        return -EINVAL;
+    if (!ready())
+        return -EPERM;
+    if (acq::thread_running())
+        return -EBUSY;
+    if (position_1based == 0 || position_1based > spec_.positions)
+        return -EINVAL;
+
+    const size_t i{position_1based - 1};
+    if (descs_[i].kind != acq::model::l4_cliff || descs_[i].ops == nullptr)
+        return -ENOTSUP;
+
+    out.addr_7bit = descs_[i].addr_7bit;
+    out.role_id = descs_[i].role_id;
+
+    const acq::source_ops &ops{*descs_[i].ops};
+    void *dev{descs_[i].dev};
+
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    out.attempted = true;
+    out.open_rc = ops.open(dev, descs_[i].addr_7bit, &out.status);
+    if (out.open_rc == 0) {
+        (void)ops.configure(dev, &out.status);
+        out.start_rc = ops.start(dev, &out.status);
+        if (out.start_rc == 0) {
+            const lexxhard::tof_cliff_stream::params p{want_frames, gap_ms, max_attempts};
+            const auto pr{lexxhard::tof_cliff_stream::run_loop(
+                ops, dev, descs_[i].scratch, out.status, p, sink, ctx,
+                [](unsigned ms) { k_msleep(ms); })};
+            out.frames_collected = pr.frames_collected;
+            out.attempts_used = pr.attempts_used;
+            out.last_read_rc = pr.last_read_rc;
+        }
+        acq::op_status ignored{};
+        (void)ops.stop(dev, &ignored);
+    }
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    return 0;
+}
+#endif
+
 #ifdef CONFIG_ZTEST
 void set_thread_stack_for_test(k_thread_stack_t *stack, size_t size)
 {

@@ -59,6 +59,7 @@ target_sources(app PRIVATE
     src/test_read_once.c
     src/test_acquisition.cpp
     src/test_publisher.cpp
+    src/test_stream_loop.cpp
     ${APP_SRC_DIR}/tof_cliff_sensor.c
     ${APP_SRC_DIR}/tof_acquisition.cpp
     ${APP_SRC_DIR}/tof_cliff_packer.cpp

@@ -47,6 +47,7 @@
 #include <stdint.h>
 
 #include "tof_acquisition.hpp"
+#include "tof_cliff_stream_loop.hpp"
 #include "tof_enumerator.hpp"
 
 namespace lexxhard::tof_cliff_runtime {
@@ -179,6 +180,41 @@ struct probe_result {
 
 int probe_position(size_t position_1based, probe_result &out, unsigned attempts = 1,
                    unsigned gap_ms = 0);
+
+#if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
+/* BENCH ONLY. Reads SEVERAL fresh frames from ONE open/configure/start session.
+ *
+ * probe_position() stops at the first fresh frame and then stops the sensor, so every L4 sample
+ * this project has recorded has been the first frame after a restart, and every one of them
+ * reported no target. That is not yet evidence that the sensors cannot range -- the existing
+ * evidence has only ever observed frame one, so a first-frame effect cannot be ruled out either.
+ * This command removes the reason we cannot tell the two apart. It decides nothing.
+ *
+ * The lifecycle is probe_position's, unchanged: same open, same configure, same start, same
+ * read_once, same stop. Only the break is gone, which read_once already supports because it
+ * re-arms the device after every fetch.
+ *
+ * Frames go to a sink as they arrive rather than into an array. The shell thread has well under
+ * a kilobyte of stack headroom on this board and assertions are not compiled in, so a buffer of
+ * frames on that stack would overflow it silently.
+ *
+ * Transmits nothing, touches no mapping, authorises nothing. */
+struct stream_result {
+    bool attempted{false};
+    int open_rc{0};
+    int start_rc{0};
+    int last_read_rc{0};
+    unsigned frames_collected{0};
+    unsigned attempts_used{0};
+    uint8_t addr_7bit{0};
+    uint8_t role_id{0};
+    tof_acq::op_status status{};
+};
+
+int stream_position(size_t position_1based, stream_result &out, unsigned want_frames,
+                    unsigned gap_ms, unsigned max_attempts,
+                    lexxhard::tof_cliff_stream::frame_sink sink, void *ctx);
+#endif
 
 #ifdef CONFIG_ZTEST
 // Lets a suite exercise the single-shot rule more than once per image.
