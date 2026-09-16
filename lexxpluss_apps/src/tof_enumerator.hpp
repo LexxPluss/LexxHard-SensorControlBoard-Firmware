@@ -71,8 +71,9 @@
 // classification is a known follow-up); until it can, it must report
 // transport_error, and this machine will freeze rather than guess.
 
-#include <stdint.h>
+#include <errno.h>
 #include <stddef.h>
+#include <stdint.h>
 
 namespace lexxhard::tof_enum {
 
@@ -82,6 +83,19 @@ struct id_bytes {
     uint8_t first{0};   // l7cx: device_id (expect 0xf0); l4cx: model_id (expect 0xeb)
     uint8_t second{0};  // l7cx: revision  (expect 0x02); l4cx: module_type (expect 0xaa)
 };
+
+// Public because a second consumer needs it: the mapping proof checks the
+// identity read taken during tail isolation, which happens outside any
+// enumeration and therefore outside this machine. It was file-local until
+// then, and the alternative -- repeating 0xf0/0x02 and 0xeb/0xaa in the proof
+// module -- is the kind of duplicated magic constant that drifts silently and
+// fails in the safe-looking direction.
+inline bool id_matches(model m, const id_bytes &b)
+{
+    if (m == model::l7cx)
+        return b.first == 0xf0 && b.second == 0x02;
+    return b.first == 0xeb && b.second == 0xaa;
+}
 
 // A probe answer the machine can reason about. Only a clean NACK proves an
 // address vacant; transport failures prove nothing and freeze the run.
