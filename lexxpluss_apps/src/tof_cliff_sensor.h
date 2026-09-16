@@ -70,6 +70,12 @@ enum tof_cliff_stage {
 	TOF_CLIFF_STAGE_DISTANCE_MODE,
 	TOF_CLIFF_STAGE_TIMING_BUDGET,
 	TOF_CLIFF_STAGE_START,
+	/* The second half of arming: ST's own VL53L4CX_Start() issues
+	 * ClearInterruptAndStartMeasurement() after StartMeasurement(), and without it the
+	 * device hands back the previous session's frame on the first read. It is its own
+	 * stage rather than a second START so a failure says which half failed, and rather
+	 * than a REARM so a start failure is never mistaken for a per-sample one. */
+	TOF_CLIFF_STAGE_START_CLEAR,
 	TOF_CLIFF_STAGE_STOP,
 	/* per sample */
 	TOF_CLIFF_STAGE_READY_CHECK,

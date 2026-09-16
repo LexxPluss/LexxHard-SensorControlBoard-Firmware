@@ -45,6 +45,7 @@ static struct {
 	VL53LX_Error fetch_rc;
 	VL53LX_Error rearm_rc;
 	int fetch_bus_xfers; /* real port transfers the fetch performs before returning */
+	int rearm_bus_xfers; /* same, for the re-arm, so a masked bus failure can be posed */
 	VL53LX_MultiRangingData_t canned;
 	int ready_calls;
 	int fetch_calls;
@@ -100,9 +101,14 @@ VL53LX_Error VL53LX_GetMultiRangingData(VL53LX_DEV Dev, VL53LX_MultiRangingData_
 
 VL53LX_Error VL53LX_ClearInterruptAndStartMeasurement(VL53LX_DEV Dev)
 {
-	ARG_UNUSED(Dev);
 	f.rearm_calls++;
 	order_add('c');
+
+	/* Real traffic when asked for, so the re-arm can fail on the bus while the ULD still
+	 * reports success - the same masking shape as the fetch and the stop. */
+	for (int i = 0; i < f.rearm_bus_xfers; i++) {
+		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0300 + i), 0x00);
+	}
 	return f.rearm_rc;
 }
 
@@ -594,9 +600,17 @@ ZTEST(tof_cliff_adapter, test_reading_never_stops_or_restarts_the_device)
 {
 	const int16_t mm[1] = {500};
 	const uint8_t status[1] = {0};
+	int rearm_after_start;
 
 	canned_targets(1, mm, status, 1);
 	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+
+	/* Arming itself spends one clear - StartMeasurement then
+	 * ClearInterruptAndStartMeasurement - so the per-cycle cost has to be measured from
+	 * here rather than from zero, or this test would silently accept a second start. */
+	rearm_after_start = f.rearm_calls;
+	zassert_equal(rearm_after_start, 1, "arming issues exactly one clear");
+
 	for (int i = 0; i < 5; i++) {
 		f.canned.StreamCount++;
 		zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
@@ -607,7 +621,7 @@ ZTEST(tof_cliff_adapter, test_reading_never_stops_or_restarts_the_device)
 	 * device call. */
 	zassert_equal(f.start_calls, 1);
 	zassert_equal(f.stop_calls, 0);
-	zassert_equal(f.rearm_calls, 5);
+	zassert_equal(f.rearm_calls - rearm_after_start, 5, "one re-arm per cycle, no more");
 }
 
 /* C1. GetMultiRangingData can fail internally, overwrite its own status with the copy
@@ -744,6 +758,136 @@ ZTEST(tof_cliff_adapter, test_a_failed_start_preserves_the_guard)
 	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
 	zassert_true(st.stale_replay);
 	zassert_false(sample.fresh);
+}
+
+/* ---------------------------------------------- arming is two calls, not one ----- */
+
+/* ST's own VL53L4CX_Start() issues StartMeasurement() and then
+ * ClearInterruptAndStartMeasurement(). This adapter issued only the first, and that is
+ * why every L4 sample this project ever recorded was the PREVIOUS session's frame: the
+ * stale data-ready was still asserted, so the first fetch after a restart returned a
+ * result produced before it, carrying the old stream count.
+ *
+ * The order is asserted exactly rather than by counting calls, because the two failure
+ * modes worth catching are both invisible to a count: deleting the second call leaves
+ * "G", and clearing before starting leaves "cG" - a clear against a stopped device,
+ * which arms nothing. */
+ZTEST(tof_cliff_adapter, test_a_successful_start_issues_start_then_clear_in_that_order)
+{
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+
+	zassert_equal(strcmp(f.order, "Gc"), 0, "arming sequence was \"%s\", expected \"Gc\"",
+		      f.order);
+	zassert_equal(f.start_calls, 1);
+	zassert_equal(f.rearm_calls, 1);
+	zassert_equal(f.stop_calls, 0, "a start that worked must not also stop the device");
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_NONE);
+}
+
+/* A device that refused to start has nothing to clear. Issuing the second call anyway
+ * would put a write on a bus that has just failed and, worse, make the log say the
+ * arming reached its second half when it never did. */
+ZTEST(tof_cliff_adapter, test_a_failed_first_call_never_issues_the_second)
+{
+	const int16_t mm[1] = {75};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+
+	f.order[0] = '\0';
+	f.start_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_START, "the first half is where it failed");
+	zassert_equal(strcmp(f.order, "G"), 0, "sequence after a refused start was \"%s\"",
+		      f.order);
+	zassert_equal(f.stop_calls, 0, "nothing was started, so there is nothing to stop");
+
+	/* And the guard is still armed: the pre-restart count is still a replay. */
+	f.start_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
+	zassert_true(st.stale_replay);
+}
+
+/* Half-armed is the one state nobody above this function can represent: StartMeasurement
+ * succeeded so the device IS ranging, but start() reports failure, so every caller records
+ * it as not started and none of them will ever stop it. The cleanup is what keeps that
+ * from leaving a ranging device behind. */
+ZTEST(tof_cliff_adapter, test_a_failed_second_call_stops_the_device_and_keeps_the_guard)
+{
+	const int16_t mm[1] = {75};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+
+	f.order[0] = '\0';
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+
+	/* Its own stage, not START and not the per-sample REARM: a reader of the log has to
+	 * be able to tell which half of arming failed, and has to not mistake this for a
+	 * failure that happened while sampling. */
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_START_CLEAR);
+	zassert_equal(strcmp(tof_cliff_stage_name(st.stage), "start_clear"), 0);
+	zassert_equal(strcmp(f.order, "GcP"), 0, "sequence was \"%s\", expected \"GcP\"",
+		      f.order);
+	zassert_equal(f.stop_calls, 1, "a half-armed device must not be left ranging");
+
+	/* The guard survives this path too. */
+	f.rearm_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
+	zassert_true(st.stale_replay);
+	zassert_false(sample.fresh);
+}
+
+/* The history may only be dropped once the device is really re-armed. Dropping it after
+ * the first call alone would accept the stale frame the second call exists to discard -
+ * the guard would be spent on the one sample it was added to refuse. */
+ZTEST(tof_cliff_adapter, test_only_a_start_that_completed_both_calls_clears_the_guard)
+{
+	const int16_t mm[1] = {75};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO);
+
+	f.start_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	f.start_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO,
+		      "a start that never began must not release the guard");
+
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	f.rearm_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), -EPROTO,
+		      "a start that stopped half way must not release it either");
+
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0,
+		      "both halves done: the same count is a new session's sample");
+	zassert_true(sample.fresh);
+	zassert_false(st.stale_replay);
+}
+
+/* The masking shape the sticky errno exists for, applied to the new call: the ULD returns
+ * VL53LX_ERROR_NONE while the transfer under it failed. Taking the ULD's word here would
+ * record an unarmed device as armed, and the very first read would hand back the previous
+ * session's frame - exactly the defect this change removes, reintroduced silently. */
+ZTEST(tof_cliff_adapter, test_the_second_calls_bus_failure_is_not_masked_by_its_uld_result)
+{
+	f.rearm_bus_xfers = 1;
+	f.rearm_rc = VL53LX_ERROR_NONE;
+	fake_i2c_fail_on(1, -EIO); /* StartMeasurement makes no traffic; this is the clear's */
+
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), -EIO);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_START_CLEAR);
+	zassert_equal(st.port_errno, -EIO);
+	zassert_equal(st.uld_rc, VL53LX_ERROR_NONE, "the ULD really did claim success");
+	zassert_equal(f.stop_calls, 1, "a bus-failed clear is still a half-armed device");
 }
 
 ZTEST(tof_cliff_adapter, test_null_arguments_are_rejected_without_touching_the_device)
