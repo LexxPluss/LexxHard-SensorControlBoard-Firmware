@@ -69,6 +69,8 @@ const char *tof_cliff_stage_name(enum tof_cliff_stage stage)
 		return "timing_budget";
 	case TOF_CLIFF_STAGE_START:
 		return "start";
+	case TOF_CLIFF_STAGE_START_CLEAR:
+		return "start_clear";
 	case TOF_CLIFF_STAGE_STOP:
 		return "stop";
 	case TOF_CLIFF_STAGE_READY_CHECK:
@@ -167,13 +169,40 @@ int tof_cliff_sensor_configure(VL53L4CX_Object_t *obj, VL53LX_DistanceModes mode
 
 int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *st)
 {
+	int ret;
+
 	if (obj == NULL || st == NULL) {
 		return -EINVAL;
 	}
 	tof_cliff_status_reset(st);
 
 	vl53l4cx_port_sticky_reset();
-	return tof_cliff_finish(st, TOF_CLIFF_STAGE_START, VL53LX_StartMeasurement(obj));
+	ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_START, VL53LX_StartMeasurement(obj));
+	if (ret != 0) {
+		return ret;
+	}
+
+	/* Arming is two calls, not one. ST's own VL53L4CX_Start() follows StartMeasurement()
+	 * with ClearInterruptAndStartMeasurement(), and omitting it is why every L4 sample this
+	 * project has recorded was the PREVIOUS session's frame: the device still has the old
+	 * data-ready asserted, so the first read fetches a result produced before the restart.
+	 *
+	 * The sticky errno is reset again because it is per transaction, not per function: a
+	 * clean second call must not inherit the first call's verdict. */
+	vl53l4cx_port_sticky_reset();
+	ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_START_CLEAR,
+			       VL53LX_ClearInterruptAndStartMeasurement(obj));
+	if (ret != 0) {
+		/* Half-armed is the one state nobody above can represent: the device IS ranging
+		 * because StartMeasurement succeeded, but this function reports failure, so the
+		 * caller records it as not started and will never stop it. Best-effort stop, and
+		 * deliberately NOT through tof_cliff_finish -- st already carries the failure that
+		 * matters and the cleanup must not overwrite which stage it came from. */
+		vl53l4cx_port_sticky_reset();
+		(void)VL53LX_StopMeasurement(obj);
+		vl53l4cx_port_sticky_reset();
+	}
+	return ret;
 }
 
 int tof_cliff_sensor_stop(VL53L4CX_Object_t *obj, struct tof_cliff_read_status *st)
