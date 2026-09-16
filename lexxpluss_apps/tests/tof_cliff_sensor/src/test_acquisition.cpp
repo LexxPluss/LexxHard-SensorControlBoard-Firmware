@@ -1505,6 +1505,73 @@ ZTEST(tof_acquisition, test_a_join_that_times_out_changes_nothing_and_kills_noth
     zassert_equal(devs[0].stop_calls, 1);
 }
 
+/* The start-order window, opened on purpose.
+ *
+ * With K_NO_WAIT the new thread became runnable inside k_thread_create(), so a priority above the
+ * caller's preempted right there -- before the return value ever reached owner_. The thread then
+ * asked may_touch_devices(), found thread_active_ already true and owner_ still null, and concluded
+ * that IT was the foreign caller. bring_up() refused at the guard, running_ was never set, and every
+ * later run_cycle() took the !running_ path. That is the worst shape a fault can have: a thread that
+ * is alive, owns the chain, reports itself running, and silently never touches a sensor -- found on
+ * hardware, where the only visible symptom was a stack watermark that never moved.
+ *
+ * Every other thread case in this file runs BELOW the ztest thread and therefore never opens the
+ * window, which is exactly how this reached a robot. This one puts the acquisition thread ABOVE its
+ * creator, which makes the preemption certain rather than possible.
+ */
+ZTEST(tof_acquisition, test_a_thread_that_preempts_its_creator_still_brings_the_sources_up)
+{
+    acq::thread_config t{thread_cfg(500)};
+    const int caller_prio{k_thread_priority_get(k_current_get())};
+
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::begin_epoch(), 0);
+
+    /* A lifetime counter that the legitimate foreign-caller cases also move, so only the DELTA
+     * across this start says anything. Non-zero here IS the defect: the acquisition thread
+     * refusing itself is recorded as a foreign call. */
+    const uint32_t foreign_before{acq::foreign_lifecycle_calls()};
+
+    /* The CALLER has to be preemptible, and that is not a detail. A cooperative thread is never
+     * preempted involuntarily in Zephyr, so k_thread_create() would return -- assigning owner_ --
+     * before the new thread ran a single instruction, whatever priority it was given. ztest runs
+     * its cases cooperatively at priority -1, so the first version of this test, which only raised
+     * the NEW thread's priority, passed cleanly against the very defect it was written to catch.
+     *
+     * Lowering the caller to a preemptible priority and putting the acquisition thread one step
+     * above it reproduces the product's arrangement: there the shell thread issuing `tof cliff
+     * start` is preemptible at 14 and acquisition runs at 7. */
+    k_thread_priority_set(k_current_get(), K_PRIO_PREEMPT(9));
+    t.priority = k_thread_priority_get(k_current_get()) - 1;
+
+    /* No assertion between these two, so a failure cannot leave the ztest thread at a priority
+     * the rest of the suite did not ask for. */
+    const int start_rc{acq::start(t)};
+    k_thread_priority_set(k_current_get(), caller_prio);
+
+    zassert_equal(start_rc, 0);
+    k_msleep(kCyclePeriodMs * 3);
+    zassert_equal(acq::try_stop(), 0);
+
+    zassert_equal(acq::foreign_lifecycle_calls() - foreign_before, 0u,
+                  "the acquisition thread was refused as a foreign caller");
+
+    for (int i = 0; i < 4; ++i) {
+        zassert_equal(devs[i].open_calls, 1, "source %d was never opened", i);
+        zassert_equal(devs[i].start_calls, 1, "source %d was never started", i);
+        /* stop_locked() skips every source whose started flag is clear, so a stop that happened
+         * is proof the source finished bring-up started. Asserting the flag directly would have
+         * to read it before try_stop() clears it, and would race the thread to do so. */
+        zassert_equal(devs[i].stop_calls, 1, "source %d was never brought up", i);
+    }
+
+    /* And cycles really ran: without this the case would still pass against a thread that brought
+     * the sources up and then cycled over nothing. */
+    zassert_true(rec.cycles >= 2, "no cycle completed: %d", rec.cycles);
+    zassert_true(rec.saw_begin);
+    zassert_true(devs[0].read_calls >= 2, "the sources were never read: %d", devs[0].read_calls);
+}
+
 ZTEST(tof_acquisition, test_starting_the_thread_does_not_renumber_the_cycles)
 {
     /* cycle_seq belongs to the mapping epoch, not to the thread. begin_epoch() resets it as one step
