@@ -7,7 +7,8 @@ from the bench branch. It is pushed for review, not for merge.
 
 ## What is here
 
-Cut from `origin/pr-b3/publisher-can-runtime` at `25c316ab`, four implementation commits plus two status and check commits, pure addition:
+Cut from `origin/pr-b3/publisher-can-runtime` at `25c316ab`, pure addition. Four implementation
+commits carry the base layer; the remainder are status and check commits, this note among them:
 
   - the vendored ULD with the device firmware externalised behind `VL53L7CX_EXTERNAL_FIRMWARE`
   - the blob record, its provider and the boot gate
