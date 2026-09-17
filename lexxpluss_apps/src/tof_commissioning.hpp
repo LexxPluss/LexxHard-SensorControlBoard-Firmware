@@ -80,6 +80,33 @@ namespace pf = tof_proof;
 // Where a run stopped. One value per step, because "commissioning failed" tells an operator
 // standing at the machine nothing: a busy chain, a frozen walk and a missing role table need three
 // different actions.
+/* The two speeds this chain is characterised at, and nothing else.
+ *
+ * They are not interchangeable and the split is not a tuning preference. The enable-chain walk is
+ * only reliable at 100 kHz on this harness; the acquisition schedule is only feasible at 400 kHz.
+ * A proof therefore happens at one speed and production runs at the other, which means the proof
+ * alone says nothing about whether the chain answers at the speed it will actually be read at. */
+enum class bus_speed : uint8_t {
+    proof_100k,
+    product_400k,
+};
+
+/* Where the bus was left. Reported as a state rather than as "did the restore work", because that
+ * question has no answer in the two cases that matter most: a run that succeeded never restored
+ * anything and ended at 400 kHz, and a run whose very first set_bus_speed failed left the bus at
+ * whatever the driver did with it, which is not knowable from here.
+ *
+ * An earlier version carried a bool defaulting to true, so a successful run reported "restored", a
+ * failed first set reported "restored", and a commit refusal that walked away at 400 kHz reported
+ * "restored" as well. Three different situations, one reassuring answer, and the only one an
+ * operator needed to act on was invisible. */
+enum class bus_state : uint8_t {
+    // A set_bus_speed call failed and nothing is known about what the driver left behind.
+    unknown,
+    proof_100k,
+    product_400k,
+};
+
 enum class stage : uint8_t {
     none = 0,         // it succeeded
     not_configured,   // no chain ops, spec or lock was injected
@@ -88,7 +115,29 @@ enum class stage : uint8_t {
     chain_busy,       // the lock was held: another enumeration, or acquisition still on the chain
     attempt_refused,  // the authority would not open an attempt
     evidence_refused, // the transaction was carried out and the proof refused it
+    // The bus would not go to 100 kHz for the walks. Refused rather than proceeding at whatever the
+    // bus happened to be left at, because a walk at an uncharacterised speed produces a mapping
+    // whose evidence means nothing.
+    proof_speed_refused,
+    // The proof held, but the bus would not go to 400 kHz afterwards.
+    product_speed_refused,
+    // The proof held and the bus retimed, but a position did not answer as itself at 400 kHz.
+    identity_recheck_failed,
     commit_refused,   // the proof held and the authority refused to install it
+};
+
+/* Which position failed the 400 kHz re-check and how. Separate from the walk results because it is
+ * a different observation: the walks establish WHAT the chain is, at a speed that cannot be used to
+ * read it; this establishes that the same chain still answers at the speed that will. */
+struct identity_recheck {
+    // 1-based, as the operator counts them. 0 when nothing failed.
+    uint8_t position{0};
+    uint8_t address{0};
+    // The probe did not cleanly ACK. Distinguished from an identity mismatch because they send an
+    // operator to different places: silence is a bus or a part, a wrong id is the wrong part.
+    bool silent{false};
+    int read_rc{0};
+    tof_enum::id_bytes seen{};
 };
 
 struct outcome {
@@ -108,6 +157,20 @@ struct outcome {
     pf::isolation_observation isolation{};
     int isolation_rc{0};
 
+    // Non-zero when a speed change failed, for the stage that failed.
+    int speed_rc{0};
+    /* Where the bus actually is when this returns. `unknown` and `product_400k` after a failure are
+     * both recoverable and neither is an error to act on: no mapping was installed, and the next
+     * proof sets the speed itself rather than trusting any of this. It is reported so an operator
+     * reading a transcript is not left inferring it. */
+    bus_state final_bus{bus_state::unknown};
+    // Whether a restore to the proof speed was tried at all, and what it returned. Separate,
+    // because "not attempted" and "attempted and failed" are different facts.
+    bool restore_attempted{false};
+    int restore_rc{0};
+    // Populated only for identity_recheck_failed.
+    identity_recheck recheck{};
+
     bool proven() const { return failed_at == stage::none; }
 };
 
@@ -123,6 +186,15 @@ struct config {
     // Stops acquisition and does not return until it has stopped. Production: stop the thread and
     // join it. Must NOT tear the subsystem down -- the heartbeat has to keep running.
     int (*quiesce)(){nullptr};
+    /* Retimes the bus. Returns 0 on success.
+     *
+     * Injected rather than called directly so the whole transaction can be driven from a fake: the
+     * failure paths below -- the bus refusing the product speed, and the restore to the proof speed
+     * failing after it -- are the ones that decide whether a half-switched chain can be left behind,
+     * and neither is reachable on real hardware on demand.
+     *
+     * It must NOT take the chain lock: prove() calls it while holding it. */
+    int (*set_bus_speed)(bus_speed){nullptr};
 };
 
 int init(const config &cfg);

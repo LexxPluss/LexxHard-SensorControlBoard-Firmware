@@ -46,6 +46,21 @@ struct fake_chain final : enm::chain_ops {
      * cliff ones -- the exact asymmetry the fingerprint has to normalise. */
     bool reset_class(size_t i) const { return !l7[i]; }
 
+    /* THE RE-CHECK PHASE. Set by the test's set_bus_speed hook when the transaction switches to the
+     * product speed, because that is exactly the boundary: everything before it is the proof, and
+     * everything after it is the read-only re-verification. The fake needs to tell them apart to
+     * model a part that answers at 100 kHz and not at 400 kHz -- which is the failure the re-check
+     * exists for and cannot be modelled by a fault that was there all along, since that one would
+     * have failed the walks instead. */
+    bool after_proof{false};
+    // Answers nothing once the re-check begins.
+    uint8_t silent_after_proof_addr{0};
+    // Answers with the other model's identity once the re-check begins.
+    uint8_t wrong_id_after_proof_addr{0};
+    // Anything the re-check does that is not read-only. Both must stay zero.
+    int readdress_calls_after_proof{0};
+    int control_calls_after_proof{0};
+
     int set_data_rc{0};
     int pulse_rc{0};
     int fail_pulse_at{-1};
@@ -62,6 +77,8 @@ struct fake_chain final : enm::chain_ops {
 
     int set_data(bool level) override
     {
+        if (after_proof)
+            ++control_calls_after_proof;
         if (set_data_rc != 0)
             return set_data_rc;
         data = level;
@@ -79,6 +96,8 @@ struct fake_chain final : enm::chain_ops {
 
     int pulse_clock() override
     {
+        if (after_proof)
+            ++control_calls_after_proof;
         if (fail_pulse_at >= 0 && pulses_seen == fail_pulse_at) {
             ++pulses_seen;
             return -EIO;
@@ -105,6 +124,8 @@ struct fake_chain final : enm::chain_ops {
 
     enm::probe_result probe(uint8_t addr7) override
     {
+        if (after_proof && silent_after_proof_addr != 0 && addr7 == silent_after_proof_addr)
+            return {enm::probe_state::nack, 0};
         if (error_probes_at_pulse_count >= 0 && pulses_seen == error_probes_at_pulse_count)
             return {enm::probe_state::transport_error, -EIO};
         return answerer(addr7) >= 0 ? enm::probe_result{enm::probe_state::ack, 0}
@@ -117,11 +138,17 @@ struct fake_chain final : enm::chain_ops {
         if (i < 0)
             return -ENXIO;
         out = l7[i] ? kL7Id : kL4Id;
+        /* The other model's identity: a part that answers at the product speed and answers as
+         * something else. Distinct from silence, and the two send an operator to different places. */
+        if (after_proof && wrong_id_after_proof_addr != 0 && addr7 == wrong_id_after_proof_addr)
+            out = l7[i] ? kL4Id : kL7Id;
         return 0;
     }
 
     enm::readdress_result readdress(enm::model, uint8_t old7, uint8_t new7) override
     {
+        if (after_proof)
+            ++readdress_calls_after_proof;
         const int i{answerer(old7)};
         if (i < 0)
             return {-ENXIO, enm::readdress_stage::collision};

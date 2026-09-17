@@ -138,6 +138,15 @@ void before(void *)
  * unreachable by rule. They are now frozen in the production spec itself (from
  * dasher_connectivity.png), so these cases exercise the REAL configuration -- which is strictly
  * better: a test that installs its own role table cannot notice the shipped one being wrong. */
+/* The runtime suite drives the REAL chain glue over a fake bus, so it has no i2c to retime. The
+ * transaction still owns the speed, and a hook that always succeeds is the honest stand-in: these
+ * cases are about the runtime's keying and start-up rules, and the speed transaction's own failure
+ * paths are covered in test_main.cpp where the hook can be made to fail on demand. */
+int speed_ok(cm::bus_speed)
+{
+    return 0;
+}
+
 cm::outcome prove_over_the_fake_chain(uint32_t epoch)
 {
     cm::config ccfg{};
@@ -146,6 +155,7 @@ cm::outcome prove_over_the_fake_chain(uint32_t epoch)
     ccfg.ops = &chain;
     ccfg.spec = &rt::spec();
     ccfg.quiesce = quiesce_via_acquisition;
+    ccfg.set_bus_speed = speed_ok;
     zassert_equal(cm::init(ccfg), 0);
     return cm::prove(epoch);
 }
