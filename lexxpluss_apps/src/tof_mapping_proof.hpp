@@ -14,7 +14,8 @@
  * It decides, and it does nothing else. It touches no bus, holds no lock, starts no
  * thread, and cannot make the subsystem publish anything. What it produces is a token,
  * and a token by itself changes no behaviour: the authority that will consume it does not
- * exist yet, and the PROVEN clamp in tof_acquisition is untouched by this file.
+ * exist yet. (When this was written a PROVEN clamp in tof_acquisition also stood in the way;
+ * it has since been removed, and a token still changes nothing on its own.)
  *
  * WHAT THE CONTRACT REQUIRES, AND WHY IT IS A TRANSACTION
  *

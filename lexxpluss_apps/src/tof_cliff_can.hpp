@@ -59,13 +59,15 @@ struct tof_cliff_pub::can_sink sink();
 /* The authorisation production uses: the acquisition layer's effective mapping state read
  * together with the mapping authority's epoch.
  *
- * The two halves come from two places on purpose, and it is not the disagreement the
- * publisher exists to avoid. The authority owns the epoch, and it is now a real value -- 0
- * until a proof commits, then whatever the host issued. The STATE is deliberately taken
- * through effective_mapping_state() rather than from the authority directly, because that is
- * where the clamp lives: the authority may well believe PROVEN, and until the clamp is lifted
- * nothing may act on that belief. Reading the state from the authority here would bypass the
- * clamp, which is exactly the shape of the safety backdoor this project deleted once. */
+ * Both halves come from ONE snapshot of the authority, and that is the whole rule this
+ * function encodes. Reading the state and the epoch separately lets a proof commit between
+ * the two reads and yields a pair that never existed -- LOST beside the new epoch, say --
+ * which the publisher would then latch for a cycle and re-check against as though it had.
+ *
+ * The state used to be taken through effective_mapping_state() instead, because that is where
+ * the PROVEN clamp lived. The clamp is gone; the single-snapshot rule is not, and it is the
+ * reason this function still exists rather than each caller reading what it needs.
+ */
 struct tof_cliff_pub::authorisation production_authorisation();
 
 }  // namespace lexxhard::tof_cliff_can

@@ -17,12 +17,12 @@
  * acquisition is configured for must still be refused, and only something holding both the
  * proof and the runtime configuration can notice.
  *
- * IT STILL CANNOT PUBLISH A MEASUREMENT
+ * WHAT A COMMITTED PROOF NOW MEANS
  *
- * tof_acq::effective_mapping_state() clamps PROVEN unconditionally, and this commit does not
- * touch it. A committed proof here is visible in the health snapshot and nowhere else. The
- * clamp lifts in its own commit, once the role table is frozen and the cycle health frame
- * exists.
+ * When this file was written a committed proof was visible in the health snapshot and nowhere
+ * else, because tof_acq::effective_mapping_state() forced PROVEN to NOT_READY. That clamp has
+ * since been removed, so a proof committed here does reach the wire: the publisher's gate opens
+ * on PROVEN, and this authority is what says so.
  *
  * THE GATE IS PRIVATE, ON PURPOSE
  *
@@ -81,9 +81,9 @@ enum class commit_refusal : uint8_t {
     epoch_install_failed,      // begin_epoch() failed for any other reason
     /* The runtime could not key its descriptors from this mapping. Inside the transaction on
      * purpose: keying used to happen after the commit had already published PROVEN, so a failure
-     * left a PROVEN authority whose descriptors did not describe the proven chain -- and the only
-     * thing standing between that and a measurement published under the wrong source_id was the
-     * clamp. */
+     * left a PROVEN authority whose descriptors did not describe the proven chain -- and while
+     * the clamp existed it was the only thing standing between that and a measurement published
+     * under the wrong source_id. Nothing stands there now. */
     mapping_install_failed,
 };
 
@@ -214,8 +214,8 @@ void note_chain_fault(uint8_t chain_flags, uint8_t failing_position);
 
 snapshot current();
 
-// For tof_acq::config::mapping_state_provider. Reports what this authority believes; the
-// acquisition layer's clamp is what decides whether anything acts on it.
+// For tof_acq::config::mapping_state_provider. Reports what this authority believes, and that
+// belief now reaches the publisher unchanged -- the acquisition layer no longer rewrites it.
 tof_acq::mapping_state state_provider();
 
 // The chain a committed proof installed. Empty (positions == 0) while non-PROVEN. The masks

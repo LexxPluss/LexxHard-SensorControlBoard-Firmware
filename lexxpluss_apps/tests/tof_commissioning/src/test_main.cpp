@@ -277,9 +277,10 @@ uint32_t fake_now_ms()
 
 acq::mapping_state reported_state()
 {
-    /* Straight from the authority, as production wires it. The clamp inside acquisition is what
-     * turns a PROVEN mapping into NOT_READY on the wire; nothing here needs to care, because these
-     * cases are about the chain, not the frame. */
+    /* Straight from the authority, as production wires it. What the publisher then does with a
+     * PROVEN mapping is the publisher suite's business; nothing here needs to care, because these
+     * cases are about the chain, not the frame. (Acquisition used to clamp PROVEN to NOT_READY on
+     * the way through, which made that separation invisible rather than untrue.) */
     return au::current().state;
 }
 

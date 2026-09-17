@@ -155,8 +155,8 @@ cycle_facts facts_;
  *
  * Advancing the epoch and restarting the cycle count are two halves of one operation, and
  * they belong to whatever owns the mapping. Implementing either half here would be
- * simulating a transition that has no API yet. The commit that lifts the PROVEN clamp is
- * where both halves land together. */
+ * simulating a transition that has no API yet. They land together in the authority's commit,
+ * which is where the epoch is consumed and begin_epoch() is called as one step of it. */
 uint32_t next_cycle_seq_{0};
 atomic_t snapshot_{ATOMIC_INIT(0)};
 k_timer health_timer_;
@@ -407,85 +407,25 @@ const char *operation_stage_name(const source_status &status)
 
 mapping_state effective_mapping_state()
 {
-    return clamp_mapping_state(cfg_.mapping_state_provider != nullptr
-                                   ? cfg_.mapping_state_provider()
-                                   : mapping_state::not_ready);
-}
-
-mapping_state clamp_mapping_state(mapping_state reported)
-{
-    if (reported == mapping_state::proven) {
-        // A proven mapping is not something this firmware is entitled to claim yet, so
-        // reporting NOT_READY keeps the consumer's own fail-safe path in charge.
-        //
-        // WHAT IS ACTUALLY MISSING, as of 2026-08-21. This list has now been wrong TWICE.
-        // First it said "until the two-board enable chain is fixed", and the hardware was
-        // fixed on 08-17 (a 50 ohm series resistor on the data line). Then it said the chain
-        // enumerates only one of four cliff positions so a real-machine proof "must still
-        // fail" -- and on 08-21 dasher1 enumerated all six positions and proved them. Both
-        // times a stale reason would have sent the reader to the wrong conclusion, so keep
-        // this current or delete it; a clamp whose stated reason is false is worse than one
-        // with no comment.
-        //
-        // What HAS been accepted on hardware (dasher1, 2026-08-21): a full proof at
-        // epoch 2 with walk1 and walk2 both COMPLETE, refusal none -- so all 28 proof
-        // checks passed on real data, including the four frozen roles, address distinctness,
-        // fingerprint equality across the two walks, and every isolation rule
-        // (tail 0x2f answered, neighbour 0x2e proven silent). The descriptors were keyed
-        // from that mapping: positions 3-6 report role_id 0,1,2,3.
-        //
-        // BOTH of the items that were on this list are now closed, on 2026-09-17:
-        //
-        //   - The 400 kHz question. A proof no longer ends at the speed it was carried out
-        //     at: commissioning sets 100 kHz for the walks, retimes to 400 kHz, and
-        //     re-verifies every position's identity at its assigned address BEFORE the
-        //     authority is told anything. A chain that does not answer at the product speed
-        //     never reaches commit_proof(), so PROVEN can no longer mean "proven only at a
-        //     speed the acquisition schedule cannot use".
-        //   - The stack watermark. Measured on dasher2 under 3.6.0-109: 1144 / 2048 (55 %),
-        //     stable across several thousand cycles, with all four sources' reads and samples
-        //     advancing together and no read or re-arm failures. The devicetree number is no
-        //     longer a number chosen without a measurement.
-        //
-        // SO WHY IS THE CLAMP STILL HERE. Because lifting it is its own commit, and the point
-        // of that separation is that the first image with it lifted gets validated for
-        // 0x216/0x217 immediately and for nothing else -- see the paragraph below, which is
-        // the reason this cannot be folded into the change that closed the prerequisites.
-        // Leaving it shut for one build is cheap; conflating "the prerequisites are closed"
-        // with "the wire has been observed" is the mistake this whole list exists to prevent.
-        //
-        // Deliberately NOT on this list, because it cannot be: "no 0x216 capture" and "no
-        // correlated cycle health". This clamp is what prevents both, so requiring them
-        // before lifting it is circular. They are what must be verified IMMEDIATELY AFTER
-        // it is lifted, on the same image, before that image is used for anything else.
-        //
-        // What WAS on this list and is now closed, because a list that only grows stops being
-        // read: the mapping authority, the epoch plus cycle-reset transaction, the cycle
-        // health frame, the single runtime bootstrap, role_id being keyed from the authority's
-        // installed mapping inside the commit transaction rather than from the descriptor's
-        // index, and the acquisition thread with its request-stop plus bounded join. None of
-        // them lifts this clamp, and the log line below has to keep naming what is actually
-        // left -- a stale diagnostic sends whoever reads it to the wrong place.
-        //
-        // Unconditional, with no build flag to lift it. A conditional safety bypass is
-        // one careless -D away from shipping and would not show up in a diff of the code
-        // it disables; lifting this is an edit here, in its own commit -- which is now the
-        // only thing standing between this board and 0x216 on the wire.
-        static bool warned{false};
-        if (!warned) {
-            warned = true;
-            /* INFO, not WRN, and that is a deliberate downgrade. While the prerequisites were
-             * open this was a warning about something wrong; now it reports a deliberate state
-             * on the ordinary success path, and an error-level line there would contaminate
-             * every acceptance transcript that follows a good proof. */
-            LOG_INF("mapping reported PROVEN; clamped to NOT_READY -- the transaction and "
-                    "acquisition prerequisites are closed, and the clamp stays until its "
-                    "removal in a separate commit, followed immediately by 0x216/0x217 "
-                    "end-to-end validation");
-        }
-        return mapping_state::not_ready;
-    }
-    return reported;
+    /* THE CLAMP IS GONE, as of 2026-09-17, and this is what it used to sit on.
+     *
+     * It reported NOT_READY for a mapping the authority believed PROVEN, because for most of this
+     * project's life a PROVEN mapping was something the firmware was not entitled to claim: the
+     * enable chain enumerated one cliff position in four, then it enumerated six but only at
+     * 100 kHz, and the acquisition thread's stack size was a devicetree number nobody had measured.
+     *
+     * All of those are closed and each was closed by evidence rather than by argument. The proof
+     * now ends at the product speed and re-verifies every position there before the authority is
+     * told anything, so PROVEN can no longer mean "proven at a speed the acquisition schedule
+     * cannot use". The stack is measured: 1144 / 2048 on dasher2, stable over thousands of cycles.
+     * And the acquisition thread was observed reading all four sensors at 400 kHz for 2130
+     * consecutive cycles with no read error and no re-arm failure.
+     *
+     * What remains between a PROVEN mapping and a measurement on the wire is the publisher's own
+     * rules, which are not a clamp and never were: an unproven mapping, an incomplete cycle, a role
+     * mismatch or a mask contradiction each still suppress a frame on their own terms. */
+    return cfg_.mapping_state_provider != nullptr ? cfg_.mapping_state_provider()
+                                                  : mapping_state::not_ready;
 }
 
 bool publication_allowed()
@@ -688,9 +628,10 @@ int bring_up()
      *
      * That is not a cosmetic staleness. The publisher refuses to pack a sample whose descriptor
      * role and facts role disagree, counts it as suppressed_role_mismatch and marks the whole cycle
-     * invalid; and facts_.sources[i].role_id is the value it would have encoded. So once the PROVEN
-     * clamp is lifted, a stale copy here suppresses EVERY measurement frame while the board
-     * otherwise looks healthy -- health flowing, sensors reading, nothing in any log.
+     * invalid; and facts_.sources[i].role_id is the value it would have encoded. So a stale copy
+     * here suppresses EVERY measurement frame while the board otherwise looks healthy -- health
+     * flowing, sensors reading, nothing in any log. While the PROVEN clamp existed this was
+     * invisible, because no measurement was leaving anyway.
      *
      * bring-up is the right place: it runs under the chain lock, from the owning thread, after the
      * commit that keyed the descriptors, and again after every re-proof, since proving stops

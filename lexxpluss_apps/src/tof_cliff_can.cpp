@@ -102,20 +102,17 @@ struct tof_cliff_pub::can_sink sink()
 
 struct tof_cliff_pub::authorisation production_authorisation()
 {
-    /* ONE read of the authority, then the clamp applied to that snapshot.
+    /* ONE read of the authority, and every field below comes from that one snapshot.
      *
      * Not effective_mapping_state() plus current().epoch: that reads the authority twice, and
      * a proof committing between the two reads yields a pair that never existed -- LOST with
      * the new epoch, say. The publisher latches this pair per cycle and re-checks it before
-     * flushing, so a pair that never existed would be latched as though it had.
-     *
-     * The clamp still applies, and still lives in the acquisition layer. Taking the state
-     * straight from the snapshot would bypass it, which is the shape of the safety backdoor
-     * this project deleted once. */
+     * flushing, so a pair that never existed would be latched as though it had. That rule is
+     * unchanged by the clamp's removal and is the reason this function exists at all. */
     const tof_authority::snapshot now{tof_authority::current()};
 
     struct tof_cliff_pub::authorisation a{};
-    a.state = tof_acq::clamp_mapping_state(now.state);
+    a.state = now.state;
     a.epoch = now.epoch;
     a.enumerated_mask = now.enumerated_mask;
     a.model_verified_mask = now.model_verified_mask;

@@ -576,9 +576,10 @@ ZTEST(tof_mapping_authority, test_the_snapshot_survives_a_pack_and_unpack_round_
 
 ZTEST(tof_mapping_authority, test_the_state_provider_reports_what_the_authority_believes)
 {
-    /* It reports PROVEN. The acquisition layer's clamp is what decides whether anything acts
-     * on it, and that clamp is not this module's business -- keeping the two separate is why
-     * lifting the clamp can be a small reviewable commit. */
+    /* It reports PROVEN, and what acts on that belief is not this module's business: the
+     * publisher's gate decides, and it opens on PROVEN and nothing else. Keeping the two separate
+     * is what made lifting the acquisition layer's old PROVEN clamp a small reviewable commit
+     * that did not have to touch this file. */
     fresh_authority();
     const transaction t;
     zassert_equal(prove(t, 2), au::commit_refusal::none);

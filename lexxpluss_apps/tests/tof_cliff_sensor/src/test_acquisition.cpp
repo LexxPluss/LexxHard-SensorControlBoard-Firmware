@@ -471,28 +471,36 @@ ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
 
 /* ------------------------------------------------------------ publication gate ----- */
 
-ZTEST(tof_acquisition, test_proven_is_unreachable_and_has_no_bypass_flag)
+ZTEST(tof_acquisition, test_the_state_acted_on_is_the_one_the_authority_reports)
 {
+    /* This case used to be test_proven_is_unreachable_and_has_no_bypass_flag, and it asserted
+     * that PROVEN was forced to NOT_READY. That clamp is gone: the proof now ends at the product
+     * speed and re-verifies every position there, and the acquisition thread has been measured
+     * reading all four sensors at that speed for thousands of consecutive cycles.
+     *
+     * What the case is for now is the opposite hazard. Nothing between the authority and the
+     * publication gate may rewrite the state in EITHER direction -- an inserted clamp would
+     * silence a proven chain, and an inserted promotion would publish on an unproven one. Every
+     * state goes through unchanged. */
     zassert_equal(acq::init(make_config(4)), 0);
 
     provider_state = acq::mapping_state::proven;
-
-    // A chain that cannot be enumerated across both boards cannot have a proven
-    // mapping, so the firmware is not entitled to claim one.
-    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready);
-    zassert_false(acq::publication_allowed(),
-                  "no role measurement may be published on an unproven mapping");
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::proven,
+                 "a proven mapping is no longer rewritten on its way to the gate");
+    zassert_true(acq::publication_allowed());
 
     provider_state = acq::mapping_state::fault;
     zassert_true(acq::effective_mapping_state() == acq::mapping_state::fault);
-    zassert_false(acq::publication_allowed());
+    zassert_false(acq::publication_allowed(), "a faulted mapping may not publish");
 
-    // There is no build flag that lifts the clamp: a conditional safety bypass is one
-    // careless -D away from shipping, and it would not appear in a diff of the code it
-    // disables. Lifting it is an edit in its own commit against fixed hardware.
-    provider_state = acq::mapping_state::proven;
+    provider_state = acq::mapping_state::lost;
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::lost);
+    zassert_false(acq::publication_allowed(), "a lost mapping may not publish");
+
+    provider_state = acq::mapping_state::not_ready;
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready);
     zassert_false(acq::publication_allowed(),
-                  "publication became possible - was a bypass reintroduced?");
+                  "publication became possible on an unproven mapping");
 }
 
 ZTEST(tof_acquisition, test_health_is_sent_from_startup_before_any_sensor_is_open)
@@ -1645,8 +1653,8 @@ ZTEST(tof_acquisition, test_a_thread_that_exited_but_was_not_joined_cannot_be_re
 /* ------------------------------------------------- cumulative observation counters ----- */
 
 /* These exist because every other record in the acquisition layer is per cycle and cleared, so it
- * can report a failure but never sustained success -- and on a clamped board, where the health
- * frame's cycle fields are zeroed, sustained success was not observable at all. What the counters
+ * can report a failure but never sustained success -- and while the PROVEN clamp zeroed the health
+ * frame's cycle fields, sustained success was not observable at all. What the counters
  * claim has to be pinned here, because the only other place their meaning is visible is a shell
  * command nobody runs in CI. */
 
@@ -1845,7 +1853,8 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
      * into the descriptor table -- the same array cfg.sources points at -- and nothing copied them
      * into facts_. The publisher refuses any sample whose descriptor role and facts role disagree,
      * marks the cycle invalid, and facts_'s copy is also the value it would have encoded: a stale
-     * 255 suppresses EVERY measurement once the clamp is lifted, silently. */
+     * 255 suppresses EVERY measurement, silently. While the PROVEN clamp was in place this was
+     * invisible, because nothing was being published anyway. */
     /* STATIC, because init() keeps the pointer and the suite's teardown walks the table after
      * this function has returned -- a local array here is a dangling read inside stop_locked(),
      * which is exactly how the first version of this test crashed. make_config() uses a

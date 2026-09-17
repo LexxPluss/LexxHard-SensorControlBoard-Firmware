@@ -49,10 +49,10 @@ set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
 #                         function pointer, so the whole publish path is exercised with
 #                         no Zephyr CAN driver linked; the real glue is a separate commit
 #                         so its flash cost can be measured on its own. The publication
-#                         gate is injected here, because tof_acq::publication_allowed()
-#                         is structurally false and the measurement path would otherwise
-#                         be unreachable -- and one test asserts that the real gate is
-#                         still shut, so lifting the clamp fails here rather than shipping.
+#                         gate is injected here so a case can drive both sides of it, and
+#                         the real gate is pinned in both directions: PROVEN publishes,
+#                         every other state suppresses. Re-inserting a clamp above it, or
+#                         removing the gate, fails here rather than shipping.
 target_sources(app PRIVATE
     src/fake_i2c.c
     src/test_port_traffic.c

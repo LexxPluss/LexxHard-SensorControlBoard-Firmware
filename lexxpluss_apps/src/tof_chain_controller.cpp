@@ -428,10 +428,11 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
 
     /* Proven, keyed, and deliberately going no further. The acquisition thread now exists -- this
      * command simply does not start it, because starting it is a separate decision from proving a
-     * mapping -- and the PROVEN clamp is shut regardless, so no measurement frame can leave this
-     * board even now. Saying so here keeps an operator from reading "proven" as "producing". */
+     * mapping. Saying so here keeps an operator from reading "proven" as "producing": with the
+     * clamp gone, starting acquisition is now the only thing between this line and frames on the
+     * bus, which makes the distinction more important than it was, not less. */
     shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; the acquisition "
-                       "thread was NOT started and the PROVEN clamp is still in force",
+                       "thread was NOT started, so nothing is being measured or published yet",
                 parsed);
     return 0;
 }
@@ -473,9 +474,9 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
 
     shell_print(shell, "acquisition thread started");
     /* Said explicitly, because "started" and "measurements are on the wire" are different claims
-     * and only the clamp decides the second one. */
-    shell_print(shell, "measurement frames leave this board only if the PROVEN clamp is lifted; "
-                       "health frames were already flowing since boot");
+     * and only a PROVEN mapping decides the second one. */
+    shell_print(shell, "measurement frames leave this board while the mapping is PROVEN; health "
+                       "frames were already flowing since boot");
     return 0;
 }
 
@@ -634,7 +635,7 @@ const char *reason_name(tof_cliff_packer::reason w)
  * image can do the walk at one speed and the reads at another without rebooting, which is the only
  * way to join the two halves that have each been verified separately.
  *
- * WHAT IT DOES NOT DO. It does not touch the mapping, the clamp, the publisher or the acquisition
+ * WHAT IT DOES NOT DO. It does not touch the mapping, the publisher or the acquisition
  * thread, and it refuses while acquisition runs: that thread owns the chain, and changing the bus
  * timing underneath a cycle in flight would corrupt a read rather than fail it. It takes the chain
  * lock so a commissioning walk cannot be halfway through either.
@@ -698,7 +699,7 @@ int cmd_cliff_i2cspeed(const struct shell *shell, size_t, char **argv)
                     rc);
         return rc;
     }
-    shell_print(shell, "i2c2 reconfigured to %lu kHz. The mapping, the clamp and the acquisition "
+    shell_print(shell, "i2c2 reconfigured to %lu kHz. The mapping and the acquisition "
                        "thread were NOT touched; a bitrate change is not a proof, so probe the "
                        "identities before trusting a read, and revoke rather than proceed if "
                        "anything fails at this speed.",
@@ -708,8 +709,8 @@ int cmd_cliff_i2cspeed(const struct shell *shell, size_t, char **argv)
 
 /* BENCH ONLY. Encodes one real sample into the contract's measurement payload and prints it.
  *
- * WHY THIS IS NOT A GATE BYPASS. It transmits nothing. The publisher, the authorisation callback
- * and the PROVEN clamp are all untouched, so no unauthorised measurement can reach the bus from
+ * WHY THIS IS NOT A GATE BYPASS. It transmits nothing. The publisher and the authorisation
+ * callback are untouched, so no unauthorised measurement can reach the bus from
  * this board -- the end of this path is an operator's terminal. Verifying the CAN hop and the
  * SCBDriver decoder is a separate, deliberate act: the operator injects these bytes with cansend.
  * Giving the firmware itself the ability to emit an unproven measurement would create that code
@@ -858,7 +859,7 @@ int cmd_cliff_pack(const struct shell *shell, size_t argc, char **argv)
     shell_print(shell, "contract: sha=%s", tof_cliff_contract::kContractSha256);
     shell_print(shell, "artefact: %s", tof_cliff_contract::kArtefactSetId);
     shell_print(shell, "NOT TRANSMITTED: no CAN frame was sent, the publisher was not used, the "
-                       "mapping state is unchanged and the PROVEN clamp is untouched. These bytes "
+                       "mapping state is unchanged. These bytes "
                        "are not evidence that this board published a measurement.");
     return 0;
 }
@@ -940,7 +941,7 @@ int cmd_cliff_stream(const struct shell *shell, size_t argc, char **argv)
     if (r.open_rc != 0 || r.start_rc != 0)
         shell_print(shell, "  session did not start; nothing was read");
     shell_print(shell, "diagnostic only: nothing was transmitted, the mapping is unchanged and the "
-                       "PROVEN clamp is untouched. configure() is a no-op, so the device runs the "
+                       "publisher was not involved. configure() is a no-op, so the device runs the "
                        "ULD DataInit defaults (MEDIUM, 33.3 ms, back-to-back).");
     return 0;
 }
@@ -953,10 +954,10 @@ int cmd_cliff_stream(const struct shell *shell, size_t argc, char **argv)
  * mapping; it prints counters the acquisition thread maintains and returns. It is NOT gated and
  * has nothing to gate: there is no state it could put the board into.
  *
- * It exists because success is silent everywhere else. A working cycle logs nothing by design, and
- * under the PROVEN clamp the health frame's cycle fields are zeroed, so "the acquisition thread is
- * alive" and "the acquisition thread is reading four sensors every cycle" were indistinguishable
- * from outside the board. Inferring the second from the first, or from the heartbeat, is exactly
+ * It exists because success is silent everywhere else. A working cycle logs nothing by design, so
+ * "the acquisition thread is alive" and "the acquisition thread is reading four sensors every
+ * cycle" were indistinguishable from outside the board -- and while the PROVEN clamp was in place
+ * the health frame's cycle fields were zeroed too, which left nothing at all to read. Inferring the second from the first, or from the heartbeat, is exactly
  * the kind of guess this project has had to retract before.
  *
  * AT MOST TWO FIELDS PER LINE, and that is a stack budget rather than a formatting preference. The

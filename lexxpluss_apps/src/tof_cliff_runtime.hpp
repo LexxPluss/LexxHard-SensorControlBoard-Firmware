@@ -137,8 +137,8 @@ int start_acquisition();
  * once -- so no measurement frame can be produced or published on a partial chain, and that is
  * deliberate. This answers a different and legitimate question: does THIS sensor range at all.
  *
- * It publishes nothing, claims nothing about the mapping, and touches neither the authority nor the
- * clamp. It is the sensor-layer counterpart of `tof enum`: a commissioning diagnostic whose output
+ * It publishes nothing, claims nothing about the mapping, and touches neither the authority nor
+ * the acquisition thread. It is the sensor-layer counterpart of `tof enum`: a commissioning diagnostic whose output
  * goes to the operator, not to the bus.
  *
  * It drives the PRODUCTION ops table (acq::l4_cliff_ops via the installed descriptor), so it

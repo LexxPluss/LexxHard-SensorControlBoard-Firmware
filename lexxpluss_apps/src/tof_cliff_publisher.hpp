@@ -59,18 +59,22 @@
  *
  * THE PUBLICATION GATE, AND WHY IT IS INJECTED
  *
- * A measurement frame may only be sent while the mapping is PROVEN, and
- * tof_acq::publication_allowed() is structurally false today -- effective_mapping_state()
- * clamps PROVEN unconditionally, with no flag to lift it. Production MUST wire the gate to
- * that function. It is injectable for exactly one reason: with the gate hard-wired shut,
- * the measurement path would have no way to be exercised at all, and an untested encoder
- * on a safety path is worse than an injectable predicate.
+ * A measurement frame may only be sent while the mapping is PROVEN, and production MUST wire
+ * the gate to tof_acq::publication_allowed(). It is injectable for exactly one reason: a test
+ * needs to drive both sides of that predicate, and an untested encoder on a safety path is
+ * worse than an injectable one.
+ *
+ * It was also, for most of this file's life, the only way to exercise the measurement path at
+ * all: effective_mapping_state() used to force PROVEN to NOT_READY, so the production gate was
+ * structurally shut. That clamp was removed once its prerequisites were closed and shown on
+ * hardware, and the gate below is now the only thing deciding.
  *
  * What this deliberately is NOT: there is no build flag, no constant, no shell command and
  * no configuration value in production that opens the gate. The earlier
  * TOF_ACQ_CHAIN_HW_FIXED was removed for being exactly that, and nothing here reintroduces
- * it. The test suite asserts that the production gate is closed, so lifting the clamp
- * without review fails a test rather than shipping.
+ * it. The suite pins the gate in both directions -- PROVEN publishes, every other state
+ * suppresses -- so reintroducing a clamp, or removing the gate, fails a test rather than
+ * shipping.
  *
  * WHAT THE HEALTH FRAME CANNOT SAY YET
  *
@@ -157,9 +161,10 @@ struct config {
      * belong together, which is a wiring defect and not something a sensor can cause. */
     const tof_acq::source_desc *sources{nullptr};
     int source_count{0};
-    /* Production MUST build this from ONE tof_authority::current() with the clamp applied to
-     * its state. Publication is allowed only for PROVEN, which the clamp removes
-     * unconditionally. See the notes above. */
+    /* Production MUST build this from ONE tof_authority::current(): reading the state and the
+     * epoch separately lets a proof commit between the two and yields a pair that never existed,
+     * which this layer then latches for a cycle. Publication is allowed only for PROVEN. See the
+     * notes above. */
     struct authorisation (*authorise)(){nullptr};
 };
 

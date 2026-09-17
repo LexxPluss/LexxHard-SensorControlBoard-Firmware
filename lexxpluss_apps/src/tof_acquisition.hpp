@@ -19,9 +19,11 @@
 //     tof_cliff_runtime::bootstrap() is a production caller: a shipping image runs the heartbeat
 //     from power-on. Cycles need a proven mapping first, so today they happen only behind
 //     commissioning.
-//   - PROVEN is unreachable by construction, see effective_mapping_state().
-//   - Stack watermark and boot time are unmeasured; both need a run on the board, and the
-//     acquisition thread's stack size is a devicetree value chosen without one.
+//   - PROVEN reaches the publisher unchanged. It was unreachable by construction until
+//     2026-09-17, when the clamp in effective_mapping_state() was removed; the gate that
+//     decides publication is the publisher's own, and it opens on PROVEN and nothing else.
+//   - The stack watermark is measured: 1144 / 2048 on dasher2, stable over thousands of
+//     cycles. Boot time is still unmeasured.
 //
 // The six-sensor acquisition skeleton: one thread, one cycle at a time, sequential
 // over the configured sources. What it produces is a set of NEUTRAL FACTS about the
@@ -475,22 +477,14 @@ void copy_facts(cycle_facts &out);
 // faulted, and the cycles do not clear the diagnosis of a source they never read.
 uint32_t snapshot();
 
-// The state the rest of the system should act on, which is not what the provider returns:
-// PROVEN is ALWAYS clamped to NOT_READY, because a chain that cannot be enumerated across
-// both boards cannot have a proven mapping.
+// The state the rest of the system acts on. It is now exactly what the provider reports: the
+// clamp that forced PROVEN to NOT_READY is gone, its prerequisites having been closed and
+// demonstrated on hardware -- see the note on the definition.
 //
-// There is deliberately no build flag to lift this. A conditional bypass of a safety gate
-// is one careless -D away from shipping, and nothing about it would appear in a diff of
-// the code it disables. Re-enabling PROVEN is an edit to this function in a commit of its
-// own, reviewed against the fixed hardware.
+// It stays a function rather than collapsing into the provider call at each site because the
+// callers must not each decide what "the state" means, and because publication_allowed() is
+// defined in terms of it.
 mapping_state effective_mapping_state();
-
-// The clamp on its own, for a caller that already holds a state and must not read a second
-// one. production_authorisation() needs exactly this: it takes the state and the epoch from
-// ONE authority snapshot, and going back through effective_mapping_state() for the state
-// would read the authority twice and could pair a state with an epoch that never existed
-// together. Clamping here rather than at the caller keeps the clamp in one place.
-mapping_state clamp_mapping_state(mapping_state reported);
 
 // True only when a role measurement may be published at all.
 bool publication_allowed();

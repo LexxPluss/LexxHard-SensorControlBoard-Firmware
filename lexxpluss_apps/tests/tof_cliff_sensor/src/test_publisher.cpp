@@ -12,11 +12,14 @@
  *
  * THE ONE THING TO BE CAREFUL ABOUT HERE
  *
- * tof_acq::publication_allowed() is structurally false: effective_mapping_state() clamps
- * PROVEN unconditionally and there is no flag to lift it. So the measurement path can only
- * be reached by injecting a gate, and this file does that -- in the TEST, through the
- * publisher's config, exactly as the acquisition layer's own mapping_state_provider is
- * injected. Production wires the gate to the real function.
+ * The gate is injected here, through the publisher's config, exactly as the acquisition
+ * layer's own mapping_state_provider is injected -- so a case can drive BOTH sides of it.
+ * Production wires it to tof_acq::publication_allowed().
+ *
+ * Until 2026-09-17 injection was the only way to reach the measurement path at all, because
+ * effective_mapping_state() clamped PROVEN unconditionally and the production gate was
+ * structurally shut. That clamp is gone; the injection stays, because a test that cannot
+ * make the gate refuse tests only half of it.
  *
  * What is deliberately NOT done: nothing in production gained a build flag, a constant, a
  * command or a configuration value that opens the gate. TOF_ACQ_CHAIN_HW_FIXED was deleted
@@ -242,18 +245,6 @@ void retire_acquisition(void *)
 ZTEST_SUITE(tof_cliff_publisher, NULL, NULL, before, retire_acquisition, NULL);
 
 /* ------------------------------------------------------------ the safety gate ----- */
-
-ZTEST(tof_cliff_publisher, test_the_production_gate_is_still_shut)
-{
-    /* The point of this test is to fail the day someone lifts the clamp. PROVEN is not
-     * something this firmware is entitled to claim while the enable chain cannot be
-     * enumerated end to end, and the clamp is unconditional by design. */
-    zassert_false(acq::publication_allowed(),
-                  "tof_acq::publication_allowed() must be structurally false; if this "
-                  "now passes, the clamp was lifted and that needs its own review");
-    zassert_not_equal(static_cast<int>(acq::effective_mapping_state()),
-                      static_cast<int>(acq::mapping_state::proven));
-}
 
 ZTEST(tof_cliff_publisher, test_no_measurement_is_sent_while_the_mapping_is_not_proven)
 {
@@ -725,7 +716,11 @@ int op_read(void *, void *, struct tof_cliff_sample *out, acq::op_status *st)
 
 const acq::source_ops kOps{op_open, op_configure, op_start, op_read, op_stop};
 
-acq::mapping_state provider() { return acq::mapping_state::proven; }
+/* Settable, because the clamp's removal made the difference between a proven and an unproven
+ * mapping observable here for the first time: with the clamp in place every state came out as
+ * NOT_READY, so a fixed `proven` was as good as any other value. */
+acq::mapping_state provider_state{acq::mapping_state::proven};
+acq::mapping_state provider() { return provider_state; }
 uint32_t clock_ms() { return 0; }
 void on_grid(int, uint32_t, const acq::source_facts &, const lexxhard::tof_l7::sample &) {}
 
@@ -801,18 +796,23 @@ ZTEST(tof_cliff_publisher, test_a_real_cycle_reaches_the_bus_through_the_packer)
     acq::stop();
 }
 
-ZTEST(tof_cliff_publisher, test_a_real_cycle_publishes_nothing_with_the_production_gate)
+ZTEST(tof_cliff_publisher, test_a_real_cycle_publishes_through_the_production_gate_when_proven)
 {
-    /* The same path with the gate wired the way production wires it. Every sensor answers,
-     * every sample is fresh, and not one frame is published -- which is the behaviour a
-     * bring-up engineer should see on hardware today. */
+    /* The same path with the gate wired the way production wires it. Every sensor answers, every
+     * sample is fresh, and the frames now reach the bus -- which is the behaviour a bring-up
+     * engineer should see on hardware for the first time with this build.
+     *
+     * It used to assert the opposite and count 2 * kCliffSources suppressions, because the clamp
+     * forced PROVEN away inside effective_mapping_state(). Both halves are kept: this one for the
+     * proven case, and the one below for an unproven mapping, which must still suppress. */
     integration::start_fails = false;
     build_descs();
     zassert_equal(acq::init(integration::make_acq_config()), 0);
+    integration::provider_state = acq::mapping_state::proven;
 
     pub::config c{make_pub_config()};
-    /* Exactly how production wires it: the state from effective_mapping_state(), which
-     * clamps PROVEN away unconditionally, read together with the epoch. */
+    /* Exactly how production wires it: the state from effective_mapping_state(), read together
+     * with the epoch. */
     c.authorise = [] { return pub::authorisation{acq::effective_mapping_state(), 1}; };
     zassert_equal(pub::init(c), 0);
 
@@ -820,8 +820,36 @@ ZTEST(tof_cliff_publisher, test_a_real_cycle_publishes_nothing_with_the_producti
     acq::run_cycle();
     acq::run_cycle();
 
-    zassert_equal(count_id(ctr::kMeasId), 0,
-                  "the production gate let a range onto the bus");
+    zassert_equal(count_id(ctr::kMeasId), 2 * kCliffSources,
+                  "a proven mapping must put four measurements on the bus per cycle");
+    pub::counters got{};
+    pub::copy_counters(got);
+    zassert_equal(got.suppressed_not_proven, 0);
+    zassert_equal(got.measurements_sent, 2 * kCliffSources);
+
+    acq::stop();
+    integration::provider_state = acq::mapping_state::proven;
+}
+
+ZTEST(tof_cliff_publisher, test_a_real_cycle_publishes_nothing_when_the_mapping_is_not_proven)
+{
+    /* The half the clamp's removal must not have taken with it. Same wiring, same fresh samples,
+     * unproven mapping: every measurement is suppressed and counted as such. Without this the
+     * suite would only cover the newly opened path and nothing would pin the closed one. */
+    integration::start_fails = false;
+    build_descs();
+    zassert_equal(acq::init(integration::make_acq_config()), 0);
+    integration::provider_state = acq::mapping_state::not_ready;
+
+    pub::config c{make_pub_config()};
+    c.authorise = [] { return pub::authorisation{acq::effective_mapping_state(), 1}; };
+    zassert_equal(pub::init(c), 0);
+
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+    acq::run_cycle();
+
+    zassert_equal(count_id(ctr::kMeasId), 0, "an unproven mapping put a range on the bus");
     pub::counters got{};
     pub::copy_counters(got);
     zassert_equal(got.suppressed_not_proven, 2 * kCliffSources);
@@ -1288,4 +1316,32 @@ ZTEST(tof_cliff_publisher, test_only_a_send_failure_can_leave_measurements_unaut
     pub::copy_counters(c);
     zassert_equal(c.cycle_health_withheld, 1);
     zassert_equal(c.cycles_invalid, 0, "a transport failure is not a structural defect");
+}
+
+ZTEST(tof_cliff_publisher, test_the_production_gate_opens_only_on_a_proven_mapping)
+{
+    /* This case was test_the_production_gate_is_still_shut, and its stated purpose was to fail the
+     * day the clamp was lifted. It did exactly that, which is the whole reason it existed.
+     *
+     * What it asserts now is the gate the clamp was standing in front of. That gate was always
+     * there and is not a clamp: it opens on PROVEN and on nothing else, so the removal did not
+     * leave an unguarded path -- it left THIS one, which has to be pinned in its own right now
+     * that nothing sits above it. */
+    build_descs();
+    zassert_equal(acq::init(integration::make_acq_config()), 0);
+
+    integration::provider_state = acq::mapping_state::proven;
+    zassert_true(acq::publication_allowed(),
+                 "a proven mapping must be publishable now that the clamp is gone");
+    zassert_equal(static_cast<int>(acq::effective_mapping_state()),
+                  static_cast<int>(acq::mapping_state::proven));
+
+    const acq::mapping_state closed[]{acq::mapping_state::not_ready, acq::mapping_state::lost,
+                                      acq::mapping_state::fault};
+    for (const acq::mapping_state st : closed) {
+        integration::provider_state = st;
+        zassert_false(acq::publication_allowed(), "only PROVEN may publish; state %d was let through",
+                      static_cast<int>(st));
+    }
+    integration::provider_state = acq::mapping_state::proven;
 }

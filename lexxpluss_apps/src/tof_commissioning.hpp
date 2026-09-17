@@ -56,10 +56,11 @@
  *
  * WHAT IT CANNOT DO YET
  *
- * It does not start acquisition after a successful proof; there is no acquisition thread yet. And
- * on the product spec as it stands it cannot succeed at all: the four cliff roles are still
- * `unknown`, so the evaluator refuses by rule. Both are true by design at this point, and the
- * PROVEN clamp is untouched either way.
+ * It does not start acquisition after a successful proof, and that separation is deliberate:
+ * proving a mapping and beginning to produce measurements are two decisions, and an operator must
+ * be able to make the first without the second. It matters more now than it did -- when this was
+ * written a PROVEN clamp stood behind it, and starting acquisition could not have published
+ * anything anyway.
  */
 
 #include <stdint.h>
