@@ -322,17 +322,41 @@ ZTEST(tof_readdress_production, test_read_id_l7_page_select_failure_stops)
     zassert_equal(bus.rd_n, 0);
 }
 
-ZTEST(tof_readdress_production, test_read_id_l7_read_failure_skips_restore)
+ZTEST(tof_readdress_production, test_read_id_l7_read_failure_still_restores_the_page)
 {
+    /* This case used to assert the opposite -- that a failed read skipped the restore -- and the
+     * behaviour it pinned left the device parked on page 0. A device on the wrong page is not a
+     * device that failed to answer a question: it is a device whose NEXT caller silently gets
+     * different registers than it asked for, and the symptom appears in an unrelated enumeration
+     * with nothing pointing back here. The read is allowed to fail; leaving the part reconfigured
+     * is not.
+     *
+     * The read's own errno is what comes back, because that is what the caller asked about. */
     fake_bus bus{l7_bus()};
     bus.rd_rc = -EIO;
     id_bytes out{};
     zassert_equal(rd::read_id(model::l7cx, bus, 0x2a, out), -EIO);
-    zassert_equal(bus.wr8_n, 1, "no page restore after a failed id read");
+    zassert_equal(bus.wr8_n, 2, "the page must be put back even when the read failed");
+    zassert_equal(bus.wr8_regs[1], rd::kL7PageReg);
+    zassert_equal(bus.wr8_vals[1], 0x02);
+}
+
+ZTEST(tof_readdress_production, test_read_id_l7_reports_the_read_failure_over_the_restore_failure)
+{
+    /* Both halves broken. The read is what the caller asked about; burying it under a page-write
+     * errno would send an operator to the bus when the answer is about the register. */
+    fake_bus bus{l7_bus()};
+    bus.rd_rc = -ENXIO;
+    bus.wr8_script[1] = -EIO;
+    id_bytes out{};
+    zassert_equal(rd::read_id(model::l7cx, bus, 0x2a, out), -ENXIO);
+    zassert_equal(bus.wr8_n, 2, "the restore is still attempted");
 }
 
 ZTEST(tof_readdress_production, test_read_id_l7_restore_failure_fails_the_read)
 {
+    /* The read succeeded and the device is stuck on page 0. At that point the stuck page IS the
+     * whole failure, so it must not be reported as a successful read. */
     fake_bus bus{l7_bus()};
     bus.wr8_script[1] = -EIO;
     id_bytes out{};

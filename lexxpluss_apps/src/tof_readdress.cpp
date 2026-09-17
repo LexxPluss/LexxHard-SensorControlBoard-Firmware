@@ -96,16 +96,33 @@ readdress_result readdress(model m, i2c_ops &ops, uint8_t old7, uint8_t new7,
     return {0, readdress_stage::none};
 }
 
+/* NOT a pure read for the L7, and the difference matters to every caller that thinks it is.
+ *
+ * The id lives on page 0 and the device sits on page 2, so reading it means selecting page 0,
+ * reading, and putting the page back. The restore is UNCONDITIONAL: an earlier version returned
+ * the moment the read failed, which left the device parked on page 0 -- and a device on the wrong
+ * page is not a device that failed to answer a question, it is a device whose next caller gets
+ * different registers than it asked for. The failure that exposed this would have been a later
+ * enumeration behaving strangely, with nothing pointing back here.
+ *
+ * The read's own error wins over the restore's when both fail: the read is what the caller asked
+ * about, and burying it under a page-write errno would send them to the wrong place. The restore's
+ * errno is still returned when the read itself succeeded, because at that point a device left on
+ * page 0 IS the whole failure.
+ *
+ * The L4 path below is genuinely read-only: one register read, no page selection, nothing to undo. */
 int read_id(model m, i2c_ops &ops, uint8_t addr7, tof_enum::id_bytes &out)
 {
     uint8_t buf[2]{};
     if (m == model::l7cx) {
         if (int const rc{ops.wr8(addr7, kL7PageReg, 0x00)}; rc != 0)
             return rc;
-        if (int const rc{ops.rd(addr7, kL7IdReg, buf, sizeof buf)}; rc != 0)
-            return rc;
-        if (int const rc{ops.wr8(addr7, kL7PageReg, 0x02)}; rc != 0)
-            return rc;
+        int const read_rc{ops.rd(addr7, kL7IdReg, buf, sizeof buf)};
+        int const restore_rc{ops.wr8(addr7, kL7PageReg, 0x02)};
+        if (read_rc != 0)
+            return read_rc;
+        if (restore_rc != 0)
+            return restore_rc;
     } else {
         if (int const rc{ops.rd(addr7, kL4IdReg, buf, sizeof buf)}; rc != 0)
             return rc;
