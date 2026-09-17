@@ -100,6 +100,23 @@ test_tof_cliff_sensor:
 # guarded readdress (exact-traffic properties the enumerator fakes cannot
 # prove, above all zero-writes-after-transport-error); the enumeration state
 # machine suite joins here.
+.PHONY: test_tof_l7_blob
+test_tof_l7_blob:
+	python3 docs/can/gen_l7_blob_record.py golden --out lexxpluss_apps/tests/tof_l7_blob/src/golden_record.h --check
+	python3 docs/can/gen_l7_blob_record.py pack lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/modules/vl53l7cx_buffers.h --c-array VL53L7CX_FIRMWARE --expect-header lexxpluss_apps/third_party/st/vl53l7cx_uld/zephyr/vl53l7cx_blob_expectation.hpp --check
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+.PHONY: test_tof_l7_port
+test_tof_l7_port:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_port -d build-test-tof-l7-port -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+.PHONY: test_tof_l7_sensor
+test_tof_l7_sensor:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_sensor -d build-test-tof-l7-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: test_tof_enumerator
 test_tof_enumerator:
 	$(RUNNER) west zephyr-export

@@ -87,6 +87,25 @@ if(ENABLE_TOF_CLIFF_ULD)
     add_definitions(-DENABLE_TOF_CLIFF_ULD)
 endif()
 
+# Hanging-object ToF: the VL53L7CX ULD with its 86,016-byte device firmware externalised into
+# storage_partition. The explicit list compiles the core and our Zephyr platform only; plugins and
+# the STM32 BSP wrapper remain vendored but do not enter this image.
+if(ENABLE_TOF_L7_ULD)
+    if(NOT ENABLE_TOF_CHAIN)
+        message(FATAL_ERROR "ENABLE_TOF_L7_ULD requires ENABLE_TOF_CHAIN")
+    endif()
+    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l7cx_uld/vl53l7cx_sources.cmake)
+    target_sources(app PRIVATE ${VL53L7CX_ULD_PRODUCTION_SOURCES})
+    # The generated expectation header names tof_l7_blob::expectation from the application-owned
+    # record format. Quoted includes otherwise search from the vendor directory and cannot find the
+    # sibling src/ header that owns that type.
+    target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                           ${VL53L7CX_ULD_INCLUDE_DIRS})
+    set_source_files_properties(${VL53L7CX_PATCHED_DIR}/vl53l7cx_api.c PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable")
+    add_definitions(-DENABLE_TOF_L7_ULD)
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
