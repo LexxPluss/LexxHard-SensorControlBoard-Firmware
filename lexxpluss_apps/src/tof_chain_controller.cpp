@@ -53,6 +53,11 @@
 
 #include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
+#if defined(ENABLE_TOF_CLIFF_ULD)
+#include "tof_acquisition.hpp"
+#include "tof_cliff_runtime.hpp"
+#include "tof_commissioning.hpp"
+#endif
 #include "tof_enumerator.hpp"
 #include "tof_readdress.hpp"
 
@@ -260,10 +265,181 @@ int cmd_enum(const struct shell *shell, size_t, char **)
     return r.status == tof_enum::chain_status::degraded ? -ENODATA : -EIO;
 }
 
+#if defined(ENABLE_TOF_CLIFF_ULD)
+
+const char *stage_label(tof_commissioning::stage st)
+{
+    using tof_commissioning::stage;
+    switch (st) {
+    case stage::none:               return "proven";
+    case stage::not_configured:     return "not_configured";
+    case stage::epoch_out_of_range: return "epoch_out_of_range";
+    case stage::quiesce_failed:     return "quiesce_failed";
+    case stage::chain_busy:         return "chain_busy";
+    case stage::attempt_refused:    return "attempt_refused";
+    case stage::evidence_refused:   return "evidence_refused";
+    case stage::commit_refused:     return "commit_refused";
+    }
+    return "?";
+}
+
+int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
+{
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d): refusing to run", st);
+        return -ENODEV;
+    }
+
+    /* The epoch is mandatory and has no default. Under the commissioning profile the HOST owns it and
+     * is the component that persists it; a firmware-invented value would be an epoch no operator
+     * recorded. Parsed wide and range-checked by the orchestration, so 256 is refused rather than
+     * truncated to a different epoch. */
+    if (argc != 2) {
+        shell_error(shell, "usage: tof cliff prove <host_epoch 0-255>");
+        return -EINVAL;
+    }
+    char *end{nullptr};
+    unsigned long const parsed{strtoul(argv[1], &end, 0)};
+    if (end == argv[1] || *end != '\0' || parsed > 0xFFFFFFFFUL) {
+        shell_error(shell, "bad epoch '%s'", argv[1]);
+        return -EINVAL;
+    }
+
+    /* The bootstrap has to have finished, and saying WHICH step failed matters: "not ready" sends
+     * an operator to look at the chain, which is the wrong place when the truth is that can2 never
+     * came up or that this image never ran the bootstrap at all. */
+    if (!tof_cliff_runtime::ready()) {
+        shell_error(shell, "cliff runtime not ready (%s): refusing to commission",
+                    tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+        return -EPERM;
+    }
+
+    static zephyr_chain_ops ops{};
+    tof_commissioning::config cfg{};
+    cfg.chain = &chain_mutex;
+    cfg.ops = &ops;
+    /* THE spec, not a copy of it. The authority compares every proof against this same object; a
+     * local static here would mean commissioning walked one chain description while the authority
+     * checked the result against another. */
+    cfg.spec = &tof_cliff_runtime::spec();
+    /* The tested primitive itself, with no wrapper in between.
+     *
+     * try_stop(), not stop(): stop() takes the chain with K_FOREVER, so a wrapper around it would
+     * block right here and the session's K_NO_WAIT acquire -- the whole reason a busy chain is a
+     * refusal rather than a wait -- would never be reached. And try_stop(), not "try_stop plus a
+     * check": is_idle() also takes the chain with K_FOREVER, so verifying the quiesce that way
+     * would put the block back one line later.
+     *
+     * Pointing the hook straight at it is deliberate. A one-line wrapper here would be production
+     * glue that no host suite links, i.e. exactly where a K_FOREVER could reappear unnoticed;
+     * assigning the function under test leaves nothing to drift. It is also the right home for the
+     * bounded join once there is an acquisition thread: quiescing is acquisition's business, not
+     * the shell's. */
+    cfg.quiesce = tof_acq::try_stop;
+    if (int const rc{tof_commissioning::init(cfg)}; rc != 0) {
+        shell_error(shell, "commissioning not configurable (%d)", rc);
+        return rc;
+    }
+
+    auto const r{tof_commissioning::prove(static_cast<uint32_t>(parsed))};
+
+    shell_print(shell, "result: %s", stage_label(r.failed_at));
+    shell_print(shell, "detail: rc=%d begin=%d proof=%d commit=%d isolation_rc=%d", r.rc,
+                static_cast<int>(r.begin), static_cast<int>(r.proof),
+                static_cast<int>(r.commit), r.isolation_rc);
+    shell_print(shell, "walk1: %s  walk2: %s", status_name(r.walk1.status),
+                status_name(r.walk2.status));
+    shell_print(shell, "isolation: attempted=%d answered=0x%02x prev=0x%02x id=%02x/%02x",
+                r.isolation.attempted, r.isolation.answering_addr, r.isolation.prev_addr,
+                r.isolation.seen.first, r.isolation.seen.second);
+
+    if (!r.proven())
+        return -EIO;
+
+    /* The descriptors were keyed inside the commit, by the authority's install callback -- there is
+     * no step here to do it, which is the point: a command that could key them separately could key
+     * them from a mapping that was never proven, and a failure between the two used to leave a
+     * PROVEN authority describing a different chain. Asserted rather than assumed, because "the
+     * commit says it succeeded" and "the keys are the current mapping's" are different claims. */
+    if (!tof_cliff_runtime::mapping_applied()) {
+        shell_error(shell, "commit reported success but the descriptors are not keyed to it: "
+                           "refusing to report a usable mapping");
+        return -EIO;
+    }
+
+    /* Proven, keyed, and deliberately going no further. Starting acquisition is the next commit's
+     * job -- there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so
+     * no measurement frame can leave this board even now. Saying so here keeps an operator from
+     * reading "proven" as "producing". */
+    shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; acquisition NOT "
+                       "started (no thread yet) and the PROVEN clamp is still in force",
+                parsed);
+    return 0;
+}
+
+int cmd_cliff_start(const struct shell *shell, size_t, char **)
+{
+    /* Separate from `prove` on purpose. Proving a mapping and starting to produce measurements are
+     * two decisions, and an operator must be able to make the first without the second -- inspect
+     * the proof, then start. A prove that started acquisition implicitly would also mean any
+     * re-prove silently restarted production.
+     *
+     * Every refusal below comes from the runtime, not from re-checked conditions here: a command
+     * that re-implemented the gate could disagree with it. */
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d)", st);
+        return -ENODEV;
+    }
+    if (!tof_cliff_runtime::ready()) {
+        shell_error(shell, "cliff runtime not ready (%s)",
+                    tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+        return -EPERM;
+    }
+    if (tof_acq::thread_running()) {
+        shell_error(shell, "acquisition thread is already running; nothing to do");
+        return -EALREADY;
+    }
+    if (!tof_cliff_runtime::mapping_applied()) {
+        /* Either nothing was ever proven, or a later attempt revoked it. Both mean the descriptors
+         * are not keyed to the mapping the authority currently reports, and a cycle would produce
+         * facts nothing can be keyed by. */
+        shell_error(shell, "no proven mapping is installed: run `tof cliff prove <epoch>` first");
+        return -EPERM;
+    }
+
+    if (int const rc{tof_cliff_runtime::start_acquisition()}; rc != 0) {
+        shell_error(shell, "acquisition refused to start (%d)", rc);
+        return rc;
+    }
+
+    shell_print(shell, "acquisition thread started");
+    /* Said explicitly, because "started" and "measurements are on the wire" are different claims
+     * and only the clamp decides the second one. */
+    shell_print(shell, "measurement frames leave this board only if the PROVEN clamp is lifted; "
+                       "health frames were already flowing since boot");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+    SHELL_CMD(start, NULL,
+              "start the acquisition thread (requires a proven, installed mapping)",
+              cmd_cliff_start),
+    SHELL_CMD_ARG(prove, NULL,
+                  "prove the cliff mapping: stop acquisition, walk -> isolate -> walk, install "
+                  "under <host_epoch 0-255>",
+                  cmd_cliff_prove, 2, 0),
+    SHELL_SUBCMD_SET_END
+);
+
+#endif  // ENABLE_TOF_CLIFF_ULD
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
     SHELL_CMD(enum, NULL,
               "manual commissioning: enumerate the ToF chain (holds the chain lock)",
               cmd_enum),
+#if defined(ENABLE_TOF_CLIFF_ULD)
+    SHELL_CMD(cliff, &sub_tof_cliff, "cliff mapping commissioning", NULL),
+#endif
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(tof, &sub_tof, "ToF chain commands", NULL);
@@ -273,6 +449,11 @@ SHELL_CMD_REGISTER(tof, &sub_tof, "ToF chain commands", NULL);
 k_mutex &chain_lock()
 {
     return chain_mutex;
+}
+
+bool glue_ready()
+{
+    return init_status.load() == 0;
 }
 
 void init()
@@ -304,6 +485,21 @@ void init()
     LOG_INF("tof chain glue ready (data settle %u ms, sensor boot %u ms; "
             "DS20001 provisional timing)",
             kDataSettleMs, kSensorBootMs);
+
+#if defined(ENABLE_TOF_CLIFF_ULD)
+    /* The cliff subsystem's ONE bootstrap, from the ONE context allowed to run it: main(), before
+     * any per-feature thread starts. tof_acq reads configured_/active_ outside the chain lock on
+     * exactly that basis, so init() and teardown() must never be called from anywhere else.
+     *
+     * After the control lines, because a subsystem whose enable lines are not configurable has
+     * nothing to acquire from. A failure here is logged and left in the stage: the shell command
+     * reports which step failed, and the health path is still what a consumer hears. */
+    if (const int rc{tof_cliff_runtime::bootstrap(tof_cliff_runtime::config_from_devicetree())};
+        rc != 0) {
+        LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
+                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), rc);
+    }
+#endif
 }
 
 }  // namespace lexxhard::tof_chain_controller

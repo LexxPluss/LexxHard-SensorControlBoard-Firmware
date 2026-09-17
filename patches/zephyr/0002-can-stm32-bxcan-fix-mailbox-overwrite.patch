@@ -1,0 +1,74 @@
+Subject: [PATCH] drivers: can: stm32_bxcan: fix CAN mailbox overwrite
+
+Backport of upstream Zephyr 4b276c496201c27abfde4cd8cff2b3d56c8a08bf
+(Mikhail Siomin, 2024-04-19), which landed after our pinned v3.6.0.
+
+Baseline: zephyr v3.6.0 (468eb56cf242eedba62006ee758700ee6148763f)
+Applies to: drivers/can/can_stm32_bxcan.c (can_stm32_send)
+
+WHY WE NEED IT, measured on DS20001 2026-08-20. can_stm32_send() reads the
+transmit status register BEFORE taking inst_mutex and then selects a TX
+mailbox from that stale value inside the critical section. Two threads
+sending concurrently can therefore both read "mailbox 0 free" and both
+select it; the second one overwrites mb0->callback_arg, so the TX-complete
+interrupt signals only the second sender's completion object.
+
+That matters here because z_impl_can_send() implements the callback == NULL
+form as:
+
+    err = api->send(dev, frame, timeout, can_tx_default_cb, &ctx);
+    if (err != 0) return err;
+    k_sem_take(&ctx.done, K_FOREVER);
+
+The caller's timeout bounds only "wait for a free mailbox" -- waiting for
+the send to COMPLETE is an unconditional K_FOREVER. So the sender whose
+callback_arg was overwritten never wakes up.
+
+Observed consequence: zcan_main (the single thread that drives every CAN
+poll() on this board) sat in state `pending` with `timeout: 0` forever.
+SCB stopped publishing 0x206/0x207/0x209/0x20A/0x20C/0x212/0x204 entirely,
+and the ROS->SCB board-control frame 0x20F -- emergency stop, power off,
+wheel power, heartbeat, lockdown -- was no longer consumed, so its 16-deep
+msgq overflowed continuously at the 31 Hz the host was sending. The CAN
+controller itself was healthy throughout: ERROR-ACTIVE, zero TX/RX error
+counters. It is a driver-level callback mismatch, not a bus fault.
+
+The second concurrent sender was introduced by the cliff ToF health
+heartbeat, which runs on the system work queue and sends 0x217 on the same
+can2 controller every 200 ms. Before that, can2 had exactly one synchronous
+sender (zcan_main serialises its eleven poll() calls), which is why this
+latent driver defect had never been reachable in this repository.
+
+Neither test layer could have caught it: the host suites replace the CAN
+sink with a function pointer (no driver, no concurrency), and the
+TOF_CLIFF_BUDGET probe runs from SYS_INIT before zcan_main's thread exists.
+
+NOT A COMPLETE FIX for shared synchronous sending. With all three mailboxes
+busy, both senders still wait on data->tx_int_sem, which has a limit of 1,
+so one of them returns -EAGAIN and drops a frame. That path is BOUNDED and
+therefore acceptable as an interim state; a single TX broker (one thread
+owning can2, others posting to a msgq) is the real fix and is deliberately
+deferred so that it does not change send-completion semantics during the
+cliff E2E bring-up.
+
+diff --git a/drivers/can/can_stm32_bxcan.c b/drivers/can/can_stm32_bxcan.c
+index 77eba66e7d8..c21099c04b3 100644
+--- a/drivers/can/can_stm32_bxcan.c
++++ b/drivers/can/can_stm32_bxcan.c
+@@ -761,7 +761,7 @@ static int can_stm32_send(const struct device *dev, const struct can_frame *fram
+ 	const struct can_stm32_config *cfg = dev->config;
+ 	struct can_stm32_data *data = dev->data;
+ 	CAN_TypeDef *can = cfg->can;
+-	uint32_t transmit_status_register = can->TSR;
++	uint32_t transmit_status_register = 0;
+ 	CAN_TxMailBox_TypeDef *mailbox = NULL;
+ 	struct can_stm32_mailbox *mb = NULL;
+ 
+@@ -793,6 +793,7 @@ static int can_stm32_send(const struct device *dev, const struct can_frame *fram
+ 	}
+ 
+ 	k_mutex_lock(&data->inst_mutex, K_FOREVER);
++	transmit_status_register = can->TSR;
+ 	while (!(transmit_status_register & CAN_TSR_TME)) {
+ 		k_mutex_unlock(&data->inst_mutex);
+ 		LOG_DBG("Transmit buffer full");

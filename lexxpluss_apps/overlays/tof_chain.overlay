@@ -22,6 +22,23 @@
 		clock-gpios = <&gpioj 1 GPIO_ACTIVE_HIGH>;
 		data-settle-ms = <2000>;
 		sensor-boot-ms = <2000>;
+		/* PROVISIONAL, and unresolved in the cliff wire contract. Stated
+		 * here rather than defaulted in firmware so that the number is
+		 * visible in a diff and has an owner. 20 Hz acquisition with a
+		 * 5 Hz heartbeat is the shape the contract's timing section
+		 * assumes; both must be replaced by approved values before
+		 * release. */
+		cycle-period-ms = <50>;
+		health-period-ms = <200>;
+		/* Also provisional. The join timeout has to cover a cycle (50 ms)
+		 * plus one blocking sensor read, and 500 ms is a generous bound
+		 * chosen to make a REFUSAL the outcome rather than a long wait;
+		 * the stack is a guess until a watermark exists, and the priority
+		 * is preemptible and below the shell so a stuck cycle cannot
+		 * starve the console. */
+		stop-join-timeout-ms = <500>;
+		acq-stack-size = <2048>;
+		acq-thread-priority = <7>;
 	};
 };
 
