@@ -901,6 +901,70 @@ int cmd_cliff_stream(const struct shell *shell, size_t argc, char **argv)
 
 
 
+/* Read-only. It starts nothing, stops nothing, touches no device, takes no lock and reads no
+ * mapping; it prints counters the acquisition thread maintains and returns. It is NOT gated and
+ * has nothing to gate: there is no state it could put the board into.
+ *
+ * It exists because success is silent everywhere else. A working cycle logs nothing by design, and
+ * under the PROVEN clamp the health frame's cycle fields are zeroed, so "the acquisition thread is
+ * alive" and "the acquisition thread is reading four sensors every cycle" were indistinguishable
+ * from outside the board. Inferring the second from the first, or from the heartbeat, is exactly
+ * the kind of guess this project has had to retract before.
+ *
+ * AT MOST TWO FIELDS PER LINE, and that is a stack budget rather than a formatting preference. The
+ * shell thread's high-water mark is already 1856/1984 -- about a hundred bytes spare -- and
+ * CONFIG_ASSERT is off, so anything that overruns it corrupts memory silently and presents as a
+ * sensor fault. An earlier version of this command claimed "one field at a time" in its comment
+ * and then passed seven arguments to a single call, which is the same defect with a reassuring
+ * label on it. Nothing is buffered here: no struct, no array, and the only local is the one status
+ * word, which has to be held because reading it twice would stop being a snapshot.
+ *
+ * What the short argument lists buy is a smaller frame, NOT the absence of stack arguments:
+ * shell_print expands to a variadic call that still places something on the stack whatever the
+ * visible argument count. The number that matters is the measured one -- this function's prologue
+ * is a single stmdb of eight registers and no sub sp, so 32 bytes, against 64 for the seven
+ * argument version it replaced. Re-measure it rather than reasoning about it if this changes.
+ *
+ * THE ROW LABEL IS THE ACQUISITION DESCRIPTOR INDEX, not a contract source_id. They do not agree
+ * and must not be printed as if they did: on this chain acq 0 and 1 are the grid sensors and the
+ * four cliff L4s are acq 2..5, whose contract source_ids are 0..3. A row labelled "src2" could be
+ * read as either, and the two readings name different corners of the robot. */
+int cmd_cliff_stats(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(shell, "cycles_completed %u", tof_acq::cycles_completed());
+    shell_print(shell, "foreign_lifecycle_calls %u", tof_acq::foreign_lifecycle_calls());
+
+    for (int i{0}; i < 6; ++i) {
+        const uint32_t id{tof_acq::source_identity(i)};
+
+        if (tof_acq::identity_is_cliff(id))
+            shell_print(shell, "acq%d cliff role %d", i, tof_acq::identity_role(id));
+        else
+            shell_print(shell, "acq%d not-cliff", i);
+
+        shell_print(shell, "acq%d reads %u", i, tof_acq::source_reads(i));
+        shell_print(shell, "acq%d samples %u", i, tof_acq::source_samples(i));
+        shell_print(shell, "acq%d read_errors %u", i, tof_acq::source_read_errors(i));
+        shell_print(shell, "acq%d rearm_failures %u", i, tof_acq::source_rearm_failures(i));
+
+        /* Fetched once and decoded twice, because two fetches would put this cycle's stage beside
+         * the previous cycle's errno -- the exact pairing the packed word exists to prevent. */
+        const uint32_t st{tof_acq::source_last_status(i)};
+        shell_print(shell, "acq%d last_stage %d", i, tof_acq::last_status_stage(st));
+        shell_print(shell, "acq%d last_errno %d", i, tof_acq::last_status_errno(st));
+    }
+
+    /* Said rather than left to be assumed: a source that never started is indistinguishable in
+     * these numbers from one that started and has never been read, and both read zero. The role id
+     * is the CONTRACT's source_id for that corner; the acq index is not. */
+    shell_print(shell, "cumulative since init; reads==0 means never started OR thread not running");
+    shell_print(shell, "acq index is NOT the contract source_id -- read the role line");
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
 #if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
     SHELL_CMD_ARG(i2cspeed, NULL,
@@ -916,6 +980,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
                   "encode one real sample and PRINT it; transmits nothing",
                   cmd_cliff_pack, 3, 4),
 #endif
+    SHELL_CMD(stats, NULL,
+              "diagnostic: cumulative acquisition counters (read-only; touches no device)",
+              cmd_cliff_stats),
     SHELL_CMD_ARG(read, NULL,
                   "diagnostic: <pos> [attempts] [gap_ms] -- does this sensor range? "
                   "(default 1 check = what one acquisition cycle sees)",

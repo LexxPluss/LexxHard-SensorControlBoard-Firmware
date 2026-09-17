@@ -1641,3 +1641,293 @@ ZTEST(tof_acquisition, test_a_thread_that_exited_but_was_not_joined_cannot_be_re
     zassert_equal(acq::start(thread_cfg(500)), 0, "a joined thread must be restartable");
     zassert_equal(acq::try_stop(), 0);
 }
+
+/* ------------------------------------------------- cumulative observation counters ----- */
+
+/* These exist because every other record in the acquisition layer is per cycle and cleared, so it
+ * can report a failure but never sustained success -- and on a clamped board, where the health
+ * frame's cycle fields are zeroed, sustained success was not observable at all. What the counters
+ * claim has to be pinned here, because the only other place their meaning is visible is a shell
+ * command nobody runs in CI. */
+
+ZTEST(tof_acquisition, test_stats_count_reads_samples_and_cycles)
+{
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+    for (int i{0}; i < 4; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    acq::run_cycle();
+    acq::run_cycle();
+    acq::run_cycle();
+
+    zassert_equal(acq::cycles_completed(), 3U);
+    for (int i{0}; i < 4; ++i) {
+        zassert_equal(acq::source_reads(i), 3U, "source %d", i);
+        zassert_equal(acq::source_samples(i), 3U, "source %d", i);
+        zassert_equal(acq::source_read_errors(i), 0U, "source %d", i);
+        zassert_equal(acq::source_rearm_failures(i), 0U, "source %d", i);
+    }
+}
+
+ZTEST(tof_acquisition, test_stats_a_cycle_with_no_sample_still_counts_the_read)
+{
+    /* The distinction the whole thing is for: a sensor that is being read and has nothing ready is
+     * not a sensor that is not being read, and on the wire both are silence. */
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+    for (int i{0}; i < 4; ++i)
+        devs[i].fresh = false;
+    zassert_equal(acq::bring_up(), 0);
+
+    acq::run_cycle();
+    acq::run_cycle();
+
+    zassert_equal(acq::cycles_completed(), 2U);
+    for (int i{0}; i < 4; ++i) {
+        zassert_equal(acq::source_reads(i), 2U, "source %d", i);
+        zassert_equal(acq::source_samples(i), 0U, "source %d", i);
+        zassert_equal(acq::source_read_errors(i), 0U, "source %d: nothing ready is not an error", i);
+    }
+}
+
+ZTEST(tof_acquisition, test_stats_read_errors_and_rearm_failures_are_counted_separately)
+{
+    /* They answer different questions. A read that failed produced nothing; a re-arm that failed
+     * produced a perfectly good sample and guaranteed there will not be another one. Collapsing
+     * them is how a chain silently stops ranging while every read still looks fine. */
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+    devs[0].read_rc = -EIO;               // a failed read: nothing to show for it
+    /* The REAL shape of a re-arm failure, taken from tof_cliff_sensor.c: the sample is fetched and
+     * intact, and the call still returns non-zero, because the device will not produce another one.
+     * An earlier version of this test used rc == 0 with rearm_failed set, which the sensor cannot
+     * produce -- so it asserted that read_errors stays 0 for a re-arm failure, and would have
+     * passed just as happily if the two counters had been wired to each other. */
+    devs[1].fresh = true;
+    devs[1].rearm_failed = true;
+    devs[1].read_rc = -EIO;
+    devs[2].fresh = true;                 // ordinary success
+    zassert_equal(acq::bring_up(), 0);
+
+    acq::run_cycle();
+    acq::run_cycle();
+
+    zassert_equal(acq::source_read_errors(0), 2U);
+    zassert_equal(acq::source_rearm_failures(0), 0U, "a failed read is not a failed re-arm");
+    zassert_equal(acq::source_samples(0), 0U);
+
+    zassert_equal(acq::source_read_errors(1), 2U, "a re-arm failure returns non-zero and counts");
+    zassert_equal(acq::source_rearm_failures(1), 2U);
+    zassert_equal(acq::source_samples(1), 2U, "the sample it did return still counts");
+
+    zassert_equal(acq::source_read_errors(2), 0U);
+    zassert_equal(acq::source_rearm_failures(2), 0U);
+    zassert_equal(acq::source_samples(2), 2U);
+}
+
+ZTEST(tof_acquisition, test_stats_survive_begin_epoch)
+{
+    /* begin_epoch() resets the CONTRACT's cycle_seq to 0, which is correct and is why these
+     * counters are separate from it: a reader watching a renumbered cycle_seq for liveness would
+     * see it drop to zero and conclude the thread had stopped. */
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+    for (int i{0}; i < 4; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+    acq::run_cycle();
+    acq::stop();
+
+    zassert_equal(acq::begin_epoch(), 0);
+
+    zassert_equal(acq::cycles_completed(), 2U, "a new epoch erased the lifetime cycle count");
+    zassert_equal(acq::source_reads(0), 2U, "a new epoch erased the per-source counts");
+    zassert_equal(acq::source_samples(0), 2U);
+}
+
+ZTEST(tof_acquisition, test_stats_are_cleared_by_init)
+{
+    /* Counts carried across an init() would describe a source table that no longer exists, and
+     * index 2 of the old table is not index 2 of the new one. */
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+    for (int i{0}; i < 4; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+    zassert_equal(acq::cycles_completed(), 1U);
+
+    acq::teardown();
+    acq::config again{make_config(4)};
+    zassert_equal(acq::init(again), 0);
+
+    zassert_equal(acq::cycles_completed(), 0U);
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        zassert_equal(acq::source_reads(i), 0U, "source %d", i);
+        zassert_equal(acq::source_samples(i), 0U, "source %d", i);
+        zassert_equal(acq::source_read_errors(i), 0U, "source %d", i);
+        zassert_equal(acq::source_rearm_failures(i), 0U, "source %d", i);
+        zassert_equal(acq::source_last_status(i), 0U, "source %d", i);
+    }
+}
+
+ZTEST(tof_acquisition, test_stats_an_out_of_range_index_reads_zero)
+{
+    /* Every one of these indexes an array, and the caller is a shell command taking an operator's
+     * word for the index. Reading past the end is not an acceptable answer to a typo. */
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+
+    const int bad_indexes[]{-1, acq::kMaxSources, acq::kMaxSources + 1, 1000};
+    for (const int bad : bad_indexes) {
+        zassert_equal(acq::source_reads(bad), 0U, "index %d", bad);
+        zassert_equal(acq::source_samples(bad), 0U, "index %d", bad);
+        zassert_equal(acq::source_read_errors(bad), 0U, "index %d", bad);
+        zassert_equal(acq::source_rearm_failures(bad), 0U, "index %d", bad);
+        zassert_equal(acq::source_last_status(bad), 0U, "index %d", bad);
+        zassert_equal(acq::source_identity(bad), 0U, "index %d", bad);
+    }
+}
+
+ZTEST(tof_acquisition, test_stats_identity_uses_the_product_source_order)
+{
+    /* THE PRODUCT ORDER, built here rather than taken from make_config(): on the real chain the two
+     * grid sensors occupy descriptor indexes 0 and 1 and the four cliff L4s are 2..5, carrying
+     * contract roles 0..3. make_config() has it the other way round, which is fine for the cases
+     * that only need four cliff sources -- and useless for this one, because a helper that puts the
+     * cliff sources first cannot catch anything about where they actually are. An index/role
+     * confusion here names the wrong corner of the robot. */
+    /* STATIC, because init() keeps the pointer and the suite's teardown walks the table after
+     * this function has returned -- a local array here is a dangling read inside stop_locked(),
+     * which is exactly how the first version of this test crashed. make_config() uses a
+     * file-scope array for the same reason. */
+    static acq::source_desc product[acq::kMaxSources];
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        auto &d{product[i]};
+
+        d = acq::source_desc{};
+        d.kind = (i < 2) ? acq::model::l7_grid : acq::model::l4_cliff;
+        d.addr_7bit = static_cast<uint8_t>(0x2A + i);
+        d.role_id = (i < 2) ? 255 : static_cast<uint8_t>(i - 2);
+        d.dev = &devs[i];
+        d.scratch = &devs[i];
+        if (d.kind == acq::model::l4_cliff)
+            d.ops = &kFakeOps;
+        else
+            d.grid_ops = &kFakeGridOps;
+        if (d.kind == acq::model::l7_grid)
+            d.grid_frequency_hz = 15;
+    }
+
+    acq::config c{make_config(6)};
+    c.sources = product;
+    c.source_count = acq::kMaxSources;
+    zassert_equal(acq::init(c), 0);
+
+    for (int i{0}; i < 2; ++i)
+        zassert_false(acq::identity_is_cliff(acq::source_identity(i)),
+                      "index %d is a grid sensor on the product chain", i);
+    for (int i{2}; i < 6; ++i) {
+        const uint32_t id{acq::source_identity(i)};
+        zassert_true(acq::identity_is_cliff(id), "index %d is a cliff sensor", i);
+        zassert_equal(acq::identity_role(id), i - 2,
+                      "acq index %d carries contract role %d, not %d", i, i - 2, i);
+    }
+}
+
+ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
+{
+    /* The real sequence on the board, and the defect it used to hide. init() runs at boot with no
+     * proven mapping, so every cliff role is 255. The proof's commit later writes the real roles
+     * into the descriptor table -- the same array cfg.sources points at -- and nothing copied them
+     * into facts_. The publisher refuses any sample whose descriptor role and facts role disagree,
+     * marks the cycle invalid, and facts_'s copy is also the value it would have encoded: a stale
+     * 255 suppresses EVERY measurement once the clamp is lifted, silently. */
+    /* STATIC, because init() keeps the pointer and the suite's teardown walks the table after
+     * this function has returned -- a local array here is a dangling read inside stop_locked(),
+     * which is exactly how the first version of this test crashed. make_config() uses a
+     * file-scope array for the same reason. */
+    static acq::source_desc product[acq::kMaxSources];
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        auto &d{product[i]};
+
+        d = acq::source_desc{};
+        d.kind = (i < 2) ? acq::model::l7_grid : acq::model::l4_cliff;
+        d.addr_7bit = static_cast<uint8_t>(0x2A + i);
+        d.role_id = 255; /* unassigned: nothing is proven at init time */
+        d.dev = &devs[i];
+        d.scratch = &devs[i];
+        if (d.kind == acq::model::l4_cliff)
+            d.ops = &kFakeOps;
+        else
+            d.grid_ops = &kFakeGridOps;
+        if (d.kind == acq::model::l7_grid)
+            d.grid_frequency_hz = 15;
+    }
+
+    acq::config c{make_config(6)};
+    c.sources = product;
+    c.source_count = acq::kMaxSources;
+    zassert_equal(acq::init(c), 0);
+    for (int i{2}; i < 6; ++i)
+        zassert_equal(acq::identity_role(acq::source_identity(i)), 255,
+                      "index %d should be unassigned before any proof", i);
+
+    /* What the proof's commit does: key the descriptors in place. */
+    for (int i{2}; i < 6; ++i)
+        product[i].role_id = static_cast<uint8_t>(i - 2);
+
+    zassert_equal(acq::bring_up(), 0);
+
+    /* THE FIELD THAT MATTERS IS facts_.sources[].role_id, not the stats mirror. The publisher
+     * compares the descriptor's role against THAT one and refuses the sample when they differ, and
+     * that one is also what it encodes into the frame. An earlier version of this test asserted
+     * only on source_identity(), and deleting the facts refresh left it passing -- a test of the
+     * diagnostic instead of the defect. */
+    acq::cycle_facts f{};
+    acq::copy_facts(f);
+    for (int i{2}; i < 6; ++i)
+        zassert_equal(f.sources[i].role_id, i - 2,
+                      "bring-up did not re-read the keyed role into the facts for index %d", i);
+    for (int i{0}; i < 2; ++i)
+        zassert_equal(f.sources[i].role_id, 255, "a grid source has no cliff role");
+
+    /* And the diagnostic must agree with it, or the shell would print a role the publisher is not
+     * using. */
+    for (int i{2}; i < 6; ++i)
+        zassert_equal(acq::identity_role(acq::source_identity(i)), i - 2,
+                      "the stats identity disagrees with the facts for index %d", i);
+}
+
+ZTEST(tof_acquisition, test_stats_last_status_carries_both_halves_in_one_word)
+{
+    /* One word, because two would not be a snapshot: a reader preempted between them comes back
+     * with this cycle's stage beside the last cycle's errno. */
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+    devs[0].read_rc = -EIO;  // the fake sets stage FETCH on a failed read
+    zassert_equal(acq::bring_up(), 0);
+
+    acq::run_cycle();
+
+    const uint32_t st{acq::source_last_status(0)};
+    zassert_equal(acq::last_status_stage(st), TOF_CLIFF_STAGE_FETCH);
+    zassert_equal(acq::last_status_errno(st), 0, "the fake records no port errno");
+
+    /* A negative errno must survive the packing as a negative number: it is carried in 16 bits and
+     * a truncation that dropped the sign would report a different errno entirely. */
+    zassert_equal(acq::last_status_errno(0xFFFFU), -1);
+    zassert_equal(acq::last_status_errno((static_cast<uint32_t>(TOF_CLIFF_STAGE_FETCH) << 16) |
+                                         (static_cast<uint32_t>(-5) & 0xFFFFU)),
+                  -5);
+
+    /* The clamp boundaries. An errno outside 16 bits is clamped rather than truncated, because a
+     * truncated errno is a DIFFERENT errno and would be read as one -- -65536 becoming 0 would
+     * report success. The extremes must survive as the extremes. */
+    zassert_equal(acq::last_status_errno(static_cast<uint32_t>(INT16_MIN) & 0xFFFFU), INT16_MIN);
+    zassert_equal(acq::last_status_errno(static_cast<uint32_t>(INT16_MAX) & 0xFFFFU), INT16_MAX);
+    zassert_equal(acq::last_status_errno(0U), 0);
+}

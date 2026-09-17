@@ -347,6 +347,61 @@ bool thread_running();
 // Diagnostics for the ownership rule: it must stay zero.
 uint32_t foreign_lifecycle_calls();
 
+/* CUMULATIVE observation, read-only, and not an input to anything.
+ *
+ * Every other record in this file is per cycle and cleared, which can report a failure but can
+ * never report sustained success -- and sustained success is exactly what nothing here could
+ * previously show: a working cycle logs nothing, so "the thread is alive" and "the thread is
+ * reading four sensors" looked identical from outside.
+ *
+ * One value per call rather than a struct or an array, because the caller is the shell thread and
+ * its stack has roughly a hundred bytes of headroom; a diagnostic that needs a buffer to be read
+ * would corrupt what it came to observe. An out-of-range index returns 0.
+ *
+ * reads counts read_cliff_sample() calls; samples counts the fresh ones; read_errors counts
+ * non-zero returns; rearm_failures counts the TIMES a re-arm failed, which is a different question
+ * from the sticky per-source flag that says whether one is still outstanding. */
+uint32_t source_reads(int index);
+uint32_t source_read_errors(int index);
+uint32_t source_samples(int index);
+uint32_t source_rearm_failures(int index);
+
+/* The most recent read's stage and port errno as ONE word, plus the source's identity as another.
+ *
+ * One word each because two separate reads are not a snapshot: a reader preempted between them
+ * comes back with this cycle's stage beside the last cycle's errno, which is the pairing the
+ * packing exists to rule out. Decode with the helpers below, which are pure functions of the word
+ * already in hand -- call the accessor ONCE and decode what it returned, never call it twice. */
+uint32_t source_last_status(int index);
+uint32_t source_identity(int index);
+
+inline int last_status_stage(uint32_t word)
+{
+    return static_cast<int>((word >> 16) & 0xFFU);
+}
+
+// Sign-extended from the 16 bits it was clamped into.
+inline int last_status_errno(uint32_t word)
+{
+    return static_cast<int>(static_cast<int16_t>(word & 0xFFFFU));
+}
+
+inline bool identity_is_cliff(uint32_t word)
+{
+    return (word & 0x100U) != 0U;
+}
+
+// The cliff role id, which the contract's own table turns into a source_id. Meaningless unless
+// identity_is_cliff(word).
+inline int identity_role(uint32_t word)
+{
+    return static_cast<int>(word & 0xFFU);
+}
+
+// Lifetime completed cycles. NOT the contract's cycle_seq, which begin_epoch() resets to 0 -- a
+// renumbering there would read as the thread having stopped.
+uint32_t cycles_completed();
+
 #ifdef CONFIG_ZTEST
 /* The owning thread's id, so a suite can assert that every recorded ULD call came from it. Test-only
  * because production has no use for it: the rule is enforced by the guard, not by inspection. */

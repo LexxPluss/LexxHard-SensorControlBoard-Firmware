@@ -71,6 +71,53 @@ atomic_t stop_requested_{ATOMIC_INIT(0)};
 K_SEM_DEFINE(stop_sem_, 0, 1);
 atomic_t foreign_calls_{ATOMIC_INIT(0)};
 
+/* CUMULATIVE per-source observation, and the reason it cannot live in source_facts: that struct is
+ * PER CYCLE and cleared before every read, so it can say "this cycle failed" but never "this sensor
+ * has produced 4000 samples and none of them failed". Success is silent everywhere else in this
+ * file -- a working cycle logs nothing, by design -- which leaves "the thread is alive" and "the
+ * thread is reading four sensors" indistinguishable from outside. These are the difference.
+ *
+ * atomic_t rather than plain counters because the acquisition thread writes them while the shell
+ * thread reads them. An unsynchronised read of a plain int written by another thread is a data race
+ * and therefore undefined behaviour in C++, not merely a stale value; "diagnostics are allowed to be
+ * approximate" is a statement about the NUMBER, not a licence for UB. Relaxed ordering is all that
+ * is wanted: each counter is independent and nothing is published through them.
+ *
+ * They are NOT a gate, a control, or an input to any decision. Nothing in this file reads them. */
+atomic_t tally_reads_[kMaxSources]{};
+atomic_t tally_read_errors_[kMaxSources]{};
+atomic_t tally_samples_[kMaxSources]{};
+atomic_t tally_rearm_failures_[kMaxSources]{};
+
+/* The most recent read's stage and port errno, packed into ONE word.
+ *
+ * Two separate atomics would NOT have been a snapshot: the reader can be preempted between them
+ * and come back with this cycle's stage beside the last cycle's errno -- precisely the pairing the
+ * whole idea was meant to rule out, reintroduced one level up. Reading source_facts::status
+ * directly has the same defect and is worse, since that struct is several words wide.
+ *
+ * Layout: stage in bits 16-23, port errno as a 16-bit signed value in bits 0-15. An errno outside
+ * that range is clamped rather than truncated, because a truncated errno is a DIFFERENT errno and
+ * would be read as one. */
+atomic_t tally_last_status_[kMaxSources]{};
+
+/* Identity, so a reader can say WHICH sensor a row is about. Packed the same way: cliff flag in
+ * bit 8, role id in bits 0-7.
+ *
+ * Written by init() and REWRITTEN BY EVERY bring_up(), because the role a source carries is not
+ * known at init time: nothing has been proven then, so every cliff role is kRoleUnassigned, and the
+ * proof's commit writes the real ones into the descriptor table afterwards. See the note in
+ * bring_up() -- the same staleness in facts_ is what silently suppresses every measurement frame.
+ *
+ * It is an atomic here rather than read from cfg_/facts_ on demand because init() may run again,
+ * and a reader racing a re-init would otherwise pick up half of one source table and half of
+ * another. */
+atomic_t tally_identity_[kMaxSources]{};
+
+/* Lifetime, and deliberately NOT next_cycle_seq_: that one is the contract's per-epoch cycle number
+ * and begin_epoch() resets it to 0, so a renumbering would read as the thread having stopped. */
+atomic_t tally_cycles_{ATOMIC_INIT(0)};
+
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
  * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed. */
@@ -523,6 +570,23 @@ int init(const config &cfg)
     facts_ = cycle_facts{};
     /* A fresh start is a fresh epoch, so the first cycle must carry 0. */
     next_cycle_seq_ = 0;
+    /* Cleared with the rest of the per-configuration state: counts carried across an init() would
+     * describe a source table that no longer exists. */
+    for (int i{0}; i < kMaxSources; ++i) {
+        atomic_clear(&tally_reads_[i]);
+        atomic_clear(&tally_read_errors_[i]);
+        atomic_clear(&tally_samples_[i]);
+        atomic_clear(&tally_rearm_failures_[i]);
+        atomic_clear(&tally_last_status_[i]);
+        atomic_clear(&tally_identity_[i]);
+    }
+    for (int i{0}; i < cfg.source_count; ++i) {
+        const source_desc &d{cfg.sources[i]};
+        atomic_set(&tally_identity_[i],
+                   static_cast<atomic_val_t>((d.kind == model::l4_cliff ? 0x100U : 0U) |
+                                             (d.role_id & 0xFFU)));
+    }
+    atomic_clear(&tally_cycles_);
     facts_.source_count = cfg.source_count;
     for (int i{0}; i < cfg.source_count; ++i) {
         facts_.sources[i].kind = cfg.sources[i].kind;
@@ -601,6 +665,33 @@ int bring_up()
      * advancing the epoch reissues (source_id, epoch, cycle_seq) triples that have already
      * been used, and the contract calls that a conflict. See the note on next_cycle_seq_.
      */
+
+    /* RE-READ THE IDENTITY FROM THE DESCRIPTOR TABLE, here, every bring-up.
+     *
+     * init() runs at boot, long before any mapping has been proven, so the role ids it copied are
+     * all kRoleUnassigned. The proof's commit transaction later writes the real ones into the
+     * descriptor table -- the same array cfg_.sources points at -- and nothing propagated them into
+     * facts_. The copies stayed at 255 for the life of the process.
+     *
+     * That is not a cosmetic staleness. The publisher refuses to pack a sample whose descriptor
+     * role and facts role disagree, counts it as suppressed_role_mismatch and marks the whole cycle
+     * invalid; and facts_.sources[i].role_id is the value it would have encoded. So once the PROVEN
+     * clamp is lifted, a stale copy here suppresses EVERY measurement frame while the board
+     * otherwise looks healthy -- health flowing, sensors reading, nothing in any log.
+     *
+     * bring-up is the right place: it runs under the chain lock, from the owning thread, after the
+     * commit that keyed the descriptors, and again after every re-proof, since proving stops
+     * acquisition and starting it brings the sources up afresh. */
+    for (int i{0}; i < facts_.source_count; ++i) {
+        const source_desc &d{cfg_.sources[i]};
+
+        facts_.sources[i].kind = d.kind;
+        facts_.sources[i].addr_7bit = d.addr_7bit;
+        facts_.sources[i].role_id = d.role_id;
+        atomic_set(&tally_identity_[i],
+                   static_cast<atomic_val_t>((d.kind == model::l4_cliff ? 0x100U : 0U) |
+                                             (d.role_id & 0xFFU)));
+    }
 
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
@@ -707,7 +798,28 @@ void run_cycle()
             const int rc{d.ops->read_cliff_sample(d.dev, d.scratch, &sample, &st)};
 
             record(f, rc, st);
+            atomic_inc(&tally_reads_[i]);
+            if (rc != 0)
+                atomic_inc(&tally_read_errors_[i]);
+            /* Counted from op_status rather than from the sticky flag in source_facts, so this is
+             * the number of TIMES a re-arm failed and not "is it still broken". The sticky one
+             * answers a different question and already exists. */
+            if (st.rearm_failed)
+                atomic_inc(&tally_rearm_failures_[i]);
+            {
+                int clamped{st.port_errno};
+                if (clamped > INT16_MAX)
+                    clamped = INT16_MAX;
+                else if (clamped < INT16_MIN)
+                    clamped = INT16_MIN;
+                atomic_set(&tally_last_status_[i],
+                           static_cast<atomic_val_t>((static_cast<uint32_t>(st.stage) & 0xFFU) << 16 |
+                                                     (static_cast<uint32_t>(clamped) & 0xFFFFU)));
+            }
+
             f.sample_produced = st.sample_present && sample.fresh;
+            if (f.sample_produced)
+                atomic_inc(&tally_samples_[i]);
             if (f.sample_produced)
                 cfg_.hooks.on_cliff_sample(i, facts_.cycle_seq, f, sample);
         } else {
@@ -730,6 +842,7 @@ void run_cycle()
 
     /* Per COMPLETED cycle, which is why this is here and not at the top. */
     ++next_cycle_seq_;
+    atomic_inc(&tally_cycles_);
 }
 
 void teardown()
@@ -917,6 +1030,55 @@ bool thread_running()
 uint32_t foreign_lifecycle_calls()
 {
     return static_cast<uint32_t>(atomic_get(&foreign_calls_));
+}
+
+/* One value per call, by design. A caller on the shell stack has about a hundred bytes to spare, so
+ * handing it a struct or an array to hold would be the diagnostic corrupting the thing it is meant
+ * to observe. Out-of-range indices return 0 rather than reading past the array. */
+uint32_t source_reads(int index)
+{
+    return index >= 0 && index < kMaxSources ? static_cast<uint32_t>(atomic_get(&tally_reads_[index]))
+                                             : 0U;
+}
+
+uint32_t source_read_errors(int index)
+{
+    return index >= 0 && index < kMaxSources
+               ? static_cast<uint32_t>(atomic_get(&tally_read_errors_[index]))
+               : 0U;
+}
+
+uint32_t source_samples(int index)
+{
+    return index >= 0 && index < kMaxSources
+               ? static_cast<uint32_t>(atomic_get(&tally_samples_[index]))
+               : 0U;
+}
+
+uint32_t source_rearm_failures(int index)
+{
+    return index >= 0 && index < kMaxSources
+               ? static_cast<uint32_t>(atomic_get(&tally_rearm_failures_[index]))
+               : 0U;
+}
+
+uint32_t source_last_status(int index)
+{
+    return index >= 0 && index < kMaxSources
+               ? static_cast<uint32_t>(atomic_get(&tally_last_status_[index]))
+               : 0U;
+}
+
+uint32_t source_identity(int index)
+{
+    return index >= 0 && index < kMaxSources
+               ? static_cast<uint32_t>(atomic_get(&tally_identity_[index]))
+               : 0U;
+}
+
+uint32_t cycles_completed()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_cycles_));
 }
 
 #ifdef CONFIG_ZTEST
