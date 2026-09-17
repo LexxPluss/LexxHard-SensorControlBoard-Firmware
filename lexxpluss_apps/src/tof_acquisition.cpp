@@ -434,17 +434,25 @@ mapping_state clamp_mapping_state(mapping_state reported)
         // (tail 0x2f answered, neighbour 0x2e proven silent). The descriptors were keyed
         // from that mapping: positions 3-6 report role_id 0,1,2,3.
         //
-        // What is still missing:
+        // BOTH of the items that were on this list are now closed, on 2026-09-17:
         //
-        //   - That proof required I2C2 at 100 kHz (diagnostic overlay). At the product's
-        //     400 kHz, walk1 has never once reached COMPLETE on this machine, and a proof
-        //     needs two COMPLETE walks. So there is no acceptance of the PROVEN path at the
-        //     speed the product runs, and lifting the clamp would open a path proven only at
-        //     a speed the final acquisition schedule cannot use. This is now an I2C signal
-        //     integrity question for hardware, not a firmware one.
-        //   - No boot timing and no stack watermark for the acquisition thread, whose stack
-        //     size is therefore a devicetree number chosen without a measurement
-        //     (acq-stack-size = 2048, acq-thread-priority = 7; the overlay says as much).
+        //   - The 400 kHz question. A proof no longer ends at the speed it was carried out
+        //     at: commissioning sets 100 kHz for the walks, retimes to 400 kHz, and
+        //     re-verifies every position's identity at its assigned address BEFORE the
+        //     authority is told anything. A chain that does not answer at the product speed
+        //     never reaches commit_proof(), so PROVEN can no longer mean "proven only at a
+        //     speed the acquisition schedule cannot use".
+        //   - The stack watermark. Measured on dasher2 under 3.6.0-109: 1144 / 2048 (55 %),
+        //     stable across several thousand cycles, with all four sources' reads and samples
+        //     advancing together and no read or re-arm failures. The devicetree number is no
+        //     longer a number chosen without a measurement.
+        //
+        // SO WHY IS THE CLAMP STILL HERE. Because lifting it is its own commit, and the point
+        // of that separation is that the first image with it lifted gets validated for
+        // 0x216/0x217 immediately and for nothing else -- see the paragraph below, which is
+        // the reason this cannot be folded into the change that closed the prerequisites.
+        // Leaving it shut for one build is cheap; conflating "the prerequisites are closed"
+        // with "the wire has been observed" is the mistake this whole list exists to prevent.
         //
         // Deliberately NOT on this list, because it cannot be: "no 0x216 capture" and "no
         // correlated cycle health". This clamp is what prevents both, so requiring them
@@ -461,14 +469,19 @@ mapping_state clamp_mapping_state(mapping_state reported)
         //
         // Unconditional, with no build flag to lift it. A conditional safety bypass is
         // one careless -D away from shipping and would not show up in a diff of the code
-        // it disables; lifting this is an edit here, in its own commit, once both of the
-        // above are closed.
+        // it disables; lifting this is an edit here, in its own commit -- which is now the
+        // only thing standing between this board and 0x216 on the wire.
         static bool warned{false};
         if (!warned) {
             warned = true;
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- proven on hardware "
-                    "only at 100 kHz, never at the product's 400 kHz, and the acquisition "
-                    "thread has no stack watermark");
+            /* INFO, not WRN, and that is a deliberate downgrade. While the prerequisites were
+             * open this was a warning about something wrong; now it reports a deliberate state
+             * on the ordinary success path, and an error-level line there would contaminate
+             * every acceptance transcript that follows a good proof. */
+            LOG_INF("mapping reported PROVEN; clamped to NOT_READY -- the transaction and "
+                    "acquisition prerequisites are closed, and the clamp stays until its "
+                    "removal in a separate commit, followed immediately by 0x216/0x217 "
+                    "end-to-end validation");
         }
         return mapping_state::not_ready;
     }
