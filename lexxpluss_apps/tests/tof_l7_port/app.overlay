@@ -1,0 +1,20 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * The production port resolves DT_NODELABEL(i2c2), so the test uses that exact label and puts a
+ * recording target behind Zephyr's real emulated-controller path.
+ */
+
+/ {
+	i2c2: i2c@11112222 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "zephyr,i2c-emul-controller";
+		reg = <0x11112222 0x1000>;
+		status = "okay";
+		clock-frequency = <400000>;
+	};
+};
