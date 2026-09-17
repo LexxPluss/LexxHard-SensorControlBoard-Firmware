@@ -567,6 +567,36 @@ int bring_up()
      * been used, and the contract calls that a conflict. See the note on next_cycle_seq_.
      */
 
+    /* RE-READ THE IDENTITY FROM THE DESCRIPTOR TABLE, here, every bring-up.
+     *
+     * init() runs at boot, long before any mapping has been proven, so the role ids it copied are
+     * all unassigned. The proof's commit transaction later writes the real ones into the descriptor
+     * table -- the same array cfg_.sources points at -- and nothing propagated them into facts_.
+     * The copies stayed unassigned for the life of the process.
+     *
+     * That is not a cosmetic staleness. The publisher refuses to pack a sample whose descriptor
+     * role and facts role disagree, counts it as suppressed_role_mismatch and marks the whole cycle
+     * invalid; and facts_.sources[i].role_id is also the value it would have encoded into the
+     * frame. So once the PROVEN clamp is lifted, a stale copy here suppresses EVERY measurement
+     * while the board otherwise looks healthy -- health flowing, sensors reading, nothing in any
+     * log to say why the wire is empty.
+     *
+     * Bring-up is the right place: it runs under the chain lock, from the thread that owns the ULD,
+     * after the commit that keyed the descriptors, and again after every re-proof, because proving
+     * stops acquisition and starting it brings the sources up afresh. install_from_mapping() is the
+     * only production path that rewrites a role, and it cannot be reached without passing through
+     * here afterwards.
+     *
+     * Observed on dasher2 before the fix: after a successful proof under epoch 5 the descriptors
+     * read roles 0..3 and facts_ still read 255 for all four. */
+    for (int i{0}; i < facts_.source_count; ++i) {
+        const source_desc &d{cfg_.sources[i]};
+
+        facts_.sources[i].kind = d.kind;
+        facts_.sources[i].addr_7bit = d.addr_7bit;
+        facts_.sources[i].role_id = d.role_id;
+    }
+
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
         source_facts &f{facts_.sources[i]};
