@@ -1,12 +1,15 @@
-# Vendored third-party source is imported verbatim and is never edited in place. Its whitespace is
-# the vendor's, and reformatting it would break the SHA256SUMS manifest that makes "has anyone
-# edited upstream?" one command -- so the whitespace checks are turned off here rather than the
-# files being cleaned up.
+# Vendored upstream source is imported verbatim and never edited in place. Its whitespace is the
+# vendor's, and reformatting it would break the SHA256SUMS manifest that makes "has anyone edited
+# upstream?" one command -- so the checks are turned off for it rather than the files cleaned up.
+# `-text` for the same reason: SHA256SUMS attests bytes, so no eol conversion may touch them.
 #
-# Measured on the VL53L7CX import: 1,396 `git diff --check` warnings, all of them under this path,
-# none in our own code.
-lexxpluss_apps/third_party/** -whitespace
+# Measured on the VL53L7CX import: 1,396 `git diff --check` warnings, all under these paths, none
+# in our own code.
+#
+# Scoped to upstream and to patches deliberately. Our own Zephyr adaptation next to it --
+# vl53l7cx_uld/zephyr/platform.c and friends -- is project-maintained code and stays checked.
+lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/** -whitespace -text
 
 # Patches are byte-exact by definition: an eol conversion or a stripped trailing space stops them
 # applying, and `vl53l7cx_sources.cmake` fails the configure when that happens.
-lexxpluss_apps/third_party/**/*.patch -text -whitespace
+lexxpluss_apps/third_party/st/vl53l7cx_uld/zephyr/patches/** -whitespace -text

@@ -7,7 +7,7 @@ from the bench branch. It is pushed for review, not for merge.
 
 ## What is here
 
-Cut from `origin/pr-b3/publisher-can-runtime` at `25c316ab`, four commits, pure addition:
+Cut from `origin/pr-b3/publisher-can-runtime` at `25c316ab`, four implementation commits plus two status and check commits, pure addition:
 
   - the vendored ULD with the device firmware externalised behind `VL53L7CX_EXTERNAL_FIRMWARE`
   - the blob record, its provider and the boot gate
@@ -35,8 +35,6 @@ narrowed. `tof_l7_blob_record.cpp` and `tof_l7_blob_provider.cpp` guard on `ENAB
 alone, so they carry real content there -- 852 and 468 bytes of object -- while
 `tof_l7_runtime` and `tof_l7_sensor` stay empty. Nothing calls them, `--gc-sections` removes
 almost all of it, and 24 bytes survive.
-`ENABLE_TOF_L7_ULD` off — which is everywhere, no named target sets it — the production image is
-unchanged.
 
 ## What is deliberately not here
 
