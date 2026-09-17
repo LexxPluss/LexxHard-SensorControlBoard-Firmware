@@ -1720,3 +1720,76 @@ ZTEST(tof_acquisition, test_a_thread_that_exited_but_was_not_joined_cannot_be_re
     zassert_equal(acq::start(thread_cfg(500)), 0, "a joined thread must be restartable");
     zassert_equal(acq::try_stop(), 0);
 }
+
+ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
+{
+    /* The real sequence on the board, and the defect it used to hide.
+     *
+     * init() runs at boot with no proven mapping, so every cliff role is unassigned. The proof's
+     * commit later writes the real roles into the descriptor table -- the same array cfg.sources
+     * points at -- and nothing copied them into facts_. The publisher refuses any sample whose
+     * descriptor role and facts role disagree, marks the cycle invalid, and facts_'s copy is also
+     * the value it would have encoded: a stale 255 suppresses EVERY measurement once the clamp is
+     * lifted, with health still flowing and nothing in any log.
+     *
+     * Observed on dasher2: after a successful proof under epoch 5 the descriptors read roles 0..3
+     * and facts_ still read 255 for all four, until bring-up was made to re-read them.
+     *
+     * THE PRODUCT SOURCE ORDER, built here rather than taken from make_config(): on the real chain
+     * the two grid sensors occupy descriptor indexes 0 and 1 and the four cliff L4s are 2..5,
+     * carrying contract roles 0..3. make_config() has it the other way round, which is fine for the
+     * cases that only need four cliff sources and useless for this one -- a helper that puts the
+     * cliff sources first cannot say anything about where they actually are, and an index/role
+     * confusion here names the wrong corner of the robot.
+     *
+     * STATIC, because init() keeps the pointer and the suite's teardown walks the table after this
+     * function has returned. */
+    static acq::source_desc product[acq::kMaxSources];
+
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        auto &d{product[i]};
+
+        d = acq::source_desc{};
+        d.kind = (i < 2) ? acq::model::l7_grid : acq::model::l4_cliff;
+        d.addr_7bit = static_cast<uint8_t>(0x2A + i);
+        d.role_id = 255; /* unassigned: nothing has been proven at init time */
+        d.dev = &devs[i];
+        d.scratch = &devs[i];
+        d.stream = &streams[i];
+        d.ops = &kFakeOps;
+    }
+
+    acq::config c{make_config(acq::kMaxSources)};
+    c.sources = product;
+    c.source_count = acq::kMaxSources;
+    zassert_equal(acq::init(c), 0);
+
+    acq::cycle_facts before_proof{};
+    acq::copy_facts(before_proof);
+    for (int i{2}; i < acq::kMaxSources; ++i)
+        zassert_equal(before_proof.sources[i].role_id, 255,
+                      "index %d should be unassigned before any proof", i);
+
+    /* What the proof's commit does: key the descriptors in place, and nothing else. */
+    for (int i{2}; i < acq::kMaxSources; ++i)
+        product[i].role_id = static_cast<uint8_t>(i - 2);
+
+    acq::cycle_facts after_keying{};
+    acq::copy_facts(after_keying);
+    for (int i{2}; i < acq::kMaxSources; ++i)
+        zassert_equal(after_keying.sources[i].role_id, 255,
+                      "keying the descriptors must not reach facts_ on its own");
+
+    zassert_equal(acq::bring_up(), 0);
+
+    /* The field the publisher compares and then encodes. Asserting anything else -- a diagnostic
+     * mirror, a counter -- would be a test of the observation rather than of the defect. */
+    acq::cycle_facts after_bring_up{};
+    acq::copy_facts(after_bring_up);
+    for (int i{2}; i < acq::kMaxSources; ++i)
+        zassert_equal(after_bring_up.sources[i].role_id, i - 2,
+                      "bring-up did not re-read the keyed role into the facts for index %d", i);
+    for (int i{0}; i < 2; ++i)
+        zassert_equal(after_bring_up.sources[i].role_id, 255,
+                      "a grid source has no cliff role to key");
+}
