@@ -14,7 +14,27 @@ Cut from `origin/pr-b3/publisher-can-runtime` at `25c316ab`, four commits, pure 
   - the single-sensor adapter and its two host suites
   - the build gating, off by default
 
-Three host suites pass on this branch: `tof_l7_blob` 15, `tof_l7_port` 12, `tof_l7_sensor` 16. With
+Three host suites pass on this branch: `tof_l7_blob` 15, `tof_l7_port` 12, `tof_l7_sensor` 16.
+
+## What turning the option off actually costs
+
+Measured, not asserted. Same parameters on both sides, fixed `VERSION=99.99.99`, raw
+`zephyr.bin` compared byte for byte against `origin/pr-b3/publisher-can-runtime` at `25c316ab`:
+
+| shape | pr-b3 | this branch | result |
+| --- | --- | --- | --- |
+| production (`firmware`: no chain, no L7) | 194,688 | 194,688 | **byte-identical**, same SHA-256 |
+| chain (`firmware_tof_chain`: chain on, L7 off) | 197,160 | 197,184 | **+24 bytes** |
+
+The production image is unchanged, and for a stronger reason than "the files are not
+compiled": all four `tof_l7_*.cpp` **are** compiled -- `src/*.cpp` is globbed -- and their
+guards leave them empty, so the linker emits the same image.
+
+The chain build is **not** identical, and the earlier blanket claim that it was has been
+narrowed. `tof_l7_blob_record.cpp` and `tof_l7_blob_provider.cpp` guard on `ENABLE_TOF_CHAIN`
+alone, so they carry real content there -- 852 and 468 bytes of object -- while
+`tof_l7_runtime` and `tof_l7_sensor` stay empty. Nothing calls them, `--gc-sections` removes
+almost all of it, and 24 bytes survive.
 `ENABLE_TOF_L7_ULD` off — which is everywhere, no named target sets it — the production image is
 unchanged.
 

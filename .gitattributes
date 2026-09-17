@@ -1,0 +1,12 @@
+# Vendored third-party source is imported verbatim and is never edited in place. Its whitespace is
+# the vendor's, and reformatting it would break the SHA256SUMS manifest that makes "has anyone
+# edited upstream?" one command -- so the whitespace checks are turned off here rather than the
+# files being cleaned up.
+#
+# Measured on the VL53L7CX import: 1,396 `git diff --check` warnings, all of them under this path,
+# none in our own code.
+lexxpluss_apps/third_party/** -whitespace
+
+# Patches are byte-exact by definition: an eol conversion or a stripped trailing space stops them
+# applying, and `vl53l7cx_sources.cmake` fails the configure when that happens.
+lexxpluss_apps/third_party/**/*.patch -text -whitespace
