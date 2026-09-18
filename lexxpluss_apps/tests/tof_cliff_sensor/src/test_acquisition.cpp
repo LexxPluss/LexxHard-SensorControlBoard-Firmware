@@ -969,17 +969,19 @@ ZTEST(tof_acquisition, test_the_wait_is_the_remainder_of_the_period_not_a_whole_
     zassert_equal(step.next_due_ms, 1100);
 }
 
-ZTEST(tof_acquisition, test_a_cycle_that_overran_still_waits_and_owes_no_backlog)
+ZTEST(tof_acquisition, test_a_cycle_that_overran_yields_briefly_and_owes_no_backlog)
 {
     constexpr uint32_t kPeriod{50};
 
-    /* Twelve milliseconds late. Not a zero wait -- that is a spin, and the acquisition thread holds
-     * the chain lock for most of a cycle, so a spinning loop is a chain that never goes idle and a
-     * commissioning quiesce that never succeeds. */
+    /* Twelve milliseconds late. Not a zero wait -- that is a spin, and this thread holds the chain
+     * lock for most of a cycle, so a spinning loop is a chain that never goes idle and a
+     * commissioning quiesce that never succeeds. And not a whole period either, which is what this
+     * case used to assert: at a 20 ms target a cycle taking 20.1 ms would then run at 40.1 ms, or
+     * about 25 Hz, the schedule throwing away half the rate over a 0.1 ms miss. */
     const acq::schedule_decision late{acq::next_cycle_due(1050, 1062, kPeriod)};
 
     zassert_true(late.overran);
-    zassert_equal(late.wait_ms, kPeriod);
+    zassert_true(late.yield_only, "a late cycle was made to wait out a whole period");
     // Re-based on now, not advanced by a period: a late cycle must not be followed by a burst of
     // back-to-back cycles repaying the debt.
     zassert_equal(late.next_due_ms, 1112);
@@ -988,14 +990,43 @@ ZTEST(tof_acquisition, test_a_cycle_that_overran_still_waits_and_owes_no_backlog
     const acq::schedule_decision exact{acq::next_cycle_due(1050, 1050, kPeriod)};
 
     zassert_true(exact.overran);
-    zassert_equal(exact.wait_ms, kPeriod);
+    zassert_true(exact.yield_only);
 
-    // Very late. Still one period, still no catch-up.
+    /* THE CRITICAL MISS, which is the whole point of the change: one millisecond late against a
+     * 20 ms period. The cycle after it must be allowed to start straight away, so the achieved
+     * cadence is the work rather than the work plus a discarded period. */
+    const acq::schedule_decision critical{acq::next_cycle_due(1020, 1021, 20)};
+
+    zassert_true(critical.overran, "a miss is still a miss and still gets counted");
+    zassert_true(critical.yield_only);
+    zassert_equal(critical.next_due_ms, 1041);
+
+    // Very late. Still a brief yield, still no catch-up.
     const acq::schedule_decision very{acq::next_cycle_due(1050, 5000, kPeriod)};
 
     zassert_true(very.overran);
-    zassert_equal(very.wait_ms, kPeriod);
+    zassert_true(very.yield_only);
     zassert_equal(very.next_due_ms, 5050);
+}
+
+ZTEST(tof_acquisition, test_the_loop_never_asks_the_kernel_for_a_zero_timeout)
+{
+    /* The gap a mutation found: every assertion about next_cycle_due() passed while the loop read
+     * wait_ms regardless of yield_only, which on a missed deadline is K_MSEC(0) -- K_NO_WAIT, and
+     * the spin the whole rule exists to prevent. The decision and the timeout are different
+     * statements and both have to be made.
+     *
+     * K_NO_WAIT compares equal to a zero-tick timeout, so that is what is checked. */
+    const acq::schedule_decision missed{acq::next_cycle_due(1050, 1050, 50)};
+    const acq::schedule_decision met{acq::next_cycle_due(1050, 1018, 50)};
+    const k_timeout_t on_miss{acq::cadence_timeout(missed)};
+    const k_timeout_t on_time{acq::cadence_timeout(met)};
+
+    zassert_true(K_TIMEOUT_EQ(on_miss, K_TICKS(1)),
+                 "a missed deadline asked for something other than the kernel's shortest wait");
+    zassert_false(K_TIMEOUT_EQ(on_miss, K_NO_WAIT), "a missed deadline asked for no wait at all");
+    zassert_true(K_TIMEOUT_EQ(on_time, K_MSEC(32)));
+    zassert_false(K_TIMEOUT_EQ(on_time, K_NO_WAIT));
 }
 
 ZTEST(tof_acquisition, test_a_deadline_further_off_than_a_period_is_repaired_not_obeyed)
@@ -1007,6 +1038,7 @@ ZTEST(tof_acquisition, test_a_deadline_further_off_than_a_period_is_repaired_not
     constexpr uint32_t kPeriod{20};
     const acq::schedule_decision step{acq::next_cycle_due(1000, 0, kPeriod)};
 
+    zassert_false(step.yield_only, "a repaired deadline is not a miss");
     zassert_equal(step.wait_ms, kPeriod, "a nonsense deadline was waited out");
     zassert_equal(step.next_due_ms, kPeriod, "the deadline was left wrong for the next cycle");
     zassert_false(step.overran, "nothing was late; the deadline was wrong");
@@ -1015,8 +1047,10 @@ ZTEST(tof_acquisition, test_a_deadline_further_off_than_a_period_is_repaired_not
 ZTEST(tof_acquisition, test_the_cadence_never_returns_a_zero_wait)
 {
     /* The property, rather than the cases: whatever it is asked, it must not tell the loop to run
-     * again immediately. Includes a zero period, which init() refuses -- checked here anyway so the
-     * two places cannot disagree about who is responsible. */
+     * again with no wait at all. Either it names a wait, and then that wait is non-zero and no
+     * longer than the period, or it asks for the kernel's own floor -- never neither. Includes a
+     * zero period, which init() refuses -- checked here anyway so the two places cannot disagree
+     * about who is responsible. */
     static const int64_t due[] = {0, 1000, 1050, -5};
     static const int64_t now[] = {0, 999, 1050, 1051, 999999};
     static const uint32_t period[] = {0, 1, 20, 50};
@@ -1028,12 +1062,17 @@ ZTEST(tof_acquisition, test_the_cadence_never_returns_a_zero_wait)
 
                 if (period[p] == 0U) {
                     zassert_true(step.overran, "a zero period must not read as a met deadline");
+                    zassert_true(step.yield_only, "a zero period must still yield");
                     continue;
                 }
-                zassert_not_equal(step.wait_ms, 0U, "due %lld now %lld period %u",
-                                  static_cast<long long>(due[d]), static_cast<long long>(now[n]),
-                                  period[p]);
-                zassert_true(step.wait_ms <= period[p], "a wait longer than the period");
+                if (step.yield_only) {
+                    zassert_true(step.overran, "a yield that was not a miss");
+                } else {
+                    zassert_not_equal(step.wait_ms, 0U, "due %lld now %lld period %u",
+                                      static_cast<long long>(due[d]),
+                                      static_cast<long long>(now[n]), period[p]);
+                    zassert_true(step.wait_ms <= period[p], "a wait longer than the period");
+                }
                 zassert_true(step.next_due_ms > now[n], "the next deadline is already past");
             }
         }
@@ -1145,7 +1184,9 @@ ZTEST(tof_acquisition, test_a_cycle_splits_into_work_publish_and_total)
     publish_cost_cycles = us_to_cycles(5000);
     acq::run_cycle();
 
-    // Four cliff reads under the chain lock.
+    // Four cliff reads under the chain lock. The lock was free, so waiting for it cost nothing --
+    // which is a different statement from the work, and is why the two are separate readings.
+    zassert_equal(acq::cycle_lock_wait_us_last(), 0U);
     zassert_within(acq::cycle_work_us_last(), 12000, 8);
     // The CAN sends, outside the lock and inside the cadence -- which is why they are timed apart
     // rather than folded into the work.
@@ -1600,6 +1641,39 @@ static void chain_holder_entry(void *, void *, void *)
     k_mutex_unlock(&lexxhard::tof_chain_controller::chain_lock());
 }
 
+ZTEST(tof_acquisition, test_waiting_for_a_busy_chain_is_timed_apart_from_the_work)
+{
+    /* Commissioning holds the chain for seconds at a time. Without this number, a cycle that was
+     * late because the chain was busy and one that was late because a sensor was slow are the same
+     * reading -- and they are opposite findings.
+     *
+     * The holder advances the fake clock before releasing, which is how a blocking wait becomes a
+     * stated duration rather than a race against the host. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    k_sem_reset(&holder_took_it);
+    k_sem_reset(&holder_release);
+    k_sem_reset(&cycle_thread_started);
+    k_thread_create(&chain_holder, chain_holder_stack, K_THREAD_STACK_SIZEOF(chain_holder_stack),
+                    chain_holder_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(0), 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&holder_took_it, K_MSEC(500)), 0, "the holder never took the chain");
+
+    k_thread_create(&cycle_runner, cycle_runner_stack, K_THREAD_STACK_SIZEOF(cycle_runner_stack),
+                    cycle_runner_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(0), 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&cycle_thread_started, K_MSEC(500)), 0);
+    k_msleep(10);  // let it reach the blocking acquire
+
+    fake_cycles += us_to_cycles(7000);
+    k_sem_give(&holder_release);
+    zassert_equal(k_thread_join(&cycle_runner, K_MSEC(500)), 0);
+    zassert_equal(k_thread_join(&chain_holder, K_MSEC(500)), 0);
+
+    zassert_within(acq::cycle_lock_wait_us_max(), 7000, 4,
+                   "the wait for a busy chain was folded into the work instead");
+    zassert_within(acq::cycle_lock_wait_us_last(), 7000, 4);
+}
+
 ZTEST(tof_acquisition, test_the_heartbeat_survives_a_long_chain_session)
 {
     zassert_equal(acq::init(make_config(4)), 0);
@@ -1799,24 +1873,71 @@ ZTEST(tof_acquisition, test_the_work_happens_inside_the_period_and_not_on_top_of
     zassert_equal(overruns, 0U, "100 ms of work does not overrun a 200 ms period");
 }
 
-ZTEST(tof_acquisition, test_work_longer_than_the_period_is_counted_rather_than_absorbed)
+ZTEST(tof_acquisition, test_work_longer_than_the_period_runs_at_the_work_and_says_so)
 {
-    /* The finding the overrun counter exists to make visible: when the work is longer than the
-     * period, no schedule can hold the cadence, and the honest answer is to say so rather than to
-     * run back to back. */
-    constexpr int kWorkMs{40};  // 50 ms once this host has rounded it -- see the test above
+    /* The rate consequence of the overrun rule, through the loop rather than the arithmetic.
+     *
+     * 100 ms of work against a 90 ms period. The rule that waited a whole period on a miss produced
+     * a cycle every 200 ms here; yielding one tick produces one every 110. Over 1200 ms that is
+     * 6 cycles against about 10. When the work is longer than the period the best achievable
+     * cadence IS the work, and the schedule must not stand between the loop and it.
+     *
+     * Every one of them is still counted as an overrun, because "the period is too short for the
+     * work" is the finding and running fast is not the same as meeting the cadence. */
+    constexpr uint32_t kPeriodMs{90};
+    constexpr int kObserveMs{1200};
+    acq::config c{make_config(2)};
 
-    zassert_equal(acq::init(make_config(2)), 0);
-    devs[0].read_delay_ms = kWorkMs;
-    devs[1].read_delay_ms = kWorkMs;  // 100 ms of work against a 50 ms period
-    zassert_equal(acq::start(thread_cfg(500)), 0);
+    c.periods.cycle_period_ms = kPeriodMs;
+    zassert_equal(acq::init(c), 0);
+    devs[0].read_delay_ms = 40;  // 50 ms each once this host has rounded it
+    devs[1].read_delay_ms = 40;
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
 
-    k_msleep(400);
+    k_msleep(kObserveMs);
+    const int cycles{rec.cycles};
     const uint32_t overruns{acq::cycle_overruns()};
 
     zassert_equal(acq::try_stop(), 0);
-    zassert_true(overruns >= 2, "overruns seen: %u -- an unmeetable cadence was absorbed silently",
-                 overruns);
+
+    zassert_true(cycles >= 8, "cycles in %d ms with 100 ms of work and a %u ms period: %d -- a "
+                              "missed deadline is still costing a whole period",
+                 kObserveMs, kPeriodMs, cycles);
+    zassert_true(overruns >= 8, "overruns seen: %u of %d cycles -- an unmeetable cadence was "
+                                "absorbed silently", overruns, cycles);
+}
+
+ZTEST(tof_acquisition, test_a_stop_is_still_prompt_while_every_cycle_is_overrunning)
+{
+    /* The other half of the overrun rule. A loop that yields for one tick between cycles is much
+     * closer to a spin than one that waits a period, so the acceptance boundary that mattered
+     * before matters more now: after a stop request, no cycle begins and the join returns well
+     * inside its bound. */
+    acq::config c{make_config(2)};
+
+    c.periods.cycle_period_ms = 20;  // unmeetable on purpose: 100 ms of work
+    zassert_equal(acq::init(c), 0);
+    devs[0].read_delay_ms = 40;
+    devs[1].read_delay_ms = 40;
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+
+    k_msleep(300);
+    zassert_true(acq::cycle_overruns() >= 2, "the loop was not actually overrunning");
+
+    const int64_t asked{k_uptime_get()};
+
+    acq::request_stop();
+    zassert_equal(acq::join(1000), 0, "the thread did not stop while overrunning");
+
+    const int64_t took{k_uptime_get() - asked};
+    const int begins_at_stop{rec.cycle_begins};
+
+    /* One cycle in flight is 100 ms; anything beyond that is the loop failing to notice. */
+    zassert_true(took <= 250, "the stop took %lld ms", static_cast<long long>(took));
+    zassert_false(acq::thread_running());
+
+    k_msleep(200);
+    zassert_equal(rec.cycle_begins, begins_at_stop, "a cycle BEGAN after the stop request");
 }
 
 ZTEST(tof_acquisition, test_a_stop_request_ends_the_cycles_and_the_thread_stops_the_devices)

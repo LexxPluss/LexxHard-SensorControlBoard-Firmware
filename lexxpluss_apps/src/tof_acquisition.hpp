@@ -455,19 +455,21 @@ uint32_t cycles_completed();
  *   - Not a catch-up. Re-basing the deadline on `now` rather than advancing it by one
  *     period is what stops a late cycle from being followed by a burst of back-to-back
  *     cycles trying to repay the debt, which is the same spin arriving later.
- *   - So: a full period. Under sustained overrun that is the old behaviour, and it has
- *     to be, because the work itself is then longer than the period and no schedule can
- *     repair that. It is reported through cycle_overruns() rather than absorbed
- *     silently, because "the period is too short for the work" is a finding.
+ *   - Not a full period either, and THIS IS THE PART THAT DECIDES THE RATE. An earlier
+ *     version waited one whole period whenever the deadline had passed. Against a 20 ms
+ *     target a cycle that took 20.1 ms would then wait another 20, giving 40.1 ms and
+ *     about 25 Hz -- the schedule throwing away half the rate over a 0.1 ms miss. When
+ *     the work is longer than the period the best achievable cadence IS the work, and
+ *     the schedule must not stand between the loop and it.
+ *   - So: the shortest wait the kernel can express, which is one tick. Not an invented
+ *     constant -- it is the floor of what "yield" can mean here, and the loop asks for it
+ *     as `yield_only` rather than as a number of milliseconds, because on the SCB one
+ *     tick is 0.1 ms and would round to zero in a millisecond field.
  *
- * The cost of that rule, stated rather than discovered later: a cycle that lands exactly
- * on its deadline, or a tick past it, loses that whole slot rather than the few
- * microseconds it was late by. On the SCB the tick is 0.1 ms against a 50 ms period, so
- * this needs a cycle that was genuinely at its limit; on a host with a 10 ms tick it
- * happens constantly, which is why the cadence test there states a period well above the
- * tick. Either way it is counted, so a schedule losing slots says so.
+ * Every overrun is counted. "The period is too short for the work" is a finding, not an
+ * error, and a schedule that cannot hold its cadence has to say so rather than absorb it.
  *
- * A deadline further ahead than one period is likewise not reachable, and is repaired rather
+ * A deadline further ahead than one period is not reachable either, and is repaired rather
  * than obeyed: waiting it out would stall acquisition for however wrong the number was, with
  * the heartbeat still flowing and nothing to say why the measurements stopped.
  *
@@ -475,12 +477,25 @@ uint32_t cycles_completed();
  * reachable -- init() refuses one -- and is treated as an overrun rather than dividing the
  * responsibility for that check between two places. */
 struct schedule_decision {
-    uint32_t wait_ms{0};   // never zero: see the overrun rule above
+    /* Meaningful only when yield_only is false, and never zero then. */
+    uint32_t wait_ms{0};
+    /* Wait the shortest interval the kernel can express instead of wait_ms. Set exactly
+     * when the deadline had already passed -- see the overrun rule above. */
+    bool yield_only{false};
     int64_t next_due_ms{0};
     bool overran{false};
 };
 
 schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period_ms);
+
+/* The decision turned into the timeout the loop actually passes to the kernel.
+ *
+ * A separate function because the interesting property lives here and nowhere else: this must
+ * never return K_NO_WAIT. A `yield_only` decision carries no millisecond figure -- one tick is
+ * 0.1 ms on the SCB and would round to zero -- so a loop that read wait_ms regardless would turn
+ * every missed deadline into a spin, and every test of next_cycle_due() would still pass. The
+ * loop's own line is then a pass-through with nothing left to get wrong. */
+k_timeout_t cadence_timeout(const schedule_decision &step);
 
 // Cycles that were already past due when they finished. A cadence that cannot be met is a
 // measurement, not an error, so it is counted here rather than logged per cycle.
@@ -522,16 +537,31 @@ uint32_t source_repeat_measurements(int index);
 
 /* Per cycle, in the order the time is actually spent:
  *
+ *   lock    -- waiting for the chain lock, before the cycle could start at all
  *   work    -- the chain lock held: every source opened, read and recorded
- *   publish -- the on_cycle hook, which is where the publisher's SYNCHRONOUS CAN sends
- *              happen, on this thread, outside the lock
+ *   publish -- publish_snapshot() plus the on_cycle hook, which is the snapshot word, the
+ *              packer AND the publisher's synchronous CAN sends, on this thread, outside
+ *              the lock. It is NOT the bus time on its own. Separating the sends would
+ *              need a clock inside the publisher, which is worth doing if this number
+ *              turns out to be large and is not worth doing before that
  *   total   -- the whole of run_cycle() from the moment the cycle began
  *   wait    -- what the thread loop actually waited afterwards, which is NOT the configured
  *              period: the loop waits a full period AFTER the work, so the achieved cadence
  *              is work + publish + period rather than period
  *   gap     -- start of one cycle to the start of the next, the only one of these that is
  *              a cadence rather than a duration
+ *
+ * The parts do not add up to the gap exactly and must not be quoted as if they did: the
+ * remainder is scheduling latency -- the thread becoming runnable after its wait expires,
+ * and being preempted by anything at a higher priority. gap >= lock + work + publish +
+ * wait, and the difference is that latency.
  */
+/* How long the chain lock was waited for before the cycle could start. Commissioning holds
+ * it for seconds at a time, so without this a cycle that was late because the chain was
+ * busy is indistinguishable from one that was late because a sensor was slow. */
+uint32_t cycle_lock_wait_us_last();
+uint32_t cycle_lock_wait_us_max();
+
 uint32_t cycle_work_us_last();
 uint32_t cycle_work_us_max();
 uint32_t cycle_publish_us_last();

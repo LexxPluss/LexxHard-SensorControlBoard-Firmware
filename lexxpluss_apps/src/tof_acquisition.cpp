@@ -127,6 +127,8 @@ atomic_t tally_read_us_last_[kMaxSources]{};
 atomic_t tally_read_us_max_[kMaxSources]{};
 atomic_t tally_new_measurements_[kMaxSources]{};
 atomic_t tally_repeat_measurements_[kMaxSources]{};
+atomic_t tally_lock_wait_us_last_{ATOMIC_INIT(0)};
+atomic_t tally_lock_wait_us_max_{ATOMIC_INIT(0)};
 atomic_t tally_work_us_last_{ATOMIC_INIT(0)};
 atomic_t tally_work_us_max_{ATOMIC_INIT(0)};
 atomic_t tally_publish_us_last_{ATOMIC_INIT(0)};
@@ -592,6 +594,8 @@ int init(const config &cfg)
                                              (d.role_id & 0xFFU)));
     }
     atomic_clear(&tally_cycles_);
+    atomic_clear(&tally_lock_wait_us_last_);
+    atomic_clear(&tally_lock_wait_us_max_);
     atomic_clear(&tally_work_us_last_);
     atomic_clear(&tally_work_us_max_);
     atomic_clear(&tally_publish_us_last_);
@@ -782,14 +786,23 @@ void run_cycle()
     if (!may_touch_devices())
         return;
 
+    /* Timed across the acquisition itself, because commissioning holds this lock for seconds at a
+     * time: without it, a cycle that was late because the chain was busy and one that was late
+     * because a sensor was slow are the same number. */
+    const uint32_t lock_asked{cfg_.now_cycles()};
+
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
 
     if (!running_) {
         k_mutex_unlock(&tof_chain_controller::chain_lock());
+        /* Deliberately not recorded: no cycle happened, and folding a refusal's lock wait into a
+         * per-cycle number would make an idle subsystem look like a contended one. */
         return;
     }
 
     in_cycle_ = true;
+    record_high_water(&tally_lock_wait_us_last_, &tally_lock_wait_us_max_,
+                      elapsed_us(lock_asked, cfg_.now_cycles()));
 
     /* The cycle has begun HERE, not at the top of the function: everything above is a refusal that
      * consumes no cycle number and owes no health frame, so timing it would fold idle time into the
@@ -1012,7 +1025,7 @@ static void thread_entry(void *, void *, void *)
          * noticed -- and that period is what a caller's join timeout would then have to cover. */
         const uint32_t wait_began{cfg_.now_cycles()};
 
-        (void)k_sem_take(&stop_sem_, K_MSEC(step.wait_ms));
+        (void)k_sem_take(&stop_sem_, cadence_timeout(step));
         /* Measured rather than assumed. It is now the REMAINDER of the period, so the work and the
          * CAN sends happen inside the cadence instead of being added to it -- which is the whole
          * change. What it is not is a guarantee: if the remainder is regularly small, or the
@@ -1203,13 +1216,24 @@ schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period
         return out;
     }
 
-    /* Past due, or exactly due -- which is the same thing here, because the alternative is a zero
-     * wait and a zero wait is the spin. Re-based on now rather than advanced, so a late cycle owes
-     * no backlog. */
+    /* Past due, or exactly due. The shortest wait the kernel can express -- not zero, which is the
+     * spin, and not a period, which would throw the rate away over a fraction of a millisecond: at
+     * a 20 ms target a cycle taking 20.1 ms would then run at 40.1 ms, or about 25 Hz. When the
+     * work is longer than the period the best achievable cadence is the work itself.
+     *
+     * Re-based on now rather than advanced, so a late cycle owes no backlog. */
     out.overran = true;
-    out.wait_ms = period_ms;
+    out.yield_only = true;
     out.next_due_ms = now_ms + period_ms;
     return out;
+}
+
+k_timeout_t cadence_timeout(const schedule_decision &step)
+{
+    /* K_TICKS(1) rather than a millisecond figure: on the SCB a tick is 0.1 ms and every
+     * millisecond value that could stand for "briefly" would round to zero, which is the spin. It
+     * is the kernel's own floor for a wait, not a number chosen here. */
+    return step.yield_only ? K_TICKS(1) : K_MSEC(step.wait_ms);
 }
 
 uint32_t cycle_overruns()
@@ -1247,6 +1271,16 @@ uint32_t source_new_measurements(int index)
 uint32_t source_repeat_measurements(int index)
 {
     return per_source(tally_repeat_measurements_, index);
+}
+
+uint32_t cycle_lock_wait_us_last()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_lock_wait_us_last_));
+}
+
+uint32_t cycle_lock_wait_us_max()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_lock_wait_us_max_));
 }
 
 uint32_t cycle_work_us_last()

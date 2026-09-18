@@ -1025,6 +1025,12 @@ int cmd_cliff_stats(const struct shell *shell, size_t argc, char **argv)
  * argument needs: a mean rate says nothing about the longest a corner went without a new
  * measurement.
  *
+ * TWO THINGS THESE NUMBERS ARE NOT. publish_us covers the snapshot word, the packer and the CAN
+ * sends together, so a large value does not by itself accuse the bus -- separating the sends needs
+ * a clock inside the publisher and is worth doing only once this number says it is worth doing.
+ * And the parts do not sum to the gap: what is left over is scheduling latency, the thread becoming
+ * runnable after its wait and being preempted by anything above it.
+ *
  * THE ROW LABEL IS THE ACQUISITION DESCRIPTOR INDEX, not a contract source_id -- same warning as
  * `stats`, same reason. */
 int cmd_cliff_timing(const struct shell *shell, size_t argc, char **argv)
@@ -1033,6 +1039,8 @@ int cmd_cliff_timing(const struct shell *shell, size_t argc, char **argv)
     ARG_UNUSED(argv);
 
     shell_print(shell, "cycles_completed %u", tof_acq::cycles_completed());
+    shell_print(shell, "lock_wait_us last %u", tof_acq::cycle_lock_wait_us_last());
+    shell_print(shell, "lock_wait_us max %u", tof_acq::cycle_lock_wait_us_max());
     shell_print(shell, "work_us last %u", tof_acq::cycle_work_us_last());
     shell_print(shell, "work_us max %u", tof_acq::cycle_work_us_max());
     shell_print(shell, "publish_us last %u", tof_acq::cycle_publish_us_last());
@@ -1055,7 +1063,8 @@ int cmd_cliff_timing(const struct shell *shell, size_t argc, char **argv)
     /* Said rather than left to be assumed. The wait begins AFTER the work and the CAN sends, so the
      * achieved cadence is work + publish + wait and not the configured period -- which is why
      * cycle_gap_us is printed as well as the parts, and why the parts should add up to it. */
-    shell_print(shell, "gap == work + publish + wait; the wait is the REMAINDER of the period");
+    shell_print(shell, "gap >= lock + work + publish + wait; the rest is scheduling latency");
+    shell_print(shell, "publish_us is snapshot + pack + CAN send, NOT the bus time alone");
     shell_print(shell, "cycle_overruns moving means the period is too short for the work");
     shell_print(shell, "repeat_measurements means fresh was set but StreamCount had not moved");
     return 0;
