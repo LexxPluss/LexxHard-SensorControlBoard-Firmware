@@ -983,10 +983,20 @@ it is a deployment decision, not a property of the guarantee. Removing the opera
 **The replacement argument, for a profile that proves without an operator.** Uniqueness rests on a
 persistent **full-width ordinal** held by the issuing side, of which `mapping_epoch` is the low 8 bits:
 
-- The ordinal is **reserved before it is used**, and durability is established by reading it back, never
-  by a write's return code. A power cut therefore skips a value; it cannot repeat one. If the write's
-  outcome cannot be confirmed, the next reservation re-reads the store and never reuses a remembered
-  value — the ambiguous write may have landed.
+- The ordinal is **reserved before it is used**, and it is durable before it is handed out. A power cut
+  therefore skips a value; it cannot repeat one.
+- **Durability must be proven by the storage medium's own means, not by reading the value back.** An
+  earlier draft of this clause said the opposite, and it was wrong in a way that matters on a host: a
+  read after a write is served from the page cache and returns bytes the disk may not hold, so a
+  read-back establishes self-consistency and says nothing about power loss. Each medium states how it
+  earns the claim. A file-backed store does it by writing a temporary file, `fsync`-ing it, renaming it
+  over the record, and `fsync`-ing the containing directory — the rename being atomic is what leaves
+  exactly one complete record after any crash, and the directory `fsync` is what makes the rename
+  itself survive.
+- **Re-reading after an outcome that could not be established is recovery of judgement, not proof of
+  durability.** When a commit reports neither success nor failure, the next reservation re-reads the
+  store and never resumes from a remembered value — the ambiguous write may have landed, and only the
+  store can say.
 - The ordinal is **strictly increasing and never reused**, including at the top of its range, where
   exhaustion is a refusal rather than a wrap.
 - The 8-bit wire value still wraps modulo 256, and that remains correct, because ordering is carried by

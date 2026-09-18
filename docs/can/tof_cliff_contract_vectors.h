@@ -10,8 +10,8 @@
  *
  * Contract : tof_cliff_wire_contract.md
  * Version  : commissioning-2026-09-18d
- * SHA-256  : 58aab1552cfde934c5ba8cf2f7d390ac639b7da6857bc8858cf8238c2a24a3c0
- * ArtefactSet : aa44bca2a75910f115d59d16a234e74b01e7bfbae9bfb2ae2eb197ec8c125785
+ * SHA-256  : 9c7ea8bb6a057ffdf9879dd5e7b23de2fb340daedb7282fd91d6aed3f1a74456
+ * ArtefactSet : c6ba6c1042114d3a645d8539aee9bef46c8aa3bdf258df1f9b2129b575d47dfd
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
