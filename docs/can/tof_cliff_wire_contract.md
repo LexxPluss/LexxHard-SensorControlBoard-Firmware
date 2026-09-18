@@ -1,12 +1,25 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-08-18c**
+Contract version: **commissioning-2026-09-18d**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
 The `-18b` revision existed for one purpose: to let the commissioning end-to-end path be built against
 byte-exact, double-pinned vectors instead of against prose. It is **not** a product release and must
 never be treated as one.
+
+`-18d` likewise adds nothing to the wire and changes no byte of any vector — the regenerated artefacts
+differ only in their version and hash stamps, which is checkable by regenerating them. It exists to
+withdraw one conclusion in *Commissioning `mapping_epoch` issuance* and put a replacement argument in its
+place.
+
+The withdrawn conclusion was that a configuration proving on boot requires a **firmware-side** persistent
+epoch issuer. That named one implementation as the only remedy for a property — cross-restart uniqueness —
+that does not actually depend on which side holds the store. What it depends on is a persistent issuer
+that cannot reuse a value, and a bounded relationship to what a consumer has accepted. Release and safety
+have chosen the host as the issuing side; the replacement argument is written out in that section, and it
+is what an unattended profile has to satisfy before it may be enabled. No automatic profile is enabled by
+this revision.
 
 `-18c` adds nothing to the wire and changes no byte of any vector. It exists because writing the
 mapping-proof implementation against `-18b` surfaced three defects in the prose, and each of them would
@@ -959,11 +972,52 @@ Under `commissioning-cliff-only-400k`:
   proof supplies a fresh epoch, which is what keeps a post-restart `cycle_seq` from aliasing onto the
   sequence that came before it.
 
-**The limitation, stated plainly: cross-restart uniqueness now rests on procedure, not on firmware.** The
-firmware does not claim it and must not be described as providing it. The property holds because a
-restart cannot reach `PROVEN` without an operator, and it would stop holding the moment anything proves
-the mapping automatically. A production configuration that proves on boot therefore requires a
-firmware-side persistent epoch issuer, and that is a release blocker, not a refinement.
+**The limitation, restated for an unattended restart.** An earlier revision said that cross-restart
+uniqueness rests on procedure — specifically on a restart being unable to reach `PROVEN` without an
+operator — and concluded that any configuration proving on boot therefore requires a *firmware-side*
+persistent epoch issuer. The first half is still true of a manual profile. The conclusion is withdrawn:
+what the property actually needs is a persistent issuer that cannot reuse a value, and which side holds
+it is a deployment decision, not a property of the guarantee. Removing the operator removes the
+*procedural* argument, so a replacement argument is required — but it does not have to be firmware.
+
+**The replacement argument, for a profile that proves without an operator.** Uniqueness rests on a
+persistent **full-width ordinal** held by the issuing side, of which `mapping_epoch` is the low 8 bits:
+
+- The ordinal is **reserved before it is used**, and durability is established by reading it back, never
+  by a write's return code. A power cut therefore skips a value; it cannot repeat one. If the write's
+  outcome cannot be confirmed, the next reservation re-reads the store and never reuses a remembered
+  value — the ambiguous write may have landed.
+- The ordinal is **strictly increasing and never reused**, including at the top of its range, where
+  exhaustion is a refusal rather than a wrap.
+- The 8-bit wire value still wraps modulo 256, and that remains correct, because ordering is carried by
+  the ordinal. A consumer locates a wire epoch relative to the one it holds, so issuance may run at most
+  **127** ordinals ahead of what a consumer has accepted; a step of exactly 128 is the one delta with no
+  positive counterpart and is refused by consumers, not guessed at. An issuer that cannot establish how
+  far ahead it is **must refuse**, and the value it may not substitute for that knowledge is its own last
+  reservation or its own last successful proof: both run ahead of acceptance in exactly the case the
+  window exists to catch.
+
+**First provisioning is an explicit act.** A store with no record does not start counting. Blank and
+corrupt are distinguished and both refuse, because an unprovisioned machine and a damaged record call for
+different operator actions, and a machine that invented a first ordinal would be asserting an issuance
+history that never happened. The first ordinal comes from the machine's recorded commissioning history or
+from a deliberate provisioning step.
+
+**Every failure is NOT_READY, and none of them is a measurement.** No epoch, an unconfirmable write, an
+unestablished window, a refused proof or a refused acquisition start all leave the subsystem exactly where
+a failed manual proof leaves it: non-`PROVEN`, no `0x216` transmitted, and health reporting the reason it
+already reports. Nothing in an automatic profile may fabricate a health state or suppress one.
+
+**The firmware's three guarantees are unchanged** — it refuses an epoch equal to any it has used since
+power-on, it advances the epoch and resets `cycle_seq` in one transaction, and it stays non-`PROVEN` if
+issuance fails for any reason. An unattended profile adds obligations on the issuing side; it removes
+none from the firmware.
+
+**What this revision deliberately does not fix.** The downlink by which an epoch reaches the firmware —
+its identifier, payload, authorisation, and its binding to a device and to a particular boot — is **not**
+specified here. Freezing a format before the semantics above are settled is how a format ends up unable
+to carry them. Until that is specified and mirrored in both repositories, no automatic profile is
+enabled, and the manual profile above remains the only one in use.
 
 ## Timing values — what the production release still has to resolve
 
