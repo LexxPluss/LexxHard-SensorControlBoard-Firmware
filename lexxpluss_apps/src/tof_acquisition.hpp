@@ -436,6 +436,56 @@ uint32_t cycles_completed();
  * It is the one that matters for the safety argument -- a mean rate says nothing about the
  * longest a corner went without a new measurement -- so it is kept beside `last` rather
  * than left to be inferred from samples. */
+/* THE CADENCE DECISION, as a pure function of three numbers.
+ *
+ * The loop used to run a cycle and then wait a full period, so the achieved cadence was
+ * work + publish + period rather than period. On dasher2 that is about 18.5 ms of work
+ * against a 50 ms period: 68.5 ms, or the 14.6 Hz actually observed, from a schedule
+ * configured for 20. No sensor and no bus had to be slow for that to happen.
+ *
+ * This waits until the cycle was DUE instead, so the work happens inside the period.
+ *
+ * Pure, and separate from the thread, for two reasons. A host test can state the clock
+ * rather than sleep against it -- the thread's own wait is a kernel call and cannot be
+ * driven that way. And the overrun rule is the part worth arguing about in isolation:
+ *
+ *   - Not zero. A cycle that overran must still yield, or the loop spins: it would hold
+ *     the chain lock almost continuously, and commissioning -- which needs the chain to
+ *     go idle -- would never get it.
+ *   - Not a catch-up. Re-basing the deadline on `now` rather than advancing it by one
+ *     period is what stops a late cycle from being followed by a burst of back-to-back
+ *     cycles trying to repay the debt, which is the same spin arriving later.
+ *   - So: a full period. Under sustained overrun that is the old behaviour, and it has
+ *     to be, because the work itself is then longer than the period and no schedule can
+ *     repair that. It is reported through cycle_overruns() rather than absorbed
+ *     silently, because "the period is too short for the work" is a finding.
+ *
+ * The cost of that rule, stated rather than discovered later: a cycle that lands exactly
+ * on its deadline, or a tick past it, loses that whole slot rather than the few
+ * microseconds it was late by. On the SCB the tick is 0.1 ms against a 50 ms period, so
+ * this needs a cycle that was genuinely at its limit; on a host with a 10 ms tick it
+ * happens constantly, which is why the cadence test there states a period well above the
+ * tick. Either way it is counted, so a schedule losing slots says so.
+ *
+ * A deadline further ahead than one period is likewise not reachable, and is repaired rather
+ * than obeyed: waiting it out would stall acquisition for however wrong the number was, with
+ * the heartbeat still flowing and nothing to say why the measurements stopped.
+ *
+ * `due_ms` and `now_ms` are milliseconds from a monotonic clock. A period of zero is not
+ * reachable -- init() refuses one -- and is treated as an overrun rather than dividing the
+ * responsibility for that check between two places. */
+struct schedule_decision {
+    uint32_t wait_ms{0};   // never zero: see the overrun rule above
+    int64_t next_due_ms{0};
+    bool overran{false};
+};
+
+schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period_ms);
+
+// Cycles that were already past due when they finished. A cadence that cannot be met is a
+// measurement, not an error, so it is counted here rather than logged per cycle.
+uint32_t cycle_overruns();
+
 /* The rate arithmetic itself, separable because it is the one part of this instrumentation that
  * can be wrong in a way the numbers never show.
  *

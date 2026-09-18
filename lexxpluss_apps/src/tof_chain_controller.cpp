@@ -1042,6 +1042,7 @@ int cmd_cliff_timing(const struct shell *shell, size_t argc, char **argv)
     shell_print(shell, "wait_us last %u", tof_acq::cycle_wait_us_last());
     shell_print(shell, "wait_us max %u", tof_acq::cycle_wait_us_max());
     shell_print(shell, "cycle_gap_us max %u", tof_acq::cycle_gap_us_max());
+    shell_print(shell, "cycle_overruns %u", tof_acq::cycle_overruns());
 
     for (int i{0}; i < 6; ++i) {
         shell_print(shell, "acq%d read_us_last %u", i, tof_acq::source_read_us_last(i));
@@ -1054,7 +1055,8 @@ int cmd_cliff_timing(const struct shell *shell, size_t argc, char **argv)
     /* Said rather than left to be assumed. The wait begins AFTER the work and the CAN sends, so the
      * achieved cadence is work + publish + wait and not the configured period -- which is why
      * cycle_gap_us is printed as well as the parts, and why the parts should add up to it. */
-    shell_print(shell, "gap == work + publish + wait; the wait starts after the sends");
+    shell_print(shell, "gap == work + publish + wait; the wait is the REMAINDER of the period");
+    shell_print(shell, "cycle_overruns moving means the period is too short for the work");
     shell_print(shell, "repeat_measurements means fresh was set but StreamCount had not moved");
     return 0;
 }
