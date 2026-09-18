@@ -548,13 +548,18 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
     /* BEFORE the start line, and it returns. A configure failure leaves start_rc at zero because
      * start was never reached, so falling through printed "start=0" beside a claim that the device
      * had been ranged at the new profile -- and returned success. That is the one output a
-     * timing-budget A/B must never produce: it is exactly what a good run looks like. */
+     * timing-budget A/B must never produce: it is exactly what a good run looks like.
+     *
+     * PARTIALLY configured, not unchanged. tof_cliff_sensor_configure() sets the distance mode and
+     * then the timing budget, so a failure at the second step leaves the first one applied. The
+     * stage printed above says which half it got to; what it cannot say is that the device is
+     * still in the state it started in, so this line does not claim it. */
     if (r.configure_rc != 0) {
         shell_error(shell,
                     "pos%lu addr=0x%02x role_id=%u open=0 configure=%d stage=%s errno=%d uld=%d",
                     pos, r.addr_7bit, r.role_id, r.configure_rc,
                     tof_cliff_stage_name(r.status.stage), r.status.port_errno, r.status.uld_rc);
-        shell_error(shell, "  start and read NOT attempted; the device keeps its previous profile");
+        shell_error(shell, "  profile may be PARTIALLY configured; start and read not attempted");
         return -EIO;
     }
     if (r.start_rc != 0) {
@@ -945,14 +950,13 @@ int cmd_cliff_stream(const struct shell *shell, size_t argc, char **argv)
         return rc;
     }
 
-    /* Before anything else, and it returns -- see the same guard in `read`. start_rc is zero after
-     * a configure failure because start was never reached, so the ordinary line would report
-     * start=0 and the command would succeed. */
+    /* Before anything else, and it returns -- see the same guard in `read`, including why the
+     * device is reported as PARTIALLY configured rather than unchanged. */
     if (r.configure_rc != 0) {
         shell_error(shell, "pos%lu addr=0x%02x role_id=%u open=0 configure=%d stage=%s errno=%d",
                     pos, r.addr_7bit, r.role_id, r.configure_rc,
                     tof_cliff_stage_name(r.status.stage), r.status.port_errno);
-        shell_error(shell, "  start and read NOT attempted; the device keeps its previous profile");
+        shell_error(shell, "  profile may be PARTIALLY configured; start and read not attempted");
         return -EIO;
     }
     shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d start=%d last_read=%d", pos,
