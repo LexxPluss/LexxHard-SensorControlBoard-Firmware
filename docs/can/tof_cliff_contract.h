@@ -10,8 +10,8 @@
  *
  * Contract : tof_cliff_wire_contract.md
  * Version  : commissioning-2026-09-18d
- * SHA-256  : 61f2b44019f28d736633bdda9e2aa1e90d71594d64f5dd4ebc930f6fc0132e7d
- * ArtefactSet : a8071d5343fa932a8e7dbd34fd59df02fe0c2b35afc7e7ce2cdaf81e927f9dde
+ * SHA-256  : 58aab1552cfde934c5ba8cf2f7d390ac639b7da6857bc8858cf8238c2a24a3c0
+ * ArtefactSet : aa44bca2a75910f115d59d16a234e74b01e7bfbae9bfb2ae2eb197ec8c125785
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
@@ -37,14 +37,14 @@
 namespace tof_cliff_contract {
 
 inline constexpr char kContractVersion[]{"commissioning-2026-09-18d"};
-inline constexpr char kContractSha256[]{"61f2b44019f28d736633bdda9e2aa1e90d71594d64f5dd4ebc930f6fc0132e7d"};
+inline constexpr char kContractSha256[]{"58aab1552cfde934c5ba8cf2f7d390ac639b7da6857bc8858cf8238c2a24a3c0"};
 inline constexpr char kProfileName[]{"commissioning-cliff-only-400k"};
 
 // The contract SHA says which contract. This says which generated artefacts: it
 // hashes the contract text together with the generator's own source, so a change
 // to what the generator emits is visible even when the contract stands still.
 // Both repositories pin it.
-inline constexpr char kArtefactSetId[]{"a8071d5343fa932a8e7dbd34fd59df02fe0c2b35afc7e7ce2cdaf81e927f9dde"};
+inline constexpr char kArtefactSetId[]{"aa44bca2a75910f115d59d16a234e74b01e7bfbae9bfb2ae2eb197ec8c125785"};
 inline constexpr bool kReleaseForbidden{true};
 
 inline constexpr uint16_t kMeasId{0x216};

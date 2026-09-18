@@ -16,8 +16,8 @@ place.
 The withdrawn conclusion was that a configuration proving on boot requires a **firmware-side** persistent
 epoch issuer. That named one implementation as the only remedy for a property — cross-restart uniqueness —
 that does not actually depend on which side holds the store. What it depends on is a persistent issuer
-that cannot reuse a value, and a bounded relationship to what a consumer has accepted. Release and safety
-have chosen the host as the issuing side; the replacement argument is written out in that section, and it
+that cannot reuse a value, and a bounded relationship to what a consumer has accepted. Engineering has selected the host as the issuing
+side and release and safety sign-off is outstanding; the replacement argument is written out in that section, and it
 is what an unattended profile has to satisfy before it may be enabled. No automatic profile is enabled by
 this revision.
 
@@ -1003,10 +1003,27 @@ different operator actions, and a machine that invented a first ordinal would be
 history that never happened. The first ordinal comes from the machine's recorded commissioning history or
 from a deliberate provisioning step.
 
-**Every failure is NOT_READY, and none of them is a measurement.** No epoch, an unconfirmable write, an
-unestablished window, a refused proof or a refused acquisition start all leave the subsystem exactly where
-a failed manual proof leaves it: non-`PROVEN`, no `0x216` transmitted, and health reporting the reason it
-already reports. Nothing in an automatic profile may fabricate a health state or suppress one.
+**Every failure is fail-closed, and the guarantee has two halves that must not be conflated.** An earlier
+draft of this paragraph said that every failure leaves the subsystem non-`PROVEN` with no `0x216`
+transmitted. That is stronger than anything an automatic sequence can promise, and stating it here while
+the implementation said something narrower is exactly the drift these revisions exist to stop.
+
+What is true:
+
+- **Before a mapping is installed** — no epoch, an unconfirmable write, an unestablished window, or a
+  refused proof — the subsystem stays non-`PROVEN` and no measurement frame is transmitted, which is
+  where a failed manual proof already leaves it.
+- **After a mapping is installed but acquisition does not start**, the mapping is `PROVEN` and no
+  acquisition is running. That produces health without measurements, not measurements without a mapping,
+  and it is a legitimate state rather than a contradiction: `PROVEN` describes the mapping, and `0x216`
+  requires an acquisition that is running.
+
+So the narrow claim, which is the one that may be relied on: **no automatic step transmits a measurement
+except after a proof that succeeded and an acquisition start that succeeded.** An automatic sequence
+cannot claim that no `0x216` exists on the bus — acquisition already started by an operator is outside
+its knowledge and outside its control, and a claim that swept that in would be false for a reason nobody
+could see from the automatic path. Nothing in an automatic profile may fabricate a health state or
+suppress one.
 
 **The firmware's three guarantees are unchanged** — it refuses an epoch equal to any it has used since
 power-on, it advances the epoch and resets `cycle_seq` in one transaction, and it stays non-`PROVEN` if

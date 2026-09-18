@@ -25,6 +25,23 @@ bool wired()
            hooks_.prove != nullptr && hooks_.start != nullptr;
 }
 
+/* A budget of zero on either step means an enabled machine that cannot finish the job. That is a
+ * configuration fault and is caught here, before anything is reached for.
+ *
+ * The start budget is the one that made this necessary. With it at zero the sequence used to acquire
+ * an epoch, run the whole proof -- installing a mapping and spending an ordinal -- and only then
+ * refuse to start, so a misconfiguration cost a real epoch and a real change to the chain every time
+ * it was stepped. Nothing about a zero budget requires finding that out the expensive way.
+ *
+ * The proof budget is folded in for consistency rather than because it was dangerous: at zero the
+ * old code spent nothing, but it reported a machine that can never reach `started` as merely
+ * "exhausted", which reads like something that happened rather than something that was configured.
+ * `enabled` already means "off"; a zero budget while enabled means "on and unable to finish". */
+bool budgeted()
+{
+    return cfg_.max_attempts > 0 && cfg_.max_start_attempts > 0;
+}
+
 } // namespace
 
 void init(const config &cfg, const hooks &h)
@@ -39,7 +56,7 @@ void init(const config &cfg, const hooks &h)
      * deployment as a deliberate configuration. */
     if (!cfg_.enabled)
         state_ = state::disabled;
-    else if (!wired())
+    else if (!wired() || !budgeted())
         state_ = state::misconfigured;
     else
         state_ = state::waiting;

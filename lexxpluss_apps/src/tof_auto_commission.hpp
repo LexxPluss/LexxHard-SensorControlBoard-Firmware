@@ -79,7 +79,8 @@ struct hooks {
 
 struct config {
     bool enabled{false};
-    /* Proof attempts within one power-on. Zero means zero, like `enabled` means off. */
+    /* Proof attempts within one power-on. Zero with `enabled` set is a configuration fault, not a
+     * quiet nothing: it describes a machine that can never reach `started`. */
     uint8_t max_attempts{0};
     /* Acquisition starts, counted separately. A start that refuses is a different failure from a
      * proof that refuses -- the mapping is installed and the epoch is spent -- so it gets its own
@@ -90,7 +91,7 @@ struct config {
 
 enum class state : uint8_t {
     disabled,      /* not configured, or configured off -- a choice, not a fault */
-    misconfigured, /* switched on and unable to act: a hook is missing. A fault, and reported as one */
+    misconfigured, /* switched on and unable to finish: a hook or a budget is missing. A fault */
     waiting,   /* on, and no mapping proven yet */
     proven,    /* a proof succeeded; acquisition not yet running */
     started,   /* acquisition running; terminal for this power-on */
@@ -99,7 +100,7 @@ enum class state : uint8_t {
 
 enum class step_result : uint8_t {
     disabled,
-    misconfigured,      /* enabled with a hook missing; nothing is attempted and it will not resolve */
+    misconfigured,      /* enabled with a hook or a budget missing; nothing is attempted, and it will not resolve */
     not_permitted,      /* the stationary condition said no; nothing was attempted or counted */
     no_epoch,           /* no epoch available; nothing was attempted or counted */
     proof_failed,       /* an attempt was spent and nothing was installed */

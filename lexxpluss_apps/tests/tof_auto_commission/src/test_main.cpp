@@ -241,17 +241,18 @@ ZTEST(tof_auto_commission, test_a_failed_start_retries_the_start_and_not_the_pro
     zassert_equal(f_.start_calls, 2, "it retried only the start");
 }
 
-ZTEST(tof_auto_commission, test_zero_attempts_means_no_proof_is_ever_attempted)
+ZTEST(tof_auto_commission, test_a_zero_proof_budget_is_a_configuration_fault)
 {
-    /* max_attempts defaults to 0, so a configuration that switches the machine on without saying
-     * how many attempts it may make gets none rather than unlimited. */
-    enable(0);
+    /* max_attempts defaults to 0, so a configuration that switches the machine on without saying how
+     * many attempts it may make describes a machine that can never reach started. That is reported
+     * as a fault rather than as a quiet nothing. */
+    enable(0, 3);
 
-    zassert_equal(ac::step(), ac::step_result::attempts_exhausted, "no budget, no attempt");
+    zassert_equal(ac::current(), ac::state::misconfigured, "on and unable to finish");
+    zassert_equal(ac::step(), ac::step_result::misconfigured, "and it says which");
+    zassert_equal(f_.acquire_calls, 0, "no epoch is reached for");
     zassert_equal(f_.prove_calls, 0, "nothing is proved");
-    zassert_equal(f_.acquire_calls, 0, "and no epoch is reached for, because acquiring may spend one");
-    zassert_equal(f_.start_calls, 0, "and nothing started");
-    zassert_equal(ac::current(), ac::state::exhausted, "it is spent from the outset");
+    zassert_equal(f_.start_calls, 0, "and nothing is started");
 }
 
 /* ---- the start budget ---- */
@@ -274,12 +275,17 @@ ZTEST(tof_auto_commission, test_start_retries_are_bounded_too)
     zassert_equal(f_.start_calls, 2, "no further start");
 }
 
-ZTEST(tof_auto_commission, test_zero_start_attempts_means_a_proof_is_never_started)
+ZTEST(tof_auto_commission, test_a_zero_start_budget_is_caught_before_an_epoch_is_spent)
 {
+    /* This is the one that mattered. With no start budget the sequence used to acquire an epoch and
+     * run the whole proof -- installing a mapping and spending an ordinal -- before refusing to
+     * start, so a misconfiguration cost a real epoch and a real change to the chain on every step. */
     enable(3, 0);
 
-    zassert_equal(ac::step(), ac::step_result::start_attempts_exhausted, "no start budget");
-    zassert_equal(f_.prove_calls, 1, "the proof still ran");
-    zassert_equal(f_.start_calls, 0, "but nothing was started");
-    zassert_equal(ac::current(), ac::state::proven, "and the mapping it installed is not forgotten");
+    zassert_equal(ac::current(), ac::state::misconfigured, "caught at configuration time");
+    zassert_equal(ac::step(), ac::step_result::misconfigured, "and reported as a fault");
+    zassert_equal(f_.acquire_calls, 0, "no epoch is acquired, so none is spent");
+    zassert_equal(f_.prove_calls, 0, "and the mapping is not touched");
+    zassert_equal(f_.start_calls, 0, "nothing is started");
+    zassert_equal(ac::attempts_used(), 0, "no proof attempt is counted either");
 }
