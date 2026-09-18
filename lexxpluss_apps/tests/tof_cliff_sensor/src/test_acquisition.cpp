@@ -44,6 +44,10 @@ namespace acq = lexxhard::tof_acq;
 
 constexpr uint32_t kCyclePeriodMs{50};
 constexpr uint32_t kHealthPeriodMs{20};
+/* What VL53LX_DataInit already leaves: MEDIUM at 33,333 us. Stated here so the suite uses the
+ * baseline rather than a number invented for a test. */
+constexpr uint32_t kBudgetUs{33333};
+constexpr uint8_t kDistanceMode{2};
 
 // Scripted behaviour and recorded traffic for the faked device ops.
 struct fake_dev {
@@ -69,6 +73,10 @@ struct fake_dev {
     int read_calls{0};
     int stop_calls{0};
     uint8_t configured_frequency_hz{0};
+    /* What configure() was actually handed. Zero means it was never told anything, which until
+     * this commit was the normal case: configure() was a no-op. */
+    uint32_t configured_budget_us{0};
+    uint8_t configured_distance_mode{0};
     bool lock_held_in_open{false};
     bool lock_held_in_read{false};
 };
@@ -132,10 +140,14 @@ int fake_open(void *dev, uint8_t, acq::op_status *st)
     return d.open_rc;
 }
 
-int fake_configure(void *dev, acq::op_status *st)
+int fake_configure(void *dev, uint32_t timing_budget_us, uint8_t distance_mode, acq::op_status *st)
 {
+    auto &d{*static_cast<fake_dev *>(dev)};
+
     memset(st, 0, sizeof(*st));
-    return static_cast<fake_dev *>(dev)->configure_rc;
+    d.configured_budget_us = timing_budget_us;
+    d.configured_distance_mode = distance_mode;
+    return d.configure_rc;
 }
 
 int fake_start(void *dev, acq::op_status *st)
@@ -368,10 +380,13 @@ acq::config make_config(int count)
         d.role_id = static_cast<uint8_t>(i);
         d.dev = &devs[i];
         d.scratch = &devs[i]; /* the fake ops ignore it; only non-null matters */
-        if (d.kind == acq::model::l4_cliff)
+        if (d.kind == acq::model::l4_cliff) {
             d.ops = &kFakeOps;
-        else
+            d.cliff_timing_budget_us = kBudgetUs;
+            d.cliff_distance_mode = kDistanceMode;
+        } else {
             d.grid_ops = &kFakeGridOps;
+        }
         if (d.kind == acq::model::l7_grid)
             d.grid_frequency_hz = 15;
     }
@@ -485,6 +500,71 @@ ZTEST(tof_acquisition, test_missing_hooks_and_bad_source_tables_are_refused)
     c = make_config(4);
     four_cliff_two_grid[1].scratch = nullptr;
     zassert_equal(acq::init(c), -EINVAL, "a cliff source needs its own scratch");
+}
+
+ZTEST(tof_acquisition, test_the_l4_ranging_profile_is_injected_and_reaches_the_device)
+{
+    /* configure() was a no-op until now, so the four cliff sensors ran on whatever
+     * VL53LX_DataInit left -- MEDIUM at 33,333 us, a vendor default rather than a decision. The
+     * profile now comes from the descriptor and has to arrive at the device unchanged.
+     *
+     * DELIBERATELY NOT THE BASELINE VALUES. A first version of this case asserted 33,333 and
+     * MEDIUM, which a bring-up that hard-coded exactly those would also pass -- the assertion
+     * could not tell an injected value from a baked-in one. These two agree with no default
+     * anywhere in the tree. */
+    constexpr uint32_t kOtherBudgetUs{20000};
+    constexpr uint8_t kOtherMode{3};  // LONG, and the suite's default is MEDIUM
+    acq::config c{make_config(acq::kMaxSources)};
+
+    for (int i{0}; i < 4; ++i) {
+        four_cliff_two_grid[i].cliff_timing_budget_us = kOtherBudgetUs;
+        four_cliff_two_grid[i].cliff_distance_mode = kOtherMode;
+    }
+    zassert_equal(acq::init(c), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    for (int i{0}; i < 4; ++i) {
+        zassert_equal(devs[i].configured_budget_us, kOtherBudgetUs, "cliff source %d", i);
+        zassert_equal(devs[i].configured_distance_mode, kOtherMode, "cliff source %d", i);
+    }
+    // And nothing of the sort reached the grid sources, whose table takes a frequency instead.
+    zassert_equal(devs[4].configured_budget_us, 0U);
+    zassert_equal(devs[4].configured_frequency_hz, 15);
+}
+
+ZTEST(tof_acquisition, test_a_missing_or_impossible_ranging_profile_is_refused)
+{
+    /* No defaults, the same rule the periods follow. A budget invented here would become the
+     * specification by being the only number in the build, and a distance mode outside the ULD's
+     * three would reach VL53LX_SetDistanceMode as an unhandled case -- the interesting failure
+     * being the one where it is quietly accepted. */
+    acq::config c{make_config(4)};
+
+    four_cliff_two_grid[2].cliff_timing_budget_us = 0;
+    zassert_equal(acq::init(c), -EINVAL, "a cliff source with no timing budget was accepted");
+
+    c = make_config(4);
+    four_cliff_two_grid[2].cliff_distance_mode = 0;
+    zassert_equal(acq::init(c), -EINVAL);
+
+    c = make_config(4);
+    four_cliff_two_grid[2].cliff_distance_mode = 4;  // one past LONG
+    zassert_equal(acq::init(c), -EINVAL, "a distance mode the ULD does not define was accepted");
+
+    // All three the ULD defines are legal, and nothing here prefers one of them.
+    for (uint8_t mode{1}; mode <= 3; ++mode) {
+        c = make_config(4);
+        for (int i{0}; i < 4; ++i)
+            four_cliff_two_grid[i].cliff_distance_mode = mode;
+        zassert_equal(acq::init(c), 0, "mode %u was refused", mode);
+        acq::teardown();
+    }
+
+    /* And the profile belongs to the cliff model only: a grid descriptor carrying it is the same
+     * class of wiring mistake as a grid descriptor carrying the cliff table. */
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[4].cliff_timing_budget_us = kBudgetUs;
+    zassert_equal(acq::init(c), -EINVAL, "a grid descriptor carried an L4 ranging profile");
 }
 
 ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
@@ -2346,10 +2426,13 @@ ZTEST(tof_acquisition, test_stats_identity_uses_the_product_source_order)
         d.role_id = (i < 2) ? 255 : static_cast<uint8_t>(i - 2);
         d.dev = &devs[i];
         d.scratch = &devs[i];
-        if (d.kind == acq::model::l4_cliff)
+        if (d.kind == acq::model::l4_cliff) {
             d.ops = &kFakeOps;
-        else
+            d.cliff_timing_budget_us = kBudgetUs;
+            d.cliff_distance_mode = kDistanceMode;
+        } else {
             d.grid_ops = &kFakeGridOps;
+        }
         if (d.kind == acq::model::l7_grid)
             d.grid_frequency_hz = 15;
     }
@@ -2393,10 +2476,13 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         d.role_id = 255; /* unassigned: nothing is proven at init time */
         d.dev = &devs[i];
         d.scratch = &devs[i];
-        if (d.kind == acq::model::l4_cliff)
+        if (d.kind == acq::model::l4_cliff) {
             d.ops = &kFakeOps;
-        else
+            d.cliff_timing_budget_us = kBudgetUs;
+            d.cliff_distance_mode = kDistanceMode;
+        } else {
             d.grid_ops = &kFakeGridOps;
+        }
         if (d.kind == acq::model::l7_grid)
             d.grid_frequency_hz = 15;
     }

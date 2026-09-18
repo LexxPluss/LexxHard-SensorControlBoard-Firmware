@@ -106,7 +106,12 @@ uint32_t now_cycles()
  *
  * role_id is deliberately NOT set here. It is the key the contract's source_id and per-cycle masks
  * are built from, and the only legitimate source for it is a mapping a proof installed. */
-void build_descriptors()
+/* The ranging profile is a PARAMETER rather than read from cfg_, because this runs before cfg_ is
+ * assigned: bootstrap validates every stage first and only adopts the configuration once they have
+ * all succeeded, so reading cfg_ here would key every cliff descriptor with a zero budget and the
+ * acquisition layer would then refuse the whole table. Moving the assignment earlier would mean a
+ * failed bootstrap left its configuration behind, which is worse. */
+void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode)
 {
     int cliff_index{0};
 
@@ -123,6 +128,8 @@ void build_descriptors()
             d.dev = &objs_[cliff_index];
             d.scratch = &scratch_;
             d.ops = &acq::l4_cliff_ops();
+            d.cliff_timing_budget_us = cliff_timing_budget_us;
+            d.cliff_distance_mode = cliff_distance_mode;
             ++cliff_index;
         } else {
             /* The grid path has its own typed table. The named stub keeps the unfinished adapter
@@ -239,7 +246,9 @@ config config_from_devicetree()
     return config{DT_PROP(DT_PATH(tof_chain), cycle_period_ms),
                   DT_PROP(DT_PATH(tof_chain), health_period_ms),
                   DT_PROP(DT_PATH(tof_chain), stop_join_timeout_ms),
-                  DT_PROP(DT_PATH(tof_chain), acq_thread_priority)};
+                  DT_PROP(DT_PATH(tof_chain), acq_thread_priority),
+                  DT_PROP(DT_PATH(tof_chain), cliff_timing_budget_us),
+                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode)};
 }
 #endif
 
@@ -252,6 +261,12 @@ int bootstrap(const config &cfg)
     if (stage_ != stage::not_started)
         return -EALREADY;
 
+    /* The ranging profile is checked HERE as well as in tof_acq::init(), and deliberately: this is
+     * the stage that can name what was wrong, and a bootstrap that reached the descriptors with a
+     * zero budget would be refused there as a generic -EINVAL with no stage attached. */
+    if (cfg.cliff_timing_budget_us == 0 || cfg.cliff_distance_mode < 1 ||
+        cfg.cliff_distance_mode > 3)
+        return -EINVAL;
     if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0 || cfg.stop_join_timeout_ms == 0)
         return -EINVAL;
 
@@ -273,7 +288,7 @@ int bootstrap(const config &cfg)
         return -ENODEV;
     }
 
-    build_descriptors();
+    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode);
 
     if (const int rc{init_authority()}; rc != 0) {
         stage_ = stage::authority_failed;
@@ -407,7 +422,11 @@ int probe_position(size_t position_1based, probe_result &out, unsigned attempts,
     out.attempted = true;
     out.open_rc = ops.open(dev, descs_[i].addr_7bit, &out.status);
     if (out.open_rc == 0) {
-        (void)ops.configure(dev, &out.status);
+        /* The descriptor's own profile, not a second opinion: this diagnostic must range the way
+         * acquisition does, or the number it prints comes from a sensor configured differently
+         * from the one the cliff path reads. */
+        (void)ops.configure(dev, descs_[i].cliff_timing_budget_us, descs_[i].cliff_distance_mode,
+                            &out.status);
         out.start_rc = ops.start(dev, &out.status);
         if (out.start_rc == 0) {
             /* One start, then re-check. Restarting between checks -- which is what looping over the
@@ -462,7 +481,11 @@ int stream_position(size_t position_1based, stream_result &out, unsigned want_fr
     out.attempted = true;
     out.open_rc = ops.open(dev, descs_[i].addr_7bit, &out.status);
     if (out.open_rc == 0) {
-        (void)ops.configure(dev, &out.status);
+        /* The descriptor's own profile, not a second opinion: this diagnostic must range the way
+         * acquisition does, or the number it prints comes from a sensor configured differently
+         * from the one the cliff path reads. */
+        (void)ops.configure(dev, descs_[i].cliff_timing_budget_us, descs_[i].cliff_distance_mode,
+                            &out.status);
         out.start_rc = ops.start(dev, &out.status);
         if (out.start_rc == 0) {
             const lexxhard::tof_cliff_stream::params p{want_frames, gap_ms, max_attempts};
@@ -506,7 +529,7 @@ const acq::source_desc *descriptors_for_test()
 
 int force_rebuild_descriptors_for_test()
 {
-    build_descriptors();
+    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode);
     keyed_ = false;
     return 0;
 }

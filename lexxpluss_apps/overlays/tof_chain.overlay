@@ -36,6 +36,14 @@
 		 * the stack is a guess until a watermark exists, and the priority
 		 * is preemptible and below the shell so a stuck cycle cannot
 		 * starve the console. */
+		/* What VL53LX_DataInit already leaves: MEDIUM at 33,333 us. Stated
+		 * rather than inherited, because until the injection point existed
+		 * nobody had chosen either value -- and 33,333 us is two thirds of
+		 * the 50 ms cycle period, so it is the first candidate for the
+		 * ranging rate. A shorter budget must be measured on the robot
+		 * before it is used for anything but an experiment. */
+		cliff-timing-budget-us = <33333>;
+		cliff-distance-mode = <2>;
 		stop-join-timeout-ms = <500>;
 		acq-stack-size = <2048>;
 		acq-thread-priority = <7>;

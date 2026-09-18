@@ -226,15 +226,14 @@ int cliff_open(void *dev, uint8_t addr_7bit, op_status *st)
     return tof_cliff_sensor_open(static_cast<VL53L4CX_Object_t *>(dev), addr_7bit, st);
 }
 
-int cliff_configure(void *dev, op_status *st)
+int cliff_configure(void *dev, uint32_t timing_budget_us, uint8_t distance_mode, op_status *st)
 {
-    // The mode and budget are the caller's business, not this layer's, and both are
-    // still unresolved in the wire contract. Until the injection point for them exists
-    // the configure step is a no-op that reports success without touching the device -
-    // deliberately visible as "not configured yet" rather than as a frozen value.
-    ARG_UNUSED(dev);
-    memset(st, 0, sizeof(*st));
-    return 0;
+    /* It used to be a no-op that reported success, so the four cliff sensors ran on whatever
+     * VL53LX_DataInit had left: MEDIUM at 33,333 us. The values now come from the descriptor,
+     * which refuses to be built without them. */
+    return tof_cliff_sensor_configure(static_cast<VL53L4CX_Object_t *>(dev),
+                                      static_cast<VL53LX_DistanceModes>(distance_mode),
+                                      timing_budget_us, st);
 }
 
 int cliff_start(void *dev, op_status *st)
@@ -545,6 +544,14 @@ int init(const config &cfg)
                 d.ops->stop == nullptr || d.grid_ops != nullptr || d.dev == nullptr ||
                 d.scratch == nullptr)
                 return -EINVAL;
+            /* The ranging profile, refused rather than defaulted. The range check on the mode is
+             * the ULD's own three values: a fourth would reach VL53LX_SetDistanceMode as an
+             * unhandled case, and the interesting failure is the one where it is silently
+             * accepted. */
+            if (d.cliff_timing_budget_us == 0 ||
+                d.cliff_distance_mode < VL53LX_DISTANCEMODE_SHORT ||
+                d.cliff_distance_mode > VL53LX_DISTANCEMODE_LONG)
+                return -EINVAL;
         } else {
             has_grid = true;
             if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
@@ -556,6 +563,11 @@ int init(const config &cfg)
              * must supply both; its implementation owns what those types are. */
             if (d.grid_ops != &l7_grid_stub_ops() &&
                 (d.dev == nullptr || d.scratch == nullptr || d.grid_frequency_hz == 0))
+                return -EINVAL;
+            /* And no L4 ranging profile on a grid descriptor, for the same reason the L4 table is
+             * refused here: a field that belongs to the other model, quietly carried, is a wiring
+             * mistake the compiler cannot see. */
+            if (d.cliff_timing_budget_us != 0 || d.cliff_distance_mode != 0)
                 return -EINVAL;
         }
     }
@@ -731,7 +743,8 @@ int bring_up()
 
             rc = d.ops->open(d.dev, d.addr_7bit, &st);
             if (rc == 0)
-                rc = d.ops->configure(d.dev, &st);
+                rc = d.ops->configure(d.dev, d.cliff_timing_budget_us, d.cliff_distance_mode,
+                                      &st);
             if (rc == 0)
                 rc = d.ops->start(d.dev, &st);
             record(f, rc, st);

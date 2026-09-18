@@ -111,7 +111,12 @@ using op_status = struct tof_cliff_read_status;
 // A point sensor operation table. It cannot carry a grid by construction.
 struct source_ops {
     int (*open)(void *dev, uint8_t addr_7bit, op_status *st);
-    int (*configure)(void *dev, op_status *st);
+    /* configure() takes the ranging profile explicitly, for the same reason the grid table's
+     * takes its frequency: there is no scheduler default and both values are refused when
+     * absent. This used to be a no-op whose comment said "until the injection point for them
+     * exists" -- so nothing ever set either one, and the four cliff sensors have been running
+     * on whatever VL53LX_DataInit left behind. */
+    int (*configure)(void *dev, uint32_t timing_budget_us, uint8_t distance_mode, op_status *st);
     int (*start)(void *dev, op_status *st);
     int (*read_cliff_sample)(void *dev, void *scratch, struct tof_cliff_sample *out,
                              op_status *st);
@@ -146,6 +151,27 @@ struct source_desc {
     // here is what keeps position policy out of the scheduler.
     uint8_t role_id{0};
     uint8_t grid_frequency_hz{0};             // explicit for l7_grid; no scheduler default
+    /* THE L4 RANGING PROFILE, and the reason it is configuration rather than a constant.
+     *
+     * VL53LX_DataInit leaves MEDIUM at 33,333 us, and until this field existed that is what
+     * the four cliff sensors ran at -- not as a decision but as a vendor default nobody had
+     * looked at, because configure() was a no-op whose comment said "until the injection
+     * point for them exists". 33,333 us is also two thirds of the 50 ms cycle period, so it
+     * is the first place to look for the rate.
+     *
+     * Both are required for l4_cliff and refused when absent, so the value that ships is one
+     * somebody wrote down. A SHORTER BUDGET IS A CANDIDATE, NOT A CHOICE: ST allows one, but
+     * ranging performance at a shorter budget cannot be inferred from the rate it permits.
+     * Maximum distance, ambient-light behaviour and error rate over the installed harness
+     * all have to be measured on the robot before a shorter value is used for anything but
+     * an experiment.
+     *
+     * distance_mode carries the ULD's own VL53LX_DISTANCEMODE_* values rather than an
+     * enumeration of our own: a private mapping onto three integers is a chance to get the
+     * correspondence wrong for no benefit. SHORT is 1, MEDIUM 2, LONG 3; anything else is
+     * refused. */
+    uint32_t cliff_timing_budget_us{0};
+    uint8_t cliff_distance_mode{0};
     void *dev{nullptr};                       // VL53L4CX_Object_t* for l4_cliff
     void *scratch{nullptr};                   // tof_cliff_scratch* for l4_cliff
     const source_ops *ops{nullptr};           // required for l4_cliff

@@ -76,6 +76,11 @@ struct config {
      * deployment. Zero is refused for the first two here and by tof_acq::start() for the timeout. */
     uint32_t stop_join_timeout_ms{0};
     int thread_priority{0};
+    /* The four L4s' ranging profile, injected for the same reason as the periods: until the
+     * acquisition layer could take one, configure() was a no-op and the parts ran on whatever
+     * VL53LX_DataInit left. Zero, or a mode outside the ULD's three, is refused. */
+    uint32_t cliff_timing_budget_us{0};
+    uint8_t cliff_distance_mode{0};
 };
 
 /* The value production uses. DEFINED only where the chain devicetree node exists -- which is every

@@ -291,7 +291,7 @@ int src_open(void *, uint8_t, acq::op_status *st)
     *st = acq::op_status{};
     return 0;
 }
-int src_configure(void *, acq::op_status *st)
+int src_configure(void *, uint32_t, uint8_t, acq::op_status *st)
 {
     *st = acq::op_status{};
     return 0;
@@ -351,6 +351,10 @@ void arrange_running_acquisition()
         descs[i].dev = &sources[i];
         descs[i].scratch = &sources[i].scratch;
         descs[i].ops = &kFakeSourceOps;
+        /* The baseline profile, which is what VL53LX_DataInit leaves anyway. Required rather than
+         * defaulted, so it has to be stated even by a fake. */
+        descs[i].cliff_timing_budget_us = 33333;
+        descs[i].cliff_distance_mode = 2;
     }
 
     acq::config c{};

@@ -112,7 +112,9 @@ namespace {
 
 /* Injected, as production injects it from the devicetree: cadence, health period, join timeout,
  * thread priority. Nothing here has a default anywhere in the module. */
-constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5)};
+/* The last two are the L4 ranging profile: what VL53LX_DataInit already leaves, stated because
+ * the runtime refuses to bootstrap without it. */
+constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 2};
 
 /* The acquisition thread's stack. The runtime sizes its own from a devicetree property; there is no
  * devicetree here, and a fallback compiled into the module for tests would be a size nobody chose
@@ -218,10 +220,23 @@ ZTEST(tof_cliff_runtime, test_timing_has_no_defaults_here_either)
 {
     /* Both periods are unresolved symbols in the wire contract. Refusing zero is what keeps this
      * layer from becoming the place a placeholder quietly turns into the specification. */
-    zassert_equal(rt::bootstrap(rt::config{0, 20}), -EINVAL);
+    zassert_equal(rt::bootstrap(rt::config{0, 20, 400, K_PRIO_PREEMPT(5), 33333, 2}), -EINVAL);
     zassert_equal(rt::current_stage(), rt::stage::not_started,
                   "a refused config still wired something up");
-    zassert_equal(rt::bootstrap(rt::config{50, 0}), -EINVAL);
+    zassert_equal(rt::bootstrap(rt::config{50, 0, 400, K_PRIO_PREEMPT(5), 33333, 2}), -EINVAL);
+    zassert_equal(rt::current_stage(), rt::stage::not_started);
+
+    /* The ranging profile has no default either, and is refused HERE rather than as a generic
+     * -EINVAL from the acquisition layer: this is the stage that can say which value was wrong.
+     * Until this commit configure() was a no-op, so the parts ran on the vendor's default and
+     * there was nothing to refuse. */
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 0, 2}), -EINVAL,
+                  "a bootstrap with no timing budget was accepted");
+    zassert_equal(rt::current_stage(), rt::stage::not_started);
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 0}), -EINVAL);
+    zassert_equal(rt::current_stage(), rt::stage::not_started);
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 4}), -EINVAL,
+                  "a distance mode the ULD does not define was accepted");
     zassert_equal(rt::current_stage(), rt::stage::not_started);
     zassert_false(rt::ready());
 }

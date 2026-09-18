@@ -691,7 +691,7 @@ int16_t canned_mm{1234};
 bool start_fails{false};
 
 int op_open(void *, uint8_t, acq::op_status *) { return 0; }
-int op_configure(void *, acq::op_status *) { return 0; }
+int op_configure(void *, uint32_t, uint8_t, acq::op_status *) { return 0; }
 int op_start(void *, acq::op_status *st)
 {
     if (start_fails) {
@@ -732,6 +732,8 @@ acq::config make_acq_config()
             descs[i].dev = &fake_dev[i];
             descs[i].scratch = &fake_scratch[i];
             descs[i].ops = &kOps;
+            descs[i].cliff_timing_budget_us = 33333;  // what DataInit leaves; required, not default
+            descs[i].cliff_distance_mode = 2;
         } else {
             descs[i].dev = nullptr;
             descs[i].scratch = nullptr;

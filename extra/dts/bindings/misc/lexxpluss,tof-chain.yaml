@@ -72,6 +72,31 @@ properties:
       watermark has been measured on hardware -- and required, so that the
       provisional number is one somebody wrote down.
 
+  cliff-timing-budget-us:
+    type: int
+    required: true
+    description: |
+      VL53L4CX measurement timing budget for the four cliff sensors. Required,
+      and 33333 is the value that preserves existing behaviour: until the
+      acquisition layer could inject one, configure() was a no-op and the parts
+      ran on whatever VL53LX_DataInit had left, which is exactly this number at
+      MEDIUM. Writing it down changes nothing about the hardware and makes the
+      first candidate for the ranging rate visible in a diff.
+
+      A shorter budget is a candidate and not a choice. ST permits one, but the
+      ranging performance at a shorter budget cannot be inferred from the rate
+      it allows: maximum distance, ambient-light behaviour and error rate over
+      the installed harness have to be measured on the robot first.
+
+  cliff-distance-mode:
+    type: int
+    required: true
+    description: |
+      VL53LX_DISTANCEMODE_* for the four cliff sensors -- 1 SHORT, 2 MEDIUM,
+      3 LONG, and nothing else is accepted. 2 preserves what DataInit leaves.
+      The ULD's own numbering rather than a private enumeration, because a
+      mapping onto three integers is only a chance to get it wrong.
+
   acq-thread-priority:
     type: int
     required: true
