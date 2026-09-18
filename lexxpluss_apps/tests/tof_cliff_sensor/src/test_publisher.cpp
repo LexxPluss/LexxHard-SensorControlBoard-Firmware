@@ -162,6 +162,15 @@ void build_descs()
     }
 }
 
+/* There is no grid publisher yet, and this is not the place to invent one: the two grid
+ * positions exist in this harness only so the cliff publisher is exercised against the real
+ * six-position table. A grid sample cannot arrive through the -ENOSYS stub, so this body is
+ * unreachable rather than merely empty. */
+void on_grid_sample_sink(int, uint32_t, const acq::source_facts &,
+                         const lexxhard::tof_l7::sample &)
+{
+}
+
 pub::config make_pub_config()
 {
     pub::config c{};
@@ -780,8 +789,17 @@ acq::config make_acq_config()
     for (int i = 0; i < acq::kMaxSources; ++i) {
         descs[i].dev = &fake_dev[i];
         descs[i].scratch = &fake_scratch[i];
-        descs[i].stream = &fake_stream[i];
-        descs[i].ops = &kOps;
+        if (descs[i].kind == acq::model::l4_cliff) {
+            descs[i].stream = &fake_stream[i];
+            descs[i].ops = &kOps;
+        } else {
+            /* The grid positions take the named stub, which is what the runtime wires and
+             * what the scheduler's descriptor validation now insists on: the point-sensor
+             * table is no longer a legal thing to put here. */
+            descs[i].grid_ops = &acq::l7_grid_stub_ops();
+            descs[i].dev = nullptr;
+            descs[i].scratch = nullptr;
+        }
     }
     c.sources = descs;
     c.source_count = acq::kMaxSources;
@@ -792,6 +810,7 @@ acq::config make_acq_config()
     c.hooks.on_cycle_begin = pub::on_cycle_begin;
     c.hooks.on_cycle = pub::on_cycle_complete;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
+    c.hooks.on_grid_sample = on_grid_sample_sink;
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = provider;
     c.now_ms = clock_ms;

@@ -12,11 +12,11 @@
 // It exists to establish the boundaries and to make the budget measurable with a
 // scheduler in the image. Known and deliberate limitations, all of which will change:
 //
-//   - The data interface is still L4-shaped. read_cliff_sample() hands back a
-//     tof_cliff_sample and there is one payload sink, which suits four point sensors and
-//     does not suit an 8x8 grid. When the real L7 path lands, the ops table and the sinks
-//     both change shape; the grid stub refusing a cliff-shaped read is the visible marker
-//     of that debt, not a design.
+//   - L4 and L7 now have SEPARATE typed operation tables, diagnostic records and payload
+//     sinks, so a grid can no longer be expressed as a point sample. What is still absent
+//     is the implementation behind the grid table: it is a named -ENOSYS stub, no real
+//     VL53L7CX is bound to it, and nothing packs or publishes a grid. The shape is
+//     finished; the path is not.
 //   - The packer, the publisher and the CAN glue all exist and are wired, and
 //     tof_cliff_runtime::bootstrap() is a production caller: a shipping image runs the heartbeat
 //     from power-on. Cycles need a proven mapping first, so today they happen only behind
@@ -82,6 +82,8 @@
 #include <zephyr/kernel.h>
 
 #include "tof_cliff_sensor.h"
+#include "tof_l7_sample.hpp"
+#include "tof_l7_status.hpp"
 #include "tof_mapping_state.hpp"
 
 namespace lexxhard::tof_acq {
@@ -97,18 +99,17 @@ enum class model : uint8_t {
 // mapping_state now lives in tof_mapping_state.hpp, included above: the authority needs the
 // enum without the vendor ULD this header drags in.
 
-// The diagnostic record is shared between models; the POLICY is not. Reusing one struct
-// for "where did it fail and with which errno" costs nothing and keeps one triage
-// vocabulary. It says nothing about what the failure means.
+// The L4 driver's own diagnostic record, used by the cliff operation table below and by
+// nothing else. It is NOT the record the scheduler keeps -- see source_status.
 using op_status = struct tof_cliff_read_status;
 
 // One source's device operations. There is no enable, no address change and no reset:
 // the enable line is the chain's addressing mechanism and belongs to commissioning.
 //
 // read_cliff_sample is named for what it actually is. A generic name would hide that this
-// table is currently the shape of a point sensor, and the grid path cannot be expressed
-// through it: an 8x8 zone frame is not a tof_cliff_sample. The name is the reminder that
-// this signature has to change, rather than a claim that it is already general.
+// table is the shape of a point sensor, and a grid cannot be expressed through it: an 8x8
+// zone frame is not a tof_cliff_sample. The answer is a second table below rather than a
+// wider signature here -- see grid_source_ops.
 struct source_ops {
     int (*open)(void *dev, uint8_t addr_7bit, op_status *st);
     int (*configure)(void *dev, op_status *st);
@@ -121,10 +122,31 @@ struct source_ops {
     int (*stop)(void *dev, op_status *st);
 };
 
-// The grid ops, every one of which returns -ENOSYS. An explicit stub rather than a null
-// pointer or a copy of the cliff ops, so that wiring L7 to the wrong driver is a
-// deliberate act rather than an oversight.
-const source_ops &l7_stub_ops();
+// A grid operation table. Being a DIFFERENT TYPE is the point, not a tidiness preference:
+// a grid can no longer be made to fit by reinterpreting it as a tof_cliff_sample, and a
+// descriptor cannot be pointed at the cliff table by accident, because the compiler
+// refuses it. The previous stub was cliff-shaped and could be wired either way.
+//
+// It has exactly five operations and, like the cliff table, no enable, address-change or
+// reset: those belong to commissioning, not to acquisition.
+//
+// configure() takes the frequency explicitly. There is no scheduler default and zero is
+// rejected, because the sustainable grid rate is a measurement nobody has taken and a
+// number invented here would become the specification by being the only one available.
+struct grid_source_ops {
+    int (*open)(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st);
+    int (*configure)(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st);
+    int (*start)(void *dev, tof_l7::operation_status *st);
+    int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
+                            tof_l7::operation_status *st);
+    int (*stop)(void *dev, tof_l7::operation_status *st);
+};
+
+// Every operation returns -ENOSYS. An explicit stub rather than a null pointer or a copy
+// of the cliff ops, so that wiring L7 to the wrong driver is a deliberate act rather than
+// an oversight -- and now in the correct shape, so the stub is the only thing still
+// missing rather than the signature as well.
+const grid_source_ops &l7_grid_stub_ops();
 
 // The cliff ops, bound to the real tof_cliff_sensor functions.
 const source_ops &l4_cliff_ops();
@@ -143,8 +165,44 @@ struct source_desc {
     // source_facts is per cycle and cleared, and a history that is cleared every cycle
     // cannot detect a repeat across cycles - which is the only thing it is for.
     void *stream{nullptr};
-    const source_ops *ops{nullptr};
+    // Explicit for l7_grid and rejected when zero. The sustainable grid rate is a
+    // measurement nobody has taken, so a scheduler default would become the
+    // specification by being the only number available.
+    uint8_t grid_frequency_hz{0};
+    const source_ops *ops{nullptr};            // required for l4_cliff, null for l7_grid
+    const grid_source_ops *grid_ops{nullptr};  // required for l7_grid, null for l4_cliff
 };
+
+// Which driver's vocabulary `stage` below is written in. Without it the number is
+// meaningless: TOF_CLIFF_STAGE_* and tof_l7::stage are unrelated enumerations that
+// happen to start at zero, so reading one as the other prints a plausible wrong answer.
+enum class status_domain : uint8_t {
+    none,
+    l4,
+    l7,
+};
+
+/* The scheduler's model-neutral diagnostic record.
+ *
+ * It replaces a field that was literally a tof_cliff_read_status even for an L7 source --
+ * which was harmless only while the grid ops were cliff-shaped stubs that never filled it
+ * in. Raw vendor values stay raw numbers rather than being mapped onto a common enum,
+ * because the two ULDs' codes are unrelated and a mapping would invent equivalences that
+ * do not exist. `domain` is what makes them readable again. */
+struct source_status {
+    status_domain domain{status_domain::none};
+    uint8_t stage{0};
+    int port_errno{0};
+    int uld_status{0};
+    bool sample_present{false};
+    // Copied from the L4 record. Always false in the l7 domain: the VL53L7CX has no
+    // per-sample re-arm, so there is nothing that can fail to re-arm.
+    bool rearm_failed{false};
+};
+
+// Resolves `stage` inside its own domain. "unknown" rather than a number, because a bare
+// number in a log invites being read in the wrong vocabulary.
+const char *operation_stage_name(const source_status &status);
 
 // What happened to one source in one cycle. No classification, no reduction, no alarm.
 struct source_facts {
@@ -175,7 +233,7 @@ struct source_facts {
      * OR-ed into the snapshot's per-source fault bit, since that word is the only signal
      * guaranteed to be sent. */
     bool rearm_failed{false};
-    op_status status{};
+    source_status status{};
 };
 
 struct cycle_facts {
@@ -208,6 +266,12 @@ struct sinks {
     // through copy_facts() is worse -- this call happens under the chain lock.
     void (*on_cliff_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
                             const struct tof_cliff_sample &sample);
+    // The grid payload's own sink, for the same reason the ops table is its own type: a
+    // sink that took both would need a discriminator, and the first mistake with a
+    // discriminator is reading the wrong arm of it. Required whenever any descriptor is
+    // an l7_grid, exactly as on_cliff_sample is required for an l4_cliff.
+    void (*on_grid_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
+                           const tof_l7::sample &sample);
     // Sent from startup, on its own timer, never from the acquisition path.
     void (*on_cliff_health)(uint32_t snapshot, mapping_state state);
 };

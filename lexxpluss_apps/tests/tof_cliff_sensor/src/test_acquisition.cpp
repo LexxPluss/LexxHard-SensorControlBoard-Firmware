@@ -44,6 +44,10 @@ namespace acq = lexxhard::tof_acq;
 
 constexpr uint32_t kCyclePeriodMs{50};
 constexpr uint32_t kHealthPeriodMs{20};
+/* Any non-zero value. It is NOT a claim about the sustainable grid rate -- that number has
+ * not been measured -- only a stand-in for "the caller supplied one", which is what the
+ * descriptor validation requires. */
+constexpr uint8_t kGridFrequencyHz{15};
 
 // Scripted behaviour and recorded traffic for the faked device ops.
 struct fake_dev {
@@ -59,6 +63,9 @@ struct fake_dev {
     int16_t mm{0};
     uint8_t status_code{0};
     bool rearm_failed{false};
+    // Written by fake_grid_configure. There is no cliff equivalent because the cliff
+    // table has no frequency argument -- which is the difference being pinned.
+    uint8_t configured_frequency_hz{0};
     uint32_t open_delay_ms{0};
 
     uint32_t read_delay_ms{0};
@@ -179,13 +186,99 @@ int fake_stop(void *dev, acq::op_status *st)
 
 const acq::source_ops kFakeOps{fake_open, fake_configure, fake_start, fake_read, fake_stop};
 
+/* The grid fakes. They read the SAME fake_dev fields as the cliff fakes, deliberately: the
+ * point of several tests below is that an identical failure produces identical neutral
+ * facts for both models, and that comparison is only worth making if the two paths are
+ * driven from one set of knobs. */
+
+int fake_grid_open(void *dev, uint8_t, lexxhard::tof_l7::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.open_calls;
+    record_caller();
+    d.lock_held_in_open = lock_is_held();
+    *st = lexxhard::tof_l7::operation_status{};
+    if (d.open_delay_ms != 0)
+        k_msleep(d.open_delay_ms);
+    if (d.open_rc != 0)
+        st->failed_stage = lexxhard::tof_l7::stage::initialise;
+    return d.open_rc;
+}
+
+int fake_grid_configure(void *dev, uint8_t frequency_hz, lexxhard::tof_l7::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    *st = lexxhard::tof_l7::operation_status{};
+    d.configured_frequency_hz = frequency_hz;
+    return d.configure_rc;
+}
+
+int fake_grid_start(void *dev, lexxhard::tof_l7::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.start_calls;
+    *st = lexxhard::tof_l7::operation_status{};
+    return d.start_rc;
+}
+
+int fake_grid_read(void *dev, void *, lexxhard::tof_l7::sample *out,
+                   lexxhard::tof_l7::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.read_calls;
+    record_caller();
+    k_sem_give(&cycle_read_seen);
+    d.lock_held_in_read = lock_is_held();
+    if (d.read_delay_ms != 0)
+        k_msleep(d.read_delay_ms);
+    *st = lexxhard::tof_l7::operation_status{};
+    *out = lexxhard::tof_l7::sample{};
+    if (d.fresh) {
+        out->fresh = true;
+        // Every zone carries a different distance, so a test can tell WHICH zone it is
+        // looking at rather than only that some number arrived.
+        for (size_t zone{0}; zone < lexxhard::tof_l7::kZoneCount; ++zone) {
+            out->target_count[zone] = 1;
+            out->distance_mm[zone] = static_cast<uint16_t>(d.mm + zone);
+            out->target_status[zone] = d.status_code;
+        }
+        st->sample_present = true;
+    }
+    if (d.read_rc != 0)
+        st->failed_stage = lexxhard::tof_l7::stage::fetch;
+    return d.read_rc;
+}
+
+int fake_grid_stop(void *dev, lexxhard::tof_l7::operation_status *st)
+{
+    *st = lexxhard::tof_l7::operation_status{};
+    record_caller();
+    ++static_cast<fake_dev *>(dev)->stop_calls;
+    return 0;
+}
+
+const acq::grid_source_ops kFakeGridOps{fake_grid_open, fake_grid_configure, fake_grid_start,
+                                        fake_grid_read, fake_grid_stop};
+
+/* One operation missing from each table. A real adapter arrives half-filled far more
+ * plausibly than a typo does, and the validation used to look at two entries out of five. */
+const acq::source_ops kHalfFilledOps{fake_open, fake_configure, fake_start, fake_read, nullptr};
+const acq::grid_source_ops kHalfFilledGridOps{fake_grid_open, fake_grid_configure,
+                                              fake_grid_start, nullptr, fake_grid_stop};
+
 // Recorded sink activity.
 struct {
     int cycles{0};
     acq::cycle_facts last{};
     int cliff_samples{0};
+    int grid_samples{0};
     int last_sample_index{-1};
     int16_t last_sample_mm{0};
+    uint16_t last_grid_mm{0};
     int health_beats{0};
     int cycle_begins{0};
     uint32_t last_begin_cycle{0};
@@ -218,6 +311,16 @@ void on_cliff_sample(int index, uint32_t cycle_seq, const acq::source_facts &,
     rec.last_sample_mm = s.entries[0].range_mm;
     if (sample_cycle_count < static_cast<int>(sizeof sample_cycles / sizeof sample_cycles[0]))
         sample_cycles[sample_cycle_count++] = cycle_seq;
+}
+
+void on_grid_sample(int index, uint32_t, const acq::source_facts &,
+                    const lexxhard::tof_l7::sample &s)
+{
+    ++rec.grid_samples;
+    rec.last_sample_index = index;
+    // The last zone, not the first: a wrong-sized or wrongly-copied grid is far more
+    // likely to be right at zone 0 than at zone 63.
+    rec.last_grid_mm = s.distance_mm[lexxhard::tof_l7::kZoneCount - 1];
 }
 
 void on_cycle_begin(uint32_t cycle_seq)
@@ -256,13 +359,22 @@ acq::config make_config(int count)
     for (int i{0}; i < acq::kMaxSources; ++i) {
         auto &d{four_cliff_two_grid[i]};
 
+        /* Reset first. Several cases below deliberately corrupt one field to check it is
+         * refused; without this, the corruption would survive into the next case and the
+         * failure would surface somewhere unrelated. */
+        d = acq::source_desc{};
         d.kind = (i < 4) ? acq::model::l4_cliff : acq::model::l7_grid;
         d.addr_7bit = static_cast<uint8_t>(0x30 + i);
         d.role_id = static_cast<uint8_t>(i);
         d.dev = &devs[i];
         d.scratch = &devs[i]; /* the fake ops ignore it; only non-null matters */
-        d.stream = &streams[i]; /* per source, never shared - see source_desc */
-        d.ops = &kFakeOps;
+        if (d.kind == acq::model::l4_cliff) {
+            d.stream = &streams[i]; /* per source, never shared - see source_desc */
+            d.ops = &kFakeOps;
+        } else {
+            d.grid_ops = &kFakeGridOps;
+            d.grid_frequency_hz = kGridFrequencyHz;
+        }
     }
     c.sources = four_cliff_two_grid;
     c.source_count = count;
@@ -270,6 +382,7 @@ acq::config make_config(int count)
     c.periods.health_period_ms = kHealthPeriodMs;
     c.hooks.on_cycle = on_cycle;
     c.hooks.on_cliff_sample = on_cliff_sample;
+    c.hooks.on_grid_sample = on_grid_sample;
     c.hooks.on_cliff_health = on_cliff_health;
     c.hooks.on_cycle_begin = on_cycle_begin;
     c.mapping_state_provider = mapping_provider;
@@ -356,7 +469,46 @@ ZTEST(tof_acquisition, test_missing_hooks_and_bad_source_tables_are_refused)
     four_cliff_two_grid[1].stream = nullptr;
     zassert_equal(acq::init(c), -EINVAL,
                   "a cliff source needs its OWN stream state, or the replay guard never arms");
-    four_cliff_two_grid[1].stream = &streams[1];
+
+    c = make_config(acq::kMaxSources);
+    c.hooks.on_grid_sample = nullptr;
+    zassert_equal(acq::init(c), -EINVAL, "a configured grid needs its own typed sink");
+
+    /* A grid sink is required only when a grid is configured. A four-cliff chain that had
+     * to supply one would be carrying a hook it can never call. */
+    c = make_config(4);
+    c.hooks.on_grid_sample = nullptr;
+    zassert_equal(acq::init(c), 0, "a cliff-only chain must not be made to carry a grid sink");
+    acq::teardown();
+
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[4].grid_ops = nullptr;
+    zassert_equal(acq::init(c), -EINVAL);
+
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[4].ops = &kFakeOps;
+    zassert_equal(acq::init(c), -EINVAL,
+                  "a grid descriptor must not carry the point-sensor table too");
+
+    c = make_config(4);
+    four_cliff_two_grid[2].grid_ops = &kFakeGridOps;
+    zassert_equal(acq::init(c), -EINVAL,
+                  "a cliff descriptor must not carry the grid table too");
+
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[4].grid_frequency_hz = 0;
+    zassert_equal(acq::init(c), -EINVAL,
+                  "a real grid table needs an explicit non-zero frequency");
+
+    /* Every entry of the table, not just the two that used to be checked. A real adapter
+     * arrives half-filled far more plausibly than a typo does. */
+    c = make_config(acq::kMaxSources);
+    four_cliff_two_grid[5].grid_ops = &kHalfFilledGridOps;
+    zassert_equal(acq::init(c), -EINVAL, "a grid table missing an operation was accepted");
+
+    c = make_config(4);
+    four_cliff_two_grid[3].ops = &kHalfFilledOps;
+    zassert_equal(acq::init(c), -EINVAL, "a cliff table missing an operation was accepted");
 }
 
 ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
@@ -366,6 +518,9 @@ ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
     // dropping an L4's enable returns it to 0x29 and destroys the chain's addressing.
     zassert_equal(sizeof(acq::source_ops), 5 * sizeof(void *),
                   "an operation was added to the device interface - if it is enable, "
+                  "the chain's addressing is now reachable from the scheduler");
+    zassert_equal(sizeof(acq::grid_source_ops), 5 * sizeof(void *),
+                  "an operation was added to the grid interface - if it is enable, "
                   "the chain's addressing is now reachable from the scheduler");
 }
 
@@ -450,6 +605,17 @@ ZTEST(tof_acquisition, test_the_same_failure_produces_the_same_facts_for_both_mo
     zassert_equal(cliff.sample_produced, grid.sample_produced);
     zassert_true(cliff.transport_error);
     zassert_false(cliff.protocol_error);
+
+    /* The neutral facts match; the diagnostic detail does not pretend to. Each stage
+     * number is read back in its own driver's vocabulary, which is the whole reason the
+     * record carries a domain: TOF_CLIFF_STAGE_* and tof_l7::stage are unrelated
+     * enumerations, so reading one as the other would print a plausible wrong answer. */
+    zassert_equal(cliff.status.domain, acq::status_domain::l4);
+    zassert_equal(grid.status.domain, acq::status_domain::l7);
+    zassert_equal(strcmp(acq::operation_stage_name(cliff.status), "fetch"), 0,
+                  "cliff stage read back as %s", acq::operation_stage_name(cliff.status));
+    zassert_equal(strcmp(acq::operation_stage_name(grid.status), "fetch"), 0,
+                  "grid stage read back as %s", acq::operation_stage_name(grid.status));
 }
 
 ZTEST(tof_acquisition, test_the_four_failure_shapes_stay_distinguishable)
@@ -951,36 +1117,39 @@ ZTEST(tof_acquisition, test_stop_quiesces_and_leaves_the_chain_free_for_commissi
     zassert_equal(rec.cycles, cycles, "a stopped scheduler must not run a cycle");
 }
 
-/* ------------------------------------------------------------------ L7 stub -------- */
+/* -------------------------------------------------------------- typed L7 grid ----- */
 
 ZTEST(tof_acquisition, test_the_grid_ops_are_an_explicit_stub)
 {
-    const acq::source_ops &ops{acq::l7_stub_ops()};
-    acq::op_status st{};
-    struct tof_cliff_sample sample{};
+    const acq::grid_source_ops &ops{acq::l7_grid_stub_ops()};
+    lexxhard::tof_l7::operation_status st{};
+    lexxhard::tof_l7::sample sample{};
 
-    // A named stub rather than a null pointer or a copy of the cliff ops, so wiring L7
-    // to the wrong driver has to be deliberate. Note what the refusal of
-    // read_cliff_sample actually says: the shared interface is still the shape of a point
-    // sensor, and an 8x8 zone frame cannot travel through it. That is prototype debt, and
-    // this assertion is where it is visible.
+    // A named stub rather than a null pointer, and now in the grid's own shape: the
+    // signature itself refuses a point-sensor read, so an L7 descriptor can no longer be
+    // wired to the L4 driver by accident. What remains missing is the implementation, and
+    // -ENOSYS is how it says so.
     zassert_equal(ops.open(nullptr, 0x30, &st), -ENOSYS);
-    zassert_equal(ops.configure(nullptr, &st), -ENOSYS);
-    zassert_equal(ops.start(nullptr, nullptr, &st), -ENOSYS);
-    zassert_equal(ops.read_cliff_sample(nullptr, nullptr, nullptr, &sample, &st), -ENOSYS);
+    zassert_equal(ops.configure(nullptr, kGridFrequencyHz, &st), -ENOSYS);
+    zassert_equal(ops.start(nullptr, &st), -ENOSYS);
+    zassert_equal(ops.read_grid_sample(nullptr, nullptr, &sample, &st), -ENOSYS);
     zassert_equal(ops.stop(nullptr, &st), -ENOSYS);
     zassert_false(sample.fresh);
-
-    zassert_not_equal(&acq::l7_stub_ops(), &acq::l4_cliff_ops());
+    zassert_false(st.sample_present);
 }
 
-ZTEST(tof_acquisition, test_a_grid_source_never_produces_a_cliff_payload)
+ZTEST(tof_acquisition, test_payloads_can_only_reach_their_typed_sink)
 {
     zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
     zassert_equal(acq::bring_up(), 0);
 
-    // Even if the grid path did return a sample, it must not travel down the cliff
-    // sink: the two packers must never have to step over each other's data.
+    // The frequency is carried to the device rather than defaulted on the way.
+    zassert_equal(devs[4].configured_frequency_hz, kGridFrequencyHz);
+    zassert_equal(devs[5].configured_frequency_hz, kGridFrequencyHz);
+    zassert_equal(devs[0].configured_frequency_hz, 0, "a cliff source has no frequency to set");
+
+    // Both models produce this cycle. Neither packer may ever have to step over, or
+    // reinterpret, the other's data.
     for (auto &d : devs) {
         d.fresh = true;
         d.mm = 500;
@@ -988,7 +1157,40 @@ ZTEST(tof_acquisition, test_a_grid_source_never_produces_a_cliff_payload)
     acq::run_cycle();
 
     zassert_equal(rec.cliff_samples, 4, "only the four cliff sources may reach that sink");
-    zassert_true(rec.last_sample_index < 4);
+    zassert_equal(rec.grid_samples, 2, "both grids must reach only the grid sink");
+    zassert_true(rec.last_sample_index >= 4);
+    zassert_equal(rec.last_sample_mm, 500, "a grid payload was written to the cliff record");
+    zassert_equal(rec.last_grid_mm, 563, "zone 63 of a 500 mm grid is 563 by construction");
+}
+
+ZTEST(tof_acquisition, test_a_grid_that_never_starts_is_never_read)
+{
+    /* The stub's own bring-up outcome, through the scheduler rather than by calling the
+     * table directly: -ENOSYS at open leaves the source not started, and a source that is
+     * not started is not read. Without this, a future adapter could fail to start and be
+     * polled every cycle regardless. Position 4 is wired exactly as tof_cliff_runtime
+     * wires it -- the named stub, no object, no scratch, no frequency. */
+    acq::config c{make_config(acq::kMaxSources)};
+
+    four_cliff_two_grid[4].grid_ops = &acq::l7_grid_stub_ops();
+    four_cliff_two_grid[4].dev = nullptr;
+    four_cliff_two_grid[4].scratch = nullptr;
+    four_cliff_two_grid[4].grid_frequency_hz = 0;
+    zassert_equal(acq::init(c), 0,
+                  "the named stub is the one grid table allowed to arrive without an object");
+    zassert_equal(acq::bring_up(), 0);
+
+    for (auto &d : devs)
+        d.fresh = true;
+    acq::run_cycle();
+
+    const acq::source_facts &stubbed{rec.last.sources[4]};
+
+    zassert_false(stubbed.started);
+    zassert_true(stubbed.unsupported);
+    zassert_false(stubbed.transport_error, "a model with no implementation is not a bus fault");
+    zassert_equal(devs[4].read_calls, 0, "a source that never started was read anyway");
+    zassert_equal(rec.grid_samples, 1, "only the wired grid may reach the sink");
 }
 
 /* ----------------------------------------------------------------- snapshot -------- */
@@ -1755,8 +1957,13 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         d.role_id = 255; /* unassigned: nothing has been proven at init time */
         d.dev = &devs[i];
         d.scratch = &devs[i];
-        d.stream = &streams[i];
-        d.ops = &kFakeOps;
+        if (d.kind == acq::model::l4_cliff) {
+            d.stream = &streams[i];
+            d.ops = &kFakeOps;
+        } else {
+            d.grid_ops = &kFakeGridOps;
+            d.grid_frequency_hz = kGridFrequencyHz;
+        }
     }
 
     acq::config c{make_config(acq::kMaxSources)};
