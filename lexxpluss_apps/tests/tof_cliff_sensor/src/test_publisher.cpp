@@ -752,6 +752,7 @@ acq::config make_acq_config()
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = provider;
     c.now_ms = clock_ms;
+    c.now_cycles = k_cycle_get_32;
     return c;
 }
 

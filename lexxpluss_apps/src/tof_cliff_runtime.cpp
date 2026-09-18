@@ -89,6 +89,14 @@ uint32_t now_ms()
     return k_uptime_get_32();
 }
 
+/* Raw cycles, deliberately not microseconds: the acquisition layer subtracts first and converts
+ * afterwards, which is what makes the 32-bit counter's ~19.9 s wrap harmless. See
+ * tof_acq::config::now_cycles. */
+uint32_t now_cycles()
+{
+    return k_cycle_get_32();
+}
+
 /* Descriptors built FROM THE SPEC, not from a hand-written table.
  *
  * Two things follow from that, both of which the old probe wiring got wrong: the addresses are the
@@ -213,6 +221,7 @@ int init_acquisition(const config &cfg)
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = au::state_provider;
     c.now_ms = now_ms;
+    c.now_cycles = now_cycles;
     return acq::init(c);
 }
 

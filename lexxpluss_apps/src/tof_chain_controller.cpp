@@ -1014,6 +1014,51 @@ int cmd_cliff_stats(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+/* Where a cycle's time goes, and how much of what it read was new.
+ *
+ * Its own command rather than more lines in `stats`, because it answers a different question and
+ * because that function's frame is already sized against a shell stack with about a hundred bytes
+ * spare. The same rule applies here and for the same reason: AT MOST TWO FIELDS PER LINE, no
+ * buffers, no locals but the ones that have to be held.
+ *
+ * Microseconds throughout. `max` is a high-water mark since init(), and it is the number the safety
+ * argument needs: a mean rate says nothing about the longest a corner went without a new
+ * measurement.
+ *
+ * THE ROW LABEL IS THE ACQUISITION DESCRIPTOR INDEX, not a contract source_id -- same warning as
+ * `stats`, same reason. */
+int cmd_cliff_timing(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(shell, "cycles_completed %u", tof_acq::cycles_completed());
+    shell_print(shell, "work_us last %u", tof_acq::cycle_work_us_last());
+    shell_print(shell, "work_us max %u", tof_acq::cycle_work_us_max());
+    shell_print(shell, "publish_us last %u", tof_acq::cycle_publish_us_last());
+    shell_print(shell, "publish_us max %u", tof_acq::cycle_publish_us_max());
+    shell_print(shell, "total_us last %u", tof_acq::cycle_total_us_last());
+    shell_print(shell, "total_us max %u", tof_acq::cycle_total_us_max());
+    shell_print(shell, "wait_us last %u", tof_acq::cycle_wait_us_last());
+    shell_print(shell, "wait_us max %u", tof_acq::cycle_wait_us_max());
+    shell_print(shell, "cycle_gap_us max %u", tof_acq::cycle_gap_us_max());
+
+    for (int i{0}; i < 6; ++i) {
+        shell_print(shell, "acq%d read_us_last %u", i, tof_acq::source_read_us_last(i));
+        shell_print(shell, "acq%d read_us_max %u", i, tof_acq::source_read_us_max(i));
+        shell_print(shell, "acq%d new_measurements %u", i, tof_acq::source_new_measurements(i));
+        shell_print(shell, "acq%d repeat_measurements %u", i,
+                    tof_acq::source_repeat_measurements(i));
+    }
+
+    /* Said rather than left to be assumed. The wait begins AFTER the work and the CAN sends, so the
+     * achieved cadence is work + publish + wait and not the configured period -- which is why
+     * cycle_gap_us is printed as well as the parts, and why the parts should add up to it. */
+    shell_print(shell, "gap == work + publish + wait; the wait starts after the sends");
+    shell_print(shell, "repeat_measurements means fresh was set but StreamCount had not moved");
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
 #if defined(ENABLE_TOF_CLIFF_BENCH_PACK)
     SHELL_CMD_ARG(i2cspeed, NULL,
@@ -1029,6 +1074,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
                   "encode one real sample and PRINT it; transmits nothing",
                   cmd_cliff_pack, 3, 4),
 #endif
+    SHELL_CMD(timing, NULL,
+              "BENCH: where a cycle's time goes, and how much of what it read was new",
+              cmd_cliff_timing),
     SHELL_CMD(stats, NULL,
               "diagnostic: cumulative acquisition counters (read-only; touches no device)",
               cmd_cliff_stats),

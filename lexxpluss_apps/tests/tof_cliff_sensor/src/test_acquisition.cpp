@@ -54,8 +54,13 @@ struct fake_dev {
     bool fresh{false};
     int16_t mm{0};
     uint8_t status_code{0};
+    uint8_t stream_count{0};
     bool rearm_failed{false};
     uint32_t open_delay_ms{0};
+    /* What this read COSTS, stated rather than slept. A real k_msleep would make every timing
+     * assertion a race against the host's scheduler; the acquisition layer reads its clock through
+     * an injected hook precisely so a test can say how long something took. */
+    uint32_t read_cycles{0};
 
     uint32_t read_delay_ms{0};
 
@@ -72,6 +77,12 @@ struct fake_dev {
  * thread may drive it -- is not observable any other way: the chain lock serialises callers but says
  * nothing about how many there were, and the ULD's port keeps ONE transport record, so two callers
  * inside it produce a transport error reported as a good sample. */
+/* A free-running cycle counter the test drives by hand. Starting value is deliberately not zero:
+ * an implementation that forgot to subtract would still pass from zero. */
+uint32_t fake_cycles{0};
+/* Advanced by the on_cycle sink, so the publish leg of a cycle has a stated cost of its own. */
+uint32_t publish_cost_cycles{0};
+
 k_tid_t uld_callers[16];
 int uld_call_count;
 
@@ -147,6 +158,7 @@ int fake_read(void *dev, void *, struct tof_cliff_sample *out, acq::op_status *s
     if (d.read_delay_ms != 0)
         k_msleep(d.read_delay_ms); // a sensor that blocks: what a join timeout has
                                    // to cover
+    fake_cycles += d.read_cycles;
     memset(st, 0, sizeof(*st));
     memset(out, 0, sizeof(*out));
     if (d.fresh) {
@@ -155,6 +167,7 @@ int fake_read(void *dev, void *, struct tof_cliff_sample *out, acq::op_status *s
         out->entry_count = 1;
         out->entries[0].range_mm = d.mm;
         out->entries[0].range_status = d.status_code;
+        out->stream_count = d.stream_count;
         /* A re-arm failure returns an error but preserves the current sample. Any
          * other error with `fresh` left set models stale output and must not earn
          * sample_present. */
@@ -275,6 +288,9 @@ void on_cycle(const acq::cycle_facts &facts)
 {
     ++rec.cycles;
     rec.last = facts;
+    /* This hook is where the publisher's synchronous CAN sends happen in production, so charging it
+     * a cost here is what makes the publish leg measurable at all. */
+    fake_cycles += publish_cost_cycles;
 }
 
 uint32_t sample_cycles[8];
@@ -325,6 +341,18 @@ uint32_t clock_ms()
     return fake_clock_ms;
 }
 
+uint32_t clock_cycles()
+{
+    return fake_cycles;
+}
+
+/* One place turns microseconds into this counter's units, because a test that hard-coded cycles
+ * would be asserting the host's clock rate rather than the code. */
+uint32_t us_to_cycles(uint32_t us)
+{
+    return k_us_to_cyc_floor32(us);
+}
+
 acq::source_desc four_cliff_two_grid[acq::kMaxSources];
 
 acq::config make_config(int count)
@@ -358,6 +386,7 @@ acq::config make_config(int count)
     c.hooks.on_cycle_begin = on_cycle_begin;
     c.mapping_state_provider = mapping_provider;
     c.now_ms = clock_ms;
+    c.now_cycles = clock_cycles;
     return c;
 }
 
@@ -377,6 +406,8 @@ void before(void *)
     sample_cycle_count = 0;
     provider_state = acq::mapping_state::not_ready;
     fake_clock_ms = 1000;
+    fake_cycles = 1234567;
+    publish_cost_cycles = 0;
 }
 
 }  // namespace
@@ -918,6 +949,204 @@ ZTEST(tof_acquisition, test_an_error_can_never_publish_even_if_an_adapter_leaves
         zassert_true(rec.last.sources[i].transport_error);
         zassert_false(rec.last.sources[i].sample_produced);
     }
+}
+
+/* --------------------------------------------------------------- rate [BENCH] ----- */
+
+ZTEST(tof_acquisition, test_the_timing_clock_is_required)
+{
+    acq::config c{make_config(4)};
+
+    c.now_cycles = nullptr;
+    zassert_equal(acq::init(c), -EINVAL,
+                  "a missing cycle clock must be refused, not defaulted to a wall clock");
+}
+
+ZTEST(tof_acquisition, test_a_read_is_timed_and_the_high_water_mark_holds)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[0].read_cycles = us_to_cycles(4000);
+    acq::run_cycle();
+    zassert_within(acq::source_read_us_last(0), 4000, 2);
+    zassert_within(acq::source_read_us_max(0), 4000, 2);
+
+    // A shorter read moves `last` and must NOT move `max`: the longest read is the one the
+    // cadence has to survive, and a mean would hide it.
+    devs[0].read_cycles = us_to_cycles(1000);
+    acq::run_cycle();
+    zassert_within(acq::source_read_us_last(0), 1000, 2);
+    zassert_within(acq::source_read_us_max(0), 4000, 2);
+
+    devs[0].read_cycles = us_to_cycles(9000);
+    acq::run_cycle();
+    zassert_within(acq::source_read_us_max(0), 9000, 2);
+}
+
+ZTEST(tof_acquisition, test_a_counter_wrap_does_not_inflate_a_duration)
+{
+    /* THE TARGET'S RATE, STATED. This suite runs on native_sim, whose cycle counter is 1 MHz --
+     * there the conversion is the identity, both orderings agree, and a test written against the
+     * host's rate passes whichever way the code does it. It would pin nothing. The SCB's counter
+     * runs at 216 MHz, where converting before subtracting returns about 4.27e9 us for any
+     * measurement that spanned the wrap. So the rate is a parameter and this states it. */
+    constexpr uint32_t kTargetHz{216000000U};
+    constexpr uint32_t kCyclesPerUs{216U};
+    /* 1000 us short of the wrap, and a 4000 us interval that crosses it. */
+    const uint32_t before{0U - 1000U * kCyclesPerUs};
+    const uint32_t after{before + 4000U * kCyclesPerUs};
+
+    zassert_true(after < before, "the interval under test did not actually cross the wrap");
+    zassert_equal(acq::elapsed_us_at(before, after, kTargetHz), 4000U);
+
+    // Ordinary intervals, away from the wrap, and the degenerate rate.
+    zassert_equal(acq::elapsed_us_at(0U, 4000U * kCyclesPerUs, kTargetHz), 4000U);
+    zassert_equal(acq::elapsed_us_at(7U, 7U, kTargetHz), 0U);
+    zassert_equal(acq::elapsed_us_at(0U, 1000U, 0U), 0U, "a zero rate must not be divided by");
+}
+
+ZTEST(tof_acquisition, test_a_wrap_during_a_real_cycle_is_carried_through)
+{
+    /* The plumbing half: the same crossing, but through run_cycle() rather than the arithmetic on
+     * its own. On this host it cannot tell the two orderings apart -- see the test above for that
+     * -- so what it pins is narrower and worth having anyway: nothing in the path stores the raw
+     * counter where a duration belongs, and a wrapped read is still recorded. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    fake_cycles = 0U - us_to_cycles(1000);
+    devs[0].read_cycles = us_to_cycles(4000);
+    acq::run_cycle();
+
+    zassert_within(acq::source_read_us_last(0), 4000, 2);
+    zassert_within(acq::source_read_us_max(0), 4000, 2);
+}
+
+ZTEST(tof_acquisition, test_a_cycle_splits_into_work_publish_and_total)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    for (auto &d : devs)
+        d.read_cycles = us_to_cycles(3000);
+    publish_cost_cycles = us_to_cycles(5000);
+    acq::run_cycle();
+
+    // Four cliff reads under the chain lock.
+    zassert_within(acq::cycle_work_us_last(), 12000, 8);
+    // The CAN sends, outside the lock and inside the cadence -- which is why they are timed apart
+    // rather than folded into the work.
+    zassert_within(acq::cycle_publish_us_last(), 5000, 4);
+    zassert_within(acq::cycle_total_us_last(), 17000, 8);
+}
+
+ZTEST(tof_acquisition, test_the_cycle_gap_is_start_to_start_and_the_first_one_has_none)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[0].read_cycles = us_to_cycles(2000);
+    acq::run_cycle();
+    zassert_equal(acq::cycle_gap_us_max(), 0U,
+                  "the first cycle has no predecessor and must not report a gap from zero");
+
+    // Stands in for the thread's wait between cycles. The gap is start to start, so it covers the
+    // work, the sends and the wait -- the whole achieved cadence, not the configured period.
+    fake_cycles += us_to_cycles(48000);
+    acq::run_cycle();
+    zassert_within(acq::cycle_gap_us_max(), 50000, 8);
+
+    fake_cycles += us_to_cycles(10000);
+    acq::run_cycle();
+    zassert_within(acq::cycle_gap_us_max(), 50000, 8,
+                   "a shorter gap must not lower the high-water mark");
+}
+
+ZTEST(tof_acquisition, test_a_repeated_stream_count_is_not_a_new_measurement)
+{
+    /* The measurement hazard this whole commit exists to avoid. On this image `fresh` means the
+     * device reported data ready, NOT that the data changed, so a rate computed from samples,
+     * frames or ROS messages can count one measurement several times. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[0].fresh = true;
+    devs[0].stream_count = 7;
+    acq::run_cycle();
+    zassert_equal(acq::source_new_measurements(0), 1U);
+    zassert_equal(acq::source_repeat_measurements(0), 0U);
+
+    acq::run_cycle();
+    zassert_equal(acq::source_new_measurements(0), 1U, "the device had not ranged again");
+    zassert_equal(acq::source_repeat_measurements(0), 1U);
+
+    devs[0].stream_count = 8;
+    acq::run_cycle();
+    zassert_equal(acq::source_new_measurements(0), 2U);
+    zassert_equal(acq::source_repeat_measurements(0), 1U);
+
+    // 255 -> 0 is an advance, not a repeat: StreamCount is eight bits and wraps, so the test is
+    // inequality and never ordering.
+    devs[0].stream_count = 255;
+    acq::run_cycle();
+    devs[0].stream_count = 0;
+    acq::run_cycle();
+    zassert_equal(acq::source_new_measurements(0), 4U);
+    zassert_equal(acq::source_repeat_measurements(0), 1U);
+
+    // And it counts only, it does not gate: every one of those reads still reached the sink.
+    zassert_equal(rec.cliff_samples, 5, "a counter must not have become a filter");
+}
+
+ZTEST(tof_acquisition, test_a_restart_does_not_call_the_first_measurement_a_repeat)
+{
+    /* A successful start renumbers the device's stream from zero, so the remembered count is from a
+     * session that no longer exists. Comparing across the restart would report the first real
+     * measurement of the new session as a repeat -- and a repeat is the shape of a stalled sensor. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[0].fresh = true;
+    devs[0].stream_count = 3;
+    acq::run_cycle();
+    zassert_equal(acq::source_new_measurements(0), 1U);
+
+    acq::stop();
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+    zassert_equal(acq::source_new_measurements(0), 2U,
+                  "the first measurement after a restart was counted as a repeat");
+    zassert_equal(acq::source_repeat_measurements(0), 0U);
+}
+
+ZTEST(tof_acquisition, test_a_cycle_that_read_nothing_still_has_a_gap_and_no_read_time)
+{
+    /* A source that never started is never read, so it has no read time -- but the cycle still
+     * happened and still consumed cadence. Reporting nothing at all for such a cycle would make a
+     * chain that is failing to start look like a chain that is idle. */
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].open_rc = -EIO;
+    zassert_equal(acq::bring_up(), 0);
+
+    acq::run_cycle();
+    fake_cycles += us_to_cycles(50000);
+    acq::run_cycle();
+
+    zassert_equal(acq::source_read_us_last(0), 0U, "a source that never started was timed");
+    zassert_equal(acq::source_new_measurements(0), 0U);
+    zassert_within(acq::cycle_gap_us_max(), 50000, 8);
+    zassert_equal(acq::cycles_completed(), 2U);
+}
+
+ZTEST(tof_acquisition, test_an_out_of_range_source_reads_zero_rather_than_memory)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+
+    zassert_equal(acq::source_read_us_last(-1), 0U);
+    zassert_equal(acq::source_read_us_max(acq::kMaxSources), 0U);
+    zassert_equal(acq::source_new_measurements(-1), 0U);
+    zassert_equal(acq::source_repeat_measurements(acq::kMaxSources), 0U);
 }
 
 /* ----------------------------------------------------------------- snapshot -------- */

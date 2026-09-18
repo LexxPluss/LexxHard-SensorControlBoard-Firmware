@@ -245,6 +245,21 @@ struct config {
     struct sinks hooks{};
     mapping_state (*mapping_state_provider)(){nullptr};
     uint32_t (*now_ms)(){nullptr};  // injected so tests need no wall clock
+
+    /* A free-running 32-bit CYCLE counter -- not microseconds, and the distinction is
+     * load-bearing.
+     *
+     * Every measurement below is a DELTA, and a delta of two unsigned cycle counts is
+     * correct across the counter's wrap. At 216 MHz that wrap is about every 19.9 s, which
+     * is longer than any interval measured here and shorter than a bench session, so a
+     * counter that wrapped would otherwise poison the numbers roughly three times a minute.
+     * Converting to microseconds first destroys that property: the converted value returns
+     * to zero at 19.9e6 rather than at 2^32, and a delta across that point is nonsense.
+     * So the conversion happens AFTER the subtraction, on a small number.
+     *
+     * Injected like now_ms, and for the same reason: a host test must be able to state the
+     * elapsed time rather than sleep for it. */
+    uint32_t (*now_cycles)(){nullptr};
 };
 
 // Validates the configuration and arms the heartbeat. Returns -EINVAL for a zero
@@ -403,6 +418,79 @@ inline int identity_role(uint32_t word)
 // Lifetime completed cycles. NOT the contract's cycle_seq, which begin_epoch() resets to 0 -- a
 // renumbering there would read as the thread having stopped.
 uint32_t cycles_completed();
+
+/* ------------------------------------------------------------------ rate [BENCH] ----
+ *
+ * Where the cycle's time goes, and how much of what it reads is actually new.
+ *
+ * The question these exist for: four corners are publishing at about 14.6 Hz against a
+ * 20 Hz nominal cadence and a >=50 Hz target, and "the sensors are slow" and "the schedule
+ * is slow" and "the bus is slow" are three different repairs. Averages cannot separate
+ * them and neither can a frame count.
+ *
+ * All values are MICROSECONDS, converted from a cycle delta so the 32-bit counter's wrap
+ * cannot inflate one. Every one is a diagnostic: nothing in this file reads them and no
+ * behaviour depends on them.
+ *
+ * `max` is a high-water mark over the lifetime of the subsystem, cleared only by init().
+ * It is the one that matters for the safety argument -- a mean rate says nothing about the
+ * longest a corner went without a new measurement -- so it is kept beside `last` rather
+ * than left to be inferred from samples. */
+/* The rate arithmetic itself, separable because it is the one part of this instrumentation that
+ * can be wrong in a way the numbers never show.
+ *
+ * Subtract in cycles, THEN convert. The other order returns a duration of about 4.27e9 us whenever
+ * the counter wrapped during the measurement, and a high-water mark poisoned once stays poisoned
+ * for the session. That defect is invisible on the host: native_sim clocks its cycle counter at
+ * 1 MHz, where the conversion is the identity and both orders agree. So the rate is a parameter
+ * here, and the test states the target's 216 MHz rather than inheriting the host's -- otherwise the
+ * test would pass against both orders and pin nothing.
+ *
+ * A zero rate returns 0 rather than dividing by it. */
+uint32_t elapsed_us_at(uint32_t from_cycles, uint32_t to_cycles, uint32_t hz);
+
+uint32_t source_read_us_last(int index);
+uint32_t source_read_us_max(int index);
+
+/* New measurements, and repeats.
+ *
+ * `fresh` on this image means only that the device reported data ready; it does not mean
+ * the data changed. So a rate computed from samples, frames or ROS messages can count the
+ * same measurement more than once, and that is precisely the mistake a rate investigation
+ * must not make.
+ *
+ * These split the fresh reads by whether the L4's own StreamCount moved. Inequality, not
+ * ordering: StreamCount is 8 bits and wraps, so 255 -> 0 is an advance and only equality
+ * is a repeat.
+ *
+ * THIS IS A COUNTER AND NOT A GATE. It suppresses nothing, refuses nothing and is read by
+ * nobody but the shell. The replay guard that does act on this signal is a different piece
+ * of work on a different branch, and conflating the two would put a new behaviour into a
+ * measurement commit. */
+uint32_t source_new_measurements(int index);
+uint32_t source_repeat_measurements(int index);
+
+/* Per cycle, in the order the time is actually spent:
+ *
+ *   work    -- the chain lock held: every source opened, read and recorded
+ *   publish -- the on_cycle hook, which is where the publisher's SYNCHRONOUS CAN sends
+ *              happen, on this thread, outside the lock
+ *   total   -- the whole of run_cycle() from the moment the cycle began
+ *   wait    -- what the thread loop actually waited afterwards, which is NOT the configured
+ *              period: the loop waits a full period AFTER the work, so the achieved cadence
+ *              is work + publish + period rather than period
+ *   gap     -- start of one cycle to the start of the next, the only one of these that is
+ *              a cadence rather than a duration
+ */
+uint32_t cycle_work_us_last();
+uint32_t cycle_work_us_max();
+uint32_t cycle_publish_us_last();
+uint32_t cycle_publish_us_max();
+uint32_t cycle_total_us_last();
+uint32_t cycle_total_us_max();
+uint32_t cycle_wait_us_last();
+uint32_t cycle_wait_us_max();
+uint32_t cycle_gap_us_max();
 
 #ifdef CONFIG_ZTEST
 /* The owning thread's id, so a suite can assert that every recorded ULD call came from it. Test-only

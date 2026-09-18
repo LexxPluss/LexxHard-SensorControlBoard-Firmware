@@ -363,6 +363,7 @@ void arrange_running_acquisition()
     c.hooks.on_cliff_sample = on_sample;
     c.hooks.on_cliff_health = on_health;
     c.now_ms = fake_now_ms;
+    c.now_cycles = k_cycle_get_32;
     c.mapping_state_provider = reported_state;
     zassert_equal(acq::init(c), 0);
     zassert_equal(acq::bring_up(), 0);

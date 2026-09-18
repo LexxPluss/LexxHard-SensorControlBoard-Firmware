@@ -118,6 +118,51 @@ atomic_t tally_identity_[kMaxSources]{};
  * and begin_epoch() resets it to 0, so a renumbering would read as the thread having stopped. */
 atomic_t tally_cycles_{ATOMIC_INIT(0)};
 
+/* Rate instrumentation [BENCH]. Microseconds, converted from a cycle delta AFTER the subtraction so
+ * the 32-bit counter's ~19.9 s wrap cannot inflate a reading. See config::now_cycles.
+ *
+ * Written only by the acquisition thread, read only by the shell, so the read-modify-write on the
+ * high-water marks needs no compare-exchange: there is exactly one writer. */
+atomic_t tally_read_us_last_[kMaxSources]{};
+atomic_t tally_read_us_max_[kMaxSources]{};
+atomic_t tally_new_measurements_[kMaxSources]{};
+atomic_t tally_repeat_measurements_[kMaxSources]{};
+atomic_t tally_work_us_last_{ATOMIC_INIT(0)};
+atomic_t tally_work_us_max_{ATOMIC_INIT(0)};
+atomic_t tally_publish_us_last_{ATOMIC_INIT(0)};
+atomic_t tally_publish_us_max_{ATOMIC_INIT(0)};
+atomic_t tally_total_us_last_{ATOMIC_INIT(0)};
+atomic_t tally_total_us_max_{ATOMIC_INIT(0)};
+atomic_t tally_wait_us_last_{ATOMIC_INIT(0)};
+atomic_t tally_wait_us_max_{ATOMIC_INIT(0)};
+atomic_t tally_gap_us_max_{ATOMIC_INIT(0)};
+
+/* The previous accepted StreamCount per source, and whether there is one.
+ *
+ * Plain variables rather than atomics because only the acquisition thread ever touches them; the
+ * atomics above are the part the shell reads. Invalidated at bring-up, because a successful start
+ * renumbers the device's stream from zero and the first count after it would otherwise be compared
+ * against a number from before the restart. */
+uint8_t prev_stream_[kMaxSources]{};
+bool prev_stream_valid_[kMaxSources]{};
+
+/* The start of the previous cycle, for the start-to-start gap. Separate validity flag for the same
+ * reason: the first cycle has no predecessor and must not report a gap measured from zero. */
+uint32_t prev_cycle_start_cycles_{0};
+bool prev_cycle_start_valid_{false};
+
+uint32_t elapsed_us(uint32_t from_cycles, uint32_t to_cycles)
+{
+    return elapsed_us_at(from_cycles, to_cycles, sys_clock_hw_cycles_per_sec());
+}
+
+void record_high_water(atomic_t *last, atomic_t *max, uint32_t value)
+{
+    atomic_set(last, static_cast<atomic_val_t>(value));
+    if (static_cast<uint32_t>(atomic_get(max)) < value)
+        atomic_set(max, static_cast<atomic_val_t>(value));
+}
+
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
  * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed. */
@@ -473,7 +518,7 @@ int init(const config &cfg)
         return -EALREADY;
     if (cfg.source_count <= 0 || cfg.source_count > kMaxSources)
         return -EINVAL;
-    if (cfg.sources == nullptr || cfg.now_ms == nullptr ||
+    if (cfg.sources == nullptr || cfg.now_ms == nullptr || cfg.now_cycles == nullptr ||
         cfg.mapping_state_provider == nullptr)
         return -EINVAL;
     /* on_cycle_begin is required, not optional. A sink that never hears the start of a cycle
@@ -532,6 +577,12 @@ int init(const config &cfg)
         atomic_clear(&tally_rearm_failures_[i]);
         atomic_clear(&tally_last_status_[i]);
         atomic_clear(&tally_identity_[i]);
+        atomic_clear(&tally_read_us_last_[i]);
+        atomic_clear(&tally_read_us_max_[i]);
+        atomic_clear(&tally_new_measurements_[i]);
+        atomic_clear(&tally_repeat_measurements_[i]);
+        prev_stream_[i] = 0;
+        prev_stream_valid_[i] = false;
     }
     for (int i{0}; i < cfg.source_count; ++i) {
         const source_desc &d{cfg.sources[i]};
@@ -540,6 +591,16 @@ int init(const config &cfg)
                                              (d.role_id & 0xFFU)));
     }
     atomic_clear(&tally_cycles_);
+    atomic_clear(&tally_work_us_last_);
+    atomic_clear(&tally_work_us_max_);
+    atomic_clear(&tally_publish_us_last_);
+    atomic_clear(&tally_publish_us_max_);
+    atomic_clear(&tally_total_us_last_);
+    atomic_clear(&tally_total_us_max_);
+    atomic_clear(&tally_wait_us_last_);
+    atomic_clear(&tally_wait_us_max_);
+    atomic_clear(&tally_gap_us_max_);
+    prev_cycle_start_valid_ = false;
     facts_.source_count = cfg.source_count;
     for (int i{0}; i < cfg.source_count; ++i) {
         facts_.sources[i].kind = cfg.sources[i].kind;
@@ -653,6 +714,10 @@ int bring_up()
 
         f.started = false;
         clear_outcomes(f);
+        /* A successful start renumbers the device's stream from zero, so a count read after it must
+         * not be compared against one read before it -- that comparison would report the first real
+         * measurement of the new session as a repeat. */
+        prev_stream_valid_[i] = false;
 
         int rc{0};
         if (d.kind == model::l4_cliff) {
@@ -724,6 +789,20 @@ void run_cycle()
 
     in_cycle_ = true;
 
+    /* The cycle has begun HERE, not at the top of the function: everything above is a refusal that
+     * consumes no cycle number and owes no health frame, so timing it would fold idle time into the
+     * cadence. */
+    const uint32_t began_cycles{cfg_.now_cycles()};
+
+    if (prev_cycle_start_valid_) {
+        const uint32_t gap{elapsed_us(prev_cycle_start_cycles_, began_cycles)};
+
+        if (static_cast<uint32_t>(atomic_get(&tally_gap_us_max_)) < gap)
+            atomic_set(&tally_gap_us_max_, static_cast<atomic_val_t>(gap));
+    }
+    prev_cycle_start_cycles_ = began_cycles;
+    prev_cycle_start_valid_ = true;
+
     facts_.cycle_seq = next_cycle_seq_;
     facts_.began_ms = now();
 
@@ -749,8 +828,11 @@ void run_cycle()
         if (d.kind == model::l4_cliff) {
             struct tof_cliff_sample sample {};
             op_status st{};
+            const uint32_t read_began{cfg_.now_cycles()};
             const int rc{d.ops->read_cliff_sample(d.dev, d.scratch, &sample, &st)};
 
+            record_high_water(&tally_read_us_last_[i], &tally_read_us_max_[i],
+                              elapsed_us(read_began, cfg_.now_cycles()));
             record(f, rc, st);
             atomic_inc(&tally_reads_[i]);
             if (rc != 0)
@@ -772,8 +854,17 @@ void run_cycle()
             }
 
             f.sample_produced = st.sample_present && sample.fresh;
-            if (f.sample_produced)
+            if (f.sample_produced) {
                 atomic_inc(&tally_samples_[i]);
+                /* Inequality rather than ordering: StreamCount is 8 bits and wraps, so 255 -> 0 is
+                 * an advance and only equality is a repeat. Counted, never acted on. */
+                if (prev_stream_valid_[i] && prev_stream_[i] == sample.stream_count)
+                    atomic_inc(&tally_repeat_measurements_[i]);
+                else
+                    atomic_inc(&tally_new_measurements_[i]);
+                prev_stream_[i] = sample.stream_count;
+                prev_stream_valid_[i] = true;
+            }
             if (f.sample_produced)
                 cfg_.hooks.on_cliff_sample(i, facts_.cycle_seq, f, sample);
         } else {
@@ -791,8 +882,24 @@ void run_cycle()
     in_cycle_ = false;
     k_mutex_unlock(&tof_chain_controller::chain_lock());
 
+    /* The device work, lock to lock. Everything after this point is ours rather than the bus's. */
+    const uint32_t work_done{cfg_.now_cycles()};
+
+    record_high_water(&tally_work_us_last_, &tally_work_us_max_,
+                      elapsed_us(began_cycles, work_done));
+
     publish_snapshot();
+    /* The publisher's synchronous CAN sends happen inside this call, on this thread. They are
+     * outside the chain lock and inside the cadence, which is why they are timed apart from the
+     * work above rather than folded into it. */
     cfg_.hooks.on_cycle(facts_);
+
+    const uint32_t cycle_done{cfg_.now_cycles()};
+
+    record_high_water(&tally_publish_us_last_, &tally_publish_us_max_,
+                      elapsed_us(work_done, cycle_done));
+    record_high_water(&tally_total_us_last_, &tally_total_us_max_,
+                      elapsed_us(began_cycles, cycle_done));
 
     /* Per COMPLETED cycle, which is why this is here and not at the top. */
     ++next_cycle_seq_;
@@ -887,7 +994,16 @@ static void thread_entry(void *, void *, void *)
         /* The cadence, and the stop signal, in one wait. Sleeping for the period and checking the
          * flag afterwards would make every stop request cost up to a full period before it was even
          * noticed -- and that period is what a caller's join timeout would then have to cover. */
+        const uint32_t wait_began{cfg_.now_cycles()};
+
         (void)k_sem_take(&stop_sem_, K_MSEC(cfg_.periods.cycle_period_ms));
+        /* Measured rather than assumed to be the configured period. It is the period when nothing
+         * interrupts it, and it is NOT the cycle time: this wait starts AFTER the work and the CAN
+         * sends, so the achieved cadence is work + publish + period. That arithmetic is the first
+         * candidate for the gap between a 50 ms configured period and a 14.6 Hz observed rate, and
+         * it is a number rather than an argument only because it is recorded here. */
+        record_high_water(&tally_wait_us_last_, &tally_wait_us_max_,
+                          elapsed_us(wait_began, cfg_.now_cycles()));
     }
 
     /* At a cycle boundary, from the thread that owns the devices. This is the reason try_stop() no
@@ -1033,6 +1149,94 @@ uint32_t source_identity(int index)
 uint32_t cycles_completed()
 {
     return static_cast<uint32_t>(atomic_get(&tally_cycles_));
+}
+
+namespace {
+
+uint32_t per_source(const atomic_t *table, int index)
+{
+    return index >= 0 && index < kMaxSources
+               ? static_cast<uint32_t>(atomic_get(&table[index]))
+               : 0U;
+}
+
+}  // namespace
+
+uint32_t elapsed_us_at(uint32_t from_cycles, uint32_t to_cycles, uint32_t hz)
+{
+    /* Unsigned subtraction FIRST, conversion second -- see the note on the declaration. The
+     * subtraction is correct across the counter's wrap because both operands are unsigned and the
+     * intervals measured here are far shorter than the wrap period. */
+    const uint32_t delta{to_cycles - from_cycles};
+
+    if (hz == 0U)
+        return 0U;
+    return static_cast<uint32_t>((static_cast<uint64_t>(delta) * 1000000U) / hz);
+}
+
+uint32_t source_read_us_last(int index)
+{
+    return per_source(tally_read_us_last_, index);
+}
+
+uint32_t source_read_us_max(int index)
+{
+    return per_source(tally_read_us_max_, index);
+}
+
+uint32_t source_new_measurements(int index)
+{
+    return per_source(tally_new_measurements_, index);
+}
+
+uint32_t source_repeat_measurements(int index)
+{
+    return per_source(tally_repeat_measurements_, index);
+}
+
+uint32_t cycle_work_us_last()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_work_us_last_));
+}
+
+uint32_t cycle_work_us_max()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_work_us_max_));
+}
+
+uint32_t cycle_publish_us_last()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_publish_us_last_));
+}
+
+uint32_t cycle_publish_us_max()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_publish_us_max_));
+}
+
+uint32_t cycle_total_us_last()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_total_us_last_));
+}
+
+uint32_t cycle_total_us_max()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_total_us_max_));
+}
+
+uint32_t cycle_wait_us_last()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_wait_us_last_));
+}
+
+uint32_t cycle_wait_us_max()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_wait_us_max_));
+}
+
+uint32_t cycle_gap_us_max()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_gap_us_max_));
 }
 
 #ifdef CONFIG_ZTEST

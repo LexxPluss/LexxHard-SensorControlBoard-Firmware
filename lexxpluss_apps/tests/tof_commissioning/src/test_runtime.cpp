@@ -247,6 +247,7 @@ ZTEST(tof_cliff_runtime, test_a_failing_step_stops_the_sequence_and_is_named)
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = au::state_provider;
     c.now_ms = k_uptime_get_32;
+    c.now_cycles = k_cycle_get_32;
     zassert_equal(acq::init(c), 0);
 
     zassert_equal(rt::bootstrap(kTiming), -EALREADY);
