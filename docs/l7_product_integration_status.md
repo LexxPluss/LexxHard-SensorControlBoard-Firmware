@@ -4,7 +4,8 @@
 commit is measured in the fully-enabled configuration before the next one starts.
 
 This branch carries the VL53L7CX base layer, rebuilt on the product stack rather than merged from
-the bench branch, plus the typed acquisition interface above it. It is pushed for review.
+the bench branch, plus the typed acquisition interface above it. It is offered for review, not
+for merge.
 
 ## What is here
 
@@ -51,6 +52,11 @@ almost all of it, and 24 bytes survive.
 No real sensor. The grid descriptors carry the named `-ENOSYS` stub, `on_grid_stub()` is a sink
 nothing can reach, there are no `VL53L7CX_Configuration` objects and no scratch, and there is no
 0x214/0x215 publisher and no blob writer.
+
+**An obligation on whoever binds a real grid table:** `on_grid_stub()` must be replaced in the same
+commit, with a test showing a grid actually reaches its publisher. Leaving the empty sink in place
+would read grids and discard them silently, which on the wire is indistinguishable from a sensor
+that is not there.
 
 ## Capacity, per commit
 
