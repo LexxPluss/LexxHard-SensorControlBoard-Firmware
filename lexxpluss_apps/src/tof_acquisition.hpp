@@ -168,8 +168,10 @@ struct source_desc {
      *
      * distance_mode carries the ULD's own VL53LX_DISTANCEMODE_* values rather than an
      * enumeration of our own: a private mapping onto three integers is a chance to get the
-     * correspondence wrong for no benefit. SHORT is 1, MEDIUM 2, LONG 3; anything else is
-     * refused. */
+     * correspondence wrong for no benefit. MEDIUM is 2 and LONG is 3, and those are the only
+     * two accepted -- SHORT (1) is defined by the enumeration but REFUSED BY THE ULD for an L4
+     * part, so accepting it here would build a descriptor that validates and then fails at
+     * bring-up on every sensor with the reason buried in a vendor error code. */
     uint32_t cliff_timing_budget_us{0};
     uint8_t cliff_distance_mode{0};
     void *dev{nullptr};                       // VL53L4CX_Object_t* for l4_cliff
@@ -577,10 +579,12 @@ uint32_t source_repeat_measurements(int index);
  *   gap     -- start of one cycle to the start of the next, the only one of these that is
  *              a cadence rather than a duration
  *
- * The parts do not add up to the gap exactly and must not be quoted as if they did: the
- * remainder is scheduling latency -- the thread becoming runnable after its wait expires,
- * and being preempted by anything at a higher priority. gap >= lock + work + publish +
- * wait, and the difference is that latency.
+ * THESE ARE NOT TERMS OF A SUM, and no inequality between them is worth writing down
+ * either. Three separate reasons, any one of which is enough: gap is a high-water mark
+ * while the others carry `last` values, so they are not even from the same cycle; a gap
+ * spans the wait at the END of one cycle and the lock wait at the START of the next, so
+ * the parts of one cycle do not compose it; and the remainder would in any case include
+ * scheduling latency, which nothing here measures. Read each one on its own.
  */
 /* How long the chain lock was waited for before the cycle could start. Commissioning holds
  * it for seconds at a time, so without this a cycle that was late because the chain was

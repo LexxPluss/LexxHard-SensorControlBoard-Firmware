@@ -92,8 +92,14 @@ properties:
     type: int
     required: true
     description: |
-      VL53LX_DISTANCEMODE_* for the four cliff sensors -- 1 SHORT, 2 MEDIUM,
-      3 LONG, and nothing else is accepted. 2 preserves what DataInit leaves.
+      VL53LX_DISTANCEMODE_* for the four cliff sensors. Only 2 (MEDIUM) and
+      3 (LONG) are accepted; 2 preserves what DataInit leaves.
+
+      1 (SHORT) is defined by the enumeration but is refused for an L4 part by
+      the ULD itself -- VL53LX_SetDistanceMode returns INVALID_PARAMS when
+      IsL4(Dev) -- so it is rejected here rather than allowed to fail at
+      bring-up on every sensor with the reason buried in a vendor error code.
+
       The ULD's own numbering rather than a private enumeration, because a
       mapping onto three integers is only a chance to get it wrong.
 

@@ -264,7 +264,7 @@ int bootstrap(const config &cfg)
     /* The ranging profile is checked HERE as well as in tof_acq::init(), and deliberately: this is
      * the stage that can name what was wrong, and a bootstrap that reached the descriptors with a
      * zero budget would be refused there as a generic -EINVAL with no stage attached. */
-    if (cfg.cliff_timing_budget_us == 0 || cfg.cliff_distance_mode < 1 ||
+    if (cfg.cliff_timing_budget_us == 0 || cfg.cliff_distance_mode < 2 ||
         cfg.cliff_distance_mode > 3)
         return -EINVAL;
     if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0 || cfg.stop_join_timeout_ms == 0)
@@ -424,11 +424,20 @@ int probe_position(size_t position_1based, probe_result &out, unsigned attempts,
     if (out.open_rc == 0) {
         /* The descriptor's own profile, not a second opinion: this diagnostic must range the way
          * acquisition does, or the number it prints comes from a sensor configured differently
-         * from the one the cliff path reads. */
-        (void)ops.configure(dev, descs_[i].cliff_timing_budget_us, descs_[i].cliff_distance_mode,
-                            &out.status);
-        out.start_rc = ops.start(dev, &out.status);
-        if (out.start_rc == 0) {
+         * from the one the cliff path reads.
+         *
+         * And the result is checked. Discarding it was harmless while configure() was a no-op;
+         * now that it really writes the distance mode and the timing budget, carrying on after a
+         * failure would range under the PREVIOUS configuration and report the answer as if it
+         * came from the new one. */
+        out.configure_rc = ops.configure(dev, descs_[i].cliff_timing_budget_us,
+                                         descs_[i].cliff_distance_mode, &out.status);
+        if (out.configure_rc == 0)
+            out.start_rc = ops.start(dev, &out.status);
+        /* configure_rc as well as start_rc: start_rc is still 0 after a configure failure, because
+         * start was never reached, so testing it alone would let the read loop run anyway -- which
+         * is the original defect with one more step in front of it. */
+        if (out.configure_rc == 0 && out.start_rc == 0) {
             /* One start, then re-check. Restarting between checks -- which is what looping over the
              * whole open/start/stop sequence does -- puts the sensor back at "just started" every
              * time and can never observe a first frame. */
@@ -483,11 +492,20 @@ int stream_position(size_t position_1based, stream_result &out, unsigned want_fr
     if (out.open_rc == 0) {
         /* The descriptor's own profile, not a second opinion: this diagnostic must range the way
          * acquisition does, or the number it prints comes from a sensor configured differently
-         * from the one the cliff path reads. */
-        (void)ops.configure(dev, descs_[i].cliff_timing_budget_us, descs_[i].cliff_distance_mode,
-                            &out.status);
-        out.start_rc = ops.start(dev, &out.status);
-        if (out.start_rc == 0) {
+         * from the one the cliff path reads.
+         *
+         * And the result is checked. Discarding it was harmless while configure() was a no-op;
+         * now that it really writes the distance mode and the timing budget, carrying on after a
+         * failure would range under the PREVIOUS configuration and report the answer as if it
+         * came from the new one. */
+        out.configure_rc = ops.configure(dev, descs_[i].cliff_timing_budget_us,
+                                         descs_[i].cliff_distance_mode, &out.status);
+        if (out.configure_rc == 0)
+            out.start_rc = ops.start(dev, &out.status);
+        /* configure_rc as well as start_rc: start_rc is still 0 after a configure failure, because
+         * start was never reached, so testing it alone would let the read loop run anyway -- which
+         * is the original defect with one more step in front of it. */
+        if (out.configure_rc == 0 && out.start_rc == 0) {
             const lexxhard::tof_cliff_stream::params p{want_frames, gap_ms, max_attempts};
             const auto pr{lexxhard::tof_cliff_stream::run_loop(
                 ops, dev, descs_[i].scratch, out.status, p, sink, ctx,

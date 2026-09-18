@@ -174,6 +174,12 @@ constexpr unsigned kMaxProbeGapMs{200};
 struct probe_result {
     bool attempted{false};
     int open_rc{0};
+    /* Its own field, because the sequence now STOPS on a configure failure. It used to be
+     * discarded, which was harmless only while configure() was a no-op: once it really sets the
+     * distance mode and the timing budget, a failure followed by a start and a read produces a
+     * reading from the PREVIOUS configuration that is indistinguishable from one taken under the
+     * new one -- exactly the confusion a timing-budget A/B cannot survive. */
+    int configure_rc{0};
     int start_rc{0};
     int read_rc{0};
     unsigned attempts_used{0};
@@ -207,6 +213,7 @@ int probe_position(size_t position_1based, probe_result &out, unsigned attempts 
 struct stream_result {
     bool attempted{false};
     int open_rc{0};
+    int configure_rc{0};  // see probe_result: the sequence stops here on failure
     int start_rc{0};
     int last_read_rc{0};
     unsigned frames_collected{0};

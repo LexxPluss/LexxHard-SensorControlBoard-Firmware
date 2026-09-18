@@ -566,10 +566,13 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "  no frame within %lu check(s): retry with more attempts and a gap, "
                            "e.g. `tof cliff read %lu 20 20`", attempts, pos);
 
+    if (r.configure_rc != 0)
+        shell_print(shell, "  configure failed (%d): the sequence stopped, nothing was read",
+                    r.configure_rc);
+
     /* Stated so that a good reading is not mistaken for a validated data path. */
-    shell_print(shell, "diagnostic only: configure() is a no-op (distance mode and timing budget "
-                       "are unresolved in the contract), nothing was published, and the mapping "
-                       "state is unchanged");
+    shell_print(shell, "diagnostic only: nothing was published, the mapping state is unchanged");
+    shell_print(shell, "ranged at the descriptor's own profile, same as acquisition uses");
     return 0;
 }
 
@@ -940,9 +943,11 @@ int cmd_cliff_stream(const struct shell *shell, size_t argc, char **argv)
                 r.attempts_used, gap_ms);
     if (r.open_rc != 0 || r.start_rc != 0)
         shell_print(shell, "  session did not start; nothing was read");
+    if (r.configure_rc != 0)
+        shell_print(shell, "  configure failed (%d): the session did not start", r.configure_rc);
     shell_print(shell, "diagnostic only: nothing was transmitted, the mapping is unchanged and the "
-                       "publisher was not involved. configure() is a no-op, so the device runs the "
-                       "ULD DataInit defaults (MEDIUM, 33.3 ms, back-to-back).");
+                       "publisher was not involved.");
+    shell_print(shell, "ranged at the descriptor's own profile (devicetree), not a ULD default.");
     return 0;
 }
 
@@ -1060,10 +1065,13 @@ int cmd_cliff_timing(const struct shell *shell, size_t argc, char **argv)
                     tof_acq::source_repeat_measurements(i));
     }
 
-    /* Said rather than left to be assumed. The wait begins AFTER the work and the CAN sends, so the
-     * achieved cadence is work + publish + wait and not the configured period -- which is why
-     * cycle_gap_us is printed as well as the parts, and why the parts should add up to it. */
-    shell_print(shell, "gap >= lock + work + publish + wait; the rest is scheduling latency");
+    /* Said rather than left to be assumed -- and said WITHOUT an arithmetic relation, because
+     * there is not one to state. cycle_gap_us is a high-water mark while the parts carry `last`
+     * values from whichever cycle wrote them, and a gap spans the wait at the END of one cycle and
+     * the lock wait at the START of the next, so the parts of any single cycle do not add up to
+     * it. Printing an inequality invited exactly the subtraction that cannot be done. */
+    shell_print(shell, "each figure stands alone; they are NOT terms of one sum");
+    shell_print(shell, "gap is a max over cycles; the others are that cycle's own last value");
     shell_print(shell, "publish_us is snapshot + pack + CAN send, NOT the bus time alone");
     shell_print(shell, "cycle_overruns moving means the period is too short for the work");
     shell_print(shell, "repeat_measurements means fresh was set but StreamCount had not moved");

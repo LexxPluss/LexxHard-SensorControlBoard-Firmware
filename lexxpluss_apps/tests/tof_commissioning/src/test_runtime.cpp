@@ -238,6 +238,11 @@ ZTEST(tof_cliff_runtime, test_timing_has_no_defaults_here_either)
     zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 4}), -EINVAL,
                   "a distance mode the ULD does not define was accepted");
     zassert_equal(rt::current_stage(), rt::stage::not_started);
+    /* SHORT. Defined by the enumeration, refused by the ULD for an L4 part, so refused here too
+     * rather than left to fail at bring-up on every sensor. */
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 1}), -EINVAL,
+                  "SHORT was accepted, and the L4 ULD rejects it");
+    zassert_equal(rt::current_stage(), rt::stage::not_started);
     zassert_false(rt::ready());
 }
 

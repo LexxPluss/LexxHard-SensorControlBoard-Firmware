@@ -551,8 +551,16 @@ ZTEST(tof_acquisition, test_a_missing_or_impossible_ranging_profile_is_refused)
     four_cliff_two_grid[2].cliff_distance_mode = 4;  // one past LONG
     zassert_equal(acq::init(c), -EINVAL, "a distance mode the ULD does not define was accepted");
 
-    // All three the ULD defines are legal, and nothing here prefers one of them.
-    for (uint8_t mode{1}; mode <= 3; ++mode) {
+    /* SHORT is 1 and the enumeration defines it, but the vendored ULD refuses it for an L4 part
+     * outright -- the IsL4() check in VL53LX_SetDistanceMode. Accepting it here would build a
+     * descriptor that validates and then fails at bring-up on all four sensors, with the reason
+     * buried in a vendor error code. */
+    c = make_config(4);
+    four_cliff_two_grid[2].cliff_distance_mode = VL53LX_DISTANCEMODE_SHORT;
+    zassert_equal(acq::init(c), -EINVAL, "SHORT was accepted, and the L4 ULD rejects it");
+
+    // The two the L4 actually supports, and nothing here prefers one of them.
+    for (uint8_t mode{VL53LX_DISTANCEMODE_MEDIUM}; mode <= VL53LX_DISTANCEMODE_LONG; ++mode) {
         c = make_config(4);
         for (int i{0}; i < 4; ++i)
             four_cliff_two_grid[i].cliff_distance_mode = mode;

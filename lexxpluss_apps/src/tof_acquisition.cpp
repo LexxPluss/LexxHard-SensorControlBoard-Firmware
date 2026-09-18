@@ -544,12 +544,15 @@ int init(const config &cfg)
                 d.ops->stop == nullptr || d.grid_ops != nullptr || d.dev == nullptr ||
                 d.scratch == nullptr)
                 return -EINVAL;
-            /* The ranging profile, refused rather than defaulted. The range check on the mode is
-             * the ULD's own three values: a fourth would reach VL53LX_SetDistanceMode as an
-             * unhandled case, and the interesting failure is the one where it is silently
-             * accepted. */
+            /* The ranging profile, refused rather than defaulted.
+             *
+             * MEDIUM or LONG, and SHORT is NOT among them even though the enumeration defines it:
+             * the vendored ULD refuses SHORT for an L4 part outright -- see the IsL4() check in
+             * VL53LX_SetDistanceMode -- so accepting it here would produce a descriptor that
+             * passes validation and then fails at bring-up on every sensor, with the reason
+             * buried in a vendor error code. */
             if (d.cliff_timing_budget_us == 0 ||
-                d.cliff_distance_mode < VL53LX_DISTANCEMODE_SHORT ||
+                d.cliff_distance_mode < VL53LX_DISTANCEMODE_MEDIUM ||
                 d.cliff_distance_mode > VL53LX_DISTANCEMODE_LONG)
                 return -EINVAL;
         } else {
