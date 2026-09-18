@@ -545,6 +545,18 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
                            "enumerated? run `tof enum` first)");
         return -EIO;
     }
+    /* BEFORE the start line, and it returns. A configure failure leaves start_rc at zero because
+     * start was never reached, so falling through printed "start=0" beside a claim that the device
+     * had been ranged at the new profile -- and returned success. That is the one output a
+     * timing-budget A/B must never produce: it is exactly what a good run looks like. */
+    if (r.configure_rc != 0) {
+        shell_error(shell,
+                    "pos%lu addr=0x%02x role_id=%u open=0 configure=%d stage=%s errno=%d uld=%d",
+                    pos, r.addr_7bit, r.role_id, r.configure_rc,
+                    tof_cliff_stage_name(r.status.stage), r.status.port_errno, r.status.uld_rc);
+        shell_error(shell, "  start and read NOT attempted; the device keeps its previous profile");
+        return -EIO;
+    }
     if (r.start_rc != 0) {
         shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=0 start=%d stage=%s errno=%d uld=%d",
                     pos, r.addr_7bit, r.role_id, r.start_rc,
@@ -565,10 +577,6 @@ int cmd_cliff_read(const struct shell *shell, size_t argc, char **argv)
     if (!r.sample.fresh)
         shell_print(shell, "  no frame within %lu check(s): retry with more attempts and a gap, "
                            "e.g. `tof cliff read %lu 20 20`", attempts, pos);
-
-    if (r.configure_rc != 0)
-        shell_print(shell, "  configure failed (%d): the sequence stopped, nothing was read",
-                    r.configure_rc);
 
     /* Stated so that a good reading is not mistaken for a validated data path. */
     shell_print(shell, "diagnostic only: nothing was published, the mapping state is unchanged");
@@ -937,14 +945,22 @@ int cmd_cliff_stream(const struct shell *shell, size_t argc, char **argv)
         return rc;
     }
 
+    /* Before anything else, and it returns -- see the same guard in `read`. start_rc is zero after
+     * a configure failure because start was never reached, so the ordinary line would report
+     * start=0 and the command would succeed. */
+    if (r.configure_rc != 0) {
+        shell_error(shell, "pos%lu addr=0x%02x role_id=%u open=0 configure=%d stage=%s errno=%d",
+                    pos, r.addr_7bit, r.role_id, r.configure_rc,
+                    tof_cliff_stage_name(r.status.stage), r.status.port_errno);
+        shell_error(shell, "  start and read NOT attempted; the device keeps its previous profile");
+        return -EIO;
+    }
     shell_print(shell, "pos%lu addr=0x%02x role_id=%u open=%d start=%d last_read=%d", pos,
                 r.addr_7bit, r.role_id, r.open_rc, r.start_rc, r.last_read_rc);
     shell_print(shell, "frames=%u/%lu attempts_used=%u gap_ms=%lu", r.frames_collected, frames,
                 r.attempts_used, gap_ms);
     if (r.open_rc != 0 || r.start_rc != 0)
         shell_print(shell, "  session did not start; nothing was read");
-    if (r.configure_rc != 0)
-        shell_print(shell, "  configure failed (%d): the session did not start", r.configure_rc);
     shell_print(shell, "diagnostic only: nothing was transmitted, the mapping is unchanged and the "
                        "publisher was not involved.");
     shell_print(shell, "ranged at the descriptor's own profile (devicetree), not a ULD default.");
