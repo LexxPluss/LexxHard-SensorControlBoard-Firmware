@@ -34,12 +34,17 @@
  *                          while the route is still with release and safety, and it is why this
  *                          module does not call tof_epoch_issuer directly.
  *
- * THE INVARIANT THIS EXISTS TO HOLD. `start()` is reached only from a `prove()` that returned
- * success. Starting acquisition is the only thing between a proven mapping and 0x216 on the wire --
- * the shell's own `tof cliff start` says so -- so every failure path here leaves the subsystem
- * exactly where a failure leaves it today: no measurement frames, and health still reporting
- * NOT_READY for the reason the runtime already publishes. This module never fabricates a health
- * state and never suppresses one.
+ * THE INVARIANT THIS EXISTS TO HOLD, stated as narrowly as it is actually true: **this module calls
+ * `start()` only after a `prove()` that returned success.** That is a property of this module's own
+ * behaviour and nothing more.
+ *
+ * An earlier version of this comment claimed more -- that a failure here means no measurement frames
+ * exist at all. It cannot claim that. Acquisition may already be running because an operator started
+ * it, and this module neither knows nor changes that. What it guarantees is that it will not be the
+ * thing that starts it: starting acquisition is the only step between a proven mapping and 0x216 on
+ * the wire, which the shell's own `tof cliff start` says in as many words, so a failure here adds
+ * nothing to the bus. Health is published by the runtime for its own reasons; this module fabricates
+ * no health state and suppresses none.
  *
  * MUTUAL EXCLUSION WITH THE OPERATOR is not implemented here, because it already exists lower down:
  * the transaction takes the chain with K_NO_WAIT and refuses if an operator's command holds it. A
@@ -74,11 +79,18 @@ struct hooks {
 
 struct config {
     bool enabled{false};
+    /* Proof attempts within one power-on. Zero means zero, like `enabled` means off. */
     uint8_t max_attempts{0};
+    /* Acquisition starts, counted separately. A start that refuses is a different failure from a
+     * proof that refuses -- the mapping is installed and the epoch is spent -- so it gets its own
+     * budget rather than borrowing the proof's, and it is bounded for the same reason the proof is:
+     * an unbounded retry keeps taking the chain from whoever is trying to look at the machine. */
+    uint8_t max_start_attempts{0};
 };
 
 enum class state : uint8_t {
-    disabled,  /* not configured, or configured off */
+    disabled,      /* not configured, or configured off -- a choice, not a fault */
+    misconfigured, /* switched on and unable to act: a hook is missing. A fault, and reported as one */
     waiting,   /* on, and no mapping proven yet */
     proven,    /* a proof succeeded; acquisition not yet running */
     started,   /* acquisition running; terminal for this power-on */
@@ -87,11 +99,13 @@ enum class state : uint8_t {
 
 enum class step_result : uint8_t {
     disabled,
+    misconfigured,      /* enabled with a hook missing; nothing is attempted and it will not resolve */
     not_permitted,      /* the stationary condition said no; nothing was attempted or counted */
     no_epoch,           /* no epoch available; nothing was attempted or counted */
     proof_failed,       /* an attempt was spent and nothing was installed */
     attempts_exhausted, /* the last attempt is spent; no further proof will be attempted */
     start_failed,       /* the mapping is proven and acquisition refused to start */
+    start_attempts_exhausted, /* the start budget is spent; the mapping stays proven, unstarted */
     started,
     already_started,
 };
@@ -103,6 +117,7 @@ step_result step();
 
 state current();
 uint8_t attempts_used();
+uint8_t start_attempts_used();
 
 } // namespace lexxhard::tof_auto_commission
 

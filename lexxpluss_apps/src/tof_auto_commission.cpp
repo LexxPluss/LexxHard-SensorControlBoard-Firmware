@@ -17,6 +17,7 @@ config cfg_{};
 hooks hooks_{};
 state state_{state::disabled};
 uint8_t attempts_{0};
+uint8_t start_attempts_{0};
 
 bool wired()
 {
@@ -31,16 +32,25 @@ void init(const config &cfg, const hooks &h)
     cfg_ = cfg;
     hooks_ = h;
     attempts_ = 0;
-    /* A machine that is off, or not fully wired, reports disabled rather than waiting. The
-     * difference matters to anything asking why nothing is happening: "switched off" and "on and
-     * unable to act" are different answers and only one of them is a fault. */
-    state_ = (cfg_.enabled && wired()) ? state::waiting : state::disabled;
+    start_attempts_ = 0;
+    /* Three outcomes, not two. Off is a choice; on-and-unwired is a fault and is reported as one,
+     * because anything asking why nothing is happening needs to tell them apart -- and because a
+     * missing hook will not resolve itself, so reporting it as "disabled" would describe a broken
+     * deployment as a deliberate configuration. */
+    if (!cfg_.enabled)
+        state_ = state::disabled;
+    else if (!wired())
+        state_ = state::misconfigured;
+    else
+        state_ = state::waiting;
 }
 
 step_result step()
 {
     if (state_ == state::disabled)
         return step_result::disabled;
+    if (state_ == state::misconfigured)
+        return step_result::misconfigured;
     if (state_ == state::started)
         return step_result::already_started;
     if (state_ == state::exhausted)
@@ -50,6 +60,9 @@ step_result step()
      * installed a mapping and spent an epoch, and re-proving because acquisition refused to start
      * would spend another for a failure that has nothing to do with the mapping. */
     if (state_ == state::proven) {
+        if (start_attempts_ >= cfg_.max_start_attempts)
+            return step_result::start_attempts_exhausted;
+        ++start_attempts_;
         if (hooks_.start(hooks_.ctx) != 0)
             return step_result::start_failed;
         state_ = state::started;
@@ -92,8 +105,14 @@ step_result step()
         return step_result::proof_failed;
     }
 
-    /* The only path to start(), and it is reached only from a prove() that returned success. */
+    /* The only path to start(), and it is reached only from a prove() that returned success. The
+     * state moves to proven BEFORE the start is tried, so a start that refuses is retried as a start
+     * and never re-proved: the mapping is installed and its epoch is spent, and spending another on
+     * a failure that has nothing to do with the mapping would be waste with a cost. */
     state_ = state::proven;
+    if (start_attempts_ >= cfg_.max_start_attempts)
+        return step_result::start_attempts_exhausted;
+    ++start_attempts_;
     if (hooks_.start(hooks_.ctx) != 0)
         return step_result::start_failed;
 
@@ -109,6 +128,11 @@ state current()
 uint8_t attempts_used()
 {
     return attempts_;
+}
+
+uint8_t start_attempts_used()
+{
+    return start_attempts_;
 }
 
 } // namespace lexxhard::tof_auto_commission

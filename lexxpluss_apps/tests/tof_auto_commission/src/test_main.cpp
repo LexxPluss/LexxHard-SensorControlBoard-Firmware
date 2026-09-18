@@ -82,11 +82,12 @@ void before(void *)
     f_ = fakes{};
 }
 
-void enable(uint8_t attempts)
+void enable(uint8_t attempts, uint8_t start_attempts = 3)
 {
     ac::config c{};
     c.enabled = true;
     c.max_attempts = attempts;
+    c.max_start_attempts = start_attempts;
     ac::init(c, wired());
 }
 
@@ -108,19 +109,27 @@ ZTEST(tof_auto_commission, test_a_default_configuration_is_off_and_calls_nothing
     zassert_equal(f_.start_calls, 0, "and nothing is started");
 }
 
-ZTEST(tof_auto_commission, test_an_unwired_machine_reports_disabled_rather_than_waiting)
+ZTEST(tof_auto_commission, test_an_unwired_machine_reports_a_configuration_error)
 {
     ac::config c{};
     c.enabled = true;
     c.max_attempts = 3;
+    c.max_start_attempts = 3;
     ac::hooks half{};
     half.enumeration_permitted = fake_permitted; /* the rest left null */
     half.ctx = &f_;
     ac::init(c, half);
 
-    zassert_equal(ac::current(), ac::state::disabled, "switched on but unable to act is not waiting");
-    zassert_equal(ac::step(), ac::step_result::disabled, "and it acts on nothing");
+    /* Not `disabled`: switched off is a choice and a missing hook is a fault, and a missing hook
+     * will not resolve itself. Reporting it as disabled would describe a broken deployment as a
+     * deliberate configuration. */
+    zassert_equal(ac::current(), ac::state::misconfigured, "on and unable to act is a fault");
+    zassert_equal(ac::step(), ac::step_result::misconfigured, "and it says which");
     zassert_equal(f_.permitted_calls, 0, "no hook is called at all");
+    zassert_equal(f_.start_calls, 0, "and nothing is started");
+
+    /* It does not resolve by being stepped again. */
+    zassert_equal(ac::step(), ac::step_result::misconfigured, "still a fault");
 }
 
 /* ---- the permission condition ---- */
@@ -243,4 +252,34 @@ ZTEST(tof_auto_commission, test_zero_attempts_means_no_proof_is_ever_attempted)
     zassert_equal(f_.acquire_calls, 0, "and no epoch is reached for, because acquiring may spend one");
     zassert_equal(f_.start_calls, 0, "and nothing started");
     zassert_equal(ac::current(), ac::state::exhausted, "it is spent from the outset");
+}
+
+/* ---- the start budget ---- */
+
+ZTEST(tof_auto_commission, test_start_retries_are_bounded_too)
+{
+    /* A refusing start must not be retried forever either: the mapping is proven and the epoch is
+     * spent, and an unbounded retry keeps taking the chain from whoever is looking at the machine. */
+    enable(3, 2);
+    f_.start_rc = -1;
+
+    zassert_equal(ac::step(), ac::step_result::start_failed, "first start refused");
+    zassert_equal(ac::step(), ac::step_result::start_failed, "second refused");
+    zassert_equal(ac::step(), ac::step_result::start_attempts_exhausted, "and the budget is spent");
+    zassert_equal(f_.start_calls, 2, "exactly max_start_attempts starts, ever");
+    zassert_equal(f_.prove_calls, 1, "and it never re-proved");
+    zassert_equal(ac::current(), ac::state::proven, "the mapping stays proven and unstarted");
+
+    zassert_equal(ac::step(), ac::step_result::start_attempts_exhausted, "still spent");
+    zassert_equal(f_.start_calls, 2, "no further start");
+}
+
+ZTEST(tof_auto_commission, test_zero_start_attempts_means_a_proof_is_never_started)
+{
+    enable(3, 0);
+
+    zassert_equal(ac::step(), ac::step_result::start_attempts_exhausted, "no start budget");
+    zassert_equal(f_.prove_calls, 1, "the proof still ran");
+    zassert_equal(f_.start_calls, 0, "but nothing was started");
+    zassert_equal(ac::current(), ac::state::proven, "and the mapping it installed is not forgotten");
 }
