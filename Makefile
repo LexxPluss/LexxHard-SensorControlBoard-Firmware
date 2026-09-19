@@ -179,6 +179,15 @@ test_tof_commission_session:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_session -d build-test-tof-commission-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the BINDING, over native_sim's loopback CAN controller -- a real Zephyr CAN
+# device, so the filter, the send path and the receive callback under test are the real ones. The
+# proof, the acquisition start and the entropy draw are supplied by the test, because all three are
+# hardware; the CAN path is not among them.
+.PHONY: test_tof_commission_bind
+test_tof_commission_bind:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind -d build-test-tof-commission-bind -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the runtime adapter: which identifier a frame is answered on, what a frame
 # under another one does, when the session frame goes out, and that there is one worker. The
 # identifiers in that suite are TEST values, not the allocated pair -- a suite using the real ones
