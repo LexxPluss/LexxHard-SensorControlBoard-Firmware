@@ -25,9 +25,17 @@ namespace pf = lexxhard::tof_proof;
 
 namespace {
 
+/* Set while the prove hook is running, so a test can reach into the state machine from INSIDE the
+ * transaction -- the one moment at which holding the lock across a proof would be visible. */
+bool probe_lock_during_prove_{false};
+bool probe_ran_{false};
+
 struct fakes {
     uint32_t token{0x11223344U};
     bool token_available{true};
+    /* Draws that come back zero before the real one. Zero is reserved as "no token", and a single
+     * zero from a healthy generator is an ordinary sample rather than a fault. */
+    int zero_draws{0};
     bool permitted{true};
     int prove_rc{0};
     int start_rc{0};
@@ -47,6 +55,11 @@ int fake_draw(void *, uint32_t *out)
     ++f_.draws;
     if (!f_.token_available)
         return -1;
+    if (f_.zero_draws > 0) {
+        --f_.zero_draws;
+        *out = 0;
+        return 0;
+    }
     *out = f_.token;
     return 0;
 }
@@ -59,6 +72,14 @@ bool fake_permitted(void *)
 int fake_prove(void *, uint32_t epoch, cm::outcome *out)
 {
     ++f_.proves;
+    if (probe_lock_during_prove_) {
+        /* announcement() takes the same spinlock the worker takes. With CONFIG_SPIN_VALIDATE the
+         * kernel asserts on a recursive take, so if the worker ever held the lock across the
+         * transaction this call would fail the test instead of quietly starving the CAN callback for
+         * the length of an enumeration. */
+        (void)cs::announcement();
+        probe_ran_ = true;
+    }
     f_.last_epoch = epoch;
     out->failed_at = f_.prove_stage;
     out->proof = f_.prove_refusal;
@@ -85,15 +106,21 @@ bool enable(uint8_t proofs = 3, uint8_t starts = 3, bool profile = true)
     return cs::init(c, wired());
 }
 
-void build_request(uint8_t out[wire::kFrameLen], uint8_t seq, uint8_t epoch, uint32_t token,
-                   wire::opcode op = wire::opcode::prove_and_start)
+void build_raw_request(uint8_t out[wire::kFrameLen], uint8_t seq, uint8_t epoch, uint32_t token,
+                       uint8_t raw_op)
 {
     wire::request r{};
-    r.op = op;
+    r.raw_op = raw_op;
     r.seq = seq;
     r.wire_epoch = epoch;
     r.session_token = token;
     wire::encode_request(r, out);
+}
+
+void build_request(uint8_t out[wire::kFrameLen], uint8_t seq, uint8_t epoch, uint32_t token,
+                   wire::opcode op = wire::opcode::prove_and_start)
+{
+    build_raw_request(out, seq, epoch, token, static_cast<uint8_t>(op));
 }
 
 /* Drives the worker to a terminal status, as the real worker thread would. */
@@ -115,6 +142,8 @@ wire::transaction_status run_to_terminal()
 static void before(void *)
 {
     f_ = fakes{};
+    probe_lock_during_prove_ = false;
+    probe_ran_ = false;
 }
 
 ZTEST_SUITE(tof_commission_session, NULL, NULL, before, NULL, NULL);
@@ -143,6 +172,23 @@ ZTEST(tof_commission_session, test_a_zero_token_is_not_a_session)
     f_.token = 0;
     zassert_false(enable(), "zero is refused");
     zassert_false(cs::has_session(), "");
+}
+
+ZTEST(tof_commission_session, test_a_single_zero_draw_is_retried_rather_than_fatal)
+{
+    /* One zero is a sample, not a verdict on the entropy source. Refusing on it would turn a healthy
+     * generator into a board with no session roughly once in 2^32 boots, for no reason. */
+    f_.zero_draws = 1;
+    zassert_true(enable(), "the second draw is taken");
+    zassert_true(cs::has_session(), "and it is a session");
+    zassert_equal(f_.draws, 2, "exactly one retry");
+    zassert_equal(cs::session_token(), 0x11223344U, "with the non-zero token");
+
+    /* Two in a row is treated as no entropy at all -- one retry, not a loop. */
+    f_ = fakes{};
+    f_.zero_draws = 2;
+    zassert_false(enable(), "refused");
+    zassert_equal(f_.draws, 2, "and it did not keep drawing");
 }
 
 /* ---- validation order ---- */
@@ -413,4 +459,203 @@ ZTEST(tof_commission_session, test_the_epoch_comes_from_the_request)
     zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
     (void)run_to_terminal();
     zassert_equal(f_.last_epoch, 0xA5U, "the firmware never generates one");
+}
+
+/* ---- the opcode boundary ---- */
+
+ZTEST(tof_commission_session, test_start_only_without_a_proof_starts_nothing_and_proves_nothing)
+{
+    /* THE MOST IMPORTANT BOUNDARY IN THE PROTOCOL. `start_only` promises it re-enumerates nothing.
+     * The sequencer has one entry point and decides from its own state, so a start_only that reached
+     * it while nothing was proven would run a FULL PROOF and report success -- and an earlier version
+     * did exactly that, because the worker never read the opcode. */
+    zassert_true(enable(), "");
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U, wire::opcode::start_only);
+
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "accepted for the worker");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_true(t.ph == wire::phase::refused, "refused");
+    zassert_true(t.res == wire::result::epoch_mismatch,
+                 "nothing is proven, so no epoch is the proven one");
+    zassert_equal(f_.proves, 0, "AND NOT ONE PROOF RAN");
+    zassert_equal(f_.starts, 0, "and acquisition was not started either");
+}
+
+ZTEST(tof_commission_session, test_start_only_with_the_proven_epoch_starts_without_re_proving)
+{
+    /* The case the opcode exists for: the proof succeeded and the start did not. */
+    zassert_true(enable(), "");
+    f_.start_rc = -1;
+
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::start_failed, "the start refused");
+    zassert_equal(f_.proves, 1, "but the mapping is proven");
+
+    f_.start_rc = 0;
+    uint8_t retry[wire::kFrameLen]{};
+    build_request(retry, 2, 7, 0x11223344U, wire::opcode::start_only);
+    zassert_true(cs::handle_request(retry, sizeof retry).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_true(t.ph == wire::phase::done, "it completed");
+    zassert_true(t.res == wire::result::ok, "");
+    zassert_equal(f_.proves, 1, "and the chain was NOT re-enumerated");
+    zassert_equal(f_.starts, 2, "only the start was retried");
+}
+
+ZTEST(tof_commission_session, test_start_only_for_an_epoch_that_is_not_the_proven_one_is_refused)
+{
+    zassert_true(enable(), "");
+    f_.start_rc = -1;
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::start_failed, "");
+
+    f_.start_rc = 0;
+    uint8_t wrong[wire::kFrameLen]{};
+    build_request(wrong, 2, 8, 0x11223344U, wire::opcode::start_only);
+    zassert_true(cs::handle_request(wrong, sizeof wrong).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_true(t.res == wire::result::epoch_mismatch, "epoch 8 is not the epoch that was proven");
+    zassert_equal(t.wire_epoch, 8, "answered against the epoch the host asked about");
+    zassert_equal(f_.proves, 1, "it did not escalate to a proof of epoch 8");
+    zassert_equal(f_.starts, 1, "and it did not start the mapping under the wrong epoch either");
+}
+
+ZTEST(tof_commission_session, test_a_request_for_a_new_epoch_after_a_proof_is_not_reported_as_done)
+{
+    /* THE ACCOUNTING LIE THIS EXISTS TO PREVENT. Once a proof is held the sequencer proves nothing
+     * else this boot: stepped again it reports already_started without touching the chain. Reporting
+     * that as done/ok would tell the host that epoch 8 was accepted while epoch 7 is what is
+     * installed -- and the host's persisted `accepted` field cannot recover from that. */
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "epoch 7 is commissioned");
+
+    uint8_t newer[wire::kFrameLen]{};
+    build_request(newer, 2, 8, 0x11223344U);
+    zassert_true(cs::handle_request(newer, sizeof newer).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+    zassert_true(t.res == wire::result::epoch_mismatch, "not ok");
+    zassert_true(t.ph == wire::phase::refused, "and not done");
+    zassert_equal(f_.proves, 1, "nothing re-proved");
+
+    /* And it does not over-refuse: the epoch that IS running is still answered as done, because a
+     * host retransmitting under a new sequence has got what it asked for. */
+    uint8_t same[wire::kFrameLen]{};
+    build_request(same, 3, 7, 0x11223344U);
+    zassert_true(cs::handle_request(same, sizeof same).queued, "");
+    const wire::transaction_status ok{run_to_terminal()};
+    zassert_true(ok.ph == wire::phase::done, "the running epoch is done");
+    zassert_true(ok.res == wire::result::ok, "");
+    zassert_equal(f_.proves, 1, "still nothing re-proved");
+}
+
+/* ---- busy is a cached answer, not a recomputed one ---- */
+
+ZTEST(tof_commission_session, test_a_busy_request_retransmitted_after_the_transaction_ends_replays_busy)
+{
+    /* An earlier version checked `running_` BEFORE claiming a table entry, so the busy answer left
+     * nothing behind -- and the identical frame, arriving again once the chain was free, was treated
+     * as a brand new request and RAN a transaction the host had already been refused. */
+    zassert_true(enable(5, 5), "");
+    uint8_t running[wire::kFrameLen]{}, busy[wire::kFrameLen]{};
+    build_request(running, 1, 11, 0x11223344U);
+    build_request(busy, 2, 12, 0x11223344U);
+
+    zassert_true(cs::handle_request(running, sizeof running).queued, "");
+    zassert_true(cs::handle_request(busy, sizeof busy).status.res == wire::result::busy_chain,
+                 "refused while one is in flight");
+    (void)run_to_terminal();
+    zassert_equal(f_.proves, 1, "one transaction ran");
+
+    const uint32_t replays_before{cs::stats().replayed_from_table};
+    const cs::rx_action again{cs::handle_request(busy, sizeof busy)};
+    zassert_true(again.send_status, "answered");
+    zassert_true(again.status.res == wire::result::busy_chain, "with the SAME answer as before");
+    zassert_false(again.queued, "not queued");
+    zassert_equal(f_.proves, 1, "and no second transaction ran");
+    zassert_equal(cs::stats().replayed_from_table, replays_before + 1, "replayed from the table");
+}
+
+/* ---- the opcode is judged after the token, never before ---- */
+
+ZTEST(tof_commission_session, test_an_unknown_opcode_is_refused_but_only_after_the_token)
+{
+    zassert_true(enable(), "");
+
+    uint8_t stale[wire::kFrameLen]{};
+    build_raw_request(stale, 1, 7, 0xDEADBEEFU, 0x7f);
+    const cs::rx_action a{cs::handle_request(stale, sizeof stale)};
+    zassert_true(a.status.res == wire::result::stale_session,
+                 "a frame from a finished boot is stale first, whatever its opcode");
+
+    uint8_t live[wire::kFrameLen]{};
+    build_raw_request(live, 1, 7, 0x11223344U, 0x7f);
+    const cs::rx_action b{cs::handle_request(live, sizeof live)};
+    zassert_true(b.status.res == wire::result::bad_opcode, "and only then judged on its opcode");
+    zassert_false(b.queued, "");
+    zassert_equal(f_.proves, 0, "nothing ran");
+
+    /* And, like `disabled`, it left no entry: the check sits before the table. */
+    uint8_t good[wire::kFrameLen]{};
+    build_request(good, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(good, sizeof good).queued, "sequence 1 is still free");
+}
+
+/* ---- phases ---- */
+
+ZTEST(tof_commission_session, test_the_worker_emits_one_terminal_status_and_no_intermediate_phase)
+{
+    /* `proving`, `proven` and `starting` are OPTIONAL DIAGNOSTICS in the wire enumeration and this
+     * firmware emits none of them: the transaction is a single blocking call with no observable
+     * interior. Pinned as a test so a host is never written against a progress frame that does not
+     * exist. */
+    zassert_true(enable(), "");
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+
+    int statuses{0};
+    wire::transaction_status last{};
+    for (int i = 0; i < 10; ++i) {
+        const cs::worker_result w{cs::worker_step()};
+        if (w.send_status) {
+            ++statuses;
+            last = w.status;
+            zassert_true(wire::is_terminal(w.status.ph), "every frame the worker sends is terminal");
+        }
+        if (w.state == cs::worker_state::idle)
+            break;
+    }
+    zassert_equal(statuses, 1, "exactly one status frame for one transaction");
+    zassert_true(last.ph == wire::phase::done, "and it is the outcome");
+}
+
+/* ---- the lock is short, and never held across the work ---- */
+
+ZTEST(tof_commission_session, test_the_lock_is_not_held_across_the_transaction)
+{
+    /* RX runs in the CAN callback and the transaction takes hundreds of milliseconds. The worker
+     * therefore takes the lock to pick the job up, RELEASES it, runs the proof, and takes it again to
+     * publish the terminal status. This test enters the state machine from inside the proof hook,
+     * which is exactly where a lock held across the work would show up. */
+    zassert_true(enable(), "");
+    probe_lock_during_prove_ = true;
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_true(probe_ran_, "the probe really ran inside the transaction");
+    zassert_true(t.ph == wire::phase::done, "and the transaction still completed normally");
 }

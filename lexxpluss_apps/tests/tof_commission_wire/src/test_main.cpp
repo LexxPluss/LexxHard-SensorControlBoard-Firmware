@@ -50,7 +50,7 @@ ZTEST_SUITE(tof_commission_wire, NULL, NULL, NULL, NULL, NULL);
 ZTEST(tof_commission_wire, test_a_prove_and_start_request_encodes_exactly)
 {
     wire::request r{};
-    r.op = wire::opcode::prove_and_start;
+    r.raw_op = static_cast<uint8_t>(wire::opcode::prove_and_start);
     r.seq = 0x2a;
     r.wire_epoch = 0x07;
     r.session_token = 0xdeadbeefU;
@@ -66,7 +66,7 @@ ZTEST(tof_commission_wire, test_a_prove_and_start_request_encodes_exactly)
 ZTEST(tof_commission_wire, test_a_start_only_request_differs_only_in_the_opcode)
 {
     wire::request r{};
-    r.op = wire::opcode::start_only;
+    r.raw_op = static_cast<uint8_t>(wire::opcode::start_only);
     r.seq = 0x2a;
     r.wire_epoch = 0x07;
     r.session_token = 0xdeadbeefU;
@@ -83,7 +83,8 @@ ZTEST(tof_commission_wire, test_a_request_decodes_to_what_was_encoded)
     wire::request got{};
     zassert_equal(wire::decode_request(frame, sizeof frame, got), wire::decode_error::none, "decodes");
     zassert_equal(got.version, 1, "version");
-    zassert_true(got.op == wire::opcode::start_only, "opcode");
+    zassert_equal(got.raw_op, static_cast<uint8_t>(wire::opcode::start_only),
+                  "the opcode byte is carried out raw");
     zassert_equal(got.seq, 0xff, "seq is carried, not interpreted -- 0xff is an ordinary identity");
     zassert_equal(got.wire_epoch, 0x00, "epoch 0 is legitimate");
     zassert_equal(got.session_token, 0x80000001U, "token, little-endian");
@@ -119,15 +120,45 @@ ZTEST(tof_commission_wire, test_an_unknown_version_stops_at_byte_zero)
     zassert_equal(got.seq, 0x11, "and nothing past byte 0 was interpreted");
 }
 
-ZTEST(tof_commission_wire, test_an_unknown_opcode_is_refused)
+ZTEST(tof_commission_wire, test_an_unknown_opcode_is_carried_out_not_refused_here)
 {
+    /* THE CODEC IS NOT WHERE AN OPCODE IS JUDGED, and this test exists to keep it that way. The
+     * specified order is length, version, session token, opcode -- so refusing here would decide an
+     * opcode before anyone had established the frame belongs to this session, and a frame from a
+     * previous boot would be answered `bad_opcode` when the true answer is `stale_session`. An
+     * earlier version did refuse here, which is exactly the order the draft rules out. */
     static const uint8_t opcodes[]{0x00, 0x03, 0xff};
     for (const uint8_t op : opcodes) {
         const uint8_t frame[wire::kFrameLen]{0x01, op, 0x2a, 0x07, 0x00, 0x00, 0x00, 0x00};
         wire::request got{};
-        zassert_equal(wire::decode_request(frame, sizeof frame, got), wire::decode_error::bad_opcode,
-                      "opcode 0x%02x", op);
+        zassert_equal(wire::decode_request(frame, sizeof frame, got), wire::decode_error::none,
+                      "opcode 0x%02x decodes", op);
+        zassert_equal(got.raw_op, op, "and is carried out unchanged");
+        zassert_false(wire::is_known_opcode(op), "while is_known_opcode() says it is not ours");
+        zassert_equal(got.seq, 0x2a, "the rest of the frame is still parsed");
     }
+
+    static const uint8_t known[]{0x01, 0x02};
+    for (const uint8_t op : known)
+        zassert_true(wire::is_known_opcode(op), "opcode 0x%02x is ours", op);
+}
+
+ZTEST(tof_commission_wire, test_an_unknown_opcode_round_trips_through_the_encoder)
+{
+    /* Encoding a raw opcode the codec does not know is not a fault either: the host-side encoder and
+     * the firmware-side decoder share this file, and a test harness that wants to put an unknown
+     * opcode on the wire is the only way the state machine's bad_opcode path can be exercised at
+     * all. */
+    wire::request r{};
+    r.raw_op = 0x7f;
+    r.seq = 0x2a;
+    r.wire_epoch = 0x07;
+    r.session_token = 0xdeadbeefU;
+
+    uint8_t out[wire::kFrameLen]{};
+    wire::encode_request(r, out);
+    const uint8_t want[wire::kFrameLen]{0x01, 0x7f, 0x2a, 0x07, 0xef, 0xbe, 0xad, 0xde};
+    expect_bytes(out, want, "unknown opcode");
 }
 
 /* ---- status, both kinds ---- */

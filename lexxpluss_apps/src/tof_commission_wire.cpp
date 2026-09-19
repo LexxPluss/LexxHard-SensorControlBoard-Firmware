@@ -43,18 +43,12 @@ decode_error check_header(const uint8_t *data, size_t len)
     return decode_error::none;
 }
 
-bool valid_opcode(uint8_t raw)
-{
-    return raw == static_cast<uint8_t>(opcode::prove_and_start) ||
-           raw == static_cast<uint8_t>(opcode::start_only);
-}
-
 } // namespace
 
 void encode_request(const request &in, uint8_t out[kFrameLen])
 {
     out[0] = in.version;
-    out[1] = static_cast<uint8_t>(in.op);
+    out[1] = in.raw_op;
     out[2] = in.seq;
     out[3] = in.wire_epoch;
     put_u32(&out[4], in.session_token);
@@ -87,14 +81,12 @@ decode_error decode_request(const uint8_t *data, size_t len, request &out)
     if (const decode_error e{check_header(data, len)}; e != decode_error::none)
         return e;
 
-    /* The opcode is validated here and not left to the state machine, because an opcode this build
-     * does not implement makes the rest of the frame uninterpretable in the same way a bad version
-     * does: what byte 3 means is defined per opcode. */
-    if (!valid_opcode(data[1]))
-        return decode_error::bad_opcode;
-
+    /* The opcode is carried raw and judged later. An earlier version refused it here, which put the
+     * opcode check before the session token and got the specified order backwards: a frame from a
+     * previous boot would have been answered on its opcode before anything established it belongs to
+     * this session at all. */
     out.version = data[0];
-    out.op = static_cast<opcode>(data[1]);
+    out.raw_op = data[1];
     out.seq = data[2];
     out.wire_epoch = data[3];
     out.session_token = get_u32(&data[4]);

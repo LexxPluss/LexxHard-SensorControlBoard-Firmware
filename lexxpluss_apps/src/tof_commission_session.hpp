@@ -19,6 +19,29 @@
  * time the host changed a sequence number, which a retry loop does by accident -- turning "bounded
  * retry" into unbounded retry without anyone intending it.
  *
+ * THE OPCODE IS ENFORCED HERE, NOT IN THE SEQUENCER. `tof_auto_commission` has one entry point and
+ * decides what to do from its own state: stepped while nothing is proven it runs a full proof,
+ * stepped while a mapping is proven it only starts. So `start_only` -- which promises it
+ * re-enumerates nothing -- is a promise only this layer can keep, and it keeps it by refusing to
+ * step the sequencer at all unless a proof is already held for the epoch the request names.
+ *
+ * AND THE EPOCH IS MATCHED, for the same reason seen from the accounting side. Once a proof is held
+ * the sequencer proves nothing else this boot, so a request naming a different epoch would be
+ * answered out of a mapping that was never proven under it. That is reported `epoch_mismatch`,
+ * whatever the opcode, because telling the host its ordinal was accepted when another one is
+ * installed is the one lie its persisted record cannot recover from.
+ *
+ * NO INTERMEDIATE PHASES. `proving`, `proven` and `starting` exist in the wire enumeration as
+ * OPTIONAL DIAGNOSTICS and this firmware emits none of them: the transaction is a single blocking
+ * call with no observable interior, so there is nothing truthful to report from inside it. A host
+ * waits for a terminal phase or its own timeout, which is what it would do anyway.
+ *
+ * LOCKING. A spinlock covers the session, the table and the running slot, because RX, the worker and
+ * the announcement sender are three different threads. It is held only for short, allocation-free
+ * stretches and NEVER across a transaction: the worker takes the job under it, releases it, runs the
+ * proof, and takes it again to publish the terminal status. Holding it across the proof would mask
+ * interrupts for the length of an enumeration.
+ *
  * THE PROOF IS NOT REIMPLEMENTED. The prove hook runs `tof_commissioning::prove()` and hands back its
  * `outcome`, which `tof_commission_map` translates. Nothing here decides what a failed walk means.
  *
@@ -97,8 +120,8 @@ wire::session_status announcement();
 /* RX path. Never blocks, never proves. `len` is the DLC as received. */
 rx_action handle_request(const uint8_t *data, size_t len);
 
-/* Worker path. Runs at most one step of the queued transaction and reports whether there is a status
- * frame to send. Returns idle when there is nothing to do. */
+/* Worker path, for a thread that may block. One call runs the queued transaction to a terminal
+ * status and returns idle; with nothing queued it returns idle having done nothing. */
 struct worker_result {
     worker_state state{worker_state::idle};
     bool send_status{false};

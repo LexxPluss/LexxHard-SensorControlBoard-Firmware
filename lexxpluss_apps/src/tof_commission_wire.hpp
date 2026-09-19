@@ -126,11 +126,21 @@ enum class wire_detail : uint8_t {
 
 struct request {
     uint8_t version{kProtocolVersion};
-    opcode op{opcode::prove_and_start};
+    /* RAW, AND NOT VALIDATED HERE. The specified order is length, version, session token, opcode --
+     * so the codec cannot be the thing that rejects an opcode, or a frame from a previous boot would
+     * be judged on its opcode before anyone had established it belongs to this session. The state
+     * machine checks it with is_known_opcode() after the token. */
+    uint8_t raw_op{static_cast<uint8_t>(opcode::prove_and_start)};
     uint8_t seq{0};
     uint8_t wire_epoch{0};
     uint32_t session_token{0};
 };
+
+constexpr bool is_known_opcode(uint8_t raw)
+{
+    return raw == static_cast<uint8_t>(opcode::prove_and_start) ||
+           raw == static_cast<uint8_t>(opcode::start_only);
+}
 
 struct session_status {
     uint8_t version{kProtocolVersion};
@@ -157,7 +167,6 @@ enum class decode_error : uint8_t {
      * that moved in a later version would otherwise be read as one of ours. */
     bad_version,
     bad_kind,
-    bad_opcode,
     /* A reserved byte that is not zero. Refused rather than ignored: ignoring it is how a later
      * version's new field gets silently discarded by an older reader that believed it understood
      * the frame. */
