@@ -28,11 +28,12 @@
  *                          stationary condition does not exist yet -- it is an open item against
  *                          safety, not something this module may infer from what it can see. So it
  *                          is asked, never derived, and a machine whose hook says no does nothing.
- *   acquire_epoch          where the epoch comes from. Which side issues it is undecided: the
- *                          firmware with a persistent store, or the host over a downlink. Hiding
- *                          that behind one hook is what lets this sequence be written and tested
- *                          while the route is still with release and safety, and it is why this
- *                          module does not call tof_epoch_issuer directly.
+ *   acquire_epoch          where the epoch comes from. **The host issues it** -- release and safety
+ *                          approved that route -- and it reaches the firmware over a downlink that
+ *                          is not specified yet. The hook stays because the sequencing does not
+ *                          depend on the transport, and because this module must not be able to
+ *                          invent an epoch even by accident: there is no firmware-side issuer on
+ *                          this branch to call, and there is not meant to be.
  *
  * THE INVARIANT THIS EXISTS TO HOLD, stated as narrowly as it is actually true: **this module calls
  * `start()` only after a `prove()` that returned success.** That is a property of this module's own

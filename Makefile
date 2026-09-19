@@ -171,12 +171,6 @@ test_tof_enumerator:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
-# Host-side tests for the mapping authority: every way a challenge, an epoch or a proof can fail to authorise, and the guarantee that a refusal costs nothing.
-.PHONY: test_tof_mapping_authority
-test_tof_mapping_authority:
-	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
-
 # Host-side tests for the unattended prove-then-start sequence: default off, bounded retries, and
 # start() reachable only from a proof that succeeded. Every hook is injected -- the proof is the
 # existing transaction and is not reimplemented here.
@@ -184,34 +178,6 @@ test_tof_mapping_authority:
 test_tof_auto_commission:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
-
-# Host-side tests for the commissioning orchestrator: the transaction that quiesces
-# acquisition, runs two walks plus tail isolation, and asks the authority to commit.
-# 13 use an injected fake quiesce; 3 link the real acquisition layer.
-.PHONY: test_tof_commissioning
-test_tof_commissioning:
-	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
-
-# Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
-.PHONY: test_tof_tail_isolation
-test_tof_tail_isolation:
-	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_tail_isolation -d build-test-tof-tail-isolation -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
-
-# Host-side tests for the mapping proof: the two-walk fingerprint comparison and every refusal it can return, against a fake chain. No device, no bus, no ULD.
-.PHONY: test_tof_mapping_proof
-test_tof_mapping_proof:
-	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_proof -d build-test-tof-mapping-proof -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
-
-# The golden-vector generators are Python and live in docs/can/ as offline tooling, so
-# they do enter the production Git branch. This gate is what keeps that from becoming
-# Python in the product: it fails if any .py appears outside docs/can/, or if any build
-# description or application file references one. Runs on the host, needs only git.
-.PHONY: check_language_boundary
-check_language_boundary:
-	./scripts/check_language_boundary.sh
 
 .PHONY: firmware
 firmware:

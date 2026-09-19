@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-09-18d**
+Contract version: **commissioning-2026-09-19e**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
@@ -16,10 +16,15 @@ place.
 The withdrawn conclusion was that a configuration proving on boot requires a **firmware-side** persistent
 epoch issuer. That named one implementation as the only remedy for a property — cross-restart uniqueness —
 that does not actually depend on which side holds the store. What it depends on is a persistent issuer
-that cannot reuse a value, and a bounded relationship to what a consumer has accepted. Engineering has selected the host as the issuing
-side and release and safety sign-off is outstanding; the replacement argument is written out in that section, and it
-is what an unattended profile has to satisfy before it may be enabled. No automatic profile is enabled by
-this revision.
+that cannot reuse a value, and a bounded relationship to what a consumer has accepted. The host is the issuing side: release and safety have approved that route, this replacement argument,
+and the volume-restore policy that goes with it. The argument is written out in that section and is
+what an unattended profile has to satisfy. **Approval is not enablement** -- no automatic profile is
+turned on by this revision, and the downlink that would carry an epoch is not specified yet.
+
+`-18e` changes status and nothing else: it records that the host-issued route, the replacement
+uniqueness argument and the volume-restore policy are approved, where `-18d` still described them as
+awaiting sign-off. No prose about the wire changed, no vector byte changed, and nothing is enabled.
+The next revision to touch behaviour will be the one that specifies the downlink.
 
 `-18c` adds nothing to the wire and changes no byte of any vector. It exists because writing the
 mapping-proof implementation against `-18b` surfaced three defects in the prose, and each of them would
