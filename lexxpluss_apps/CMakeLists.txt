@@ -68,6 +68,17 @@ endif()
 # Cliff ToF: the vendored VL53L4CX ULD and its Zephyr platform layer. Off by
 # default, so the production image is byte-identical until the acquisition path
 # is real. TOF_CLIFF_BUDGET selects a build point of the flash/RAM budget series.
+# The automatic-commissioning build: the cliff image plus the hardware entropy binding the session
+# token needs. It is a separate flag, and a separate overlay and Kconfig fragment, so that every
+# other image -- product, chain, cliff -- comes out byte for byte as it did before this existed.
+# Nothing is wired to a CAN filter by it and no automatic proof runs; see tof_commission_session.hpp.
+if(ENABLE_TOF_AUTO_COMMISSION)
+    if(NOT ENABLE_TOF_CLIFF_ULD)
+        message(FATAL_ERROR "ENABLE_TOF_AUTO_COMMISSION requires ENABLE_TOF_CLIFF_ULD")
+    endif()
+    add_definitions(-DENABLE_TOF_AUTO_COMMISSION)
+endif()
+
 if(ENABLE_TOF_CLIFF_ULD)
     include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l4cx_uld/vl53l4cx_sources.cmake)
     target_sources(app PRIVATE ${VL53L4CX_ULD_PRODUCTION_SOURCES})

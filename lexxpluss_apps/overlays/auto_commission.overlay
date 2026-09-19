@@ -1,0 +1,26 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
+/*
+ * The hardware random number generator, for the automatic-commissioning build ONLY.
+ *
+ * WHY IT IS HERE AND NOT IN THE BOARD DTS. Every other image -- the product firmware, the chain
+ * build, the cliff build -- must come out byte for byte as it did before this existed. Enabling the
+ * peripheral in lexxpluss_scb.dts would put the driver, its init entry and its clock configuration
+ * into all of them for a feature none of them uses. This overlay is stacked on top of
+ * tof_chain.overlay by one Makefile target and by nothing else.
+ *
+ * WHAT IT IS FOR. The commissioning session token, which must be unguessable and must differ across
+ * adjacent boots: it is what tells a request from this boot from one that a finished boot's host is
+ * still retransmitting. stm32f7.dtsi declares this node `disabled`, so without this file there is no
+ * entropy device at all and the session layer refuses every request -- which is the correct failure
+ * and is tested.
+ */
+
+&rng {
+	status = "okay";
+};

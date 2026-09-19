@@ -272,6 +272,27 @@ firmware_tof_cliff:
 	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
 	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
 
+# The automatic-commissioning build: the cliff image PLUS the hardware RNG the session token needs.
+# Its own flag, its own devicetree overlay and its own Kconfig fragment, for one reason -- every
+# other image must come out byte for byte as it did before this target existed, which is checked by
+# building firmware_tof_cliff on either side of the change and comparing zephyr.bin.
+#
+# COMPARE zephyr.bin AND NOT zephyr.signed.bin. The signature uses PSS, whose salt is random, so two
+# signings of identical bytes differ; the raw image is the reproducible artefact.
+#
+# Nothing here is wired: no CAN filter is installed, no automatic proof runs, and the profile is off
+# by default. What this target adds over firmware_tof_cliff is the entropy peripheral and the binding
+# to it, so that the capacity question can be answered before any of the wiring exists.
+.PHONY: firmware_auto_commission
+firmware_auto_commission:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-auto-commission/zephyr/zephyr.signed.bin out/zephyr_auto_commission.signed.bin
+	mv build-auto-commission/zephyr/zephyr.signed.confirmed.bin out/zephyr_auto_commission.signed.confirmed.bin
+	cp out/zephyr_auto_commission.signed.confirmed.bin out/zephyr_auto_commission.test.bin
+	printf '\377' | dd of=out/zephyr_auto_commission.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_auto_commission.test.bin) - 24)) conv=notrunc status=none
+
 .PHONY: firmware_initial
 firmware_initial:
 	$(MAKE) bootloader
