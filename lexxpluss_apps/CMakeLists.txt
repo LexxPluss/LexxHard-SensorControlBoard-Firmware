@@ -77,6 +77,15 @@ if(ENABLE_TOF_AUTO_COMMISSION)
         message(FATAL_ERROR "ENABLE_TOF_AUTO_COMMISSION requires ENABLE_TOF_CLIFF_ULD")
     endif()
     add_definitions(-DENABLE_TOF_AUTO_COMMISSION)
+    # THE TWO BENCH DECISIONS, both off unless the build says otherwise, and neither with a runtime
+    # default. The profile being on says the board will entertain a request at all; the release
+    # condition says it may re-enumerate the chain when it does. See tof_commission_boot.hpp.
+    if(TOF_AUTO_COMMISSION_PROFILE)
+        add_definitions(-DTOF_AUTO_COMMISSION_PROFILE)
+    endif()
+    if(TOF_AUTO_COMMISSION_PERMIT_ENUMERATION)
+        add_definitions(-DTOF_AUTO_COMMISSION_PERMIT_ENUMERATION)
+    endif()
 endif()
 
 if(ENABLE_TOF_CLIFF_ULD)

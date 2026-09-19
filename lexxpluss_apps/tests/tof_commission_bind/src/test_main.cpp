@@ -96,10 +96,29 @@ int send_request(uint32_t id, uint8_t seq, uint8_t epoch, uint32_t token)
 }
 
 /* The board answers from the receive callback, and the loopback driver delivers on its own work
- * queue, so a moment is needed before the answer is in the queue. */
-bool next_status(struct can_frame &out, k_timeout_t wait = K_MSEC(200))
+ * queue, so a moment is needed before the answer is in the queue.
+ *
+ * SESSION FRAMES ARE SKIPPED, because the worker announces on its own schedule and a suite that
+ * treated the next frame as the answer would read an announcement as a transaction status -- which
+ * is exactly what a host must not do either. */
+bool next_transaction(struct can_frame &out, k_timeout_t wait = K_MSEC(200))
 {
-    return k_msgq_get(&status_msgq, &out, wait) == 0;
+    for (;;) {
+        if (k_msgq_get(&status_msgq, &out, wait) != 0)
+            return false;
+        wire::status_kind kind{};
+        if (wire::decode_status_kind(out.data, out.dlc, kind) != wire::decode_error::none)
+            continue;
+        if (kind == wire::status_kind::transaction)
+            return true;
+    }
+}
+
+/* And the other direction: nothing was ANSWERED, whatever else the board may have announced. */
+bool no_transaction_within(k_timeout_t wait = K_MSEC(200))
+{
+    struct can_frame f {};
+    return !next_transaction(f, wait);
 }
 
 bind::config configured()
@@ -211,7 +230,7 @@ ZTEST(tof_commission_bind, test_a_session_means_a_filter_and_a_worker)
     zassert_equal(send_request(ctr::kCommissionRequestId, 1, 7, token_), 0, "the request goes out");
 
     struct can_frame answer {};
-    zassert_true(next_status(answer), "the board answered");
+    zassert_true(next_transaction(answer), "the board answered");
     zassert_equal(answer.id, ctr::kCommissionStatusId, "on 0x219, the status identifier");
     zassert_equal(answer.dlc, wire::kFrameLen, "eight bytes");
 
@@ -244,7 +263,7 @@ ZTEST(tof_commission_bind, test_no_session_still_installs_the_filter_and_answers
 
     zassert_equal(send_request(ctr::kCommissionRequestId, 4, 9, 0x12345678U), 0, "");
     struct can_frame answer {};
-    zassert_true(next_status(answer), "answered");
+    zassert_true(next_transaction(answer), "answered");
     zassert_equal(answer.id, ctr::kCommissionStatusId, "on the status identifier");
 
     wire::transaction_status t{};
@@ -253,7 +272,8 @@ ZTEST(tof_commission_bind, test_no_session_still_installs_the_filter_and_answers
     zassert_true(t.res == wire::result::no_session, "with no_session");
     zassert_equal(proves_, 0, "and nothing was proved");
 
-    /* No announcement either: there is no session to announce. */
+    /* No announcement either: there is no session to announce. This board has none, so the queue
+     * must be empty of EVERYTHING, not only of transaction statuses. */
     zassert_equal(k_msgq_get(&status_msgq, &answer, K_MSEC(200)), -EAGAIN, "nothing else was sent");
 
     teardown(r);
@@ -273,8 +293,7 @@ ZTEST(tof_commission_bind, test_a_refused_configuration_installs_nothing)
     zassert_false(r.worker_started, "");
 
     zassert_equal(send_request(ctr::kCommissionRequestId, 5, 9, token_), 0, "a request is sent");
-    struct can_frame answer {};
-    zassert_equal(k_msgq_get(&status_msgq, &answer, K_MSEC(200)), -EAGAIN, "and nothing answers it");
+    zassert_true(no_transaction_within(), "and nothing answers it");
     zassert_equal(proves_, 0, "nothing ran");
 }
 
@@ -284,6 +303,37 @@ ZTEST(tof_commission_bind, test_a_device_that_is_not_ready_installs_nothing)
     zassert_equal(r.rc, -ENODEV, "refused");
     zassert_true(r.state == bind::outcome::refused, "");
     zassert_false(r.filter_installed, "");
+}
+
+ZTEST(tof_commission_bind, test_a_refused_release_condition_proves_nothing)
+{
+    /* THE DEFAULT EVERY IMAGE BUT THE BENCH ONE HAS. The transport works, the session exists, the
+     * request is accepted -- and the chain is never touched, because nobody said it was safe to
+     * touch it. A board that proved anyway would be re-enumerating on a machine that may be moving.
+     */
+    permitted_ = false;
+    const bind::result r{ bind::start(can_dev(), configured()) };
+    zassert_true(r.state == bind::outcome::running, "the downlink is up");
+
+    zassert_equal(send_request(ctr::kCommissionRequestId, 7, 3, token_), 0, "");
+    struct can_frame answer {};
+    zassert_true(next_transaction(answer), "accepted");
+
+    /* Driven here rather than waiting for the worker's own tick: this suite's worker sleeps for a
+     * minute between passes, and the session's claim makes a direct call safe either way. */
+    (void)rt::service_once(k_uptime_get());
+    zassert_true(next_transaction(answer), "and then answered");
+
+    wire::transaction_status t{};
+    zassert_equal(wire::decode_transaction_status(answer.data, answer.dlc, t),
+                  wire::decode_error::none, "");
+    zassert_true(t.ph == wire::phase::refused, "refused");
+    zassert_true(t.res == wire::result::not_permitted, "because the condition said no");
+    zassert_true(permitted_calls_ >= 1, "and it was ASKED, not assumed");
+    zassert_equal(proves_, 0, "NOT ONE PROOF RAN");
+    zassert_equal(starts_, 0, "and acquisition was never started");
+
+    teardown(r);
 }
 
 ZTEST(tof_commission_bind, test_only_the_request_identifier_is_received)
@@ -302,11 +352,13 @@ ZTEST(tof_commission_bind, test_only_the_request_identifier_is_received)
     zassert_equal(rt::stats().frames_in, before_in, "neither reached the runtime");
     zassert_equal(proves_, 0, "and nothing ran");
 
-    /* The one on the status identifier is in the observer's queue -- the test's own frame, not an
-     * answer to it. */
-    struct can_frame echoed {};
-    zassert_equal(k_msgq_get(&status_msgq, &echoed, K_MSEC(50)), 0, "the test's own frame");
-    zassert_equal(k_msgq_get(&status_msgq, &echoed, K_MSEC(200)), -EAGAIN, "and no answer");
+    /* NOT CHECKED ON THE BUS, and the reason is worth writing down: the frame this test put on the
+     * status identifier is a request, whose byte 1 is the opcode -- and opcode 1 is the same value
+     * as `status_kind::transaction`. Read back off the status identifier it is indistinguishable
+     * from a status, which is precisely why the contract gives the two directions their own
+     * identifiers and why nobody may send a request on 0x219. The runtime's own counter is the
+     * honest evidence here, and it has not moved. */
+    zassert_equal(rt::stats().frames_in, before_in, "still nothing reached the runtime");
 
     teardown(r);
 }

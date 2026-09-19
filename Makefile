@@ -298,14 +298,20 @@ firmware_tof_cliff:
 # COMPARE zephyr.bin AND NOT zephyr.signed.bin. The signature uses PSS, whose salt is random, so two
 # signings of identical bytes differ; the raw image is the reproducible artefact.
 #
-# Nothing here is wired: no CAN filter is installed, no automatic proof runs, and the profile is off
-# by default. What this target adds over firmware_tof_cliff is the entropy peripheral and the binding
-# to it, so that the capacity question can be answered before any of the wiring exists.
+# THIS TARGET IS THE BENCH IMAGE, and it says so on the command line rather than in a default:
+# TOF_AUTO_COMMISSION_PROFILE lets the board entertain a commissioning request at all, and
+# TOF_AUTO_COMMISSION_PERMIT_ENUMERATION lets it re-enumerate the chain when it gets one. Both are
+# off in every other build, and there is no runtime way to turn either on -- what a board will do is
+# fixed by the image it is running and is visible in this line.
+#
+# A trustworthy stationary condition does not exist yet; it is an open item against safety. Permitting
+# enumeration here is a bench decision, and an image built this way must not go on a machine that can
+# move until that item is closed.
 .PHONY: firmware_auto_commission
 firmware_auto_commission:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DTOF_AUTO_COMMISSION_PROFILE=1 -DTOF_AUTO_COMMISSION_PERMIT_ENUMERATION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-auto-commission/zephyr/zephyr.signed.bin out/zephyr_auto_commission.signed.bin
 	mv build-auto-commission/zephyr/zephyr.signed.confirmed.bin out/zephyr_auto_commission.signed.confirmed.bin
 	cp out/zephyr_auto_commission.signed.confirmed.bin out/zephyr_auto_commission.test.bin

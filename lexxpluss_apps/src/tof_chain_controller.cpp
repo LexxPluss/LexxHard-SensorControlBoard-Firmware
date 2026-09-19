@@ -61,6 +61,9 @@
 #include "tof_acquisition.hpp"
 #include "tof_cliff_packer.hpp"
 #include "tof_cliff_runtime.hpp"
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+#include "tof_commission_boot.hpp"
+#endif
 #include "tof_commissioning.hpp"
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
 /* The budget probe is C, and this is the whole of its interface: one call, made after the bootstrap
@@ -1271,6 +1274,15 @@ void init()
         LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
                 tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), rc);
     }
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+    /* AFTER the cliff bootstrap, and for a reason: that bootstrap is what brings can2 up for this
+     * subsystem, and the downlink has nothing to commission until the chain glue exists. The entropy
+     * driver came up long before main(). Called unconditionally -- what the board will actually do
+     * is decided by the image's own build flags, which tof_commission_boot latches here and nothing
+     * can change afterwards -- and its failures are reported rather than fatal: a board that cannot
+     * commission itself must still run its health path. */
+    (void)tof_commission_boot::start();
+#endif
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
     /* The budget probe's walk, from HERE rather than from its own SYS_INIT.
      *
