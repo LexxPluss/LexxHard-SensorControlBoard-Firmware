@@ -171,6 +171,14 @@ test_tof_enumerator:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the commissioning downlink codec and the internal-to-wire mapper: byte-exact
+# golden vectors, malformed frames, and every enumerator of all four mapped enums. Symbolic
+# identifiers only -- nothing here is wired to a CAN filter.
+.PHONY: test_tof_commission_wire
+test_tof_commission_wire:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_wire -d build-test-tof-commission-wire -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the unattended prove-then-start sequence: default off, bounded retries, and
 # start() reachable only from a proof that succeeded. Every hook is injected -- the proof is the
 # existing transaction and is not reimplemented here.
