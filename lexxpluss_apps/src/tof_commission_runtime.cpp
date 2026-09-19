@@ -56,6 +56,9 @@ bool announced_once_{false};
 constexpr size_t kWorkerStack{4096};
 K_THREAD_STACK_DEFINE(worker_stack, kWorkerStack);
 struct k_thread worker_thread;
+/* NOT cleared by init(). A thread, once created, exists for the life of the process, and the
+ * k_thread object it was created on cannot be reused while it does -- so a second init() must not
+ * make start() willing to create another one on top of it. */
 bool worker_started_{false};
 
 /* The send itself happens with NO lock held: it is the transport's call, it may block or fail, and
@@ -242,7 +245,13 @@ int start()
 
 bool running()
 {
-    return worker_started_;
+    /* Under the lock, like the claim itself. start() writes this field from whatever thread called
+     * it, so an unlocked read here is a data race in the same way the counters were -- and the
+     * answer would be the one the reader's cache happened to hold. */
+    k_spinlock_key_t key{k_spin_lock(&lock_)};
+    const bool r{worker_started_};
+    k_spin_unlock(&lock_, key);
+    return r;
 }
 
 counters stats()

@@ -356,13 +356,64 @@ ZTEST(tof_commission_runtime, test_a_send_that_fails_is_counted_and_does_not_sto
     zassert_equal(f_.proves, 1, "without running again");
 }
 
-ZTEST(tof_commission_runtime, test_there_is_one_worker_thread)
+namespace {
+
+K_THREAD_STACK_DEFINE(starter_a_stack, 2048);
+K_THREAD_STACK_DEFINE(starter_b_stack, 2048);
+struct k_thread starter_a;
+struct k_thread starter_b;
+int start_rc_a_{-1};
+int start_rc_b_{-1};
+
+void call_start_a(void *, void *, void *)
 {
-    zassert_equal(rt::init(configured(), wired()), 0, "");
-    zassert_false(rt::running(), "none until asked");
-    zassert_equal(rt::start(), 0, "started");
-    zassert_true(rt::running(), "");
-    /* The session layer's claim makes a second worker harmless; this makes a second one impossible
-     * to create by accident. */
-    zassert_equal(rt::start(), -EALREADY, "and a second is refused rather than created");
+    start_rc_a_ = rt::start();
+}
+
+void call_start_b(void *, void *, void *)
+{
+    start_rc_b_ = rt::start();
+}
+
+} // namespace
+
+ZTEST(tof_commission_runtime, test_two_callers_racing_to_start_produce_one_worker)
+{
+    /* ONE TEST FOR BOTH CLAIMS, deliberately: the worker thread outlives the test that created it,
+     * so a second test that expected to create its own would be the one that failed, depending on
+     * the order ztest happened to run them in.
+     *
+     * The config makes the worker inert once it exists -- it wakes a minute of uptime from now --
+     * so it cannot disturb the tests that follow. */
+    rt::config c{configured()};
+    c.poll_ms = 60000;
+    c.announce_period_ms = 60000;
+    zassert_equal(rt::init(c, wired()), 0, "");
+    zassert_false(rt::running(), "no worker until one is asked for");
+
+    start_rc_a_ = -1;
+    start_rc_b_ = -1;
+    k_thread_create(&starter_a, starter_a_stack, K_THREAD_STACK_SIZEOF(starter_a_stack),
+                    call_start_a, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+    k_thread_create(&starter_b, starter_b_stack, K_THREAD_STACK_SIZEOF(starter_b_stack),
+                    call_start_b, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+    zassert_equal(k_thread_join(&starter_a, K_SECONDS(5)), 0, "both callers returned");
+    zassert_equal(k_thread_join(&starter_b, K_SECONDS(5)), 0, "");
+
+    /* EXACTLY ONE WINS. What this pins is the CONTRACT, and it is worth saying what it does not
+     * pin: on single-CPU native_sim the first starter runs `start()` to completion before the second
+     * is scheduled, so removing the lock leaves this test green -- checked by mutation rather than
+     * assumed. The lock is what makes the contract hold where a preemption can land between the
+     * check and the set, which is the board, not this simulator. */
+    const int wins{(start_rc_a_ == 0 ? 1 : 0) + (start_rc_b_ == 0 ? 1 : 0)};
+    const int refusals{(start_rc_a_ == -EALREADY ? 1 : 0) + (start_rc_b_ == -EALREADY ? 1 : 0)};
+    zassert_equal(wins, 1, "one caller created the worker (a=%d b=%d)", start_rc_a_, start_rc_b_);
+    zassert_equal(refusals, 1, "and the other was refused (a=%d b=%d)", start_rc_a_, start_rc_b_);
+    zassert_true(rt::running(), "there is a worker");
+
+    /* And a later sequential caller is refused too, including after a re-init: the k_thread object
+     * cannot be reused while the thread it carries is alive. */
+    zassert_equal(rt::start(), -EALREADY, "");
+    zassert_equal(rt::init(c, wired()), 0, "re-initialised");
+    zassert_equal(rt::start(), -EALREADY, "and still refused");
 }
