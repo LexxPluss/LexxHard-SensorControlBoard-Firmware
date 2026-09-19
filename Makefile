@@ -171,6 +171,14 @@ test_tof_enumerator:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the commissioning protocol state machine: sessions, the validation order, the
+# idempotency table and the per-boot budgets. The entropy source and the transaction are injected;
+# the sequencer, codec and mapper are the real ones.
+.PHONY: test_tof_commission_session
+test_tof_commission_session:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_session -d build-test-tof-commission-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the commissioning downlink codec and the internal-to-wire mapper: byte-exact
 # golden vectors, malformed frames, and every enumerator of all four mapped enums. Symbolic
 # identifiers only -- nothing here is wired to a CAN filter.
