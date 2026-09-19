@@ -66,6 +66,16 @@ uint8_t used_entries_{0};
 bool running_{false};
 uint8_t running_index_{0};
 
+/* WHETHER A WORKER HAS TAKEN THE JOB, which is not the same fact as `running_` and is the reason
+ * this exists. `running_` says a request is queued; it stays true for the whole transaction, so two
+ * threads calling worker_step() both saw it, both took the same job out of the table, and both ran
+ * the proof -- one chain enumerated twice under ONE host-issued epoch, and two terminal statuses for
+ * one sequence number. (Nothing here issues an epoch: both runs would carry the one the request
+ * named, and the second would meet the authority's own refusal at commit.) The claim is taken under
+ * the same lock as the job and is released only after the terminal status has been written, so there
+ * is no instant at which the job is unclaimed and unfinished. */
+bool worker_active_{false};
+
 /* Where the sequencer picks up the epoch. It is the queued request's, never generated here -- there
  * is no firmware-side issuer on this branch and there is not meant to be. */
 uint32_t pending_epoch_{0};
@@ -147,6 +157,7 @@ bool init(const config &cfg, const hooks &h)
         e = entry{};
     used_entries_ = 0;
     running_ = false;
+    worker_active_ = false;
     token_ = 0;
     has_session_ = false;
 
@@ -351,6 +362,16 @@ worker_result worker_step()
         out.state = worker_state::idle;
         return out;
     }
+    if (worker_active_) {
+        /* Another thread has this job. Reported as running and NOTHING else: no transaction, and no
+         * status frame -- a second terminal status for one sequence number would tell the host its
+         * request finished twice, and the second one would be describing a transaction this call
+         * never ran. */
+        k_spin_unlock(&lock_, key);
+        out.state = worker_state::running;
+        return out;
+    }
+    worker_active_ = true;
     const uint8_t index{running_index_};
     const wire::opcode op{table_[index].op};
     const uint8_t req_epoch{table_[index].wire_epoch};
@@ -472,6 +493,10 @@ worker_result worker_step()
      * terminal phase or its own timeout, which is what it would do anyway. */
     e.terminal = true;
     running_ = false;
+    /* RELEASED HERE, AFTER THE TABLE HOLDS THE OUTCOME, and not a line earlier. Clearing it before
+     * the status was written would leave a window in which the job is neither claimed nor finished,
+     * which is the window this flag exists to close. */
+    worker_active_ = false;
     out.send_status = true;
     out.status = e.status;
     out.state = worker_state::idle;

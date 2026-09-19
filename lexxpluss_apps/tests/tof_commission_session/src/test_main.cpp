@@ -11,6 +11,7 @@
  * and how, not what a walk means.
  */
 
+#include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
 
 #include <string.h>
@@ -29,6 +30,13 @@ namespace {
  * transaction -- the one moment at which holding the lock across a proof would be visible. */
 bool probe_lock_during_prove_{false};
 bool probe_ran_{false};
+
+/* Holds the prove hook open, so the race window is a state the test creates rather than one it hopes
+ * to hit. `prove_entered` is given when a worker is inside the transaction with the lock released;
+ * `prove_release` is what lets it finish. */
+bool block_prove_{false};
+K_SEM_DEFINE(prove_entered, 0, 1);
+K_SEM_DEFINE(prove_release, 0, 1);
 
 struct fakes {
     uint32_t token{0x11223344U};
@@ -79,6 +87,14 @@ int fake_prove(void *, uint32_t epoch, cm::outcome *out)
          * the length of an enumeration. */
         (void)cs::announcement();
         probe_ran_ = true;
+    }
+    if (block_prove_) {
+        /* ONLY THE FIRST PROOF WAITS. A second one means the claim failed, and it must return rather
+         * than block: the test should then fail saying that two proofs ran, which is the defect,
+         * instead of timing out on a join, which is only a symptom of it. */
+        block_prove_ = false;
+        k_sem_give(&prove_entered);
+        k_sem_take(&prove_release, K_FOREVER);
     }
     f_.last_epoch = epoch;
     out->failed_at = f_.prove_stage;
@@ -144,6 +160,9 @@ static void before(void *)
     f_ = fakes{};
     probe_lock_during_prove_ = false;
     probe_ran_ = false;
+    block_prove_ = false;
+    k_sem_reset(&prove_entered);
+    k_sem_reset(&prove_release);
 }
 
 ZTEST_SUITE(tof_commission_session, NULL, NULL, before, NULL, NULL);
@@ -658,4 +677,86 @@ ZTEST(tof_commission_session, test_the_lock_is_not_held_across_the_transaction)
 
     zassert_true(probe_ran_, "the probe really ran inside the transaction");
     zassert_true(t.ph == wire::phase::done, "and the transaction still completed normally");
+}
+
+/* ---- two workers, one job ---- */
+
+namespace {
+
+K_THREAD_STACK_DEFINE(worker_a_stack, 4096);
+K_THREAD_STACK_DEFINE(worker_b_stack, 4096);
+struct k_thread worker_a_thread;
+struct k_thread worker_b_thread;
+
+cs::worker_result result_a_{};
+cs::worker_result result_b_{};
+
+void run_worker_a(void *, void *, void *)
+{
+    result_a_ = cs::worker_step();
+}
+
+void run_worker_b(void *, void *, void *)
+{
+    result_b_ = cs::worker_step();
+}
+
+} // namespace
+
+ZTEST(tof_commission_session, test_a_second_worker_takes_nothing_and_runs_nothing)
+{
+    /* THE WINDOW IS REAL AND IS OPENED ON PURPOSE. The worker releases the lock for the transaction,
+     * which is the whole point of the split -- so without a claim, two threads in worker_step() both
+     * see the same queued job, both take it out of the table and both run it: one chain enumerated
+     * twice under ONE host-issued epoch, and two terminal statuses for one sequence number. Here the
+     * prove hook
+     * blocks until the test lets it go, so the second worker is guaranteed to arrive while the first
+     * is inside the transaction rather than when the scheduler happens to allow it. */
+    zassert_true(enable(), "");
+    block_prove_ = true;
+    result_a_ = cs::worker_result{};
+    result_b_ = cs::worker_result{};
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "queued");
+
+    k_thread_create(&worker_a_thread, worker_a_stack, K_THREAD_STACK_SIZEOF(worker_a_stack),
+                    run_worker_a, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+
+    /* A is now inside prove(), holding the claim, with the spinlock released. */
+    zassert_equal(k_sem_take(&prove_entered, K_SECONDS(5)), 0, "the first worker reached the proof");
+
+    k_thread_create(&worker_b_thread, worker_b_stack, K_THREAD_STACK_SIZEOF(worker_b_stack),
+                    run_worker_b, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+    zassert_equal(k_thread_join(&worker_b_thread, K_SECONDS(5)), 0, "the second worker returned");
+
+    /* It returned while the transaction was still running, and it did nothing. The count comes
+     * first because it is the defect stated plainly: without the claim, this reads 2. */
+    zassert_equal(f_.proves, 1, "the chain was NOT enumerated a second time");
+    zassert_equal(f_.starts, 0, "and nothing was started by it");
+    zassert_false(result_b_.send_status, "AND SENT NO STATUS: one request has one terminal answer");
+    zassert_true(result_b_.state == cs::worker_state::running, "reported as running");
+
+    k_sem_give(&prove_release);
+    zassert_equal(k_thread_join(&worker_a_thread, K_SECONDS(5)), 0, "the first worker finished");
+
+    zassert_equal(f_.proves, 1, "one proof");
+    zassert_equal(f_.starts, 1, "one start");
+    zassert_true(result_a_.send_status, "the worker that did the work sent the status");
+    zassert_true(result_a_.status.ph == wire::phase::done, "which is the outcome");
+    zassert_true(result_a_.state == cs::worker_state::idle, "and the slot is free again");
+
+    /* And the answer is in the table, so a retransmission is still replayed rather than re-run --
+     * the claim closed a race without touching idempotency. */
+    const uint32_t replays_before{cs::stats().replayed_from_table};
+    const cs::rx_action again{cs::handle_request(frame, sizeof frame)};
+    zassert_true(again.send_status, "answered");
+    zassert_true(again.status.ph == wire::phase::done, "from the table");
+    zassert_equal(f_.proves, 1, "without running anything");
+    zassert_equal(cs::stats().replayed_from_table, replays_before + 1, "counted as a replay");
+
+    /* Nothing is claimed any more: the next step finds an empty slot rather than a job it may not
+     * touch. */
+    zassert_true(cs::worker_step().state == cs::worker_state::idle, "idle");
 }

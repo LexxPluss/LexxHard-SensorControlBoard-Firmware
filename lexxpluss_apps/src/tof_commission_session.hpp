@@ -42,6 +42,15 @@
  * proof, and takes it again to publish the terminal status. Holding it across the proof would mask
  * interrupts for the length of an enumeration.
  *
+ * AND THE JOB IS CLAIMED, not merely observed. Because the lock is released for the transaction, two
+ * threads in `worker_step()` would otherwise both see the same queued request and both run it: one
+ * chain enumerated twice under ONE host-issued epoch -- this firmware issues none -- and two terminal
+ * statuses for one sequence number.
+ * The claim is taken inside the same critical section as the job and released only after the outcome
+ * is in the table, so a second caller is told `running` and does nothing at all. One worker thread
+ * is still the intended deployment; this is what makes a second one harmless rather than a defect
+ * that only shows up on a bus.
+ *
  * THE PROOF IS NOT REIMPLEMENTED. The prove hook runs `tof_commissioning::prove()` and hands back its
  * `outcome`, which `tof_commission_map` translates. Nothing here decides what a failed walk means.
  *
@@ -121,7 +130,9 @@ wire::session_status announcement();
 rx_action handle_request(const uint8_t *data, size_t len);
 
 /* Worker path, for a thread that may block. One call runs the queued transaction to a terminal
- * status and returns idle; with nothing queued it returns idle having done nothing. */
+ * status and returns idle; with nothing queued it returns idle having done nothing. Called while
+ * another thread is already running the queued job it returns `running` with no status frame, having
+ * touched neither the chain nor the table. */
 struct worker_result {
     worker_state state{worker_state::idle};
     bool send_status{false};
