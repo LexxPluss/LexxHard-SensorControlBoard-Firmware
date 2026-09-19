@@ -307,6 +307,25 @@ firmware_tof_cliff:
 # A trustworthy stationary condition does not exist yet; it is an open item against safety. Permitting
 # enumeration here is a bench decision, and an image built this way must not go on a machine that can
 # move until that item is closed.
+#
+# MEASURED, 2026-09-19, at the commit that added the call site. zephyr.bin is what is compared --
+# zephyr.signed.bin uses PSS, whose salt is random, so two signings of identical bytes differ.
+#
+#   image             zephyr.bin   signed.bin      RAM     FLASH
+#   product              194,748      195,084  181,440    74.29%   byte-identical to the baseline
+#   cliff                248,716      249,052  220,736    94.88%   byte-identical to the baseline
+#   auto-commission      255,952      256,288  226,240    97.64%
+#
+#   auto-commission over cliff:   +7,236 B flash,  +5,504 B RAM
+#   headroom against the 261,712 B signed ceiling:   5,424 B
+#
+# 4,160 B of the RAM delta is the worker stack (worker_stack, 0x1040 in .bss including Zephyr's
+# guard). The binding is no longer collected: 49 text symbols from the four commissioning
+# translation units are in the ELF, where before the call site existed the linker dropped them.
+#
+# 97.64% OF THE SLOT. The next thing added to this image has 5,424 B to fit in, and the worker stack
+# is a starting point rather than a measurement -- CONFIG_THREAD_ANALYZER on a board will say whether
+# 4 KiB is right, and either direction moves this number.
 .PHONY: firmware_auto_commission
 firmware_auto_commission:
 	./scripts/manage_zephyr_patches.sh verify
