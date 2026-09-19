@@ -7,10 +7,11 @@
  * The automatic-commissioning downlink, as bytes. Nothing else.
  *
  * WHAT THIS LAYER IS. Pack and unpack, length and version, and the fixed wire enumerations. It holds
- * no state, makes no decisions and does not know which CAN identifier carries it -- the draft calls
- * them REQUEST_ID and STATUS_ID and this file does not name them at all, because formal registration
- * of 0x214-0x219 has not come back and a numeric constant here is the one thing that would have to be
- * unpicked if the registrar answers differently.
+ * no state, makes no decisions and does not know which CAN identifier carries it. The pair was
+ * allocated on 2026-09-19 -- 0x218 request, 0x219 status -- and lives in the generated wire
+ * contract; this file still names neither, because a codec that knew which identifier carried it
+ * would be a codec that could be wrong about one. The binding reads them from the contract and the
+ * runtime is handed them.
  *
  * The three layers are deliberately separate: this codec, the mapper that turns the firmware's
  * internal enums into these wire values, and the protocol state machine that owns sessions,

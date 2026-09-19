@@ -55,8 +55,10 @@
  * `outcome`, which `tof_commission_map` translates. Nothing here decides what a failed walk means.
  *
  * DEFAULT OFF, AND NO NUMERIC IDENTIFIER. `config::profile_enabled` is false when
- * default-constructed, and this file names no CAN identifier: registration of 0x214-0x219 has not
- * come back and the draft is not frozen.
+ * default-constructed, and this file names no CAN identifier -- not because none exists, but because
+ * this layer has no business knowing one. The pair was allocated on 2026-09-19 (0x218 request, 0x219
+ * status) and lives in the generated wire contract; tof_commission_bind reads it from there and the
+ * runtime is handed it. Nothing changes here when it moves.
  */
 
 #pragma once

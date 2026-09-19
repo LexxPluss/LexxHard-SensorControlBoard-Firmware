@@ -32,8 +32,11 @@
  * Wiring it to a constant `true` on a bench is a decision to write down where the bench is
  * configured, not something this file may assume.
  *
- * NOTHING CALLS THIS YET, and that is why the profile is still off by default: turning it on is a
- * deployment act, not a consequence of linking.
+ * WHO CALLS IT: tof_commission_boot, once, from the chain controller's bootstrap, and only in a
+ * build that defines ENABLE_TOF_AUTO_COMMISSION. What the board then actually does is decided by
+ * that build's own flags -- the profile and the release condition are both off unless the image says
+ * otherwise, and neither can be changed at runtime. Turning them on is a deployment act, not a
+ * consequence of linking.
  */
 
 #pragma once
