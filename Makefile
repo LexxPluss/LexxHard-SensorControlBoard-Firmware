@@ -179,6 +179,15 @@ test_tof_commission_session:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_session -d build-test-tof-commission-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the runtime adapter: which identifier a frame is answered on, what a frame
+# under another one does, when the session frame goes out, and that there is one worker. The
+# identifiers in that suite are TEST values, not the allocated pair -- a suite using the real ones
+# could not tell a runtime that reads its configuration from one that ignores it.
+.PHONY: test_tof_commission_runtime
+test_tof_commission_runtime:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_runtime -d build-test-tof-commission-runtime -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the commissioning downlink codec and the internal-to-wire mapper: byte-exact
 # golden vectors, malformed frames, and every enumerator of all four mapped enums. Symbolic
 # identifiers only -- nothing here is wired to a CAN filter.

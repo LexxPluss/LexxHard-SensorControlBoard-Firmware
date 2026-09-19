@@ -1,0 +1,208 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
+#include "tof_commission_runtime.hpp"
+
+#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
+
+#include <errno.h>
+#include <string.h>
+
+#include <zephyr/kernel.h>
+
+#include "tof_commission_wire.hpp"
+
+namespace lexxhard::tof_commission_runtime {
+
+namespace wire = tof_commission_wire;
+
+namespace {
+
+config cfg_{};
+hooks hooks_{};
+bool ready_{false};
+counters stats_{};
+
+int64_t last_announce_ms_{0};
+bool announced_once_{false};
+
+/* The worker. One thread, created once; `start()` is what makes that true rather than a comment.
+ *
+ * 4 KiB is a starting point and not a measurement: the transaction that runs on this thread walks
+ * the chain twice and isolates the tail, and the depth of that has been measured on the shell
+ * thread and not here. CONFIG_THREAD_ANALYZER on a board, before release. */
+constexpr size_t kWorkerStack{4096};
+K_THREAD_STACK_DEFINE(worker_stack, kWorkerStack);
+struct k_thread worker_thread;
+bool worker_started_{false};
+
+int send_frame(uint32_t id, const uint8_t *data, size_t len)
+{
+    const int rc{hooks_.send != nullptr ? hooks_.send(hooks_.ctx, id, data, len) : -ENODEV};
+    if (rc != 0)
+        ++stats_.send_failures;
+    return rc;
+}
+
+void send_status(const wire::transaction_status &s)
+{
+    uint8_t frame[wire::kFrameLen]{};
+    wire::encode_transaction_status(s, frame);
+    if (send_frame(cfg_.status_id, frame, sizeof frame) == 0)
+        ++stats_.status_sent;
+}
+
+void send_session()
+{
+    uint8_t frame[wire::kFrameLen]{};
+    wire::encode_session_status(session::announcement(), frame);
+    if (send_frame(cfg_.status_id, frame, sizeof frame) == 0)
+        ++stats_.sessions_sent;
+}
+
+/* The hooks the session layer gets. They are this module's own, forwarding to the binding's, so the
+ * session layer never sees the runtime's context pointer and the binding never sees the session's
+ * signatures. */
+bool rt_permitted(void *)
+{
+    return hooks_.enumeration_permitted != nullptr && hooks_.enumeration_permitted(hooks_.ctx);
+}
+
+int rt_prove(void *, uint32_t epoch, tof_commissioning::outcome *out)
+{
+    return hooks_.prove != nullptr ? hooks_.prove(hooks_.ctx, epoch, out) : -ENODEV;
+}
+
+int rt_start(void *)
+{
+    return hooks_.start != nullptr ? hooks_.start(hooks_.ctx) : -ENODEV;
+}
+
+int rt_draw(void *, uint32_t *out)
+{
+    return hooks_.draw_token != nullptr ? hooks_.draw_token(hooks_.ctx, out) : -ENODEV;
+}
+
+void worker_entry(void *, void *, void *)
+{
+    for (;;) {
+        (void)service_once(k_uptime_get());
+        k_msleep(cfg_.poll_ms);
+    }
+}
+
+} // namespace
+
+int init(const config &cfg, const hooks &h)
+{
+    /* IDENTIFIERS ARE REQUIRED AND ARE CHECKED, because the alternative is a default -- and a
+     * default identifier is a frame on somebody else's conversation. Zero is not one, and one value
+     * for both would answer a request with a frame the sender reads back as a request. */
+    if (cfg.request_id == 0 || cfg.status_id == 0 || cfg.request_id == cfg.status_id)
+        return -EINVAL;
+    if (cfg.announce_period_ms == 0 || cfg.poll_ms == 0)
+        return -EINVAL;
+    if (h.send == nullptr || h.enumeration_permitted == nullptr || h.prove == nullptr ||
+        h.start == nullptr || h.draw_token == nullptr)
+        return -EINVAL;
+
+    cfg_ = cfg;
+    hooks_ = h;
+    stats_ = counters{};
+    ready_ = false;
+    announced_once_ = false;
+    last_announce_ms_ = 0;
+
+    session::config sc{};
+    sc.profile_enabled = cfg_.profile_enabled;
+    sc.max_proof_attempts = cfg_.max_proof_attempts;
+    sc.max_start_attempts = cfg_.max_start_attempts;
+    const session::hooks sh{rt_draw, rt_permitted, rt_prove, rt_start, nullptr};
+    if (!session::init(sc, sh)) {
+        /* No token, so no session -- and the board says NOTHING on the bus rather than announcing a
+         * session it cannot distinguish from the last one. A host that hears no announcement does
+         * nothing, which is the correct unattended behaviour for a board in this state. */
+        return -ENODEV;
+    }
+
+    ready_ = true;
+    return 0;
+}
+
+void on_frame(uint32_t id, const uint8_t *data, size_t len)
+{
+    if (!ready_)
+        return;
+    if (id != cfg_.request_id) {
+        /* Not ours. Counted rather than ignored silently, because a runtime that is being handed
+         * the wrong identifier looks exactly like one that is being handed nothing. */
+        ++stats_.frames_ignored;
+        return;
+    }
+    ++stats_.frames_in;
+
+    const session::rx_action a{session::handle_request(data, len)};
+    if (a.send_status)
+        send_status(a.status);
+    if (a.send_session)
+        send_session();
+}
+
+service_result service_once(int64_t now_ms)
+{
+    service_result out{};
+    if (!ready_)
+        return out;
+
+    const session::worker_result w{session::worker_step()};
+    if (w.send_status) {
+        send_status(w.status);
+        out.sent_status = true;
+        out.terminal = true;
+        ++stats_.transactions;
+    }
+
+    /* The announcement is on the same thread as the worker, so it does not go out while a
+     * transaction is running -- and that is honest rather than unfortunate: `transaction_in_progress`
+     * would be stale by the time the host read it, and the host does not need it to make progress.
+     * What it needs is the token, which does not change while the board is up. */
+    if (!announced_once_ || now_ms - last_announce_ms_ >= static_cast<int64_t>(cfg_.announce_period_ms)) {
+        send_session();
+        last_announce_ms_ = now_ms;
+        announced_once_ = true;
+        out.sent_session = true;
+    }
+    return out;
+}
+
+int start()
+{
+    if (!ready_)
+        return -EPERM;
+    if (worker_started_)
+        return -EALREADY;
+
+    k_thread_create(&worker_thread, worker_stack, K_THREAD_STACK_SIZEOF(worker_stack), worker_entry,
+                    nullptr, nullptr, nullptr, K_PRIO_PREEMPT(10), 0, K_NO_WAIT);
+    k_thread_name_set(&worker_thread, "tof_commission");
+    worker_started_ = true;
+    return 0;
+}
+
+bool running()
+{
+    return worker_started_;
+}
+
+counters stats()
+{
+    return stats_;
+}
+
+} // namespace lexxhard::tof_commission_runtime
+
+#endif // ENABLE_TOF_CHAIN && ENABLE_TOF_CLIFF_ULD
