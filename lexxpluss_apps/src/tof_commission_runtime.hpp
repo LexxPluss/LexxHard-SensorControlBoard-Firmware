@@ -7,13 +7,14 @@
  * The board's side of the commissioning downlink as a running thing: one worker, one periodic
  * announcement, and a receive entry point. It owns no policy and, deliberately, NO IDENTIFIERS.
  *
- * WHY THE IDENTIFIERS ARE INJECTED. Registration of the commissioning pair has not come back, and
- * 0x214/0x215 turned out to belong to the grid transport already -- which is exactly the kind of
- * thing a placeholder constant hides until somebody greps for it. So this file names no number, the
- * configuration carries both identifiers, and a configuration that omits either is refused rather
- * than defaulted. The production values arrive through tof_commission_ids.hpp, which is generated
- * from the wire contract and does not compile until the registrar has answered; the tests pass their
- * own. When the answer comes, one generated header changes and nothing here does.
+ * WHY THE IDENTIFIERS ARE INJECTED, NOW THAT THEY EXIST. The pair was allocated on 2026-09-19 --
+ * 0x218 request, 0x219 status -- and it still does not appear here. The values live in the generated
+ * wire contract, the binding reads them from there and passes them in, and the tests pass their own:
+ * a suite using the real pair could not tell a runtime that reads its configuration from one that
+ * ignores it. A configuration that omits either identifier is refused rather than defaulted, because
+ * a default identifier is a frame on somebody else's conversation. 0x214/0x215 turning out to belong
+ * to the grid transport is exactly the kind of thing a placeholder constant hides until somebody
+ * greps for it.
  *
  * WHAT IT IS NOT. It is not the state machine, which is tof_commission_session, and it is not the
  * proof, which is tof_commissioning. It moves frames between them, on the right threads.
@@ -24,6 +25,12 @@
  * hundreds of milliseconds of I2C. One thread calls it -- `start()` creates that thread and refuses
  * a second -- and the session layer's own claim makes a second caller harmless rather than a defect
  * that first appears on a bus.
+ *
+ * A BOARD WITH NO ENTROPY STILL ANSWERS. It announces no session -- it cannot tell this boot from
+ * the last one, so it has nothing to announce -- but a well-formed request is still answered, with
+ * `no_session`. The difference matters to a host that comes back holding a durable pending request:
+ * silence leaves it retransmitting for ever, while `no_session` is terminal and tells it to stop and
+ * report. Refusing to speak and refusing to act are different refusals.
  *
  * DEFAULT OFF, AND NOTHING IS ENABLED BY EXISTING. `config::profile_enabled` is false when
  * default-constructed, `init()` refuses a configuration without hooks or identifiers, and no CAN
@@ -46,9 +53,11 @@ namespace lexxhard::tof_commission_runtime {
 namespace session = tof_commission;
 
 struct config {
-    /* Both required and both checked. Zero is not a CAN identifier and "the same value for both"
-     * is a wiring mistake that would answer a request with a frame the sender reads back as a
-     * request. */
+    /* Both required and both checked: non-zero, distinct, and 11 bits. This bus is CAN classic with
+     * standard identifiers, so a value above 0x7FF is not a wider identifier here -- it is a
+     * configuration that would be truncated or refused by the driver, after the runtime had already
+     * reported itself configured. "The same value for both" is the other wiring mistake: it would
+     * answer a request with a frame the sender reads back as a request. */
     uint32_t request_id{0};
     uint32_t status_id{0};
 
@@ -100,11 +109,17 @@ struct counters {
     uint32_t transactions{0};     /* worker steps that produced a terminal status */
 };
 
-/* Draws the session token and configures the state machine. Returns 0, or negative when the
- * configuration is incomplete (-EINVAL) or no session could be established (-ENODEV) -- and in the
- * second case the board deliberately says NOTHING on the bus, because a board that cannot tell this
- * boot from the last one has no business announcing a session at all. */
+/* Draws the session token and configures the state machine. Returns 0, or -EINVAL for a
+ * configuration that is incomplete, or -ENODEV when no session could be drawn.
+ *
+ * -ENODEV IS NOT "DEAD". The receive path still works and still answers -- with `no_session`, which
+ * is what the protocol says and what breaks a returning host out of its retransmit loop. What the
+ * board does not do is announce a session or run a transaction. */
 int init(const config &cfg, const hooks &h);
+
+/* Whether a session token was drawn. False means every request is answered `no_session` and no
+ * announcement is sent. */
+bool has_session();
 
 /* The receive path. Frames under any other identifier are ignored and counted. Never blocks, never
  * proves, never takes the chain. */
@@ -113,14 +128,20 @@ void on_frame(uint32_t id, const uint8_t *data, size_t len);
 /* One turn of the worker: run the queued transaction if there is one, and send the periodic session
  * frame when it is due. Exposed so a test drives exactly the code the thread runs. */
 struct service_result {
+    /* TRUE MEANS IT REACHED THE BUS. A send that failed leaves these false and shows up in
+     * `counters::send_failures`; naming them for the attempt would make a caller that logs them
+     * report traffic that does not exist. */
     bool sent_status{false};
     bool sent_session{false};
+    /* The worker produced a terminal status this call, whether or not it could be sent. */
     bool terminal{false};
 };
 service_result service_once(int64_t now_ms);
 
-/* Creates the single worker thread. -EALREADY if one is already running, which is the point: one
- * worker, decided here rather than hoped for. */
+/* Creates the single worker thread. The claim is taken under the same lock as everything else, so
+ * two callers racing produce one thread and one -EALREADY rather than two threads. -EPERM when
+ * there is no session: there is nothing for a worker to do on a board that answers every request
+ * `no_session` from the receive path. */
 int start();
 bool running();
 

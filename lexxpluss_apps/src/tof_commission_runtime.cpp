@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/spinlock.h>
 
 #include "tof_commission_wire.hpp"
 
@@ -24,8 +25,25 @@ namespace {
 
 config cfg_{};
 hooks hooks_{};
-bool ready_{false};
+
+/* Written once by init(), before any thread that reads them exists, and read-only afterwards. The
+ * lock below is for the things that are not. */
+bool configured_{false};
+bool session_ok_{false};
+
+/* THE COUNTERS ARE SHARED. `on_frame()` runs on whatever thread CAN delivers on and the worker runs
+ * on its own, so a plain `++` on either side is a data race the moment a real filter is installed --
+ * and `stats()` reading them unlocked would hand out a total that never existed. The lock is taken
+ * for the increment and for the snapshot, and NEVER across a send or a transaction. */
+struct k_spinlock lock_;
 counters stats_{};
+
+void count(uint32_t counters::*field, uint32_t by = 1)
+{
+    k_spinlock_key_t key{k_spin_lock(&lock_)};
+    stats_.*field += by;
+    k_spin_unlock(&lock_, key);
+}
 
 int64_t last_announce_ms_{0};
 bool announced_once_{false};
@@ -40,28 +58,34 @@ K_THREAD_STACK_DEFINE(worker_stack, kWorkerStack);
 struct k_thread worker_thread;
 bool worker_started_{false};
 
+/* The send itself happens with NO lock held: it is the transport's call, it may block or fail, and
+ * holding a spinlock across it would mask interrupts for as long as a mailbox takes. */
 int send_frame(uint32_t id, const uint8_t *data, size_t len)
 {
     const int rc{hooks_.send != nullptr ? hooks_.send(hooks_.ctx, id, data, len) : -ENODEV};
     if (rc != 0)
-        ++stats_.send_failures;
+        count(&counters::send_failures);
     return rc;
 }
 
-void send_status(const wire::transaction_status &s)
+bool send_status(const wire::transaction_status &s)
 {
     uint8_t frame[wire::kFrameLen]{};
     wire::encode_transaction_status(s, frame);
-    if (send_frame(cfg_.status_id, frame, sizeof frame) == 0)
-        ++stats_.status_sent;
+    if (send_frame(cfg_.status_id, frame, sizeof frame) != 0)
+        return false;
+    count(&counters::status_sent);
+    return true;
 }
 
-void send_session()
+bool send_session()
 {
     uint8_t frame[wire::kFrameLen]{};
     wire::encode_session_status(session::announcement(), frame);
-    if (send_frame(cfg_.status_id, frame, sizeof frame) == 0)
-        ++stats_.sessions_sent;
+    if (send_frame(cfg_.status_id, frame, sizeof frame) != 0)
+        return false;
+    count(&counters::sessions_sent);
+    return true;
 }
 
 /* The hooks the session layer gets. They are this module's own, forwarding to the binding's, so the
@@ -104,6 +128,10 @@ int init(const config &cfg, const hooks &h)
      * for both would answer a request with a frame the sender reads back as a request. */
     if (cfg.request_id == 0 || cfg.status_id == 0 || cfg.request_id == cfg.status_id)
         return -EINVAL;
+    /* Standard 11-bit identifiers: this contract's transport is CAN classic. A value that does not
+     * fit is a configuration error to report now, not one for the driver to truncate later. */
+    if (cfg.request_id > 0x7FFu || cfg.status_id > 0x7FFu)
+        return -EINVAL;
     if (cfg.announce_period_ms == 0 || cfg.poll_ms == 0)
         return -EINVAL;
     if (h.send == nullptr || h.enumeration_permitted == nullptr || h.prove == nullptr ||
@@ -112,8 +140,13 @@ int init(const config &cfg, const hooks &h)
 
     cfg_ = cfg;
     hooks_ = h;
-    stats_ = counters{};
-    ready_ = false;
+    {
+        k_spinlock_key_t key{k_spin_lock(&lock_)};
+        stats_ = counters{};
+        k_spin_unlock(&lock_, key);
+    }
+    configured_ = false;
+    session_ok_ = false;
     announced_once_ = false;
     last_announce_ms_ = 0;
 
@@ -122,28 +155,34 @@ int init(const config &cfg, const hooks &h)
     sc.max_proof_attempts = cfg_.max_proof_attempts;
     sc.max_start_attempts = cfg_.max_start_attempts;
     const session::hooks sh{rt_draw, rt_permitted, rt_prove, rt_start, nullptr};
-    if (!session::init(sc, sh)) {
-        /* No token, so no session -- and the board says NOTHING on the bus rather than announcing a
-         * session it cannot distinguish from the last one. A host that hears no announcement does
-         * nothing, which is the correct unattended behaviour for a board in this state. */
-        return -ENODEV;
-    }
+    session_ok_ = session::init(sc, sh);
 
-    ready_ = true;
-    return 0;
+    /* CONFIGURED EITHER WAY, and that is the fix for a host that cannot get out of a retransmit
+     * loop. With no token the board announces nothing -- it has no session to announce -- but the
+     * receive path stays up and answers `no_session`, which is terminal at the host and tells it to
+     * stop and report. An earlier version dropped the frame instead, so a host holding a durable
+     * pending request from a previous boot retransmitted into silence for ever. */
+    configured_ = true;
+    return session_ok_ ? 0 : -ENODEV;
+}
+
+bool has_session()
+{
+    return session_ok_;
 }
 
 void on_frame(uint32_t id, const uint8_t *data, size_t len)
 {
-    if (!ready_)
+    /* NOT gated on a session. A board with no token still answers -- see init(). */
+    if (!configured_)
         return;
     if (id != cfg_.request_id) {
         /* Not ours. Counted rather than ignored silently, because a runtime that is being handed
          * the wrong identifier looks exactly like one that is being handed nothing. */
-        ++stats_.frames_ignored;
+        count(&counters::frames_ignored);
         return;
     }
-    ++stats_.frames_in;
+    count(&counters::frames_in);
 
     const session::rx_action a{session::handle_request(data, len)};
     if (a.send_status)
@@ -155,15 +194,16 @@ void on_frame(uint32_t id, const uint8_t *data, size_t len)
 service_result service_once(int64_t now_ms)
 {
     service_result out{};
-    if (!ready_)
+    /* Nothing to work on without a session: every request was refused in the receive path, so
+     * nothing can be queued and there is nothing to announce. */
+    if (!configured_ || !session_ok_)
         return out;
 
     const session::worker_result w{session::worker_step()};
     if (w.send_status) {
-        send_status(w.status);
-        out.sent_status = true;
+        out.sent_status = send_status(w.status);
         out.terminal = true;
-        ++stats_.transactions;
+        count(&counters::transactions);
     }
 
     /* The announcement is on the same thread as the worker, so it does not go out while a
@@ -171,25 +211,32 @@ service_result service_once(int64_t now_ms)
      * would be stale by the time the host read it, and the host does not need it to make progress.
      * What it needs is the token, which does not change while the board is up. */
     if (!announced_once_ || now_ms - last_announce_ms_ >= static_cast<int64_t>(cfg_.announce_period_ms)) {
-        send_session();
+        out.sent_session = send_session();
         last_announce_ms_ = now_ms;
         announced_once_ = true;
-        out.sent_session = true;
     }
     return out;
 }
 
 int start()
 {
-    if (!ready_)
+    if (!configured_ || !session_ok_)
         return -EPERM;
-    if (worker_started_)
+
+    /* CLAIMED UNDER THE LOCK, because "check then set" on a plain bool is two threads creating two
+     * threads. The claim is taken before the thread exists, so the loser gets -EALREADY rather than
+     * a second worker on the same job. */
+    k_spinlock_key_t key{k_spin_lock(&lock_)};
+    if (worker_started_) {
+        k_spin_unlock(&lock_, key);
         return -EALREADY;
+    }
+    worker_started_ = true;
+    k_spin_unlock(&lock_, key);
 
     k_thread_create(&worker_thread, worker_stack, K_THREAD_STACK_SIZEOF(worker_stack), worker_entry,
                     nullptr, nullptr, nullptr, K_PRIO_PREEMPT(10), 0, K_NO_WAIT);
     k_thread_name_set(&worker_thread, "tof_commission");
-    worker_started_ = true;
     return 0;
 }
 
@@ -200,7 +247,12 @@ bool running()
 
 counters stats()
 {
-    return stats_;
+    /* A coherent snapshot rather than a field-by-field read, so a caller cannot see a total that
+     * never existed. */
+    k_spinlock_key_t key{k_spin_lock(&lock_)};
+    const counters c{stats_};
+    k_spin_unlock(&lock_, key);
+    return c;
 }
 
 } // namespace lexxhard::tof_commission_runtime

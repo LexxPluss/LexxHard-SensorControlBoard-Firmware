@@ -185,6 +185,15 @@ ZTEST(tof_commission_runtime, test_a_configuration_without_identifiers_is_refuse
     c = configured();
     c.announce_period_ms = 0;
     zassert_equal(rt::init(c, wired()), -EINVAL, "a period of zero announces nothing, for ever");
+
+    /* Standard 11-bit identifiers. A value that does not fit is a configuration error to report
+     * now, not one for the CAN driver to truncate into somebody else's identifier later. */
+    c = configured();
+    c.request_id = 0x800;
+    zassert_equal(rt::init(c, wired()), -EINVAL, "0x800 is not an 11-bit identifier");
+    c = configured();
+    c.status_id = 0x1FFFFFFF;
+    zassert_equal(rt::init(c, wired()), -EINVAL, "nor is a 29-bit one on this bus");
 }
 
 ZTEST(tof_commission_runtime, test_a_missing_hook_is_refused_rather_than_defaulted)
@@ -203,18 +212,38 @@ ZTEST(tof_commission_runtime, test_a_missing_hook_is_refused_rather_than_default
     zassert_equal(rt::init(configured(), h), -EINVAL, "no entropy, and no fallback to invent one");
 }
 
-ZTEST(tof_commission_runtime, test_no_entropy_means_the_board_says_nothing_at_all)
+ZTEST(tof_commission_runtime, test_no_entropy_announces_nothing_but_still_answers)
 {
     f_.token_available = false;
-    zassert_equal(rt::init(configured(), wired()), -ENODEV, "refused");
+    zassert_equal(rt::init(configured(), wired()), -ENODEV, "no session could be drawn");
+    zassert_false(rt::has_session(), "and it says so");
 
-    /* And it is SILENT. A board that cannot tell this boot from the last one must not announce a
-     * session: a host that hears nothing does nothing, which is the correct unattended behaviour. */
+    /* NOT ANNOUNCED: a board that cannot tell this boot from the last one has no session to
+     * announce, and announcing one anyway is how a host addresses a boot that does not exist. */
+    (void)rt::service_once(0);
     (void)rt::service_once(10000);
+    zassert_equal(f_.sent_count, 0u, "no session frame, at any time");
+
+    /* BUT STILL ANSWERED, and this is the difference that matters. A host coming back with a
+     * durable pending request from a previous boot retransmits it; silence leaves it retransmitting
+     * for ever, while `no_session` is terminal and tells it to stop and report. */
     uint8_t frame[wire::kFrameLen]{};
     build_request(frame, 1, 7, 0x77665544U);
     rt::on_frame(kTestRequestId, frame, sizeof frame);
-    zassert_equal(f_.sent_count, 0u, "not one frame");
+
+    zassert_equal(rt::stats().frames_in, 1u, "the frame was taken in");
+    wire::transaction_status t{};
+    zassert_true(last_transaction(t), "and answered");
+    zassert_true(t.ph == wire::phase::refused, "refused");
+    zassert_true(t.res == wire::result::no_session, "with no_session");
+    zassert_equal(t.seq, 1, "for the sequence that asked");
+    zassert_equal(f_.sent[f_.sent_count - 1].id, kTestStatusId, "on the status identifier");
+    zassert_equal(f_.proves, 0, "and nothing was proved or started");
+    zassert_equal(f_.starts, 0, "");
+
+    /* There is nothing for a worker to do on such a board. */
+    zassert_equal(rt::start(), -EPERM, "no worker is created");
+    zassert_false(rt::running(), "");
 }
 
 /* ---- identifiers are used as configured ---- */
@@ -285,6 +314,7 @@ ZTEST(tof_commission_runtime, test_the_worker_runs_the_transaction_and_answers_o
 
     const rt::service_result r{rt::service_once(0)};
     zassert_true(r.terminal, "the worker ran it to a terminal status");
+    zassert_true(r.sent_status, "which reached the bus");
     zassert_equal(f_.proves, 1, "one proof");
     zassert_equal(f_.starts, 1, "one start");
 
@@ -307,7 +337,12 @@ ZTEST(tof_commission_runtime, test_a_send_that_fails_is_counted_and_does_not_sto
     uint8_t frame[wire::kFrameLen]{};
     build_request(frame, 1, 7, f_.token);
     rt::on_frame(kTestRequestId, frame, sizeof frame);
-    (void)rt::service_once(0);
+    const rt::service_result r{rt::service_once(0)};
+    /* `sent_` means it REACHED THE BUS. A caller that logged an attempt as traffic would be
+     * reporting frames nobody can see. */
+    zassert_true(r.terminal, "the transaction ran");
+    zassert_false(r.sent_status, "and its status did not go out");
+    zassert_false(r.sent_session, "nor did the announcement");
 
     zassert_true(rt::stats().send_failures >= 2, "counted");
     zassert_equal(f_.sent_count, 0u, "nothing reached the bus");
