@@ -67,6 +67,11 @@ ZTEST(tof_grid_packer, test_can_id_assignment)
         ids::TOF_GRID_HEALTH_ID,      // 0x215 grid health
         tof_cliff_contract::kMeasId,  // 0x216 cliff measurement
         tof_cliff_contract::kHealthId,// 0x217 cliff health
+        // The commissioning downlink, allocated by the team on 2026-09-19 and read from the same
+        // generated contract as the pair above. Two identifiers for one conversation because the
+        // directions are fixed: 0x218 is only ever written by a host, 0x219 only ever by an SCB.
+        tof_cliff_contract::kCommissionRequestId,
+        tof_cliff_contract::kCommissionStatusId,
     };
     constexpr size_t kAssignedCount{sizeof kAssigned / sizeof kAssigned[0]};
 

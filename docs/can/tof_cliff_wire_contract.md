@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-09-19e**
+Contract version: **commissioning-2026-09-19f**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
@@ -52,6 +52,13 @@ What this revision settles, and what it does not:
 
 - **Frame layouts, encodings and validation rules: settled.** Golden vectors for the *layout* are
   generated from this document and pinned by both repositories.
+- **The commissioning downlink identifiers: `0x218` and `0x219`, ALLOCATED 2026-09-19.** The team
+  allocated the pair directly, with authority over the register, so these are not self-assignments
+  pending a row: `0x218` carries the request (host or IPC to SCB) and `0x219` carries both status
+  frames (SCB to host). They are recorded here, in the contract, which is what the generated headers
+  on both sides are built from -- there is no second place naming them and no literal in any handler.
+  `0x214`/`0x215` stay reserved for the L7 grid transport and `0x216`/`0x217` remain the L4
+  measurement and health pair, so the block is contiguous and this pair extends it upwards.
 - **Health CAN identifier: `0x217`, usable here, registration outstanding.** Self-assigned 2026-08-17
   under the same team authorisation as `0x214`/`0x215`/`0x216`, after a fresh scan of both repositories
   and a live `can1` capture. But this contract's own rule is that **the team's CAN ID register is the
@@ -122,6 +129,19 @@ CAN classic, 11-bit identifiers, on **CAN2 at 1 Mbit/s** (the SCB-to-IPC bus).
 | --- | --- | --- |
 | `TOF_CLIFF_MEAS_ID` | one measurement frame per sensor per completed read | `0x216` |
 | `TOF_CLIFF_HEALTH_ID` | one health frame per acquisition cycle, and periodically regardless | **unallocated** — see *Open decisions* |
+| `TOF_CLIFF_COMMISSION_REQUEST_ID` | one commissioning request, host or IPC to SCB | `0x218` |
+| `TOF_CLIFF_COMMISSION_STATUS_ID` | session announcements and transaction statuses, SCB to host | `0x219` |
+
+The commissioning pair was **allocated by the team on 2026-09-19** with authority over the register,
+which is a different thing from the self-assignments above: no row is owed for it. Direction is part
+of the allocation and not a convention — `0x218` is only ever written by a host and only ever read by
+an SCB, and `0x219` the other way round — so a board that receives on `0x219`, or a host that
+receives on `0x218`, is misconfigured rather than merely unlucky.
+
+**One identifier carries both status kinds**, and that is deliberate. A session announcement and a
+transaction status are the same conversation and are distinguished by byte 1 of the payload, which
+the decoder checks before anything else; splitting them would spend a second identifier to save a
+comparison, and would let a host subscribe to one and believe it had the other.
 
 `0x216` was reserved for this purpose on 2026-08-06 under the same team-authorized self-assignment
 that allocated `0x214`/`0x215`. This contract is what un-reserves it: until this document is frozen,

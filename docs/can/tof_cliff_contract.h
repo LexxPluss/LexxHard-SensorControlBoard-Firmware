@@ -9,9 +9,9 @@
  *     docs/can/gen_cliff_golden_vectors.py --emit
  *
  * Contract : tof_cliff_wire_contract.md
- * Version  : commissioning-2026-09-19e
- * SHA-256  : ee7a89720f549a4e8207d5a57a64b6ff9c850338d794c1f8cdd7c7ff00f5f658
- * ArtefactSet : e3022a8ac53e70bb2c64b2348e04c1e5fe9ba87a75b807268447867eefe49c94
+ * Version  : commissioning-2026-09-19f
+ * SHA-256  : 2735391f640901cf4877e523d908845545683e05d581d62a4454f22c53d67c31
+ * ArtefactSet : 79629d287664bc3917cc9557a7f7ce04868bf16685ede97bddf2b1dea08e97f0
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
@@ -36,19 +36,21 @@
 
 namespace tof_cliff_contract {
 
-inline constexpr char kContractVersion[]{"commissioning-2026-09-19e"};
-inline constexpr char kContractSha256[]{"ee7a89720f549a4e8207d5a57a64b6ff9c850338d794c1f8cdd7c7ff00f5f658"};
+inline constexpr char kContractVersion[]{"commissioning-2026-09-19f"};
+inline constexpr char kContractSha256[]{"2735391f640901cf4877e523d908845545683e05d581d62a4454f22c53d67c31"};
 inline constexpr char kProfileName[]{"commissioning-cliff-only-400k"};
 
 // The contract SHA says which contract. This says which generated artefacts: it
 // hashes the contract text together with the generator's own source, so a change
 // to what the generator emits is visible even when the contract stands still.
 // Both repositories pin it.
-inline constexpr char kArtefactSetId[]{"e3022a8ac53e70bb2c64b2348e04c1e5fe9ba87a75b807268447867eefe49c94"};
+inline constexpr char kArtefactSetId[]{"79629d287664bc3917cc9557a7f7ce04868bf16685ede97bddf2b1dea08e97f0"};
 inline constexpr bool kReleaseForbidden{true};
 
 inline constexpr uint16_t kMeasId{0x216};
 inline constexpr uint16_t kHealthId{0x217};
+inline constexpr uint16_t kCommissionRequestId{0x218};
+inline constexpr uint16_t kCommissionStatusId{0x219};
 inline constexpr uint8_t kProtocolVersion{0x1};
 inline constexpr uint16_t kSentinelInvalid{0xFFFF};
 inline constexpr uint8_t kSourceCount{4};
