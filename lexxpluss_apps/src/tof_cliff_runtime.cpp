@@ -12,6 +12,7 @@
 #include <errno.h>
 
 #include <zephyr/devicetree.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -110,6 +111,35 @@ config cfg_{};
  * cannot go stale. */
 bool keyed_{false};
 uint8_t keyed_epoch_{0};
+
+/* THE START CLAIM. Non-blocking, and it exists because start_acquisition() does something
+ * DESTRUCTIVE before the layer below it can refuse: it returns the two hanging sensors' ULD
+ * objects to empty, and those objects belong to a thread that may be using them right now.
+ *
+ * tof_acq::start() does hold the authoritative -EALREADY, but it holds it too late to help -- by
+ * the time it answers, the reset has already happened, and a running acquisition thread would find
+ * its next read refused at the state check with both sensors apparently unopened. There are two
+ * entry points into this function, the commissioning worker and the shell, and a runtime API may
+ * not assume its callers agree not to overlap.
+ *
+ * So the claim covers the whole sequence -- test the running state, reset, start -- and a caller
+ * that loses it is told -EALREADY WITHOUT ANYTHING HAVING BEEN WRITTEN. atomic_cas rather than a
+ * mutex because the answer to "somebody else is already starting" is to refuse, not to wait: this
+ * runs from a commissioning path that must not block. */
+atomic_t starting_{};
+
+struct start_claim {
+    const bool held;
+
+    start_claim() : held{atomic_cas(&starting_, 0, 1)} {}
+    ~start_claim()
+    {
+        if (held)
+            atomic_clear(&starting_);
+    }
+    start_claim(const start_claim &) = delete;
+    start_claim &operator=(const start_claim &) = delete;
+};
 
 uint32_t now_ms()
 {
@@ -553,6 +583,23 @@ int start_acquisition()
      * descriptors that were never keyed. */
     if (!ready() || !mapping_applied())
         return -EPERM;
+
+    const start_claim claim;
+
+    if (!claim.held)
+        return -EALREADY;   // another caller is inside this sequence; nothing here has been written
+
+    /* BEFORE THE RESET, NOT AFTER. An acquisition thread that is running owns those objects, and
+     * returning them to empty under it would leave every later read refused at the adapter's state
+     * check -- two hanging sensors that stop reporting, with -EPERM and a stage number as the only
+     * trace, on a machine where nothing is actually wrong.
+     *
+     * A thread that has EXITED but has not been joined is a different case and is deliberately not
+     * caught here: nothing is touching the devices, so the reset is harmless, and tof_acq::start()
+     * refuses it on its own with the same -EALREADY. */
+    if (acq::thread_running())
+        return -EALREADY;
+
     /* The thread, which from here on is the only thing allowed to touch a sensor. Behind this gate
      * because a thread that started before the descriptors were keyed would publish cycles whose
      * facts carry kRoleUnassigned -- and it would be publishing them continuously, not once.

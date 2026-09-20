@@ -182,6 +182,10 @@ namespace {
 uint8_t uld_ready_value{0};
 uint8_t uld_init_status{VL53L7CX_STATUS_OK};
 uint8_t uld_frequency_status{VL53L7CX_STATUS_OK};
+/* init and fetch counts, so "the sensors kept ranging and were not opened again" is two
+ * observations rather than an inference from the absence of frames. */
+int uld_init_calls{0};
+int uld_fetch_calls{0};
 int uld_frequency_calls{0};
 uint8_t uld_last_frequency{0};
 /* Per device, so "both sensors were configured" is a statement about two objects rather than
@@ -207,6 +211,8 @@ void reset_uld_fake()
     uld_ready_value = 0;
     uld_init_status = VL53L7CX_STATUS_OK;
     uld_frequency_status = VL53L7CX_STATUS_OK;
+    uld_init_calls = 0;
+    uld_fetch_calls = 0;
     uld_frequency_calls = 0;
     uld_last_frequency = 0;
     uld_frequency_device_count = 0;
@@ -244,6 +250,7 @@ int vl53l7cx_port_error(void)
 
 uint8_t vl53l7cx_init(VL53L7CX_Configuration *)
 {
+    ++uld_init_calls;
     return uld_init_status;
 }
 
@@ -279,6 +286,7 @@ uint8_t vl53l7cx_check_data_ready(VL53L7CX_Configuration *, uint8_t *is_ready)
 
 uint8_t vl53l7cx_get_ranging_data(VL53L7CX_Configuration *, VL53L7CX_ResultsData *results)
 {
+    ++uld_fetch_calls;
     *results = uld_results;
     return VL53L7CX_STATUS_OK;
 }
@@ -1010,4 +1018,46 @@ ZTEST(tof_grid_wiring, test_a_sensor_with_nothing_ready_is_not_a_sensor_that_fai
     zassert_equal(health->data[3] & 0x03, 0x00,
                   "quiet cycles were reported as a recovered failure (flags %02x)",
                   health->data[3]);
+}
+
+
+ZTEST(tof_grid_wiring, test_a_second_start_refuses_before_it_touches_a_running_sensor)
+{
+    /* THE SECOND START IS THE DANGEROUS ONE. start_acquisition() returns both ULD objects to empty
+     * so that a new session can open them, and the layer that knows a thread is already running --
+     * tof_acq::start() -- does not get to answer until after that reset. Without a claim over the
+     * whole sequence, a duplicate call would zero the objects under the thread that is reading
+     * them, and every later read would be refused at the adapter's state check: two hanging
+     * sensors silently stopping on a machine where nothing is wrong.
+     *
+     * It is not a hypothetical overlap. The commissioning worker and the shell are two entry
+     * points into this function, and a runtime API cannot assume its callers agree not to. */
+    uld_ready_value = 1;
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    zassert_true(prove_over_the_fake_chain(7).proven());
+    zassert_equal(rt::start_acquisition(), 0);
+    k_msleep(static_cast<int>(kTiming.cycle_period_ms) * 2);
+
+    const int init_before{uld_init_calls};
+    const int frequency_before{uld_frequency_calls};
+    const int fetch_before{uld_fetch_calls};
+
+    zassert_true(init_before > 0, "the sensors never came up, so this proves nothing");
+    bus_count = 0;
+
+    zassert_equal(rt::start_acquisition(), -EALREADY, "a second start was accepted");
+
+    k_msleep(static_cast<int>(kTiming.cycle_period_ms) * 2);
+    zassert_equal(acq::try_stop(), 0);
+
+    /* Not reopened: no second download of the device firmware, no second frequency write. */
+    zassert_equal(uld_init_calls, init_before,
+                  "the sensors were initialised again under the running thread");
+    zassert_equal(uld_frequency_calls, frequency_before);
+    /* And still ranging, which is the assertion that fails if the objects were zeroed: a reset
+     * object is no longer `running`, and read_once() refuses it without ever reaching the bus. */
+    zassert_true(uld_fetch_calls > fetch_before,
+                 "the sensors stopped producing after the refused start");
+    zassert_true(frames_with_id(ids::TOF_GRID_DATA_ID) > 0,
+                 "no grid reached the bus after the refused start");
 }

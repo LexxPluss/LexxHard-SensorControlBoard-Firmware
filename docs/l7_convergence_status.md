@@ -1,7 +1,11 @@
 # L7 convergence — status
 
-**NOT MERGEABLE.** This is where the L7 grid path is finished: on the baseline that actually runs
-on a machine, rather than on the branch it was written on.
+**NOT MERGEABLE, AND NOT FLASHABLE.** This is where the L7 grid path is finished: on the baseline
+that actually runs on a machine, rather than on the branch it was written on.
+
+The accurate state, as of the wiring commit: the implementation is essentially complete and its
+runtime blocker is closed, but the fully wired image is 708 bytes over the signable ceiling. Until
+that is decided this is source, not firmware.
 
 ## Why this branch exists, and why it is not a merge
 
@@ -60,6 +64,19 @@ publishers, and the grid publisher's init is a precondition for acquisition rath
 The ranging frequency comes from the devicetree, through the bootstrap, into the descriptors and out
 to the ULD; there is no default on that path and 0 or >15 is refused at the bootstrap.
 
+**A duplicate start used to break the sensors it could not start.** `start_acquisition()` returns
+both ULD objects to empty so a new session can open them, and the layer holding the authoritative
+"already running" answer -- `tof_acq::start()` -- does not get to speak until after that reset. A
+second call therefore zeroed the objects under the thread that was reading them, and every later
+read was refused at the adapter's state check: two hanging sensors silently stopping on a machine
+where nothing was wrong. It is not hypothetical overlap -- the commissioning worker and the shell
+are two entry points, and a runtime API cannot assume its callers agree not to overlap.
+
+A non-blocking claim now covers the whole sequence (test the running state, reset, start) and a
+caller that loses it is refused with nothing written. WHAT THE SUITE DOES NOT COVER: two callers
+racing. native_sim is single-CPU, so the test exercises the sequential duplicate, which is the case
+that actually bit; the claim's mutual exclusion is reasoned, not demonstrated.
+
 **The tests caught one defect that no review had:** the adapter's lifecycle is per session -- open()
 takes an empty object, stop() leaves a configured one -- so a SECOND bring-up refused both hanging
 sensors with -EPERM. On a machine that is commissioned twice in one boot, both would simply have
@@ -73,17 +90,18 @@ Measured with the repository's Docker builder, `VERSION=99.99.99`, same paramete
 | build | FLASH used | against the 261,712 B ceiling |
 | --- | --- | --- |
 | cliff only, at the branch point `741db238` | 248,704 | 12,912 spare |
-| cliff only, at this commit | 248,808 | 12,808 spare |
-| **cliff + hanging sensors, fully wired** | **262,348** | **636 OVER** |
+| cliff only, at this branch's head | 248,880 | 12,832 spare |
+| **cliff + hanging sensors, fully wired** | **262,420** | **708 OVER** |
 
-The last row did not link: `region FLASH overflowed by 204 bytes` against the 256 KiB slot, and the
+The last row did not link: `region FLASH overflowed by 276 bytes` against the 256 KiB slot, and the
 usable ceiling is 432 bytes below that. **There is no image to flash from this configuration
 today.**
 
-The always-on part of this commit -- the mapping install's new checks, the fan-out, the config field
--- costs **104 bytes** and leaves RAM unchanged at 220,736. Everything else is the grid path, and
-where it goes is not a mystery: the vendored ULD's `vl53l7cx_api.c` is 7,813 bytes of text, the
-publisher 1,852, the adapter 898, the blob runtime 812, the packer 304, the port 680. Static RAM
+The always-on part of this branch -- the mapping install's new checks, the fan-out, the config
+field and the start claim -- costs **176 bytes** and leaves RAM unchanged at 220,736. Everything
+else is the grid path, and where it goes is not a mystery: the vendored ULD's `vl53l7cx_api.c` is
+7,813 bytes of text, the publisher 1,852, the adapter 898, the blob runtime 812, the packer 304,
+the port 680. Static RAM
 grows by about 5,700 bytes, nearly all of it the two `VL53L7CX_Configuration` objects and their
 shared scratch, against 384 KiB of it -- RAM is not the problem.
 
