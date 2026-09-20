@@ -47,6 +47,7 @@
 #include <stdint.h>
 
 #include "tof_acquisition.hpp"
+#include "tof_mapping_proof.hpp"
 #include "tof_cliff_stream_loop.hpp"
 #include "tof_enumerator.hpp"
 
@@ -60,6 +61,7 @@ enum class stage : uint8_t {
     chain_not_ready,   // the chain controller's glue never came up; nothing was wired
     authority_failed,
     publisher_failed,
+    grid_publisher_failed,
     acquisition_failed,
     ready,
 };
@@ -81,6 +83,19 @@ struct config {
      * VL53LX_DataInit left. Zero, or a mode outside the ULD's three, is refused. */
     uint32_t cliff_timing_budget_us{0};
     uint8_t cliff_distance_mode{0};
+    /* The two L7s' ranging frequency, in Hz, and injected for the same reason as everything
+     * above it: the sustainable grid rate has never been measured, so a number chosen here would
+     * become the specification by being the only one anybody could find.
+     *
+     * It is NOT in the chain spec, and that boundary is the point. The spec describes what the
+     * machine IS -- topology, models, addresses, which position carries which source -- and none
+     * of that changes when somebody retunes a rate. The frequency is deployment policy: it belongs
+     * with the cycle period and the timing budget, in the devicetree, where a diff shows who
+     * changed it.
+     *
+     * Zero and anything above 15 are refused by bootstrap(); the adapter refuses the same range
+     * again on its own account. 15 Hz is the ULD's ceiling at 8x8. */
+    uint8_t grid_frequency_hz{0};
 };
 
 /* The value production uses. DEFINED only where the chain devicetree node exists -- which is every
@@ -229,6 +244,17 @@ int stream_position(size_t position_1based, stream_result &out, unsigned want_fr
 #endif
 
 #ifdef CONFIG_ZTEST
+/* The authority's install callback, reachable directly.
+ *
+ * Its refusals are the last gate before a descriptor is keyed, and most of them cannot be produced
+ * through a real proof: the enumerator validates the spec's source ids, and the authority refuses
+ * a fingerprint that disagrees with the spec, so a crafted-but-committed fingerprint is not a
+ * state the production path can reach. That makes them defence in depth -- and it also makes them
+ * untestable except from here. A gate nobody can exercise is a gate nobody knows the shape of.
+ *
+ * It is the same function the authority calls; nothing is bypassed and nothing is relaxed. */
+int install_from_mapping_for_test(const tof_proof::fingerprint &fp, uint8_t epoch);
+
 // Lets a suite exercise the single-shot rule more than once per image.
 void reset_for_test();
 /* The acquisition thread's stack, for suites that have no devicetree to size one from. Injected

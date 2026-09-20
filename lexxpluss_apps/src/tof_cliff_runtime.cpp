@@ -20,6 +20,12 @@
 #include "tof_chain_spec.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
+#include "tof_grid_publisher.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+/* The only file outside the adapter that names a VL53L7CX object: the two sensors and their
+ * shared scratch are resident state, and this is the layer that owns resident state. */
+#include "tof_l7_sensor.hpp"
+#endif
 #include "tof_mapping_authority.hpp"
 #include "tof_mapping_proof.hpp"
 
@@ -35,6 +41,9 @@ namespace can = lexxhard::tof_cliff_can;
 namespace enm = lexxhard::tof_enum;
 namespace pf = lexxhard::tof_proof;
 namespace pub = lexxhard::tof_cliff_pub;
+#if defined(ENABLE_TOF_L7_ULD)
+namespace gpub = lexxhard::tof_grid_pub;
+#endif
 
 /* ALL of the subsystem's saved state lives here, at file scope.
  *
@@ -52,6 +61,24 @@ acq::source_desc descs_[acq::kMaxSources];
 constexpr int kCliffSensors{4};
 VL53L4CX_Object_t objs_[kCliffSensors];
 struct tof_cliff_scratch scratch_;
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* The two HANGING-OBJECT sensors. They look forward for half-height obstacles and read an 8x8
+ * grid; the four objects above look down for a drop and read one distance each. This file is named
+ * for the latter because it existed first, and the two must not be read as variants of one job.
+ *
+ * The same arrangement as the cliff objects above, and the same argument for sharing the scratch: the
+ * adapter's read_once() copies the grid out of it before it returns, and every operation on
+ * either sensor belongs to the acquisition thread while it owns the chain -- the concurrency
+ * note at the top of tof_l7_sensor.hpp. A second scratch would be another VL53L7CX_ResultsData
+ * of static RAM buying no property the one has not got.
+ *
+ * The CONFIGURATIONS are not shared, and cannot be: each holds its own device address, stream
+ * count and calibration data, so one object for two sensors would be one sensor. */
+constexpr int kGridSensors{2};
+tof_l7::sensor l7_objs_[kGridSensors];
+tof_l7::scratch l7_scratch_;
+#endif
 
 /* The acquisition thread's stack, sized from the devicetree.
  *
@@ -111,9 +138,11 @@ uint32_t now_cycles()
  * all succeeded, so reading cfg_ here would key every cliff descriptor with a zero budget and the
  * acquisition layer would then refuse the whole table. Moving the assignment earlier would mean a
  * failed bootstrap left its configuration behind, which is worse. */
-void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode)
+void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode,
+                       uint8_t grid_frequency_hz)
 {
     int cliff_index{0};
+    int grid_index{0};
 
     for (size_t i{0}; i < spec_.positions; ++i) {
         const enm::position_spec &ps{spec_.at[i]};
@@ -132,19 +161,67 @@ void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_m
             d.cliff_distance_mode = cliff_distance_mode;
             ++cliff_index;
         } else {
-            /* The grid path has its own typed table. The named stub keeps the unfinished adapter
-             * explicit without pretending an 8x8 payload fits through the cliff signature. */
+#if defined(ENABLE_TOF_L7_ULD)
+            if (grid_index < kGridSensors) {
+                d.dev = &l7_objs_[grid_index];
+                d.scratch = &l7_scratch_;
+                d.grid_ops = &acq::l7_grid_ops();
+                /* From the deployment's devicetree, through bootstrap, to the descriptor, and
+                 * from here to the ULD by way of grid_ops.configure() during bring-up. This is
+                 * the only assignment of it: there is no default anywhere on that path, and
+                 * acquisition refuses a real grid table carrying a zero. */
+                d.grid_frequency_hz = grid_frequency_hz;
+                ++grid_index;
+            } else {
+                /* More grid positions than sensor objects. The spec would have to have grown
+                 * without this constant growing with it; the stub keeps such a position
+                 * describable instead of pointing it at an object that does not exist. */
+                d.grid_ops = &acq::l7_grid_stub_ops();
+            }
+#else
+            /* No ULD in this image, so nothing can open an L7. The named stub keeps the
+             * position describable and every operation on it an explicit -ENOSYS. */
+            (void)grid_frequency_hz;
             d.grid_ops = &acq::l7_grid_stub_ops();
+#endif
         }
     }
 }
 
-void on_grid_stub(int, uint32_t, const acq::source_facts &, const tof_l7::sample &)
+/* BOTH publishers, every cycle, and in this order.
+ *
+ * The two sink slots hold one function pointer each and the cliff publisher already owned them.
+ * Wiring the grid publisher in by replacing it would have silently stopped the four ranges that
+ * work on hardware today -- a change with no compile error and no log line, whose only symptom is
+ * an absence.
+ *
+ * The order is not arbitrary. Within one cycle the cliff publisher queues at most four
+ * measurement frames and the grid publisher up to 34, and each flushes its own queue to the bus
+ * in the call below. Cliff first means a grid's 34 sends cannot delay the frames of the path that
+ * stops the machine. */
+#if !defined(ENABLE_TOF_L7_ULD)
+void on_grid_unreachable(int, uint32_t, const acq::source_facts &, const tof_l7::sample &)
 {
-    /* A fresh sample is structurally impossible while the table above is the -ENOSYS stub. This
-     * sink exists so the scheduler configuration already has its final typed shape; the commit
-     * that installs the real table must replace this at the same time, rather than silently reading
-     * and discarding grids. */
+    /* Unreachable rather than empty: without the ULD every grid operation is -ENOSYS, so no
+     * sample can ever be fresh. If this body ever runs, the descriptor table was built by
+     * something other than build_descriptors() above. */
+}
+#endif
+
+void fanout_cycle_begin(uint32_t cycle_seq)
+{
+    pub::on_cycle_begin(cycle_seq);
+#if defined(ENABLE_TOF_L7_ULD)
+    gpub::on_cycle_begin(cycle_seq);
+#endif
+}
+
+void fanout_cycle(const acq::cycle_facts &facts)
+{
+    pub::on_cycle_complete(facts);
+#if defined(ENABLE_TOF_L7_ULD)
+    gpub::on_cycle_complete(facts);
+#endif
 }
 
 int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
@@ -155,6 +232,11 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
      * half-keyed table on the first refusal -- some corners published correctly, the rest not
      * published at all, and nothing on the wire to say which. */
     uint8_t keys[acq::kMaxSources];
+    /* Which grid source ids this fingerprint has already claimed. The contract has exactly two,
+     * and two positions claiming one of them would publish two different sensors' grids under one
+     * physical position -- with nothing on the wire to say so, because each frame is individually
+     * well formed. */
+    uint8_t grid_claimed{0};
 
     if (!ready())
         return -EPERM;
@@ -163,8 +245,48 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
 
     for (size_t i{0}; i < spec_.positions; ++i) {
         keys[i] = kRoleUnassigned;
+
+        if (descs_[i].kind == acq::model::l7_grid) {
+            /* THE GRID SOURCE ID COMES FROM THE FINGERPRINT'S OWN FIELD.
+             *
+             * Not source_id_of(role): that answers a cliff question -- which corner a mounting
+             * role publishes as -- and an L7 has no cliff role at all. Not the descriptor index
+             * either: the index is where the board sits on the chain, and the contract's
+             * source_id is which side of the machine it looks at. They agree today by
+             * construction of the spec, and an index used as a source id would keep agreeing
+             * right up until somebody reorders the chain, at which point left and right swap
+             * with nothing on the wire looking wrong. */
+            const pf::position_fingerprint &pos{fp.at[i]};
+
+            /* Five checks, and each one is a different way to publish a grid under a position
+             * nobody proved. The position, because the fingerprint entry has to be the one for
+             * THIS descriptor rather than a neighbour's. The model, because a health frame from
+             * an L4 at a grid position would be an 8x8 claim about a part that has none. The
+             * address, because that is the device acquisition will actually read. The verified
+             * flag, because an unverified position proves nothing. The range, because the
+             * contract has two grid sources and a third would be unrepresentable. */
+            if (pos.position != static_cast<uint8_t>(i + 1))
+                return -EINVAL;
+            if (pos.expected != enm::model::l7cx)
+                return -EINVAL;
+            if (pos.address != descs_[i].addr_7bit)
+                return -EINVAL;
+            if (!pos.verified)
+                return -EINVAL;
+            if (pos.source_id < 0 || pos.source_id > 1)
+                return -EINVAL;
+
+            const uint8_t src{static_cast<uint8_t>(pos.source_id)};
+
+            if ((grid_claimed & static_cast<uint8_t>(1U << src)) != 0)
+                return -EINVAL;
+            grid_claimed |= static_cast<uint8_t>(1U << src);
+            keys[i] = src;
+            continue;
+        }
+
         if (descs_[i].kind != acq::model::l4_cliff)
-            continue;   // the grid stubs have no cliff source id and stay unassigned
+            continue;   // a stubbed position has no source id and stays unassigned
 
         /* The address, because role_id is the key a measurement is published under: if the mapping
          * proved front_left at 0x2C and the descriptor acquisition reads is 0x2D, keying it would
@@ -213,6 +335,24 @@ int init_publisher()
     return pub::init(cfg);
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+int init_grid_publisher()
+{
+    gpub::config cfg{};
+
+    cfg.sink = can::grid_sink();
+    cfg.sources = descs_;
+    cfg.source_count = static_cast<int>(spec_.positions);
+    cfg.authorise = can::grid_production_authorisation;
+    /* The zone-confidence policy, stated rather than defaulted. false is what the packer's own
+     * suite calls the conservative reading: VL53L7CX target_status 6 and 9 are low-confidence,
+     * and whether a hanging-object decision may rest on them is a safety question nobody has
+     * answered. Until somebody does, those zones travel as the invalid sentinel. */
+    cfg.accept_low_confidence = false;
+    return gpub::init(cfg);
+}
+#endif
+
 int init_acquisition(const config &cfg)
 {
     acq::config c{};
@@ -221,10 +361,17 @@ int init_acquisition(const config &cfg)
     c.source_count = static_cast<int>(spec_.positions);
     c.periods.cycle_period_ms = cfg.cycle_period_ms;
     c.periods.health_period_ms = cfg.health_period_ms;
-    c.hooks.on_cycle_begin = pub::on_cycle_begin;
-    c.hooks.on_cycle = pub::on_cycle_complete;
+    c.hooks.on_cycle_begin = fanout_cycle_begin;
+    c.hooks.on_cycle = fanout_cycle;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
-    c.hooks.on_grid_sample = on_grid_stub;
+#if defined(ENABLE_TOF_L7_ULD)
+    c.hooks.on_grid_sample = gpub::on_grid_sample;
+#else
+    /* No ULD, so the grid table is the -ENOSYS stub and a fresh grid sample is structurally
+     * impossible. The hook is still required by acquisition's own validation, and a sink that
+     * cannot be reached is the honest thing to give it. */
+    c.hooks.on_grid_sample = on_grid_unreachable;
+#endif
     c.hooks.on_cliff_health = pub::on_cliff_health;
     c.mapping_state_provider = au::state_provider;
     c.now_ms = now_ms;
@@ -248,7 +395,8 @@ config config_from_devicetree()
                   DT_PROP(DT_PATH(tof_chain), stop_join_timeout_ms),
                   DT_PROP(DT_PATH(tof_chain), acq_thread_priority),
                   DT_PROP(DT_PATH(tof_chain), cliff_timing_budget_us),
-                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode)};
+                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode),
+                  DT_PROP(DT_PATH(tof_chain), grid_frequency_hz)};
 }
 #endif
 
@@ -269,6 +417,18 @@ int bootstrap(const config &cfg)
         return -EINVAL;
     if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0 || cfg.stop_join_timeout_ms == 0)
         return -EINVAL;
+    /* The grid frequency, checked here for the same reason as the cliff profile: this is the
+     * stage that can name what was wrong. 15 Hz is the ULD's ceiling at 8x8 and zero is the
+     * absence of a choice; the adapter refuses the identical range again during bring-up, where
+     * the refusal would arrive as one sensor failing to start rather than as a configuration
+     * nobody accepted.
+     *
+     * Checked in every build, including one with no L7 ULD, because the value is the
+     * deployment's statement about the machine rather than this image's opinion of it. An
+     * overlay that names a frequency no firmware can honour should be refused by whichever
+     * firmware reads it. */
+    if (cfg.grid_frequency_hz == 0 || cfg.grid_frequency_hz > 15)
+        return -EINVAL;
 
 #if DT_NODE_EXISTS(DT_PATH(tof_chain))
     stack_ = acq_stack_;
@@ -288,7 +448,7 @@ int bootstrap(const config &cfg)
         return -ENODEV;
     }
 
-    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode);
+    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode, cfg.grid_frequency_hz);
 
     if (const int rc{init_authority()}; rc != 0) {
         stage_ = stage::authority_failed;
@@ -307,6 +467,21 @@ int bootstrap(const config &cfg)
         LOG_ERR("publisher init failed (%d)", rc);
         return rc;
     }
+
+#if defined(ENABLE_TOF_L7_ULD)
+    /* BEFORE acquisition, and a hard failure rather than a warning. Acquisition is what calls
+     * the grid sink, and a grid publisher that never initialised answers every call by returning
+     * immediately: the chain would range, the samples would be read, and the 8x8 grids would go
+     * nowhere -- which on the bus is indistinguishable from two sensors that are not there.
+     *
+     * The CAN glue above is tolerated when it fails because a board that cannot reach the bus
+     * still has a health path to run. This one is not: there is nothing left to report with. */
+    if (const int rc{init_grid_publisher()}; rc != 0) {
+        stage_ = stage::grid_publisher_failed;
+        LOG_ERR("grid publisher init failed (%d): refusing to start acquisition", rc);
+        return rc;
+    }
+#endif
 
     if (const int rc{init_acquisition(cfg)}; rc != 0) {
         stage_ = stage::acquisition_failed;
@@ -346,6 +521,8 @@ const char *stage_name(stage st)
         return "authority_failed";
     case stage::publisher_failed:
         return "publisher_failed";
+    case stage::grid_publisher_failed:
+        return "grid_publisher_failed";
     case stage::acquisition_failed:
         return "acquisition_failed";
     case stage::ready:
@@ -382,6 +559,22 @@ int start_acquisition()
      *
      * Nothing about the cycle counter is touched here: the first cycle of a new epoch must carry
      * cycle_seq 0, and begin_epoch() already did that inside the commit. */
+#if defined(ENABLE_TOF_L7_ULD)
+    /* THE L7 OBJECTS GO BACK TO EMPTY BEFORE EVERY BRING-UP, and this is not hygiene.
+     *
+     * The adapter's lifecycle is per SESSION: open() accepts an empty object and stop() leaves a
+     * configured one, so a second start would be refused at the state check -- on the second
+     * commissioning of a boot, both grid sensors would simply fail to come up, with -EPERM and a
+     * stage number as the only trace. The objects are resident because the ULD needs somewhere to
+     * live; the session over them is not, and a bring-up follows a proof that has just toggled
+     * every enable line on the chain, so the device on the other end really is starting again.
+     *
+     * Here rather than in the adapter: the adapter's refusal is what makes a stale reopen visible,
+     * and this layer is the one that knows a new session is beginning. */
+    for (auto &object : l7_objs_)
+        object = tof_l7::sensor{};
+#endif
+
     acq::thread_config tcfg{};
 
     tcfg.stack = stack_;
@@ -545,9 +738,14 @@ const acq::source_desc *descriptors_for_test()
     return descs_;
 }
 
+int install_from_mapping_for_test(const pf::fingerprint &fp, uint8_t epoch)
+{
+    return install_from_mapping(fp, epoch);
+}
 int force_rebuild_descriptors_for_test()
 {
-    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode);
+    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode,
+                      cfg_.grid_frequency_hz);
     keyed_ = false;
     return 0;
 }

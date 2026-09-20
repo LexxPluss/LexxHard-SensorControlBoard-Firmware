@@ -139,7 +139,22 @@ struct grid_source_ops {
 // Every operation returns -ENOSYS. It keeps an unfinished model explicit while
 // using the correct grid shape; the old stub's cliff-shaped read signature was
 // prototype debt.
+//
+// It stays after the real table below exists, and is not merely legacy: init()
+// accepts a descriptor carrying it WITHOUT a device, a scratch or a frequency,
+// which is what lets a build that has no L7 ULD describe the same chain.
 const grid_source_ops &l7_grid_stub_ops();
+
+#if defined(ENABLE_TOF_L7_ULD)
+// The grid ops, bound to the real tof_l7 adapter. `dev` is a tof_l7::sensor and
+// `scratch` a tof_l7::scratch, exactly as `dev`/`scratch` are the L4 object and
+// its scratch for the cliff table -- the void pointers are the scheduler
+// refusing to know either vendor's types, not an invitation to pass anything.
+//
+// Only in a build that has the ULD. A build without it cannot open an L7, so a
+// table that could be pointed at one would be a call into nothing.
+const grid_source_ops &l7_grid_ops();
+#endif
 
 // The cliff ops, bound to the real tof_cliff_sensor functions.
 const source_ops &l4_cliff_ops();

@@ -62,7 +62,7 @@ int8_t source_id_of(enm::l4_role role)
 
 bool is_commissioning_profile(const fingerprint &fp)
 {
-    constexpr size_t kPositions{6};
+    constexpr size_t kPositions{kCommissioningPositions};
     if (fp.positions != kPositions)
         return false;
     for (size_t i{0}; i < kPositions; ++i) {
@@ -171,7 +171,7 @@ namespace {
  * important refusal this module produces, and it would have been the least informative. */
 bool is_commissioning_topology(const enm::chain_spec &spec)
 {
-    constexpr size_t kPositions{6};
+    constexpr size_t kPositions{kCommissioningPositions};
     if (spec.positions != kPositions)
         return false;
     for (size_t i{0}; i < kPositions; ++i) {

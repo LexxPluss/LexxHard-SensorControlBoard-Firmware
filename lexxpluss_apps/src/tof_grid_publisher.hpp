@@ -7,6 +7,15 @@
  * The grid transport: one complete 8x8 read becomes 16 data frames on
  * TOF_GRID_DATA_ID and the health frame that closes it on TOF_GRID_HEALTH_ID.
  *
+ * WHAT THESE TWO SENSORS ARE FOR, because the chain carries two jobs and the
+ * names are worth keeping apart. The VL53L7CX pair looks FORWARD for HANGING
+ * OBJECTS -- half-height obstacles the machine would drive into, a shelf edge
+ * or a pallet overhang -- which is why they read an 8x8 grid: the question is
+ * where in a vertical field something is. The four VL53L4CX at 0x216/0x217 look
+ * DOWN for a drop, and answer one distance per corner. Neither is a variant of
+ * the other, and a comment here that called an L7 a cliff sensor would be
+ * describing a sensor that does not exist on this machine.
+ *
  * WHAT THIS LAYER OWNS, and it is deliberately little: per-source generation
  * numbers, the recovered-flag accumulation the contract's health byte 3 is
  * defined in terms of, the queue that keeps CAN off the chain lock, and the

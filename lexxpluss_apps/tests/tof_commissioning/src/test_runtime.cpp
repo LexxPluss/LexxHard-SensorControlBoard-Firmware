@@ -29,6 +29,10 @@
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
 #include "tof_cliff_runtime.hpp"
+#include "tof_can_ids.hpp"
+#include "tof_cliff_contract.h"
+#include "tof_grid_publisher.hpp"
+#include "tof_l7_sensor.hpp"
 #include "tof_commissioning.hpp"
 #include "tof_mapping_authority.hpp"
 
@@ -39,6 +43,9 @@ namespace enm = lexxhard::tof_enum;
 namespace pf = lexxhard::tof_proof;
 namespace pub = lexxhard::tof_cliff_pub;
 namespace rt = lexxhard::tof_cliff_runtime;
+namespace gpub = lexxhard::tof_grid_pub;
+namespace ids = lexxhard::tof_can_ids;
+namespace l7 = lexxhard::tof_l7;
 
 void ignore_grid(int, uint32_t, const acq::source_facts &, const lexxhard::tof_l7::sample &) {}
 
@@ -49,12 +56,50 @@ int send_rc{0};
 int frames_sent{0};
 uint16_t last_can_id{0};
 
-int fake_send(uint16_t can_id, const uint8_t *, uint8_t)
+/* Every frame either publisher offered, in order. The grid tests need the BYTES -- a generation
+ * and a source id are what say which sensor a grid came from -- and the fan-out test needs to see
+ * both identifier pairs in one cycle. 96 is three cycles' worth of a fully populated chain. */
+struct sent_frame {
+    uint16_t can_id;
+    uint8_t data[8];
+};
+sent_frame bus_frames[96];
+int bus_count{0};
+
+int fake_send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
 {
     ++frames_sent;
     last_can_id = can_id;
+    if (bus_count < static_cast<int>(sizeof bus_frames / sizeof bus_frames[0])) {
+        sent_frame &f{bus_frames[bus_count++]};
+        f.can_id = can_id;
+        memcpy(f.data, data, dlc <= 8 ? dlc : 8);
+    }
     return send_rc;
 }
+
+int frames_with_id(uint16_t id)
+{
+    int n{0};
+    for (int i = 0; i < bus_count; ++i)
+        if (bus_frames[i].can_id == id)
+            ++n;
+    return n;
+}
+
+const sent_frame *first_with_id(uint16_t id)
+{
+    for (int i = 0; i < bus_count; ++i)
+        if (bus_frames[i].can_id == id)
+            return &bus_frames[i];
+    return nullptr;
+}
+
+/* The grid publisher's sink, failed on purpose. The runtime builds the publisher's configuration
+ * itself, so this is the only way to make that init fail from outside it -- and it is the case
+ * that matters: a publisher that never came up answers every call by returning, and the grids
+ * would be read and dropped with nothing on the bus to say so. */
+bool grid_sink_broken{false};
 
 fake::fake_chain chain{};
 
@@ -78,6 +123,31 @@ struct tof_cliff_pub::can_sink sink()
     return {fake_send};
 }
 
+struct tof_grid_pub::can_sink grid_sink()
+{
+    if (grid_sink_broken)
+        return {nullptr};
+    return {fake_send};
+}
+
+/* Reproduced from production for the same reason as the cliff's: one authority read, and the two
+ * chain-level flags false because a grid is only ever published under a proven whole chain. A
+ * permissive stub here would make every gating assertion in the grid tests meaningless. */
+struct tof_grid_pub::authorisation grid_production_authorisation()
+{
+    const au::snapshot now{au::current()};
+    struct tof_grid_pub::authorisation a{};
+
+    a.state = now.state;
+    a.epoch = now.epoch;
+    a.boards_detected = now.state == acq::mapping_state::proven
+                            ? static_cast<uint8_t>(lexxhard::tof_proof::kCommissioningPositions)
+                            : 0;
+    a.chain_length_unexpected = false;
+    a.other_position_enumeration_failed = false;
+    return a;
+}
+
 struct tof_cliff_pub::authorisation production_authorisation()
 {
     const au::snapshot now{au::current()};
@@ -95,6 +165,125 @@ struct tof_cliff_pub::authorisation production_authorisation()
 }
 
 }  // namespace lexxhard::tof_cliff_can
+
+/* ------------------------------------------------------- the VL53L7CX ULD, faked -------
+ *
+ * The real adapter is linked (tof_l7_sensor.cpp): what this suite is about is the path from a
+ * devicetree number to the vendor call, so the adapter has to be the production one and only the
+ * vendor's entry points are replaced. A fake that stood in for the ADAPTER would prove the
+ * scheduler talks to the fake.
+ *
+ * Deliberately not shared with tests/tof_l7_sensor's fake, which reproduces the ULD's observable
+ * defects for a lifecycle suite. This one exists to be driven: a data-ready flag the test owns and
+ * a grid it can recognise on the bus. One fake serving both would have to grow both jobs.
+ */
+namespace {
+
+uint8_t uld_ready_value{0};
+uint8_t uld_init_status{VL53L7CX_STATUS_OK};
+uint8_t uld_frequency_status{VL53L7CX_STATUS_OK};
+int uld_frequency_calls{0};
+uint8_t uld_last_frequency{0};
+/* Per device, so "both sensors were configured" is a statement about two objects rather than
+ * about the last one to be touched. */
+const VL53L7CX_Configuration *uld_frequency_devices[4]{};
+int uld_frequency_device_count{0};
+uint8_t uld_firmware_byte{0xA5};
+VL53L7CX_ResultsData uld_results{};
+
+void good_grid()
+{
+    uld_results = VL53L7CX_ResultsData{};
+    for (size_t zone{0}; zone < l7::kZoneCount; ++zone) {
+        uld_results.nb_target_detected[zone] = 1;
+        /* A ramp, so a frame's bytes identify the grid rather than just its shape. */
+        uld_results.distance_mm[zone] = static_cast<int16_t>(100 + zone);
+        uld_results.target_status[zone] = 5;
+    }
+}
+
+void reset_uld_fake()
+{
+    uld_ready_value = 0;
+    uld_init_status = VL53L7CX_STATUS_OK;
+    uld_frequency_status = VL53L7CX_STATUS_OK;
+    uld_frequency_calls = 0;
+    uld_last_frequency = 0;
+    uld_frequency_device_count = 0;
+    for (auto &d : uld_frequency_devices)
+        d = nullptr;
+    good_grid();
+}
+
+}  // namespace
+
+/* The verified-firmware boundary. tof_l7_runtime.cpp is not linked here -- it reads a flash
+ * partition -- and the adapter has no test-only path that takes a raw pointer, so the only way to
+ * give it a payload is to be the runtime. */
+namespace lexxhard::tof_l7_runtime {
+
+const uint8_t *firmware_data()
+{
+    return &uld_firmware_byte;
+}
+
+size_t firmware_size()
+{
+    return VL53L7CX_FIRMWARE_DOWNLOAD_SIZE;
+}
+
+}  // namespace lexxhard::tof_l7_runtime
+
+extern "C" {
+
+void vl53l7cx_port_clear_error(void) {}
+int vl53l7cx_port_error(void)
+{
+    return 0;
+}
+
+uint8_t vl53l7cx_init(VL53L7CX_Configuration *)
+{
+    return uld_init_status;
+}
+
+uint8_t vl53l7cx_set_resolution(VL53L7CX_Configuration *, uint8_t)
+{
+    return VL53L7CX_STATUS_OK;
+}
+
+uint8_t vl53l7cx_set_ranging_frequency_hz(VL53L7CX_Configuration *p_dev, uint8_t frequency_hz)
+{
+    ++uld_frequency_calls;
+    uld_last_frequency = frequency_hz;
+    if (uld_frequency_device_count < 4)
+        uld_frequency_devices[uld_frequency_device_count++] = p_dev;
+    return uld_frequency_status;
+}
+
+uint8_t vl53l7cx_start_ranging(VL53L7CX_Configuration *)
+{
+    return VL53L7CX_STATUS_OK;
+}
+
+uint8_t vl53l7cx_stop_ranging(VL53L7CX_Configuration *)
+{
+    return VL53L7CX_STATUS_OK;
+}
+
+uint8_t vl53l7cx_check_data_ready(VL53L7CX_Configuration *, uint8_t *is_ready)
+{
+    *is_ready = uld_ready_value;
+    return VL53L7CX_STATUS_OK;
+}
+
+uint8_t vl53l7cx_get_ranging_data(VL53L7CX_Configuration *, VL53L7CX_ResultsData *results)
+{
+    *results = uld_results;
+    return VL53L7CX_STATUS_OK;
+}
+
+}  // extern "C"
 
 /* The chain controller's readiness, stubbed. The runtime refuses to bootstrap while this is false,
  * which is how the ordering between "the control lines are configured" and "sensors may be brought
@@ -114,7 +303,12 @@ namespace {
  * thread priority. Nothing here has a default anywhere in the module. */
 /* The last two are the L4 ranging profile: what VL53LX_DataInit already leaves, stated because
  * the runtime refuses to bootstrap without it. */
-constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 2};
+/* SEVEN Hz, and not the overlay's five. The production overlay says 5, so a suite that also said
+ * 5 would pass against an implementation that ignored the configuration and hard-coded the
+ * overlay's number -- which is exactly the defect this path can have. Every assertion below about
+ * the frequency is an assertion that SEVEN arrived. */
+constexpr uint8_t kGridHz{7};
+constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 2, kGridHz};
 
 /* The acquisition thread's stack. The runtime sizes its own from a devicetree property; there is no
  * devicetree here, and a fallback compiled into the module for tests would be a size nobody chose
@@ -137,6 +331,9 @@ void before(void *)
     send_rc = 0;
     frames_sent = 0;
     last_can_id = 0;
+    bus_count = 0;
+    grid_sink_broken = false;
+    reset_uld_fake();
 }
 
 /* The roles used to be injected here, because dasher_spec() carried l4_role::unknown and PROVEN was
@@ -220,27 +417,27 @@ ZTEST(tof_cliff_runtime, test_timing_has_no_defaults_here_either)
 {
     /* Both periods are unresolved symbols in the wire contract. Refusing zero is what keeps this
      * layer from becoming the place a placeholder quietly turns into the specification. */
-    zassert_equal(rt::bootstrap(rt::config{0, 20, 400, K_PRIO_PREEMPT(5), 33333, 2}), -EINVAL);
+    zassert_equal(rt::bootstrap(rt::config{0, 20, 400, K_PRIO_PREEMPT(5), 33333, 2, kGridHz}), -EINVAL);
     zassert_equal(rt::current_stage(), rt::stage::not_started,
                   "a refused config still wired something up");
-    zassert_equal(rt::bootstrap(rt::config{50, 0, 400, K_PRIO_PREEMPT(5), 33333, 2}), -EINVAL);
+    zassert_equal(rt::bootstrap(rt::config{50, 0, 400, K_PRIO_PREEMPT(5), 33333, 2, kGridHz}), -EINVAL);
     zassert_equal(rt::current_stage(), rt::stage::not_started);
 
     /* The ranging profile has no default either, and is refused HERE rather than as a generic
      * -EINVAL from the acquisition layer: this is the stage that can say which value was wrong.
      * Until this commit configure() was a no-op, so the parts ran on the vendor's default and
      * there was nothing to refuse. */
-    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 0, 2}), -EINVAL,
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 0, 2, kGridHz}), -EINVAL,
                   "a bootstrap with no timing budget was accepted");
     zassert_equal(rt::current_stage(), rt::stage::not_started);
-    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 0}), -EINVAL);
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 0, kGridHz}), -EINVAL);
     zassert_equal(rt::current_stage(), rt::stage::not_started);
-    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 4}), -EINVAL,
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 4, kGridHz}), -EINVAL,
                   "a distance mode the ULD does not define was accepted");
     zassert_equal(rt::current_stage(), rt::stage::not_started);
     /* SHORT. Defined by the enumeration, refused by the ULD for an L4 part, so refused here too
      * rather than left to fail at bring-up on every sensor. */
-    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 1}), -EINVAL,
+    zassert_equal(rt::bootstrap(rt::config{50, 20, 400, K_PRIO_PREEMPT(5), 33333, 1, kGridHz}), -EINVAL,
                   "SHORT was accepted, and the L4 ULD rejects it");
     zassert_equal(rt::current_stage(), rt::stage::not_started);
     zassert_false(rt::ready());
@@ -326,10 +523,10 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_equal(d[3].role_id, 1);
     zassert_equal(d[4].role_id, 2);
     zassert_equal(d[5].role_id, 3);
-    /* The grid positions are stubs with no cliff source id, and they stay unassigned rather than
-     * being given a plausible-looking number. */
-    zassert_equal(d[0].role_id, rt::kRoleUnassigned);
-    zassert_equal(d[1].role_id, rt::kRoleUnassigned);
+    /* The grid positions are keyed too, and from their own field: the fingerprint's source_id,
+     * which the contract owns. They used to stay unassigned because nothing could publish them. */
+    zassert_equal(d[0].role_id, 0);
+    zassert_equal(d[1].role_id, 1);
 
     /* Only now may the acquisition thread start -- and from here on it is the only thing allowed to
      * touch a sensor. */
@@ -488,3 +685,329 @@ ZTEST(tof_cliff_runtime, test_starting_twice_is_refused_rather_than_creating_a_s
     zassert_equal(acq::try_stop(), 0);
 }
 
+
+
+/* ==================================================================== the grid wiring ======
+ *
+ * Everything between a number in the devicetree and an 8x8 grid on the bus. The suite above owns
+ * the bootstrap's shape; this one owns the path the L7s take through it, which did not exist
+ * until the ops table, the mapping install and the fan-out arrived together.
+ */
+
+namespace {
+
+/* A fingerprint the install would accept, so each test can break exactly one thing about it.
+ * Built from the spec the descriptors were built from, which is what a committed proof hands
+ * over. */
+pf::fingerprint good_fingerprint()
+{
+    pf::fingerprint fp{};
+
+    fp.positions = rt::spec().positions;
+    for (size_t i{0}; i < fp.positions; ++i) {
+        const enm::position_spec &ps{rt::spec().at[i]};
+
+        fp.at[i].position = static_cast<uint8_t>(i + 1);
+        fp.at[i].expected = ps.expected;
+        fp.at[i].address = ps.target_addr;
+        fp.at[i].source_id = ps.source_id;
+        fp.at[i].role = ps.role;
+        fp.at[i].verified = true;
+    }
+    return fp;
+}
+
+int grid_frames_for_source(uint8_t source_id)
+{
+    int n{0};
+    for (int i = 0; i < bus_count; ++i)
+        if (bus_frames[i].can_id == ids::TOF_GRID_DATA_ID && (bus_frames[i].data[1] >> 4) == source_id)
+            ++n;
+    return n;
+}
+
+int health_frames_for_source(uint8_t source_id)
+{
+    int n{0};
+    for (int i = 0; i < bus_count; ++i)
+        if (bus_frames[i].can_id == ids::TOF_GRID_HEALTH_ID &&
+            (bus_frames[i].data[1] >> 4) == source_id)
+            ++n;
+    return n;
+}
+
+/* Bring the whole thing up and let it range. The cliff ops are -ENOSYS stubs in this binary, so
+ * the four L4s fail to start and contribute nothing -- which is deliberate here: what reaches the
+ * bus then comes from the grid path alone, and the cliff publisher's presence is still visible in
+ * its own frames. */
+void run_cycles(int cycles)
+{
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    const cm::outcome r{prove_over_the_fake_chain(7)};
+    zassert_true(r.proven(), "the proof failed at stage %d", static_cast<int>(r.failed_at));
+    bus_count = 0;
+    zassert_equal(rt::start_acquisition(), 0);
+    k_msleep(static_cast<int>(kTiming.cycle_period_ms) * cycles);
+    zassert_equal(acq::try_stop(), 0, "the thread did not stop cleanly");
+}
+
+}  // namespace
+
+ZTEST_SUITE(tof_grid_wiring, NULL, NULL, before, NULL, NULL);
+
+/* ------------------------------------------------------- the frequency, end to end -------- */
+
+ZTEST(tof_grid_wiring, test_the_configured_frequency_reaches_both_sensors)
+{
+    /* devicetree -> runtime config -> descriptor -> grid_ops.configure() -> ULD, and the number
+     * is SEVEN so that an implementation quietly using the overlay's five would fail here. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    zassert_equal(d[0].grid_frequency_hz, kGridHz, "descriptor 0 did not take the configuration");
+    zassert_equal(d[1].grid_frequency_hz, kGridHz, "descriptor 1 did not take the configuration");
+
+    zassert_true(prove_over_the_fake_chain(7).proven());
+    zassert_equal(rt::start_acquisition(), 0);
+    k_msleep(static_cast<int>(kTiming.cycle_period_ms));
+    zassert_equal(acq::try_stop(), 0);
+
+    zassert_equal(uld_frequency_calls, 2, "the ULD was configured %d times", uld_frequency_calls);
+    zassert_equal(uld_last_frequency, kGridHz);
+    zassert_equal(uld_frequency_device_count, 2);
+    /* TWO OBJECTS. One configuration shared by both sensors would be one sensor: the object holds
+     * the device address and the stream count. */
+    zassert_not_equal(uld_frequency_devices[0], uld_frequency_devices[1],
+                      "both sensors were configured through one ULD object");
+}
+
+ZTEST(tof_grid_wiring, test_a_frequency_the_uld_cannot_honour_is_refused_at_bootstrap)
+{
+    rt::config zero{kTiming};
+    rt::config too_fast{kTiming};
+
+    zero.grid_frequency_hz = 0;
+    too_fast.grid_frequency_hz = 16;   // one past the ULD's 8x8 ceiling
+
+    zassert_equal(rt::bootstrap(zero), -EINVAL, "a frequency nobody chose was accepted");
+    zassert_equal(rt::current_stage(), rt::stage::not_started);
+    zassert_equal(rt::bootstrap(too_fast), -EINVAL, "16 Hz was accepted at 8x8");
+    zassert_equal(rt::current_stage(), rt::stage::not_started);
+    /* And the boundary is where it says it is, rather than a range nobody stated. */
+    rt::config ceiling{kTiming};
+    ceiling.grid_frequency_hz = 15;
+    zassert_equal(rt::bootstrap(ceiling), 0);
+}
+
+/* --------------------------------------------------------------- the mapping install ------ */
+
+ZTEST(tof_grid_wiring, test_the_grid_source_comes_from_the_fingerprint_not_the_index)
+{
+    /* THE TEST THAT SEPARATES THE TWO. With the spec's source ids swapped, the fingerprint says
+     * position 1 is source 1 and position 2 is source 0 -- the opposite of their indices. An
+     * install that used the index would key them the other way round and publish the left sensor's
+     * grid as the right one's, with every frame individually well formed. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    rt::spec().at[0].source_id = 1;
+    rt::spec().at[1].source_id = 0;
+
+    zassert_true(prove_over_the_fake_chain(7).proven());
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    zassert_equal(d[0].role_id, 1, "position 1 was keyed from its index, not the fingerprint");
+    zassert_equal(d[1].role_id, 0);
+}
+
+ZTEST(tof_grid_wiring, test_the_swapped_mapping_reaches_the_wire)
+{
+    /* The same swap, followed all the way to the bytes: what the fingerprint said is what the
+     * frames carry. Without this the keying could be right and the publishing wrong. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    rt::spec().at[0].source_id = 1;
+    rt::spec().at[1].source_id = 0;
+    zassert_true(prove_over_the_fake_chain(7).proven());
+
+    uld_ready_value = 1;
+    bus_count = 0;
+    zassert_equal(rt::start_acquisition(), 0);
+    k_msleep(static_cast<int>(kTiming.cycle_period_ms) * 2);
+    zassert_equal(acq::try_stop(), 0);
+
+    zassert_true(grid_frames_for_source(0) > 0, "nothing was published as source 0");
+    zassert_true(grid_frames_for_source(1) > 0, "nothing was published as source 1");
+}
+
+ZTEST(tof_grid_wiring, test_each_refusal_the_install_owes_the_contract)
+{
+    /* Straight at the install, because a real proof cannot produce most of these: the enumerator
+     * validates the spec's source ids and the authority refuses a fingerprint that disagrees with
+     * the spec. They are the last gate before a descriptor is keyed, and this is the only place
+     * their shape can be seen. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+
+    zassert_equal(rt::install_from_mapping_for_test(good_fingerprint(), 7), 0,
+                  "the unmodified fingerprint was refused");
+
+    struct {
+        const char *what;
+        void (*break_it)(pf::fingerprint &);
+    } cases[]{
+        {"the entry belongs to another position",
+         [](pf::fingerprint &fp) { fp.at[0].position = 3; }},
+        {"an L4 at a grid position",
+         [](pf::fingerprint &fp) { fp.at[0].expected = enm::model::l4cx; }},
+        {"an address acquisition will not read",
+         [](pf::fingerprint &fp) { fp.at[0].address = 0x3A; }},
+        {"a position nothing verified",
+         [](pf::fingerprint &fp) { fp.at[0].verified = false; }},
+        {"no source id at all",
+         [](pf::fingerprint &fp) { fp.at[0].source_id = -1; }},
+        {"a source id the contract cannot express",
+         [](pf::fingerprint &fp) { fp.at[0].source_id = 2; }},
+        {"two positions claiming one source",
+         [](pf::fingerprint &fp) { fp.at[1].source_id = fp.at[0].source_id; }},
+    };
+
+    for (const auto &c : cases) {
+        pf::fingerprint fp{good_fingerprint()};
+
+        c.break_it(fp);
+        zassert_equal(rt::install_from_mapping_for_test(fp, 7), -EINVAL, "accepted: %s", c.what);
+    }
+}
+
+ZTEST(tof_grid_wiring, test_a_grid_refusal_leaves_not_one_descriptor_keyed)
+{
+    /* The two-pass rule, from the grid end. Position 2 is the one that fails, so a single-pass
+     * install would already have written position 1 -- one sensor publishing under a proven
+     * source id while the other publishes nothing, and no frame able to say so. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    zassert_equal(rt::install_from_mapping_for_test(good_fingerprint(), 7), 0);
+    zassert_equal(rt::force_rebuild_descriptors_for_test(), 0);
+
+    pf::fingerprint fp{good_fingerprint()};
+
+    fp.at[1].verified = false;
+    zassert_equal(rt::install_from_mapping_for_test(fp, 7), -EINVAL);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    for (int i{0}; i < 6; ++i)
+        zassert_equal(d[i].role_id, rt::kRoleUnassigned,
+                      "position %d kept a key from an install that refused", i + 1);
+}
+
+ZTEST(tof_grid_wiring, test_a_stale_grid_address_is_refused_by_a_real_proof)
+{
+    /* The one grid refusal a committed proof CAN reach: the descriptors were built from one spec
+     * and the proof proves another, so the address the mapping proved is not the address
+     * acquisition will read. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    make_the_descriptors_stale_at(0, 0x3A);
+
+    const cm::outcome r{prove_over_the_fake_chain(7)};
+
+    zassert_false(r.proven());
+    zassert_equal(r.commit, au::commit_refusal::mapping_install_failed);
+    zassert_false(rt::mapping_applied());
+}
+
+/* ------------------------------------------------------- the publisher, and the fan-out --- */
+
+ZTEST(tof_grid_wiring, test_acquisition_does_not_start_when_the_grid_publisher_does_not)
+{
+    /* A publisher that never initialised returns from every call. Acquisition would range, read
+     * grids and hand them to nothing -- indistinguishable on the bus from two sensors that are
+     * not there, which is the one failure mode this pair of identifiers cannot report. */
+    grid_sink_broken = true;
+
+    zassert_equal(rt::bootstrap(kTiming), -EINVAL);
+    zassert_equal(rt::current_stage(), rt::stage::grid_publisher_failed);
+    zassert_false(rt::ready());
+    zassert_equal(rt::start_acquisition(), -EPERM);
+    zassert_false(acq::thread_running());
+}
+
+ZTEST(tof_grid_wiring, test_a_ready_grid_reaches_the_bus_through_the_real_scheduler)
+{
+    uld_ready_value = 1;
+    run_cycles(2);
+
+    /* 16 data frames and one health frame per grid per source. */
+    zassert_true(frames_with_id(ids::TOF_GRID_DATA_ID) >= 32,
+                 "only %d data frames", frames_with_id(ids::TOF_GRID_DATA_ID));
+    zassert_true(frames_with_id(ids::TOF_GRID_HEALTH_ID) >= 2);
+    zassert_true(health_frames_for_source(0) > 0);
+    zassert_true(health_frames_for_source(1) > 0);
+
+    const sent_frame *health{first_with_id(ids::TOF_GRID_HEALTH_ID)};
+
+    zassert_not_null(health);
+    zassert_equal(health->data[2], 64, "a grid of 64 trusted zones reported %u", health->data[2]);
+    zassert_equal(health->data[3], 0x00, "flags on a grid whose chain never failed");
+    /* byte 4: boards_detected in the high nibble, the 0-based chain position in the low one. */
+    zassert_equal(health->data[4] >> 4, 6, "the proven chain's length");
+    zassert_equal(health->data[5], 0x00, "no error to report");
+}
+
+ZTEST(tof_grid_wiring, test_the_cliff_publisher_still_gets_the_cycle_it_used_to_own)
+{
+    /* THE FAN-OUT. Wiring the grid publisher into the two sink slots by replacement would have
+     * left this suite green everywhere except here: the cliff publisher would simply stop being
+     * told a cycle happened.
+     *
+     * The assertion is on the cliff publisher's COUNTERS and not on frames at 0x217, and that
+     * distinction is the test. Its heartbeat runs on its own timer and keeps emitting health
+     * frames on that identifier whether or not any cycle reaches it, so counting frames there
+     * would pass against a fan-out that had dropped the cliff publisher entirely -- which is
+     * exactly what a mutation of this wiring does. cycle_health_sent moves only for a cycle that
+     * was both announced and completed, and suppressed_cycle_not_begun is what a completion
+     * without an announcement leaves behind. */
+    uld_ready_value = 1;
+    run_cycles(2);
+
+    struct pub::counters cliff{};
+    struct gpub::counters grid{};
+
+    pub::copy_counters(cliff);
+    gpub::copy_counters(grid);
+
+    zassert_true(grid.grids_sent > 0, "the grid publisher saw no cycle");
+    zassert_true(cliff.cycle_health_sent > 0,
+                 "the cliff publisher was not told a cycle happened (%u announced, %u suppressed)",
+                 cliff.cycle_health_sent, cliff.suppressed_cycle_not_begun);
+    zassert_equal(cliff.suppressed_cycle_not_begun, 0,
+                  "a cycle completed at the cliff publisher that nobody had announced to it");
+    zassert_equal(grid.suppressed_cycle_not_begun, 0,
+                  "a cycle completed at the grid publisher that nobody had announced to it");
+}
+
+ZTEST(tof_grid_wiring, test_a_sensor_with_nothing_ready_is_not_a_sensor_that_failed)
+{
+    /* At 7 Hz against a 50 ms cycle, most cycles find nothing ready. That is the ordinary case:
+     * the adapter returns success with a non-fresh sample and the scheduler records no outcome.
+     *
+     * The assertion is made on the WIRE rather than on a counter, because the observable that
+     * matters is the health frame: had those quiet cycles been recorded as I/O failures, the
+     * publisher would owe a recovered-transfer flag and the next grid would carry it. */
+    uld_ready_value = 0;
+    run_cycles(3);
+
+    zassert_equal(frames_with_id(ids::TOF_GRID_DATA_ID), 0, "a quiet sensor published a grid");
+    zassert_equal(frames_with_id(ids::TOF_GRID_HEALTH_ID), 0);
+
+    uld_ready_value = 1;
+    bus_count = 0;
+    zassert_equal(rt::start_acquisition(), 0);
+    k_msleep(static_cast<int>(kTiming.cycle_period_ms) * 2);
+    zassert_equal(acq::try_stop(), 0);
+
+    const sent_frame *health{first_with_id(ids::TOF_GRID_HEALTH_ID)};
+
+    zassert_not_null(health, "nothing was published once a grid was ready");
+    zassert_equal(health->data[3] & 0x03, 0x00,
+                  "quiet cycles were reported as a recovered failure (flags %02x)",
+                  health->data[3]);
+}

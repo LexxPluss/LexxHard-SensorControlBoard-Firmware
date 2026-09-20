@@ -50,14 +50,22 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_runtime.cpp
+    ${APP_SRC_DIR}/tof_grid_packer.cpp
+    ${APP_SRC_DIR}/tof_grid_publisher.cpp
+    ${APP_SRC_DIR}/tof_l7_sensor.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp
     ${APP_SRC_DIR}/tof_tail_isolation.cpp
     ${APP_SRC_DIR}/tof_enumerator.cpp
 )
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
+# ENABLE_TOF_L7_ULD, because the bootstrap under test is the one that wires the grid path. The
+# ADAPTER is the production one: only the vendor's entry points are replaced, in test_runtime.cpp,
+# so what this suite proves about the frequency is a statement about the real path to the ULD
+# rather than about a fake standing in for the layer that would carry it.
+target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD ENABLE_TOF_L7_ULD)
 set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
+set(L7_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld)
 set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
@@ -66,4 +74,6 @@ target_include_directories(app PRIVATE
     ${ULD_DIR}/upstream
     ${ULD_DIR}/upstream/modules
     ${ULD_DIR}/upstream/porting
+    ${L7_DIR}/zephyr
+    ${L7_DIR}/upstream/modules
 )

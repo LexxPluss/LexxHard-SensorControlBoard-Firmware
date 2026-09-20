@@ -44,6 +44,9 @@
 #include <cstdint>
 
 #include "tof_cliff_publisher.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_grid_publisher.hpp"
+#endif
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
 
@@ -69,6 +72,36 @@ struct tof_cliff_pub::can_sink sink();
  * reason this function still exists rather than each caller reading what it needs.
  */
 struct tof_cliff_pub::authorisation production_authorisation();
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE FILE IS NAMED FOR THE CLIFF AND THESE TWO ARE NOT THE CLIFF'S. What lives here is the ToF
+ * chain's CAN glue -- one controller, one send(), one authority read -- and it was named when the
+ * chain carried only the four downward drop sensors. The pair below serves the two FORWARD-looking
+ * VL53L7CX that detect hanging objects: a different question, a different frame layout and a
+ * different identifier pair. Renaming the module is worth doing and is not this commit's to do.
+ *
+ * The same two entry points, for the grid transport. Same bus, same send(), and the same single-snapshot
+ * rule -- which is the reason these live here beside the cliff pair rather than in the runtime
+ * that wires them: one function, one read of the authority, no caller able to pair fields that
+ * were never true together. */
+struct tof_grid_pub::can_sink grid_sink();
+
+/* The chain-level fields a grid health frame reports are derived here, and two of them are
+ * derived as ZERO on purpose.
+ *
+ * A grid is published only under a PROVEN mapping, and a mapping is proven only when every
+ * position of the chain enumerated, answered at its own address and matched its expected model.
+ * So on any frame this firmware can actually emit, "the chain is not the configured length" and
+ * "another position failed enumeration" are both false by construction -- there is no reachable
+ * state where a grid goes out beside either of them.
+ *
+ * They are wired to false rather than to a plausible-looking source, and boards_detected reports
+ * the proven chain's length rather than a count nobody took. If a later firmware ever publishes
+ * grids without a whole-chain proof behind them, this function is where those bits start being
+ * computed, and the reason they were zero stops holding at the same moment.
+ */
+struct tof_grid_pub::authorisation grid_production_authorisation();
+#endif
 
 }  // namespace lexxhard::tof_cliff_can
 

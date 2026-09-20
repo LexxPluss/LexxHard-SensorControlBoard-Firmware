@@ -17,6 +17,9 @@
 #include <zephyr/sys/atomic.h>
 
 #include "tof_chain_controller.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_sensor.hpp"
+#endif
 
 LOG_MODULE_REGISTER(tof_acq, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -291,6 +294,51 @@ const grid_source_ops kL7GridStubOps{
     l7_open, l7_configure, l7_start, l7_read_grid_sample, l7_stop,
 };
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* ------------------------------------------------------------- the real L7 grid ops ---
+ *
+ * The same shape as the cliff adapters above and for the same reason: this layer knows the
+ * lifecycle and nothing about either vendor's object, so the cast is the one place the
+ * scheduler's void pointer becomes a tof_l7::sensor. A descriptor pointing the grid table
+ * at an L4 object is prevented by the TYPE of the table, not by a check here. */
+
+int l7_real_open(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st)
+{
+    return tof_l7::open(static_cast<tof_l7::sensor *>(dev), addr_7bit, st);
+}
+int l7_real_configure(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st)
+{
+    /* The frequency arrives from the descriptor, which took it from the deployment's
+     * devicetree. Nothing in this file has a default for it, and the adapter refuses
+     * anything outside 1..15 on its own account. */
+    return tof_l7::configure(static_cast<tof_l7::sensor *>(dev), frequency_hz, st);
+}
+int l7_real_start(void *dev, tof_l7::operation_status *st)
+{
+    return tof_l7::start(static_cast<tof_l7::sensor *>(dev), st);
+}
+int l7_real_read_grid_sample(void *dev, void *scratch, tof_l7::sample *out,
+                             tof_l7::operation_status *st)
+{
+    /* ONE non-blocking readiness check per cycle, never a poll. The L7 ranges at its own
+     * frequency and the scheduler runs at its own period, so MOST CYCLES FIND NOTHING
+     * READY -- at 5 Hz against a 50 ms cycle, nine out of ten. That is the ordinary case
+     * and the adapter reports it as rc 0 with a non-fresh sample, which records no outcome
+     * at all: counting it as an I/O failure would make a working sensor look broken nine
+     * times out of ten. */
+    return tof_l7::read_once(static_cast<tof_l7::sensor *>(dev),
+                             static_cast<tof_l7::scratch *>(scratch), out, st);
+}
+int l7_real_stop(void *dev, tof_l7::operation_status *st)
+{
+    return tof_l7::stop(static_cast<tof_l7::sensor *>(dev), st);
+}
+
+const grid_source_ops kL7GridOps{
+    l7_real_open, l7_real_configure, l7_real_start, l7_real_read_grid_sample, l7_real_stop,
+};
+#endif
+
 /* ------------------------------------------------------------------ internals ------ */
 
 uint32_t now()
@@ -433,6 +481,13 @@ const grid_source_ops &l7_grid_stub_ops()
 {
     return kL7GridStubOps;
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+const grid_source_ops &l7_grid_ops()
+{
+    return kL7GridOps;
+}
+#endif
 
 const source_ops &l4_cliff_ops()
 {

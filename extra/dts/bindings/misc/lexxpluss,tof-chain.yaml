@@ -103,6 +103,30 @@ properties:
       The ULD's own numbering rather than a private enumeration, because a
       mapping onto three integers is only a chance to get it wrong.
 
+  grid-frequency-hz:
+    type: int
+    required: true
+    description: |
+      VL53L7CX ranging frequency, in Hz, for the two forward-looking sensors
+      that detect HANGING OBJECTS -- half-height obstacles the machine would
+      drive into. It does not touch the four downward VL53L4CX that detect a
+      drop; those have cliff-timing-budget-us and cliff-distance-mode. Required
+      and PROVISIONAL: the sustainable grid rate has never been measured, so a
+      value chosen in firmware would become the specification by being the only
+      one anybody could find. It belongs here, with the cycle period and the
+      cliff timing budget, because it is deployment policy -- what the machine
+      IS (topology, models, addresses, which position is which source) lives in
+      the chain spec and does not change when somebody retunes a rate.
+
+      Accepted range 1-15. 15 is the ULD's ceiling at 8x8; zero is the absence
+      of a choice, and both are refused by the bootstrap rather than clamped.
+
+      This does NOT change the acquisition cycle period. The scheduler keeps
+      running at cycle-period-ms and asks each L7 once per cycle whether a grid
+      is ready; at a frequency below that rate most cycles find nothing, which
+      is the ordinary case and is recorded as no outcome at all rather than as
+      a failed read.
+
   acq-thread-priority:
     type: int
     required: true

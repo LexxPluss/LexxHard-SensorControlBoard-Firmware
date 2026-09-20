@@ -44,6 +44,13 @@
 		 * before it is used for anything but an experiment. */
 		cliff-timing-budget-us = <33333>;
 		cliff-distance-mode = <2>;
+		/* PROVISIONAL, and the lowest number that is plainly a choice: nobody
+		 * has measured what the two L7s can sustain while four L4s share the
+		 * bus, so this is a starting point for a bench run and not a rate the
+		 * detection path may assume. It is here, in the overlay, so that the
+		 * first real measurement replaces a number with an owner rather than a
+		 * constant somebody has to find. */
+		grid-frequency-hz = <5>;
 		stop-join-timeout-ms = <500>;
 		acq-stack-size = <2048>;
 		acq-thread-priority = <7>;

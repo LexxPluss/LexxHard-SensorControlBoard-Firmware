@@ -44,6 +44,7 @@ project(tof_cliff_sensor_test)
 
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
+set(L7_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld)
 
 #   test_publisher.cpp    acquisition -> packer -> a fake CAN sink. The sink is a
 #                         function pointer, so the whole publish path is exercised with
@@ -67,6 +68,8 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${APP_SRC_DIR}/tof_grid_packer.cpp
     ${APP_SRC_DIR}/tof_grid_publisher.cpp
+    ${APP_SRC_DIR}/tof_l7_sensor.cpp
+    src/l7_vendor_stubs.cpp
     ${ULD_DIR}/zephyr/vl53lx_platform.c
     ${ULD_DIR}/zephyr/vl53l4cx_bus_io.c
 )
@@ -89,5 +92,7 @@ target_include_directories(app PRIVATE
     ${ULD_DIR}/upstream
     ${ULD_DIR}/upstream/modules
     ${ULD_DIR}/upstream/porting
+    ${L7_DIR}/zephyr
+    ${L7_DIR}/upstream/modules
 )
 target_compile_options(app PRIVATE -Wno-unused-parameter)

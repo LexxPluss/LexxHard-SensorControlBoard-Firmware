@@ -280,6 +280,26 @@ firmware_tof_chain:
 #
 # PROVEN is still clamped and the four cliff roles are still unknown, so this image produces the
 # 0x217 health heartbeat and refuses `tof cliff prove`. It does NOT produce measurement frames.
+# The whole ToF chain: four cliff sensors AND the two hanging VL53L7CX grids. This is the first
+# build in which the grid path is reachable end to end -- real ops table, mapping install, grid
+# publisher -- so it is the configuration any capacity or stack number has to be taken from. The
+# chain and cliff images below measure the parts, not the machine.
+#
+# IT NEEDS A PROVISIONED BLOB. The ULD downloads 86,016 bytes of device firmware into each sensor
+# at open(), and this firmware refuses to take that payload from anywhere but a verified record in
+# storage_partition. On a board that has never been provisioned both L7s fail to come up at the
+# firmware stage, the four cliff sensors are unaffected, and 0x214/0x215 stay silent -- which is
+# what the contract says a sensor that cannot verify must do.
+.PHONY: firmware_tof_l7
+firmware_tof_l7:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-l7/zephyr/zephyr.signed.bin out/zephyr_tof_l7.signed.bin
+	mv build-tof-l7/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_l7.signed.confirmed.bin
+	cp out/zephyr_tof_l7.signed.confirmed.bin out/zephyr_tof_l7.test.bin
+	printf '\377' | dd of=out/zephyr_tof_l7.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_l7.test.bin) - 24)) conv=notrunc status=none
+
 .PHONY: firmware_tof_cliff
 firmware_tof_cliff:
 	./scripts/manage_zephyr_patches.sh verify

@@ -142,6 +142,12 @@ bool same(const fingerprint &a, const fingerprint &b);
 // the two drift.
 bool is_commissioning_profile(const fingerprint &fp);
 
+// How many positions that profile has: two grid sensors then four cliff sensors. Exported
+// because a third caller now needs it -- the grid health frame reports the proven chain's
+// length -- and the number was already written twice in the implementation below. A count
+// that disagrees with the profile it names is a health frame describing a chain nobody built.
+inline constexpr size_t kCommissioningPositions{6};
+
 // The wire contract's role -> source_id table: front_left 0, rear_left 1, rear_right 2,
 // front_right 3. Returns -1 for unknown, which is not a source id but the absence of one.
 //

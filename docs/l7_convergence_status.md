@@ -33,10 +33,73 @@ that branch and does not belong here.
 The publisher compiles against this baseline's acquisition types **unchanged** -- which is the
 evidence that not migrating `27ce1d41` was right, rather than merely cheaper.
 
-Host suites in `tests/tof_cliff_sensor` on this branch: `tof_acquisition` 81, `tof_cliff_adapter` 30,
+Host suites in `tests/tof_cliff_sensor`: `tof_acquisition` 81, `tof_cliff_adapter` 30,
 `tof_cliff_port` 12, `tof_cliff_publisher` 40, `tof_cliff_stream_loop` 9, `tof_grid_publisher` 30.
-All pass. The full regression across every suite, and the capacity measurement, belong to the wired
-configuration below -- not to this commit, where nothing calls the publisher and the linker drops it.
+In `tests/tof_commissioning`: `tof_cliff_runtime` 15, `tof_commissioning` 26, `tof_grid_wiring` 11.
+Elsewhere: `tof_mapping_proof` 38, `tof_mapping_authority` 43, `tof_l7_sensor` 16. All pass.
+
+## The two jobs on one chain, and their names
+
+The chain carries six boards doing two different things, and the modules are named after the one
+that came first. Worth stating once, here:
+
+  - the two **VL53L7CX** at positions 1-2 look FORWARD and read an 8x8 grid. They detect **hanging
+    objects** -- half-height obstacles the machine would drive into. Their frames are 0x214/0x215
+  - the four **VL53L4CX** at positions 3-6 look DOWN and read one distance each. They detect a
+    **drop** -- the cliff path. Their frames are 0x216/0x217
+
+Neither is a variant of the other. `tof_cliff_runtime` and `tof_cliff_can` are named for the second
+because it existed first, and both now serve the chain rather than the cliff; the new code says so
+where it sits in them. Renaming those modules is worth doing and is not this work's to do.
+
+## What this branch wired, and what it cost
+
+The grid path is complete in firmware: the real ops table binds the scheduler to the adapter, the
+mapping install keys the two hanging sensors from `fp.at[i].source_id`, the hooks fan out to both
+publishers, and the grid publisher's init is a precondition for acquisition rather than a warning.
+The ranging frequency comes from the devicetree, through the bootstrap, into the descriptors and out
+to the ULD; there is no default on that path and 0 or >15 is refused at the bootstrap.
+
+**The tests caught one defect that no review had:** the adapter's lifecycle is per session -- open()
+takes an empty object, stop() leaves a configured one -- so a SECOND bring-up refused both hanging
+sensors with -EPERM. On a machine that is commissioned twice in one boot, both would simply have
+failed to come up. The objects are now returned to empty before every bring-up, by the layer that
+knows a new session is starting.
+
+### Capacity: the wired configuration does not fit
+
+Measured with the repository's Docker builder, `VERSION=99.99.99`, same parameters throughout.
+
+| build | FLASH used | against the 261,712 B ceiling |
+| --- | --- | --- |
+| cliff only, at the branch point `741db238` | 248,704 | 12,912 spare |
+| cliff only, at this commit | 248,808 | 12,808 spare |
+| **cliff + hanging sensors, fully wired** | **262,348** | **636 OVER** |
+
+The last row did not link: `region FLASH overflowed by 204 bytes` against the 256 KiB slot, and the
+usable ceiling is 432 bytes below that. **There is no image to flash from this configuration
+today.**
+
+The always-on part of this commit -- the mapping install's new checks, the fan-out, the config field
+-- costs **104 bytes** and leaves RAM unchanged at 220,736. Everything else is the grid path, and
+where it goes is not a mystery: the vendored ULD's `vl53l7cx_api.c` is 7,813 bytes of text, the
+publisher 1,852, the adapter 898, the blob runtime 812, the packer 304, the port 680. Static RAM
+grows by about 5,700 bytes, nearly all of it the two `VL53L7CX_Configuration` objects and their
+shared scratch, against 384 KiB of it -- RAM is not the problem.
+
+The known candidate is the SD-card FAT stack, measured at **26,276 bytes** and called by no
+application code. That is a product decision with a service consequence, not a decision this branch
+may take: it removes shell access to the SD card, and whether manufacturing or field staff rely on
+it cannot be settled by a repository search. **Until somebody decides, the grid path is complete in
+source and unflashable in practice.**
+
+### Stack
+
+`run_cycle()`'s frame is **300 bytes**, measured by disassembling the object in both builds, and
+this commit does not change it: the 258-byte grid sample is a local in the scheduler's grid arm,
+which the cliff-only build already compiles. What the frame does NOT show is the ULD's own depth
+below `read_once()`, so the acquisition thread's 2,048-byte stack is still unproven -- a
+`CONFIG_THREAD_ANALYZER` watermark on a board remains the final word, as it was before.
 
 ## What the next commit must do, and the rules it is held to
 

@@ -20,6 +20,7 @@
 #include "tof_acquisition.hpp"
 #include "tof_cliff_contract.h"
 #include "tof_mapping_authority.hpp"
+#include "tof_mapping_proof.hpp"
 
 namespace lexxhard::tof_cliff_can {
 
@@ -99,6 +100,40 @@ struct tof_cliff_pub::can_sink sink()
     s.send = send;
     return s;
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+struct tof_grid_pub::can_sink grid_sink()
+{
+    struct tof_grid_pub::can_sink s{};
+    /* The same send(). The grid frames are 0x214/0x215 and the cliff frames 0x216/0x217, all
+     * DLC 8 on the same controller; a second sink would be a second copy of the same three
+     * lines and one more place for the timeout to diverge. */
+    s.send = send;
+    return s;
+}
+
+struct tof_grid_pub::authorisation grid_production_authorisation()
+{
+    /* ONE read, for the same reason as the cliff's. */
+    const tof_authority::snapshot now{tof_authority::current()};
+
+    struct tof_grid_pub::authorisation a{};
+    a.state = now.state;
+    a.epoch = now.epoch;
+    /* The proven chain's length, and reported only when it is proven. A PROVEN mapping means
+     * every position of the commissioning profile enumerated and verified, so the number is a
+     * fact about that proof rather than a count taken here; outside PROVEN nothing is published
+     * and zero is the honest answer. */
+    a.boards_detected = now.state == tof_acq::mapping_state::proven
+                            ? static_cast<uint8_t>(tof_proof::kCommissioningPositions)
+                            : 0;
+    /* Both false by construction -- see the header. Not "not implemented": there is no state in
+     * which this firmware publishes a grid while either is true. */
+    a.chain_length_unexpected = false;
+    a.other_position_enumeration_failed = false;
+    return a;
+}
+#endif
 
 struct tof_cliff_pub::authorisation production_authorisation()
 {
