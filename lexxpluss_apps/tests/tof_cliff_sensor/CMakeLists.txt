@@ -60,10 +60,13 @@ target_sources(app PRIVATE
     src/test_acquisition.cpp
     src/test_publisher.cpp
     src/test_stream_loop.cpp
+    src/test_grid_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_sensor.c
     ${APP_SRC_DIR}/tof_acquisition.cpp
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
+    ${APP_SRC_DIR}/tof_grid_packer.cpp
+    ${APP_SRC_DIR}/tof_grid_publisher.cpp
     ${ULD_DIR}/zephyr/vl53lx_platform.c
     ${ULD_DIR}/zephyr/vl53l4cx_bus_io.c
 )
@@ -72,7 +75,12 @@ target_sources(app PRIVATE
 # test defines it too. The chain controller itself is NOT linked here - the test fakes
 # chain_lock() with a real k_mutex, which keeps the lock assertions honest without
 # dragging in the bus and the shell.
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
+#
+# ENABLE_TOF_L7_ULD is here for the grid publisher, which is guarded on all three. It pulls in
+# NO vendor code: the publisher consumes tof_l7::sample, which is vendor-free on purpose, so
+# this suite still compiles without a line of ST's VL53L7CX driver. The adapter that does use
+# it has its own suite.
+target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD ENABLE_TOF_L7_ULD)
 set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
