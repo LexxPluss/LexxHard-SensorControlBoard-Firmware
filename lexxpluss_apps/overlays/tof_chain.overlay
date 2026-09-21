@@ -22,13 +22,23 @@
 		clock-gpios = <&gpioj 1 GPIO_ACTIVE_HIGH>;
 		data-settle-ms = <2000>;
 		sensor-boot-ms = <2000>;
-		/* PROVISIONAL, and unresolved in the cliff wire contract. Stated
-		 * here rather than defaulted in firmware so that the number is
-		 * visible in a diff and has an owner. 20 Hz acquisition with a
-		 * 5 Hz heartbeat is the shape the contract's timing section
-		 * assumes; both must be replaced by approved values before
-		 * release. */
-		cycle-period-ms = <50>;
+		/* EXPERIMENT E2, 2026-09-21, and it is a DIAGNOSTIC one: the cycle
+		 * period is the only variable moved from E1. 50 -> 20 ms is the
+		 * engineering goal of >=50 Hz stated as a period.
+		 *
+		 * IT IS EXPECTED TO BE TIGHT, and possibly not to fit. E1 measured
+		 * total_us max at 20,378 us against this 20,000 us period, so an
+		 * overrun here is a measurement, not a malfunction. A cycle that
+		 * cannot finish in its period, or a source that reports repeat
+		 * measurements, is this image's RESULT rather than its failure.
+		 *
+		 * Still PROVISIONAL and still unresolved in the cliff wire
+		 * contract: the heartbeat stays at 5 Hz and both numbers must be
+		 * replaced by approved values before release.
+		 *
+		 * Measured against allmemory/hanging_object/l4_rate_2026-09-21/
+		 * e1_budget20k.md. */
+		cycle-period-ms = <20>;
 		health-period-ms = <200>;
 		/* Also provisional. The join timeout has to cover a cycle (50 ms)
 		 * plus one blocking sensor read, and 500 ms is a generous bound
