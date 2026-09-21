@@ -53,6 +53,7 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_grid_packer.cpp
     ${APP_SRC_DIR}/tof_grid_publisher.cpp
     ${APP_SRC_DIR}/tof_l7_sensor.cpp
+    ${APP_SRC_DIR}/tof_commission_wiring.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp

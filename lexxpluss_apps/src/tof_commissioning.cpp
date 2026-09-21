@@ -68,6 +68,14 @@ int init(const config &cfg)
     return 0;
 }
 
+#ifdef CONFIG_ZTEST
+void reset_for_test()
+{
+    cfg_ = config{};
+    ready_ = false;
+}
+#endif
+
 /* Puts the bus back to the speed a walk needs, after a failure past the point where it was raised.
  *
  * Best effort, and recorded rather than escalated: there is nothing useful to do about a bus that

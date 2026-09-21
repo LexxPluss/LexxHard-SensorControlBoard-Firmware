@@ -22,13 +22,23 @@
 		clock-gpios = <&gpioj 1 GPIO_ACTIVE_HIGH>;
 		data-settle-ms = <2000>;
 		sensor-boot-ms = <2000>;
-		/* PROVISIONAL, and unresolved in the cliff wire contract. Stated
-		 * here rather than defaulted in firmware so that the number is
-		 * visible in a diff and has an owner. 20 Hz acquisition with a
-		 * 5 Hz heartbeat is the shape the contract's timing section
-		 * assumes; both must be replaced by approved values before
-		 * release. */
-		cycle-period-ms = <50>;
+		/* EXPERIMENT E2, 2026-09-21, and it is a DIAGNOSTIC one: the cycle
+		 * period is the only variable moved from E1. 50 -> 20 ms is the
+		 * engineering goal of >=50 Hz stated as a period.
+		 *
+		 * IT IS EXPECTED TO BE TIGHT, and possibly not to fit. E1 measured
+		 * total_us max at 20,378 us against this 20,000 us period, so an
+		 * overrun here is a measurement, not a malfunction. A cycle that
+		 * cannot finish in its period, or a source that reports repeat
+		 * measurements, is this image's RESULT rather than its failure.
+		 *
+		 * Still PROVISIONAL and still unresolved in the cliff wire
+		 * contract: the heartbeat stays at 5 Hz and both numbers must be
+		 * replaced by approved values before release.
+		 *
+		 * Measured against allmemory/hanging_object/l4_rate_2026-09-21/
+		 * e1_budget20k.md. */
+		cycle-period-ms = <20>;
 		health-period-ms = <200>;
 		/* Also provisional. The join timeout has to cover a cycle (50 ms)
 		 * plus one blocking sensor read, and 500 ms is a generous bound
@@ -36,13 +46,35 @@
 		 * the stack is a guess until a watermark exists, and the priority
 		 * is preemptible and below the shell so a stuck cycle cannot
 		 * starve the console. */
-		/* What VL53LX_DataInit already leaves: MEDIUM at 33,333 us. Stated
-		 * rather than inherited, because until the injection point existed
-		 * nobody had chosen either value -- and 33,333 us is two thirds of
-		 * the 50 ms cycle period, so it is the first candidate for the
-		 * ranging rate. A shorter budget must be measured on the robot
-		 * before it is used for anything but an experiment. */
-		cliff-timing-budget-us = <33333>;
+		/* EXPERIMENT E3, 2026-09-21: the budget is the only variable moved
+		 * from E2, which runs a 20 ms cycle against a 20,000 us budget.
+		 *
+		 * WHAT E1 AND E2 ESTABLISHED. 33,333 us is what VL53LX_DataInit
+		 * leaves for MEDIUM; E1 cut it to 20,000 at a 50 ms cycle and cost
+		 * nothing -- no read errors, no repeats, no rearm failures. E2 then
+		 * cut the cycle to 20 ms and got 50.20 cycles/s with repeat
+		 * measurements still at zero, so the rate is real rather than the
+		 * same sample published twice.
+		 *
+		 * WHAT E2 LEFT OPEN, and what this image is for: per-source new
+		 * measurements came to 49.2-49.7 Hz against 50.20 cycles/s, i.e.
+		 * about 1 % of cycles found no fresh sample at that sensor and were
+		 * skipped. A budget equal to the cycle period leaves a sensor no
+		 * slack at all -- any jitter and the measurement is not finished
+		 * when the cycle reads it. 15,000 us gives 5 ms of slack inside a
+		 * 20 ms cycle, and the question is whether the fresh gap closes.
+		 *
+		 * The 17 % cycle overrun E2 measured is NOT what this image
+		 * addresses: total_us max was 20,258 against a 20,000 us period, so
+		 * the work itself is marginally too long and only shortening the
+		 * work (1 MHz I2C, or less serial work) moves it. One variable at a
+		 * time, and this one is the budget.
+		 *
+		 * MEDIUM is kept. SHORT is not an option for L4 here.
+		 *
+		 * Measured against allmemory/hanging_object/l4_rate_2026-09-21/
+		 * e2_cycle20.md, whose baseline chain starts at baseline_20hz.md */
+		cliff-timing-budget-us = <15000>;
 		cliff-distance-mode = <2>;
 		/* PROVISIONAL, and the lowest number that is plainly a choice: nobody
 		 * has measured what the two L7s can sustain while four L4s share the

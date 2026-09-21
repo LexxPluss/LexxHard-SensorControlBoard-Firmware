@@ -206,6 +206,14 @@ int init(const config &cfg);
 // truncated into a different epoch.
 outcome prove(uint32_t host_epoch);
 
+#ifdef CONFIG_ZTEST
+/* Puts the module back to never-configured, so a suite can assert what an unconfigured one does.
+ * That state is not a curiosity: it is what the automatic downlink met on dasher2 on 2026-09-21,
+ * and a test that can only run against an already-configured module cannot tell a boot that wires
+ * the transaction from one that does not. */
+void reset_for_test();
+#endif
+
 }  // namespace lexxhard::tof_commissioning
 
 #endif  // ENABLE_TOF_CHAIN && ENABLE_TOF_CLIFF_ULD
