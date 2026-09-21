@@ -50,6 +50,7 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_runtime.cpp
+    ${APP_SRC_DIR}/tof_commission_wiring.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp

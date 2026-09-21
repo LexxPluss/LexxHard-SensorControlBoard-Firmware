@@ -29,6 +29,7 @@
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
 #include "tof_cliff_runtime.hpp"
+#include "tof_commission_wiring.hpp"
 #include "tof_commissioning.hpp"
 #include "tof_mapping_authority.hpp"
 
@@ -38,6 +39,7 @@ namespace cm = lexxhard::tof_commissioning;
 namespace enm = lexxhard::tof_enum;
 namespace pf = lexxhard::tof_proof;
 namespace pub = lexxhard::tof_cliff_pub;
+namespace wiring = lexxhard::tof_commission_wiring;
 namespace rt = lexxhard::tof_cliff_runtime;
 
 void ignore_grid(int, uint32_t, const acq::source_facts &, const lexxhard::tof_l7::sample &) {}
@@ -130,6 +132,10 @@ void before(void *)
 {
     glue_is_ready = true;
     rt::reset_for_test();
+    /* Back to never-configured before every case, so "a production boot configures the transaction"
+     * is a claim this suite can actually fail. Nothing here proves without going through the wiring
+     * below, so resetting it costs the other cases nothing. */
+    cm::reset_for_test();
     rt::set_thread_stack_for_test(runtime_acq_stack, K_THREAD_STACK_SIZEOF(runtime_acq_stack));
     au::reset_epoch_history_for_test();
     chain = fake::fake_chain{};
@@ -152,22 +158,99 @@ int speed_ok(cm::bus_speed)
     return 0;
 }
 
+/* The pieces production takes from its image: the chain lock, the bus, the two hooks. Everything
+ * about the ORDER they are used in belongs to the wiring module, which is the point -- a suite that
+ * assembles its own order cannot notice production having a different one. */
+wiring::inputs boot_inputs()
+{
+    wiring::inputs in{};
+    in.chain = &lexxhard::tof_chain_controller::chain_lock();
+    in.ops = &chain;
+    in.set_bus_speed = speed_ok;
+    in.quiesce = quiesce_via_acquisition;
+    return in;
+}
+
 cm::outcome prove_over_the_fake_chain(uint32_t epoch)
 {
-    cm::config ccfg{};
-
-    ccfg.chain = &lexxhard::tof_chain_controller::chain_lock();
-    ccfg.ops = &chain;
-    ccfg.spec = &rt::spec();
-    ccfg.quiesce = quiesce_via_acquisition;
-    ccfg.set_bus_speed = speed_ok;
-    zassert_equal(cm::init(ccfg), 0);
+    /* CONFIGURED THROUGH THE PRODUCTION WIRING, not with a second copy of it assembled here. The
+     * copy is exactly what let the defect through: this suite used to configure the transaction
+     * itself, so every case passed whether or not any production path ever configured one -- and
+     * none did, outside the shell command. */
+    const wiring::report r{wiring::boot(kTiming, boot_inputs())};
+    zassert_true(r.bootstrap_rc == 0 || r.bootstrap_rc == -EALREADY, "bootstrap failed (%d)",
+                 r.bootstrap_rc);
+    zassert_equal(r.configure_rc, 0, "the production wiring did not configure the transaction (%d)",
+                  r.configure_rc);
     return cm::prove(epoch);
 }
 
 }  // namespace
 
 ZTEST_SUITE(tof_cliff_runtime, NULL, NULL, before, NULL, NULL);
+
+/* THE CASE THAT WOULD HAVE CAUGHT dasher2, 2026-09-21.
+ *
+ * The image announced a session on 0x219, took the host's 0x218, and answered `misconfigured /
+ * not_started` in three frames, having touched neither I2C nor the enable chain: nothing in the
+ * boot sequence had configured the transaction, because the only code that did so sat inside the
+ * `tof cliff prove` shell command. Two suites covered the protocol across that seam and both
+ * replaced prove() with a fake that succeeds, so neither could see it.
+ *
+ * The first assertion is the symptom itself, asserted deliberately rather than assumed: it is what
+ * makes the second one capable of failing. Delete the init call from wiring::boot() and this test
+ * reproduces the field verdict exactly. */
+ZTEST(tof_cliff_runtime, test_the_production_boot_configures_the_commissioning_transaction)
+{
+    zassert_equal(cm::prove(1).failed_at, cm::stage::not_configured,
+                  "an unconfigured transaction was expected to refuse before touching anything");
+
+    const wiring::report r{wiring::boot(kTiming, boot_inputs())};
+    zassert_equal(r.bootstrap_rc, 0, "the runtime bootstrap failed (%d)", r.bootstrap_rc);
+    zassert_equal(r.configure_rc, 0, "the boot sequence left the transaction unconfigured (%d)",
+                  r.configure_rc);
+    zassert_equal(wiring::configure_status(), 0,
+                  "the status the shell and the downlink both read says unconfigured");
+
+    /* The gate is open, which is all this case claims. Whether the proof then SUCCEEDS is the fake
+     * chain's business and other cases', but it must no longer stop at the gate. */
+    zassert_not_equal(cm::prove(1).failed_at, cm::stage::not_configured,
+                      "prove() still refuses as unconfigured after a production boot");
+}
+
+/* The other half of the same rule: a boot missing one of the pieces must refuse and SAY so, rather
+ * than configure something half-built. A transaction with no quiesce hook would take the chain
+ * while acquisition was still running. */
+ZTEST(tof_cliff_runtime, test_a_boot_with_a_piece_missing_refuses_and_stays_unconfigured)
+{
+    wiring::inputs broken{boot_inputs()};
+    broken.quiesce = nullptr;
+
+    const wiring::report r{wiring::boot(kTiming, broken)};
+    zassert_equal(r.bootstrap_rc, 0, "the bootstrap itself should still have run (%d)",
+                  r.bootstrap_rc);
+    zassert_equal(r.configure_rc, -EINVAL, "an incomplete wiring was accepted (%d)", r.configure_rc);
+    zassert_equal(cm::prove(1).failed_at, cm::stage::not_configured,
+                  "prove() ran against a half-configured transaction");
+}
+
+/* A spec with positions is not proof that bootstrap succeeded: the production spec has static
+ * storage and is populated before boot. This is the failure that would slip through a guard based
+ * on spec().positions and configure a transaction against an incomplete runtime. */
+ZTEST(tof_cliff_runtime, test_a_failed_runtime_boot_does_not_configure_the_transaction)
+{
+    glue_is_ready = false;
+
+    const wiring::report r{wiring::boot(kTiming, boot_inputs())};
+    zassert_equal(r.bootstrap_rc, -ENODEV, "the unavailable chain glue was not reported (%d)",
+                  r.bootstrap_rc);
+    zassert_equal(r.configure_rc, -ENODEV,
+                  "a failed runtime boot still configured the transaction (%d)", r.configure_rc);
+    zassert_equal(wiring::configure_status(), -ENODEV,
+                  "the shared status claims a failed boot was configured");
+    zassert_equal(cm::prove(1).failed_at, cm::stage::not_configured,
+                  "prove() ran against an incompletely bootstrapped runtime");
+}
 
 ZTEST(tof_cliff_runtime, test_one_call_brings_the_whole_subsystem_up)
 {
@@ -487,4 +570,3 @@ ZTEST(tof_cliff_runtime, test_starting_twice_is_refused_rather_than_creating_a_s
     zassert_equal(rt::start_acquisition(), 0);
     zassert_equal(acq::try_stop(), 0);
 }
-
