@@ -36,13 +36,24 @@
 		 * the stack is a guess until a watermark exists, and the priority
 		 * is preemptible and below the shell so a stuck cycle cannot
 		 * starve the console. */
-		/* What VL53LX_DataInit already leaves: MEDIUM at 33,333 us. Stated
-		 * rather than inherited, because until the injection point existed
-		 * nobody had chosen either value -- and 33,333 us is two thirds of
-		 * the 50 ms cycle period, so it is the first candidate for the
-		 * ranging rate. A shorter budget must be measured on the robot
-		 * before it is used for anything but an experiment. */
-		cliff-timing-budget-us = <33333>;
+		/* EXPERIMENT E1, 2026-09-21: the budget is the only variable moved
+		 * from the 20 Hz baseline. 33,333 us is what VL53LX_DataInit leaves
+		 * for MEDIUM and it is two thirds of a 50 ms cycle, so it is what
+		 * stops the cycle period going below ~50 ms: a sensor cannot
+		 * produce a new measurement faster than its budget, and a shorter
+		 * cycle against this budget buys repeat samples rather than data.
+		 *
+		 * 20,000 us is the first candidate. The cycle period stays at 50 ms
+		 * here ON PURPOSE -- this image answers one question only, whether
+		 * a shorter budget costs errors, repeats or plausibility, with the
+		 * rate held where the baseline measured it. The cycle comes down in
+		 * a separate image once that question has an answer.
+		 *
+		 * MEDIUM is kept. SHORT is not an option for L4 here.
+		 *
+		 * Baseline this is measured against:
+		 * allmemory/hanging_object/l4_rate_2026-09-21/baseline_20hz.md */
+		cliff-timing-budget-us = <20000>;
 		cliff-distance-mode = <2>;
 		stop-join-timeout-ms = <500>;
 		acq-stack-size = <2048>;
