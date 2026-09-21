@@ -46,24 +46,35 @@
 		 * the stack is a guess until a watermark exists, and the priority
 		 * is preemptible and below the shell so a stuck cycle cannot
 		 * starve the console. */
-		/* EXPERIMENT E1, 2026-09-21: the budget is the only variable moved
-		 * from the 20 Hz baseline. 33,333 us is what VL53LX_DataInit leaves
-		 * for MEDIUM and it is two thirds of a 50 ms cycle, so it is what
-		 * stops the cycle period going below ~50 ms: a sensor cannot
-		 * produce a new measurement faster than its budget, and a shorter
-		 * cycle against this budget buys repeat samples rather than data.
+		/* EXPERIMENT E3, 2026-09-21: the budget is the only variable moved
+		 * from E2, which runs a 20 ms cycle against a 20,000 us budget.
 		 *
-		 * 20,000 us is the first candidate. The cycle period stays at 50 ms
-		 * here ON PURPOSE -- this image answers one question only, whether
-		 * a shorter budget costs errors, repeats or plausibility, with the
-		 * rate held where the baseline measured it. The cycle comes down in
-		 * a separate image once that question has an answer.
+		 * WHAT E1 AND E2 ESTABLISHED. 33,333 us is what VL53LX_DataInit
+		 * leaves for MEDIUM; E1 cut it to 20,000 at a 50 ms cycle and cost
+		 * nothing -- no read errors, no repeats, no rearm failures. E2 then
+		 * cut the cycle to 20 ms and got 50.20 cycles/s with repeat
+		 * measurements still at zero, so the rate is real rather than the
+		 * same sample published twice.
+		 *
+		 * WHAT E2 LEFT OPEN, and what this image is for: per-source new
+		 * measurements came to 49.2-49.7 Hz against 50.20 cycles/s, i.e.
+		 * about 1 % of cycles found no fresh sample at that sensor and were
+		 * skipped. A budget equal to the cycle period leaves a sensor no
+		 * slack at all -- any jitter and the measurement is not finished
+		 * when the cycle reads it. 15,000 us gives 5 ms of slack inside a
+		 * 20 ms cycle, and the question is whether the fresh gap closes.
+		 *
+		 * The 17 % cycle overrun E2 measured is NOT what this image
+		 * addresses: total_us max was 20,258 against a 20,000 us period, so
+		 * the work itself is marginally too long and only shortening the
+		 * work (1 MHz I2C, or less serial work) moves it. One variable at a
+		 * time, and this one is the budget.
 		 *
 		 * MEDIUM is kept. SHORT is not an option for L4 here.
 		 *
-		 * Baseline this is measured against:
-		 * allmemory/hanging_object/l4_rate_2026-09-21/baseline_20hz.md */
-		cliff-timing-budget-us = <20000>;
+		 * Measured against allmemory/hanging_object/l4_rate_2026-09-21/
+		 * e2_cycle20.md, whose baseline chain starts at baseline_20hz.md */
+		cliff-timing-budget-us = <15000>;
 		cliff-distance-mode = <2>;
 		stop-join-timeout-ms = <500>;
 		acq-stack-size = <2048>;
