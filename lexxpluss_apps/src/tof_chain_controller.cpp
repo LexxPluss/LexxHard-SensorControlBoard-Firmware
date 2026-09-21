@@ -51,6 +51,9 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 
+#include <stm32_ll_bus.h>
+#include <stm32_ll_system.h>
+
 #include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
 #include "tof_l7_blob_provider.hpp"
@@ -65,6 +68,7 @@
 #include "tof_commission_boot.hpp"
 #endif
 #include "tof_commission_wiring.hpp"
+#include "tof_i2c_speed.hpp"
 #include "tof_commissioning.hpp"
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
 /* The budget probe is C, and this is the whole of its interface: one call, made after the bootstrap
@@ -87,6 +91,14 @@ const struct gpio_dt_spec data_pin = GPIO_DT_SPEC_GET(DT_PATH(tof_chain), data_g
 const struct gpio_dt_spec clock_pin = GPIO_DT_SPEC_GET(DT_PATH(tof_chain), clock_gpios);
 constexpr uint32_t kDataSettleMs{DT_PROP(DT_PATH(tof_chain), data_settle_ms)};
 constexpr uint32_t kSensorBootMs{DT_PROP(DT_PATH(tof_chain), sensor_boot_ms)};
+
+/* The STM32 I2C-v2 driver refuses Fast-mode Plus unless devicetree supplies a timing preset. This
+ * build owns one preset -- a 54 MHz peripheral clock, 1 MHz target, then TIMINGR -- and verifies the
+ * register after every product-speed switch. More entries would make the fixed index ambiguous, so
+ * changing the table requires changing this assertion and the selection rule together. */
+BUILD_ASSERT(DT_PROP_LEN(DT_NODELABEL(i2c2), timings) == 3,
+             "i2c2 must have exactly one <clock speed TIMINGR> preset");
+constexpr uint32_t kFastPlusTiming{DT_PROP_BY_IDX(DT_NODELABEL(i2c2), timings, 2)};
 
 K_MUTEX_DEFINE(chain_mutex);
 
@@ -286,9 +298,12 @@ const char *bus_state_name(tof_commissioning::bus_state b)
 {
     using tof_commissioning::bus_state;
     switch (b) {
-    case bus_state::unknown:      return "unknown";
-    case bus_state::proof_100k:   return "100k";
-    case bus_state::product_400k: return "400k";
+    case bus_state::unknown: return "unknown";
+    /* Stated as the roles they are. The frequencies are devicetree properties now, and a label that
+     * said "400k" while the overlay configured 1 MHz would be a diagnostic that lies about the one
+     * thing it exists to report. The command below prints the configured values alongside. */
+    case bus_state::proof:   return "proof-speed";
+    case bus_state::product: return "product-speed";
     }
     return "?";
 }
@@ -321,14 +336,49 @@ const char *stage_label(tof_commissioning::stage st)
  * Nor does it check whether acquisition is running. That check belongs to the callers, which are
  * in a position to know: commissioning has already quiesced and holds the chain, and the shell
  * command refuses under the lock. Repeating it here would be a third opinion about the same fact. */
-int set_bus_speed_hw(tof_commissioning::bus_speed s)
+int apply_bus_speed(const tof_i2c_speed::resolution &want)
 {
     if (!device_is_ready(i2c2_dev))
         return -ENODEV;
+    if (!want.ok())
+        return want.rc;
 
-    const uint32_t speed{s == tof_commissioning::bus_speed::proof_100k ? I2C_SPEED_STANDARD
-                                                                       : I2C_SPEED_FAST};
-    return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed));
+    if (const int rc{i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(want.code))};
+        rc != 0)
+        return rc;
+
+    /* STM32's get_config returns the driver's cached request, not TIMINGR. It is still useful for
+     * detecting disagreement in the driver API, but it is not presented as hardware evidence. */
+    uint32_t applied{0};
+    if (const int rc{i2c_get_config(i2c2_dev, &applied)}; rc != 0)
+        return rc;
+
+    if (want.fast_mode_plus && READ_REG(I2C2->TIMINGR) != kFastPlusTiming)
+        return -ENOTSUP;
+
+    /* On STM32F769, selecting a 1 MHz TIMINGR value is not sufficient: SYSCFG separately enables
+     * the stronger Fast-mode Plus drive for all I2C2 pins (PF0/PF1 included). It is disabled again
+     * at 100/400 kHz so a failed transaction cannot leave the proof phase in an unreported electrical
+     * mode. The register read-back makes both directions observable. */
+    LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_SYSCFG);
+    if (want.fast_mode_plus)
+        LL_SYSCFG_EnableFastModePlus(LL_SYSCFG_I2C_FASTMODEPLUS_I2C2);
+    else
+        LL_SYSCFG_DisableFastModePlus(LL_SYSCFG_I2C_FASTMODEPLUS_I2C2);
+
+    const bool applied_fmp{
+        (READ_BIT(SYSCFG->PMC, LL_SYSCFG_I2C_FASTMODEPLUS_I2C2) != 0U)};
+    return tof_i2c_speed::verify_applied(want, I2C_SPEED_GET(applied), applied_fmp);
+}
+
+int set_bus_speed_hw(tof_commissioning::bus_speed s)
+{
+    /* Every decision is in tof_i2c_speed, which a host suite links. The frequencies are devicetree
+     * properties, so "what speed does production run at" is answered by the overlay rather than by
+     * an enum member's name. */
+    return apply_bus_speed(
+        tof_i2c_speed::resolve_role(s, DT_PROP(DT_PATH(tof_chain), cliff_proof_i2c_hz),
+                                    DT_PROP(DT_PATH(tof_chain), cliff_product_i2c_hz)));
 }
 
 /* The image's chain ops, at file scope because tof_commissioning::init() copies the configuration
@@ -345,8 +395,9 @@ zephyr_chain_ops chain_ops{};
  * be reached. And try_stop(), not "try_stop plus a check": is_idle() also takes the chain with
  * K_FOREVER, so verifying the quiesce that way would put the block back one line later.
  *
- * The bus-speed hook is what lets the transaction own the speed for the whole run: 100 kHz for the
- * walks, 400 kHz before anything is published, and back to 100 kHz if it gives up. The bench
+ * The bus-speed hook is what lets the transaction own the speed for the whole run: the configured
+ * proof speed for the walks, the configured product speed before anything is published, and back
+ * to the proof speed if it gives up. The bench
  * `i2cspeed` command still exists and still changes nothing else, but a proof no longer depends on
  * an operator having run it -- and must not, since the bus can be left at either speed by a
  * previous failure. */
@@ -419,7 +470,7 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "recheck: pos=%u addr=0x%02x silent=%d read_rc=%d id=%02x/%02x",
                     r.recheck.position, r.recheck.address, static_cast<int>(r.recheck.silent),
                     r.recheck.read_rc, r.recheck.seen.first, r.recheck.seen.second);
-    if (!r.proven() && r.final_bus != tof_commissioning::bus_state::proof_100k)
+    if (!r.proven() && r.final_bus != tof_commissioning::bus_state::proof)
         shell_warn(shell, "the bus is NOT back at 100 kHz. Nothing was published and no mapping was "
                           "installed, so this is recoverable: the next `tof cliff prove` sets the "
                           "speed itself rather than trusting this restore.");
@@ -682,20 +733,18 @@ int cmd_cliff_i2cspeed(const struct shell *shell, size_t, char **argv)
 
     char *end{nullptr};
     unsigned long const khz{strtoul(argv[1], &end, 0)};
-    uint32_t speed{0};
+    tof_i2c_speed::resolution requested{};
 
     if (end == argv[1] || *end != '\0') {
-        shell_error(shell, "usage: tof cliff i2cspeed <100|400>");
+        shell_error(shell, "usage: tof cliff i2cspeed <100|400|1000>");
         return -EINVAL;
     }
-    if (khz == 100)
-        speed = I2C_SPEED_STANDARD;
-    else if (khz == 400)
-        speed = I2C_SPEED_FAST;
-    else {
-        /* Only the two the contract and the diagnostic overlay actually use. A free-form kHz field
-         * would invite a value nobody has characterised on this harness. */
-        shell_error(shell, "only 100 or 400 kHz: %lu is not a speed this chain is characterised at",
+    /* The same resolver the transaction uses, so this command cannot reach a speed commissioning
+     * would refuse -- and cannot be left behind when the supported set changes. A free-form kHz
+     * field would invite a value nobody has characterised on this harness. */
+    requested = tof_i2c_speed::resolve_hz(static_cast<uint32_t>(khz) * 1000U);
+    if (!requested.ok()) {
+        shell_error(shell, "%lu kHz is not a speed this chain is characterised at (100, 400, 1000)",
                     khz);
         return -EINVAL;
     }
@@ -718,12 +767,12 @@ int cmd_cliff_i2cspeed(const struct shell *shell, size_t, char **argv)
                            "under a cycle in flight would corrupt a read rather than fail it");
         return -EBUSY;
     }
-    int const rc{i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed))};
+    int const rc{apply_bus_speed(requested)};
     k_mutex_unlock(&chain_mutex);
 
     if (rc != 0) {
-        shell_error(shell, "i2c_configure failed (%d): the bus is left at whatever the driver did "
-                           "with it, so re-run this before trusting any read",
+        shell_error(shell, "I2C speed apply/verification failed (%d): the bus is left at whatever "
+                           "the driver did with it, so re-run this before trusting any read",
                     rc);
         return rc;
     }

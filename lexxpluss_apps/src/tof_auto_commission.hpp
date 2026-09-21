@@ -13,7 +13,8 @@
  *
  * WHAT IT IS AND IS NOT. It sequences; it decides nothing about mappings. The proof itself is the
  * existing transaction -- `tof_commissioning::prove()`, which quiesces acquisition, walks the chain
- * at 100 kHz, isolates the tail, walks again, moves to 400 kHz and commits, all under the chain
+ * at the configured proof speed, isolates the tail, walks again, moves to the configured product
+ * speed and commits, all under the chain
  * lock. None of that is reimplemented here, and it must not be: a second copy of the proof would be
  * a second thing to keep in step with the contract, and the one that drifted would be the one
  * running unattended.

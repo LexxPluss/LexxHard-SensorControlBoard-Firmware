@@ -107,8 +107,8 @@ int fake_quiesce()
 }
 
 /* The bus speed the transaction owns. Recorded as a SEQUENCE rather than a current value, because
- * what has to be asserted is the ORDER -- 100 kHz before the walks, 400 kHz before anything is
- * published, 100 kHz again on the way out of a failure -- and a single "what is it now" field
+ * what has to be asserted is the ORDER -- proof speed before the walks, product speed before
+ * anything is published, proof speed again on the way out of a failure -- and a single "what is it now" field
  * cannot tell a correct run from one that switched at the wrong moment. */
 constexpr int kMaxSpeedCalls{8};
 cm::bus_speed speed_calls[kMaxSpeedCalls]{};
@@ -125,14 +125,14 @@ int fake_set_bus_speed(cm::bus_speed s)
 
     /* A CALL THAT FAILS CHANGES NOTHING, and getting that order wrong made the fake contradict the
      * very test it was serving: it updated the phase first, so a failed restore still flipped the
-     * model back to the proof state while the test's own comment said the bus was left at 400 kHz.
+     * model back to the proof state while the test's own comment said the bus was left at product speed.
      * The failure path would have been asserted against a chain that had quietly recovered. */
     if (fail_speed_call != 0 && speed_call_count == fail_speed_call)
         return speed_fail_rc;
 
     /* The boundary the fake chain needs: everything before the switch up is the proof, everything
      * after it is the non-disturbing re-verification. */
-    chain.after_proof = s == cm::bus_speed::product_400k;
+    chain.after_proof = s == cm::bus_speed::product;
     return 0;
 }
 
@@ -785,10 +785,10 @@ ZTEST(tof_commissioning, test_a_thread_that_will_not_join_keeps_the_gate_shut)
                   "the thread did not stop its own devices on the way out");
 }
 
-/* --------------------------------------- the 100 -> 400 kHz transaction ------------- */
+/* --------------------------------------- the proof -> product speed transaction ------ */
 
-/* The chain is proven at 100 kHz because that is the only speed its enable walk is reliable at, and
- * it is READ at 400 kHz because that is the only speed the acquisition schedule fits in. Nothing in
+/* The chain is proven at the proof speed because that is the speed its enable walk is reliable at,
+ * and it is READ at the product speed because that is the speed the acquisition schedule uses. Nothing in
  * the proof says the chain still answers at the second speed, so the transaction asks -- before the
  * authority is told anything at all. */
 
@@ -799,15 +799,40 @@ ZTEST(tof_commissioning, test_the_speed_goes_down_for_the_walks_and_up_before_an
     const cm::outcome r{cm::prove(7)};
     zassert_true(r.proven(), "stage %d", static_cast<int>(r.failed_at));
 
-    const cm::bus_speed want[]{cm::bus_speed::proof_100k, cm::bus_speed::product_400k};
+    const cm::bus_speed want[]{cm::bus_speed::proof, cm::bus_speed::product};
     zassert_true(speed_seq_is(want, 2), "calls=%d", speed_call_count);
     zassert_equal(install_calls, 1, "the mapping is installed exactly once, after the re-check");
 }
 
+ZTEST(tof_commissioning, test_every_chain_position_is_rechecked_at_the_product_speed)
+{
+    /* The four L4 sources are the only positions that publish Range, but all six devices share the
+     * bus. Rechecking only those four would leave both L7 identities unverified at 1 MHz and still
+     * install a mapping for the whole chain. Count a successful pass explicitly; the per-position
+     * failure tests below prove each failure can be reached, not that the success path visited all
+     * six before it committed. */
+    const enm::chain_spec spec{provable_spec()};
+    arrange(spec);
+
+    const cm::outcome r{cm::prove(7)};
+
+    zassert_true(r.proven(), "stage %d", static_cast<int>(r.failed_at));
+    zassert_equal(chain.probe_calls_after_proof, static_cast<int>(spec.positions),
+                  "the product-speed pass did not probe all %u positions",
+                  static_cast<unsigned>(spec.positions));
+    zassert_equal(chain.read_id_calls_after_proof, static_cast<int>(spec.positions),
+                  "the product-speed pass did not read all %u identities",
+                  static_cast<unsigned>(spec.positions));
+    const uint32_t all_positions{(1U << spec.positions) - 1U};
+    zassert_equal(chain.probed_addr_mask_after_proof, all_positions,
+                  "the product-speed pass skipped a chain address");
+    zassert_equal(install_calls, 1, "the fully rechecked mapping was not installed once");
+}
+
 ZTEST(tof_commissioning, test_the_proof_speed_is_set_and_not_assumed)
 {
-    /* The entry SETS 100 kHz rather than trusting whatever a previous run left behind. Without that
-     * a single failed restore would make every later proof walk the chain at 400 kHz -- and report
+    /* The entry SETS the proof speed rather than trusting whatever a previous run left behind. Without that
+     * a single failed restore would make every later proof walk the chain at product speed -- and report
      * success on evidence gathered at a speed nobody characterised the walk at. */
     arrange(provable_spec());
     fail_speed_call = 1;
@@ -827,17 +852,18 @@ ZTEST(tof_commissioning, test_the_product_speed_failing_publishes_nothing_and_re
     const cm::outcome r{cm::prove(7)};
 
     zassert_equal(r.failed_at, cm::stage::product_speed_refused);
-    zassert_equal(install_calls, 0, "PROVEN must not be published on a chain never read at 400 kHz");
-    zassert_equal(r.final_bus, cm::bus_state::proof_100k, "the bus must be put back");
-    const cm::bus_speed want[]{cm::bus_speed::proof_100k, cm::bus_speed::product_400k,
-                               cm::bus_speed::proof_100k};
+    zassert_equal(install_calls, 0,
+                  "PROVEN must not be published on a chain never read at product speed");
+    zassert_equal(r.final_bus, cm::bus_state::proof, "the bus must be put back");
+    const cm::bus_speed want[]{cm::bus_speed::proof, cm::bus_speed::product,
+                               cm::bus_speed::proof};
     zassert_true(speed_seq_is(want, 3), "calls=%d", speed_call_count);
 }
 
 ZTEST(tof_commissioning, test_a_silent_position_at_the_product_speed_publishes_nothing)
 {
     /* The failure this whole step exists to catch: the chain enumerated and proved perfectly at
-     * 100 kHz and one part stops answering when the bus speeds up. Without the re-check that is
+     * the proof speed and one part stops answering when the bus speeds up. Without the re-check that is
      * discovered by the acquisition thread, after PROVEN has been published and a consumer has been
      * told the mapping is good. */
     for (size_t pos{0}; pos < provable_spec().positions; ++pos) {
@@ -851,7 +877,7 @@ ZTEST(tof_commissioning, test_a_silent_position_at_the_product_speed_publishes_n
         zassert_equal(r.recheck.address, provable_spec().at[pos].target_addr);
         zassert_true(r.recheck.silent, "a part that does not answer is not an identity mismatch");
         zassert_equal(install_calls, 0, "position %u was silent and a mapping was installed", pos + 1);
-        zassert_equal(r.final_bus, cm::bus_state::proof_100k);
+        zassert_equal(r.final_bus, cm::bus_state::proof);
     }
 }
 
@@ -889,19 +915,19 @@ ZTEST(tof_commissioning, test_a_failed_restore_is_reported_and_does_not_become_a
     /* And the MODEL agrees: the bus really is still at the product speed. Asserting the reported
      * state alone would pass against a fake that had silently recovered, which is what it used to
      * do. */
-    zassert_true(chain.after_proof, "the bus must actually still be at 400 kHz");
+    zassert_true(chain.after_proof, "the bus must actually still be at product speed");
     zassert_equal(install_calls, 0);
 }
 
 ZTEST(tof_commissioning, test_a_proof_after_a_failed_restore_sets_the_speed_itself)
 {
     /* The recovery path that matters, and the reason the entry sets rather than confirms. The bus
-     * is left at 400 kHz by a failed restore; the next proof must not inherit that. */
+     * is left at product speed by a failed restore; the next proof must not inherit that. */
     arrange(provable_spec());
     chain.silent_after_proof_addr = provable_spec().at[0].target_addr;
     fail_speed_call = 3;
     const cm::outcome first{cm::prove(7)};
-    zassert_not_equal(first.final_bus, cm::bus_state::proof_100k,
+    zassert_not_equal(first.final_bus, cm::bus_state::proof,
                       "the scenario needs the bus left somewhere other than the proof speed");
 
     /* A fresh attempt over a chain that is healthy again. arrange() is not called: the point is that
@@ -911,14 +937,15 @@ ZTEST(tof_commissioning, test_a_proof_after_a_failed_restore_sets_the_speed_itse
     speed_call_count = 0;
     install_calls = 0;
 
-    zassert_true(chain.after_proof, "the scenario starts with the bus genuinely left at 400 kHz");
+    zassert_true(chain.after_proof,
+                 "the scenario starts with the bus genuinely left at product speed");
 
     const cm::outcome second{cm::prove(8)};
 
     zassert_true(second.proven(), "stage %d", static_cast<int>(second.failed_at));
-    const cm::bus_speed want[]{cm::bus_speed::proof_100k, cm::bus_speed::product_400k};
+    const cm::bus_speed want[]{cm::bus_speed::proof, cm::bus_speed::product};
     zassert_true(speed_seq_is(want, 2),
-                 "the entry must set 100 kHz itself rather than trust the last restore");
+                 "the entry must set the proof speed itself rather than trust the last restore");
     zassert_equal(install_calls, 1);
 }
 
@@ -941,7 +968,7 @@ ZTEST(tof_commissioning, test_the_recheck_does_not_readdress_or_touch_the_enable
 
 ZTEST(tof_commissioning, test_a_commit_refusal_does_not_walk_away_at_the_product_speed)
 {
-    /* The one failure path that used to end at 400 kHz with nobody told. A reused epoch is the
+    /* The one failure path that used to end at product speed with nobody told. A reused epoch is the
      * ordinary way to reach it -- an operator repeating a number -- and the run would return
      * "commit_refused" while leaving the bus retimed, so the next walk ran at a speed its evidence
      * does not cover. Best effort, and it does NOT become a different failure: the commit refusal
@@ -955,9 +982,9 @@ ZTEST(tof_commissioning, test_a_commit_refusal_does_not_walk_away_at_the_product
     zassert_equal(again.failed_at, cm::stage::commit_refused,
                   "the restore must not rename the failure");
     zassert_true(again.restore_attempted);
-    zassert_equal(again.final_bus, cm::bus_state::proof_100k);
-    const cm::bus_speed want[]{cm::bus_speed::proof_100k, cm::bus_speed::product_400k,
-                               cm::bus_speed::proof_100k};
+    zassert_equal(again.final_bus, cm::bus_state::proof);
+    const cm::bus_speed want[]{cm::bus_speed::proof, cm::bus_speed::product,
+                               cm::bus_speed::proof};
     zassert_true(speed_seq_is(want, 3), "calls=%d", speed_call_count);
 }
 
@@ -967,7 +994,7 @@ ZTEST(tof_commissioning, test_the_reported_bus_state_is_the_real_one_on_every_pa
      * that never restored anything and ends at the product speed, a first set that failed and left
      * the bus unknowable, and a failure that did restore. They must not read alike. */
     arrange(provable_spec());
-    zassert_equal(cm::prove(11).final_bus, cm::bus_state::product_400k,
+    zassert_equal(cm::prove(11).final_bus, cm::bus_state::product,
                   "a successful run ends at the speed acquisition will read at");
 
     arrange(provable_spec());
@@ -979,5 +1006,5 @@ ZTEST(tof_commissioning, test_the_reported_bus_state_is_the_real_one_on_every_pa
 
     arrange(provable_spec());
     chain.silent_after_proof_addr = provable_spec().at[0].target_addr;
-    zassert_equal(cm::prove(13).final_bus, cm::bus_state::proof_100k);
+    zassert_equal(cm::prove(13).final_bus, cm::bus_state::proof);
 }

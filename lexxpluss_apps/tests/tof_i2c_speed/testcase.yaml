@@ -1,0 +1,4 @@
+tests:
+  tof.i2c_speed:
+    platform_allow: native_sim
+    tags: tof

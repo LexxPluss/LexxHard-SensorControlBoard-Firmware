@@ -49,7 +49,7 @@ struct fake_chain final : enm::chain_ops {
     /* THE RE-CHECK PHASE. Set by the test's set_bus_speed hook when the transaction switches to the
      * product speed, because that is exactly the boundary: everything before it is the proof, and
      * everything after it is the read-only re-verification. The fake needs to tell them apart to
-     * model a part that answers at 100 kHz and not at 400 kHz -- which is the failure the re-check
+     * model a part that answers at the proof speed and not at the product speed -- which is the failure the re-check
      * exists for and cannot be modelled by a fault that was there all along, since that one would
      * have failed the walks instead. */
     bool after_proof{false};
@@ -60,6 +60,12 @@ struct fake_chain final : enm::chain_ops {
     // Anything the re-check does that is not read-only. Both must stay zero.
     int readdress_calls_after_proof{0};
     int control_calls_after_proof{0};
+    /* What the re-check actually looked at. The chain is shared by every position, so a re-check
+     * that only revisited the four that publish would leave two devices unverified at a speed
+     * nothing had exercised them at. */
+    int probe_calls_after_proof{0};
+    int read_id_calls_after_proof{0};
+    uint32_t probed_addr_mask_after_proof{0};
 
     int set_data_rc{0};
     int pulse_rc{0};
@@ -124,6 +130,12 @@ struct fake_chain final : enm::chain_ops {
 
     enm::probe_result probe(uint8_t addr7) override
     {
+        if (after_proof) {
+            ++probe_calls_after_proof;
+            for (size_t i{0}; i < kStages; ++i)
+                if (addr[i] == addr7)
+                    probed_addr_mask_after_proof |= (1U << i);
+        }
         if (after_proof && silent_after_proof_addr != 0 && addr7 == silent_after_proof_addr)
             return {enm::probe_state::nack, 0};
         if (error_probes_at_pulse_count >= 0 && pulses_seen == error_probes_at_pulse_count)
@@ -134,6 +146,8 @@ struct fake_chain final : enm::chain_ops {
 
     int read_id(enm::model, uint8_t addr7, enm::id_bytes &out) override
     {
+        if (after_proof)
+            ++read_id_calls_after_proof;
         const int i{answerer(addr7)};
         if (i < 0)
             return -ENXIO;

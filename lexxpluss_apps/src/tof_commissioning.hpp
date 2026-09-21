@@ -84,28 +84,35 @@ namespace pf = tof_proof;
 /* The two speeds this chain is characterised at, and nothing else.
  *
  * They are not interchangeable and the split is not a tuning preference. The enable-chain walk is
- * only reliable at 100 kHz on this harness; the acquisition schedule is only feasible at 400 kHz.
- * A proof therefore happens at one speed and production runs at the other, which means the proof
- * alone says nothing about whether the chain answers at the speed it will actually be read at. */
+ * only reliable at the slower speed on this harness; the acquisition schedule is only feasible at
+ * the faster one. A proof therefore happens at one speed and production runs at the other, which
+ * means the proof alone says nothing about whether the chain answers at the speed it will actually
+ * be read at -- and that is what the re-check after the switch is for.
+ *
+ * NAMED BY ROLE, NOT BY FREQUENCY. They used to be proof_100k and product_400k, which put a number
+ * this module does not own into every call site and made "what speed does production run at" a
+ * question answered by an enum rather than by configuration. The frequencies are devicetree
+ * properties and tof_i2c_speed turns them into controller settings; nothing here knows them. */
 enum class bus_speed : uint8_t {
-    proof_100k,
-    product_400k,
+    proof,
+    product,
 };
 
 /* Where the bus was left. Reported as a state rather than as "did the restore work", because that
  * question has no answer in the two cases that matter most: a run that succeeded never restored
- * anything and ended at 400 kHz, and a run whose very first set_bus_speed failed left the bus at
- * whatever the driver did with it, which is not knowable from here.
+ * anything and ended at the product speed, and a run whose very first set_bus_speed failed left the
+ * bus at whatever the driver did with it, which is not knowable from here.
  *
  * An earlier version carried a bool defaulting to true, so a successful run reported "restored", a
- * failed first set reported "restored", and a commit refusal that walked away at 400 kHz reported
+ * failed first set reported "restored", and a commit refusal that walked away at the product speed
+ * reported
  * "restored" as well. Three different situations, one reassuring answer, and the only one an
  * operator needed to act on was invisible. */
 enum class bus_state : uint8_t {
     // A set_bus_speed call failed and nothing is known about what the driver left behind.
     unknown,
-    proof_100k,
-    product_400k,
+    proof,
+    product,
 };
 
 enum class stage : uint8_t {
@@ -116,18 +123,18 @@ enum class stage : uint8_t {
     chain_busy,       // the lock was held: another enumeration, or acquisition still on the chain
     attempt_refused,  // the authority would not open an attempt
     evidence_refused, // the transaction was carried out and the proof refused it
-    // The bus would not go to 100 kHz for the walks. Refused rather than proceeding at whatever the
+    // The bus would not go to the configured proof speed for the walks. Refused rather than proceeding at whatever the
     // bus happened to be left at, because a walk at an uncharacterised speed produces a mapping
     // whose evidence means nothing.
     proof_speed_refused,
-    // The proof held, but the bus would not go to 400 kHz afterwards.
+    // The proof held, but the bus would not go to the configured product speed afterwards.
     product_speed_refused,
-    // The proof held and the bus retimed, but a position did not answer as itself at 400 kHz.
+    // The proof held and the bus retimed, but a position did not answer as itself at product speed.
     identity_recheck_failed,
     commit_refused,   // the proof held and the authority refused to install it
 };
 
-/* Which position failed the 400 kHz re-check and how. Separate from the walk results because it is
+/* Which position failed the product-speed re-check and how. Separate from the walk results because it is
  * a different observation: the walks establish WHAT the chain is, at a speed that cannot be used to
  * read it; this establishes that the same chain still answers at the speed that will. */
 struct identity_recheck {
@@ -160,7 +167,7 @@ struct outcome {
 
     // Non-zero when a speed change failed, for the stage that failed.
     int speed_rc{0};
-    /* Where the bus actually is when this returns. `unknown` and `product_400k` after a failure are
+    /* Where the bus actually is when this returns. `unknown` and `product` after a failure are
      * both recoverable and neither is an error to act on: no mapping was installed, and the next
      * proof sets the speed itself rather than trusting any of this. It is reported so an operator
      * reading a transcript is not left inferring it. */

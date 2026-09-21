@@ -72,6 +72,33 @@ properties:
       watermark has been measured on hardware -- and required, so that the
       provisional number is one somebody wrote down.
 
+  cliff-proof-i2c-hz:
+    type: int
+    required: true
+    description: |
+      Bus frequency for the two enable-chain walks and the tail isolation.
+      The walk is only reliable at the slower speed on this harness, and the
+      value is required rather than defaulted so that the speed a proof was
+      gathered at is written down next to the speed it is read at. Only
+      100000, 400000 and 1000000 have a controller setting; anything else is
+      REFUSED at run time rather than rounded to a neighbour.
+
+  cliff-product-i2c-hz:
+    type: int
+    required: true
+    description: |
+      Bus frequency the chain is actually read at, switched to after a proof
+      succeeds and re-verified by re-reading every position's identity before
+      any mapping is committed. Required and explicit: this is the number the
+      acquisition schedule has to fit in, and a proof gathered at the walk
+      speed says nothing about whether the chain still answers here.
+
+      Only 100000, 400000 and 1000000 have a controller setting. A controller
+      that cannot deliver the configured value makes commissioning FAIL and
+      the bus go back to the proof speed; it never falls back silently,
+      because a mapping proven at one speed and read at another is precisely
+      what the re-check exists to prevent.
+
   cliff-timing-budget-us:
     type: int
     required: true

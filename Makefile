@@ -205,6 +205,11 @@ test_tof_commission_wire:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_wire -d build-test-tof-commission-wire -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+.PHONY: test_tof_i2c_speed
+test_tof_i2c_speed:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_i2c_speed -d build-test-tof-i2c-speed -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the unattended prove-then-start sequence: default off, bounded retries, and
 # start() reachable only from a proof that succeeded. Every hook is injected -- the proof is the
 # existing transaction and is not reimplemented here.

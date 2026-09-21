@@ -76,14 +76,46 @@
 		 * e2_cycle20.md, whose baseline chain starts at baseline_20hz.md */
 		cliff-timing-budget-us = <15000>;
 		cliff-distance-mode = <2>;
+		/* EXPERIMENT E4, 2026-09-21: the bus speeds, stated as configuration
+		 * rather than compiled into the transaction's enum.
+		 *
+		 * The walk speed does not move. 100 kHz is what the enable chain was
+		 * characterised at, and nothing in this experiment gives a reason to
+		 * disturb the one step whose reliability the whole proof rests on.
+		 *
+		 * The product speed goes to 1 MHz (Fast-mode Plus). E3 reached
+		 * 49.95 Hz per source with every cycle producing a fresh sample, and
+		 * what is left between that and 50 Hz is the 18 % of cycles whose work
+		 * does not fit in 20 ms: total_us max 20,399 us against a 20,000 us
+		 * period, with four serial reads of about 8,000 us each dominating it.
+		 * Only shortening the work moves that, and this is the one variable
+		 * that shortens it without touching the schedule.
+		 *
+		 * DO NOT EXPECT 2.5x. The fixed overheads of each transfer do not
+		 * scale with the clock, so the honest prediction is "less than 2.5x
+		 * and unknown until measured".
+		 *
+		 * The whole chain is re-verified at this speed before any mapping is
+		 * committed -- all six positions, not the four that publish, because
+		 * all six share the bus. */
+		cliff-proof-i2c-hz = <100000>;
+		cliff-product-i2c-hz = <1000000>;
 		stop-join-timeout-ms = <500>;
 		acq-stack-size = <2048>;
 		acq-thread-priority = <7>;
 	};
 };
 
-/* 400 kHz is the only speed with a feasible read schedule; provisional
- * until Request B settles speed versus installed harness length. */
+/* E4 keeps the boot/default setting at 400 kHz; commissioning explicitly moves to the configured
+ * proof speed and then to the configured product speed before the mapping is installed.
+ *
+ * Zephyr's STM32 I2C-v2 driver deliberately refuses Fast-mode Plus without a manual timing preset.
+ * The peripheral clock is 216 MHz / APB1 prescaler 4 = 54 MHz. 0x00500C15 is the STM32 timing
+ * algorithm's 1 MHz result for that clock with the F7 analog filter enabled, DNF=0, 60 ns rise and
+ * 100 ns fall. The controller glue additionally reads TIMINGR and the I2C2 Fast-mode Plus drive bit
+ * back before it lets commissioning continue: this constant is not trusted merely because it was
+ * written here. */
 &i2c2 {
 	clock-frequency = <I2C_BITRATE_FAST>;
+	timings = <54000000 I2C_BITRATE_FAST_PLUS 0x00500C15>;
 };
