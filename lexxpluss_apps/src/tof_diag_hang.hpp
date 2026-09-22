@@ -68,9 +68,9 @@ struct record {
     uint32_t acq_end_ms;      // 0x20
     uint32_t send_begin;      // 0x24 ToF CAN sends begun (cliff + grid + health)
     uint32_t send_end;        // 0x28 ToF CAN sends returned
-    uint32_t send_id;         // 0x2c CAN id of the most recent send begun
-    uint32_t send_rc;         // 0x30 rc of the most recent send returned
-    uint32_t send_begin_ms;   // 0x34
+    uint32_t send_id;         // 0x2c CAN id of the most recent send begun, ANY sender
+    uint32_t send_rc;         // 0x30 rc of the most recent send returned, ANY sender
+    uint32_t send_begin_ms;   // 0x34 (these three are last-writer-wins across senders: use slot[])
     uint32_t send_fail;       // 0x38 sends that returned non-zero
     uint32_t grid_suppressed; // 0x3c mode 1: grid frames the publisher handed over and we dropped
     uint32_t grid_sent;       // 0x40 grid frames (0x214/0x215) sent
@@ -98,7 +98,18 @@ struct record {
         uint32_t ms;
         uint32_t event; // code << 24 | arg (24 bits)
     } ring[kRing];            // 0xbc
-    uint32_t magic_end;       // 0x1bc
+    /* One slot per sender, because the three fields above are overwritten by whichever sender went
+     * last: with one sender stuck, the other can replace its id. slot[0] is the acquisition thread
+     * (cliff 0x216 and grid 0x214/0x215), slot[1] the system work queue (health 0x217). */
+    struct {
+        uint32_t active;   // 1 between begin and end
+        uint32_t id;       // CAN id of this sender's current or last send
+        uint32_t begin_ms; // when it began
+        uint32_t rc;       // rc of this sender's last completed send
+        uint32_t begin;    // sends begun by this sender
+        uint32_t end;      // sends returned to this sender
+    } slot[2];                // 0x1bc
+    uint32_t magic_end;       // 0x1ec
 };
 
 /* Ring event codes. */

@@ -34,11 +34,12 @@ namespace lexxhard::tof_diag {
 
 namespace {
 
-static_assert(sizeof(record) == 0x1c0, "the record layout is part of the reading procedure");
+static_assert(sizeof(record) == 0x1f0, "the record layout is part of the reading procedure");
+static_assert(offsetof(record, slot) == 0x1bc);
 static_assert(offsetof(record, wdt_withheld) == 0x8c);
 static_assert(offsetof(record, fatal_reason) == 0x98);
 static_assert(offsetof(record, ring) == 0xbc);
-static_assert(offsetof(record, magic_end) == 0x1bc);
+static_assert(offsetof(record, magic_end) == 0x1ec);
 /* Inside DTCM, and the record does not run off its end. */
 static_assert(kRecordAddress >= DT_REG_ADDR(DT_CHOSEN(zephyr_dtcm)));
 static_assert(kRecordAddress + sizeof(record) <=
@@ -144,21 +145,42 @@ void cycle_end()
     r.acq_end = r.acq_end + 1;
 }
 
+namespace {
+
+/* 0: the acquisition thread (cliff and grid frames); 1: the system work queue (health). Nothing else
+ * sends through tof_cliff_can. Each slot has exactly one writer, so plain stores are enough. */
+int sender_slot()
+{
+    return k_current_get() == &k_sys_work_q.thread ? 1 : 0;
+}
+
+} // namespace
+
 void send_begin(uint16_t can_id)
 {
     volatile record &r{rec()};
+    const uint32_t now{now_ms()};
+    auto &s{r.slot[sender_slot()]};
+    s.id = can_id;
+    s.begin_ms = now;
+    s.begin = s.begin + 1;
+    s.active = 1;
     r.send_id = can_id;
-    r.send_begin_ms = now_ms();
+    r.send_begin_ms = now;
     inc(r.send_begin); // acquisition thread and the system work queue
 }
 
 void send_end(int rc)
 {
     volatile record &r{rec()};
+    auto &s{r.slot[sender_slot()]};
+    s.rc = static_cast<uint32_t>(rc);
+    s.end = s.end + 1;
+    s.active = 0;
     r.send_rc = static_cast<uint32_t>(rc);
     if (rc != 0) {
         inc(r.send_fail);
-        ring(ev_send_fail, (r.send_id << 8) | (static_cast<uint32_t>(rc) & 0xFFU));
+        ring(ev_send_fail, (s.id << 8) | (static_cast<uint32_t>(rc) & 0xFFU));
     }
     inc(r.send_end);
 }
@@ -385,6 +407,10 @@ int cmd_status(const struct shell *sh, size_t, char **)
                 r.acq_begin_ms, r.acq_end_ms);
     shell_print(sh, "send  begin %u end %u fail %u  last id 0x%03x rc %d at %u ms", r.send_begin,
                 r.send_end, r.send_fail, r.send_id, static_cast<int>(r.send_rc), r.send_begin_ms);
+    for (int i{0}; i < 2; ++i)
+        shell_print(sh, "slot[%d] %s active %u id 0x%03x begin %u end %u rc %d at %u ms", i,
+                    i == 0 ? "acq   " : "health", r.slot[i].active, r.slot[i].id, r.slot[i].begin,
+                    r.slot[i].end, static_cast<int>(r.slot[i].rc), r.slot[i].begin_ms);
     shell_print(sh, "grid  sent %u suppressed %u", r.grid_sent, r.grid_suppressed);
     shell_print(sh, "health begin %u end %u   zcan loops %u", r.health_begin, r.health_end,
                 r.zcan_loops);
