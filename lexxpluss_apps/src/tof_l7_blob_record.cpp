@@ -7,7 +7,7 @@
 
 #include "tof_l7_blob_record.hpp"
 
-#if defined(ENABLE_TOF_CHAIN)
+#if defined(ENABLE_TOF_CHAIN) || defined(ENABLE_L7_BLOB_PROVISIONER)
 
 #include <string.h>
 
@@ -239,4 +239,4 @@ status verify(const reader &r, size_t region_size, const accept_list &accepted, 
 
 }  // namespace lexxhard::tof_l7_blob
 
-#endif  // ENABLE_TOF_CHAIN
+#endif  // ENABLE_TOF_CHAIN || ENABLE_L7_BLOB_PROVISIONER

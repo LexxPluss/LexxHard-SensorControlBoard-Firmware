@@ -128,6 +128,24 @@ test_tof_l7_blob:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# The uncommitted L7 blob record the provisioner image embeds, generated offline from the vendored
+# VL53L7CX_FIRMWARE by the same generator and inputs as the archived record.uncommitted.img. The
+# accept-list check runs first, so an image is never built around a record the signed accept-list
+# does not name. The generator runs here and only here: a firmware build never runs Python.
+L7_BLOB_RECORD_DIR:=build-l7-blob-record
+.PHONY: l7_blob_record
+l7_blob_record:
+	python3 docs/can/gen_l7_blob_record.py pack lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/modules/vl53l7cx_buffers.h --c-array VL53L7CX_FIRMWARE --expect-header lexxpluss_apps/third_party/st/vl53l7cx_uld/zephyr/vl53l7cx_blob_expectation.hpp --check
+	mkdir -p $(L7_BLOB_RECORD_DIR)
+	python3 docs/can/gen_l7_blob_record.py pack lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/modules/vl53l7cx_buffers.h --c-array VL53L7CX_FIRMWARE --out $(L7_BLOB_RECORD_DIR)/record.uncommitted.img --commit-marker-out $(L7_BLOB_RECORD_DIR)/marker.bin
+
+# Host tests for the one-shot L7 blob provisioner: the real record on a NOR-semantics fake flash,
+# with a reset injected at every erase and write, including the two windows that must NOT recover.
+.PHONY: test_tof_l7_blob_provisioner
+test_tof_l7_blob_provisioner: l7_blob_record
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob_provisioner -d build-test-tof-l7-blob-provisioner -t run -- -DBOARD_ROOT=/${WORKDIR}/extra -DL7_BLOB_RECORD_IMG=/${WORKDIR}/$(L7_BLOB_RECORD_DIR)/record.uncommitted.img
+
 .PHONY: test_tof_l7_port
 test_tof_l7_port:
 	$(RUNNER) west zephyr-export
@@ -355,6 +373,21 @@ firmware_auto_commission:
 	mv build-auto-commission/zephyr/zephyr.signed.confirmed.bin out/zephyr_auto_commission.signed.confirmed.bin
 	cp out/zephyr_auto_commission.signed.confirmed.bin out/zephyr_auto_commission.test.bin
 	printf '\377' | dd of=out/zephyr_auto_commission.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_auto_commission.test.bin) - 24)) conv=notrunc status=none
+
+# DEV ONLY: the one-shot L7 blob provisioner image. The product runtime without the ToF chain, plus a
+# thread that, five minutes after boot, writes the VL53L7CX device-firmware record into storage_partition,
+# verifies it with the production reader and only then confirms the image. Delivered as the padded
+# unconfirmed test image: anything but a verified success leaves it unconfirmed, and the next reset
+# reverts to the previous image. Safety-lidar behaviour is the product's -- no bypass. Never release.
+.PHONY: firmware_l7_blob_provisioner
+firmware_l7_blob_provisioner: l7_blob_record
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-l7-blob-provisioner -- -DENABLE_L7_BLOB_PROVISIONER=1 -DL7_BLOB_RECORD_IMG=/${WORKDIR}/$(L7_BLOB_RECORD_DIR)/record.uncommitted.img -DEXTRA_CONF_FILE=overlays/l7_blob_provisioner.conf -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}-DEV-L7-BLOB-PROVISIONER-NOFAT
+	mv build-l7-blob-provisioner/zephyr/zephyr.signed.bin out/zephyr_l7_blob_provisioner.signed.bin
+	mv build-l7-blob-provisioner/zephyr/zephyr.signed.confirmed.bin out/zephyr_l7_blob_provisioner.signed.confirmed.bin
+	cp out/zephyr_l7_blob_provisioner.signed.confirmed.bin out/zephyr_l7_blob_provisioner.test.bin
+	printf '\377' | dd of=out/zephyr_l7_blob_provisioner.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_l7_blob_provisioner.test.bin) - 24)) conv=notrunc status=none
 
 .PHONY: firmware_initial
 firmware_initial:

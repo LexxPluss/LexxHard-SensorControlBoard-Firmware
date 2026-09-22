@@ -45,6 +45,9 @@
 #include <zephyr/dfu/mcuboot.h>
 #include "tof_chain_controller.hpp"
 #endif
+#if defined(ENABLE_L7_BLOB_PROVISIONER)
+#include "tof_l7_blob_provisioner_boot.hpp"
+#endif
 
 namespace {
 
@@ -353,6 +356,12 @@ int main()
         printk("tof_chain: image confirmed\n");
     else
         printk("tof_chain: image confirm failed (%d), will revert on next boot\n", rc);
+#endif
+
+#if defined(ENABLE_L7_BLOB_PROVISIONER)
+    // DEV provisioner image: deliberately NO confirm here. The image confirms itself from the
+    // provisioning thread, and only after a verified success; see tof_l7_blob_provisioner_boot.hpp.
+    lexxhard::tof_l7_blob_provisioner_boot::start();
 #endif
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);

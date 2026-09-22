@@ -58,7 +58,7 @@
 /* Guarded like every other file in this family, and for the same reason: every source cpp is
  * globbed, so without it this module would compile into the production image and drag SHA-256 and
  * CRC-32 in with it. The production image is byte-identical until the chain is enabled. */
-#if defined(ENABLE_TOF_CHAIN)
+#if defined(ENABLE_TOF_CHAIN) || defined(ENABLE_L7_BLOB_PROVISIONER)
 
 #include <stddef.h>
 #include <stdint.h>
@@ -167,4 +167,4 @@ status read_header(const reader &r, size_t region_size, header_info &out);
 
 }  // namespace lexxhard::tof_l7_blob
 
-#endif  // ENABLE_TOF_CHAIN
+#endif  // ENABLE_TOF_CHAIN || ENABLE_L7_BLOB_PROVISIONER

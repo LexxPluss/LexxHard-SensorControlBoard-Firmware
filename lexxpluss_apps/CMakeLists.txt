@@ -143,6 +143,35 @@ if(ENABLE_TOF_L7_ULD)
     add_definitions(-DENABLE_TOF_L7_ULD)
 endif()
 
+# DEV ONLY: the one-shot VL53L7CX blob provisioner (tof_l7_blob_provisioner_boot.hpp). The ordinary
+# product runtime -- power, board controller, CAN, firmware updater, shell -- plus one low-priority
+# thread that writes the device-firmware record into storage_partition, verifies it and only then
+# confirms the image. No ToF chain, no ULD, no commissioning. Off by default, and every other image
+# is byte for byte what it was: the new sources compile to nothing without this definition.
+#
+# The record is NOT generated here. The generator is offline tooling and does not run inside a
+# firmware build; the Makefile target produces the record first and passes its path in
+# L7_BLOB_RECORD_IMG. What is embedded is checked twice more before any flash operation: its size by
+# a static_assert, and its content by the production reader against the signed accept-list at boot.
+if(ENABLE_L7_BLOB_PROVISIONER)
+    if(ENABLE_TOF_CHAIN)
+        message(FATAL_ERROR "ENABLE_L7_BLOB_PROVISIONER is a separate DEV image and excludes ENABLE_TOF_CHAIN")
+    endif()
+    if(NOT L7_BLOB_RECORD_IMG OR NOT EXISTS "${L7_BLOB_RECORD_IMG}")
+        message(FATAL_ERROR "ENABLE_L7_BLOB_PROVISIONER needs L7_BLOB_RECORD_IMG naming the generated "
+                            "uncommitted record (see the firmware_l7_blob_provisioner Makefile target)")
+    endif()
+    add_definitions(-DENABLE_L7_BLOB_PROVISIONER)
+    set(L7_BLOB_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/l7_blob_record)
+    file(MAKE_DIRECTORY ${L7_BLOB_GEN_DIR})
+    generate_inc_file_for_target(app ${L7_BLOB_RECORD_IMG} ${L7_BLOB_GEN_DIR}/l7_blob_record.inc)
+    # The accept-list header lives with the vendored ULD; the record format header in src/.
+    target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                           ${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l7cx_uld/zephyr
+                                           ${L7_BLOB_GEN_DIR})
+    message(WARNING "DEV BUILD: L7 blob provisioner. Writes storage_partition at boot. NOT FOR RELEASE.")
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
