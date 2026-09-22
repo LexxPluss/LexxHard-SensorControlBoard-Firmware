@@ -143,6 +143,19 @@ if(ENABLE_TOF_L7_ULD)
     add_definitions(-DENABLE_TOF_L7_ULD)
 endif()
 
+# DEV ONLY: a ToF image that never confirms itself, for a first end-to-end run of code that has not
+# been on hardware. main() normally confirms a ToF image before any subsystem thread runs; with this
+# flag nothing confirms it, so any reset -- including one the new code causes -- reverts to the
+# previous image. Every other build is unchanged: the flag only removes a call.
+if(TOF_DEV_NO_AUTO_CONFIRM)
+    if(NOT ENABLE_TOF_CHAIN)
+        message(FATAL_ERROR "TOF_DEV_NO_AUTO_CONFIRM applies only to ENABLE_TOF_CHAIN images")
+    endif()
+    add_definitions(-DTOF_DEV_NO_AUTO_CONFIRM)
+    message(WARNING "DEV BUILD: TOF_DEV_NO_AUTO_CONFIRM. This image never confirms itself; any reset "
+                    "reverts to the previous image. NOT FOR RELEASE.")
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()

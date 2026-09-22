@@ -349,10 +349,19 @@ int main()
     // without first proving the cascade leaves it time to execute. A
     // future dedicated ToF PRODUCTION target must decide its test-boot
     // behaviour explicitly instead of inheriting this.
+#if defined(TOF_DEV_NO_AUTO_CONFIRM)
+    // DEV end-to-end image: deliberately NEVER confirmed, by anything. The real L7 ULD, both grid
+    // sensors and the shared acquisition loop have not run on hardware yet, and the confirm above
+    // happens before any subsystem thread does -- a fault that resets the board once they start would
+    // otherwise be a confirmed image resetting forever. Unconfirmed, any reset of any kind reverts
+    // to the previous image.
+    printk("tof_chain: DEV E2E image, NOT confirmed: any reset reverts to the previous image\n");
+#else
     if (int rc = boot_write_img_confirmed(); rc == 0)
         printk("tof_chain: image confirmed\n");
     else
         printk("tof_chain: image confirm failed (%d), will revert on next boot\n", rc);
+#endif
 #endif
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
