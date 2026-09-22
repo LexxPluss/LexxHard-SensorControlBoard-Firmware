@@ -180,20 +180,25 @@ void worker(void *, void *, void *)
 K_THREAD_STACK_DEFINE(worker_stack, 4096);
 struct k_thread worker_thread;
 
-/* Five minutes after main() gets here. The delay is not for the SCB's own controllers, CAN or the
- * firmware updater, which are running within seconds. It is for two things outside the board:
+/* Ten minutes after main() gets here. The delay is not for the SCB's own controllers, CAN or the
+ * firmware updater, which are running within seconds. It is for three things outside the board:
  *   - A reset caused by the update itself -- the machine power-cycles after a CAN DFU, and when a
  *     second SCB reset follows, if one does, has not been measured -- lands while the worker has not
  *     touched the partition and the image is unconfirmed, so MCUboot reverts to the previous image
  *     before a byte of storage has changed.
  *   - The robot PC, which takes about three minutes to come back after that power cycle, is up and
  *     logging, and somebody can be watching the shell, before the one risky window opens.
+ *   - If this image must not run -- inspect found something unexpected, or the unconfirmed image
+ *     did not revert as it should -- there is time to put the previous image back by CAN DFU before
+ *     the worker starts: about three minutes for the PC to return plus about 2 min 45 s for the DFU
+ *     and its power cycle is already more than five minutes, so five would have left the rollback
+ *     racing the first erase.
  * It does nothing for a reset that arrives once the erase has started; that is what the marker-last
  * ordering and the two stated unrecoverable windows in tof_l7_blob_provisioner.hpp are for.
  *
  * An erase stalls the flash bank for about a second, well inside the 10 s IWDG timeout, and the
  * existing DFU already erases a larger 256 KiB sector on this board on every update. */
-constexpr int kStartDelayMs{300'000};
+constexpr int kStartDelayMs{600'000};
 /* Below every existing thread: the run is the least urgent thing on the board. */
 constexpr int kPriority{9};
 

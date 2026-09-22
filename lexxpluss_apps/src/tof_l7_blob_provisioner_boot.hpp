@@ -9,7 +9,7 @@
  * The rest of the image is the ordinary product runtime -- power sequencing, board controller, CAN,
  * firmware updater, shell -- because the one thing a remotely flashed provisioner must not do is lose
  * the robot's power or its CAN DFU. Only the ToF chain is absent, and in its place this module runs
- * the provisioner once per boot, in its own low-priority thread, five minutes after boot.
+ * the provisioner once per boot, in its own low-priority thread, ten minutes after boot.
  *
  * THE IMAGE IS NOT CONFIRMED BY main(). It is flashed as an unconfirmed test image and confirms
  * itself only after the run ends in already_provisioned or provisioned_and_verified AND the

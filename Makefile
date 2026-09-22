@@ -375,7 +375,7 @@ firmware_auto_commission:
 	printf '\377' | dd of=out/zephyr_auto_commission.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_auto_commission.test.bin) - 24)) conv=notrunc status=none
 
 # DEV ONLY: the one-shot L7 blob provisioner image. The product runtime without the ToF chain, plus a
-# thread that, five minutes after boot, writes the VL53L7CX device-firmware record into storage_partition,
+# thread that, ten minutes after boot, writes the VL53L7CX device-firmware record into storage_partition,
 # verifies it with the production reader and only then confirms the image. Delivered as the padded
 # unconfirmed test image: anything but a verified success leaves it unconfirmed, and the next reset
 # reverts to the previous image. Safety-lidar behaviour is the product's -- no bypass. Never release.
