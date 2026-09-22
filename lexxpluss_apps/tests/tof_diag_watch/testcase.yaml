@@ -1,0 +1,4 @@
+tests:
+  tof.diag.watch:
+    platform_allow: native_sim
+    tags: tof diag

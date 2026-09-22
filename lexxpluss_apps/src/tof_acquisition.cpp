@@ -20,6 +20,13 @@
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_sensor.hpp"
 #endif
+#include "tof_diag_hang.hpp"
+
+#if defined(TOF_DIAG_HANG)
+namespace lexxhard::tof_diag {
+const tof_acq::grid_source_ops &grid_ops();
+}
+#endif
 
 LOG_MODULE_REGISTER(tof_acq, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -373,9 +380,11 @@ void health_work_handler(k_work *)
 {
     // Reads one atomic word. Takes no lock and touches no device, so a stalled bring-up
     // cannot silence it.
+    TOF_DIAG(tof_diag::health_begin());
     if (cfg_.hooks.on_cliff_health != nullptr)
         cfg_.hooks.on_cliff_health(static_cast<uint32_t>(atomic_get(&snapshot_)),
                                    effective_mapping_state());
+    TOF_DIAG(tof_diag::health_end());
 }
 
 void health_timer_handler(k_timer *)
@@ -485,7 +494,13 @@ const grid_source_ops &l7_grid_stub_ops()
 #if defined(ENABLE_TOF_L7_ULD)
 const grid_source_ops &l7_grid_ops()
 {
+#if defined(TOF_DIAG_HANG)
+    /* DEV hang isolation: deferred open, and either the real L7 behind `tofdiag arm` (mode 1) or
+     * a static grid with no bus access (mode 2). See tof_diag_hang.hpp. */
+    return tof_diag::grid_ops();
+#else
     return kL7GridOps;
+#endif
 }
 #endif
 
@@ -891,6 +906,7 @@ void run_cycle()
 
     facts_.cycle_seq = next_cycle_seq_;
     facts_.began_ms = now();
+    TOF_DIAG(tof_diag::cycle_begin());
 
     /* Before the first sensor is touched. A cycle that produces no sample at all still has to be
      * announced, and this is the only point at which that is possible: every later hook is
@@ -990,6 +1006,7 @@ void run_cycle()
     /* Per COMPLETED cycle, which is why this is here and not at the top. */
     ++next_cycle_seq_;
     atomic_inc(&tally_cycles_);
+    TOF_DIAG(tof_diag::cycle_end());
 }
 
 void teardown()

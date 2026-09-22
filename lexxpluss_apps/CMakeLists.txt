@@ -163,6 +163,20 @@ if(TOF_DEV_NO_AUTO_CONFIRM)
                     "reverts to the previous image. NOT FOR RELEASE.")
 endif()
 
+# DEV ONLY: the L7 hang-isolation images (see src/tof_diag_hang.hpp). 1 = the real L7 behind
+# `tofdiag arm` with grid frames kept off CAN; 2 = a static grid through the real publisher and CAN
+# send, with no L7 bus access. Both keep the image unconfirmed and gate the IWDG on progress.
+if(TOF_DIAG_HANG)
+    if(NOT TOF_DIAG_HANG STREQUAL "1" AND NOT TOF_DIAG_HANG STREQUAL "2")
+        message(FATAL_ERROR "TOF_DIAG_HANG must be 1 or 2")
+    endif()
+    if(NOT ENABLE_TOF_L7_ULD OR NOT TOF_DEV_NO_AUTO_CONFIRM)
+        message(FATAL_ERROR "TOF_DIAG_HANG needs ENABLE_TOF_L7_ULD and TOF_DEV_NO_AUTO_CONFIRM")
+    endif()
+    add_definitions(-DTOF_DIAG_HANG=${TOF_DIAG_HANG})
+    message(WARNING "DEV BUILD: TOF_DIAG_HANG=${TOF_DIAG_HANG} L7 hang isolation. NOT FOR RELEASE.")
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()

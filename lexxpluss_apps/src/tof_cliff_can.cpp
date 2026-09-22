@@ -21,6 +21,7 @@
 #include "tof_cliff_contract.h"
 #include "tof_mapping_authority.hpp"
 #include "tof_mapping_proof.hpp"
+#include "tof_diag_hang.hpp"
 
 namespace lexxhard::tof_cliff_can {
 
@@ -76,8 +77,34 @@ int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
      * and a completion callback would put the counter update in yet another context for no
      * gain. Note that "blocking" here is unbounded on the completion side -- see kSendTimeout
      * above for what the 1 ms does and does not cover. */
+#if defined(TOF_DIAG_HANG)
+    tof_diag::send_begin(can_id);
+    const int rc{can_send(dev_, &frame, kSendTimeout, nullptr, nullptr)};
+    tof_diag::send_end(rc);
+    return rc;
+#else
     return can_send(dev_, &frame, kSendTimeout, nullptr, nullptr);
+#endif
 }
+
+#if defined(TOF_DIAG_HANG) && defined(ENABLE_TOF_L7_ULD)
+/* DEV hang isolation. Mode 1 keeps every grid frame off the bus -- the publisher, packer and its
+ * accounting all run, only the transmit is replaced -- so the real L7 path can run without adding a
+ * single frame to the shared CAN transmit path. Mode 2 sends them, counted. */
+int send_grid(uint16_t can_id, const uint8_t *data, uint8_t dlc)
+{
+#if TOF_DIAG_HANG == 1
+    (void)can_id;
+    (void)data;
+    (void)dlc;
+    tof_diag::grid_suppressed();
+    return 0;
+#else
+    tof_diag::grid_sent();
+    return send(can_id, data, dlc);
+#endif
+}
+#endif
 
 } // namespace
 
@@ -108,7 +135,11 @@ struct tof_grid_pub::can_sink grid_sink()
     /* The same send(). The grid frames are 0x214/0x215 and the cliff frames 0x216/0x217, all
      * DLC 8 on the same controller; a second sink would be a second copy of the same three
      * lines and one more place for the timeout to diverge. */
+#if defined(TOF_DIAG_HANG)
+    s.send = send_grid;
+#else
     s.send = send;
+#endif
     return s;
 }
 

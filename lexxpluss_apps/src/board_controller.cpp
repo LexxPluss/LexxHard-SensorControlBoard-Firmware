@@ -42,6 +42,7 @@
 #include "common.hpp"
 #include "led_controller.hpp"
 #include "power_state.hpp"
+#include "tof_diag_hang.hpp"
 
 namespace {
     constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{5000};
@@ -1947,6 +1948,12 @@ private:
             LOG_INF("Watchdog device is not ready\n");
             return;
         }
+#if defined(TOF_DIAG_HANG)
+        /* DEV hang isolation: fed only while the watched work keeps finishing, so a thread-level
+         * hang becomes an IWDG reset. See tof_diag_hang.hpp. */
+        if (!tof_diag::feed_allowed())
+            return;
+#endif
         wdt_feed(dev_wdi, 0);   // Feed the watchdog, Second value will not be used for STM32
     }
     bool should_lockdown() const {

@@ -36,6 +36,7 @@
 #include "zcan_gpio.hpp"
 #include "zcan_tug_encoder.hpp"
 #include "zcan_main.hpp"
+#include "tof_diag_hang.hpp"
 
 namespace lexxhard::zcan_main {
 
@@ -81,6 +82,7 @@ public:
             uss.poll();
             gpio.poll();
             tug_encoder.poll();
+            TOF_DIAG(tof_diag::zcan_loop());
             k_usleep(1);
         }
     }
