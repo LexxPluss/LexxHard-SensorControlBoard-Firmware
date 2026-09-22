@@ -23,6 +23,13 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
+# An L7 image verifies the stored blob on the main stack at boot, which does not fit the default main
+# stack: see overlays/tof_l7.conf. Kconfig is fixed by find_package(Zephyr), so the fragment is added
+# here, before it, and only for L7 builds -- every other image is configured exactly as before.
+if(ENABLE_TOF_L7_ULD)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
