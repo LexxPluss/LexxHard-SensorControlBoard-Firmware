@@ -100,7 +100,9 @@ struct record {
     } ring[kRing];            // 0xbc
     /* One slot per sender, because the three fields above are overwritten by whichever sender went
      * last: with one sender stuck, the other can replace its id. slot[0] is the acquisition thread
-     * (cliff 0x216 and grid 0x214/0x215), slot[1] the system work queue (health 0x217). */
+     * -- grid 0x214/0x215, cliff measurements 0x216, AND the per-cycle health 0x217 that
+     * on_cycle_complete sends; slot[1] is the system work queue, which sends only the heartbeat
+     * 0x217. So a 0x217 in slot[0] is a cycle health frame and in slot[1] a heartbeat. */
     struct {
         uint32_t active;   // 1 between begin and end
         uint32_t id;       // CAN id of this sender's current or last send

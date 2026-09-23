@@ -147,8 +147,9 @@ void cycle_end()
 
 namespace {
 
-/* 0: the acquisition thread (cliff and grid frames); 1: the system work queue (health). Nothing else
- * sends through tof_cliff_can. Each slot has exactly one writer, so plain stores are enough. */
+/* 0: the acquisition thread -- grid 0x214/0x215, cliff 0x216 and the per-cycle health 0x217;
+ * 1: the system work queue, which sends the heartbeat 0x217 and nothing else. Nothing else sends
+ * through tof_cliff_can. Each slot has exactly one writer, so plain stores are enough. */
 int sender_slot()
 {
     return k_current_get() == &k_sys_work_q.thread ? 1 : 0;
@@ -409,7 +410,8 @@ int cmd_status(const struct shell *sh, size_t, char **)
                 r.send_end, r.send_fail, r.send_id, static_cast<int>(r.send_rc), r.send_begin_ms);
     for (int i{0}; i < 2; ++i)
         shell_print(sh, "slot[%d] %s active %u id 0x%03x begin %u end %u rc %d at %u ms", i,
-                    i == 0 ? "acq   " : "health", r.slot[i].active, r.slot[i].id, r.slot[i].begin,
+                    i == 0 ? "acq (grid/cliff/cycle-health)" : "workq (heartbeat 0x217)     ",
+                    r.slot[i].active, r.slot[i].id, r.slot[i].begin,
                     r.slot[i].end, static_cast<int>(r.slot[i].rc), r.slot[i].begin_ms);
     shell_print(sh, "grid  sent %u suppressed %u", r.grid_sent, r.grid_suppressed);
     shell_print(sh, "health begin %u end %u   zcan loops %u", r.health_begin, r.health_end,
