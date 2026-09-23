@@ -46,7 +46,11 @@ uint32_t evaluate(watch_state &st, const watch_input &in)
         st.zcan_seen_ms = in.now_ms;
     }
 
-    if (in.now_ms < kGraceMs)
+    /* Unarmed: judge nothing but the clock. The post-DFU boot legitimately blocks every sender
+     * until the robot PC is back on the bus, and that is not this image's business. */
+    if (!in.armed)
+        return in.now_ms >= kUnarmedRevertMs ? static_cast<uint32_t>(unarmed_timeout) : 0U;
+    if (in.now_ms - in.armed_ms < kGraceMs)
         return 0;
 
     uint32_t why{0};
@@ -59,6 +63,32 @@ uint32_t evaluate(watch_state &st, const watch_input &in)
         why |= stuck_health;
     if (in.now_ms - st.zcan_seen_ms > kZcanBoundMs)
         why |= stuck_zcan;
+    return why;
+}
+
+uint32_t arm_blockers(const arm_input &in)
+{
+    uint32_t why{0};
+
+    /* Each watched activity must have been seen to work on THIS boot... */
+    if (in.send_end == 0)
+        why |= arm_no_send;
+    if (in.health_end == 0)
+        why |= arm_no_health;
+    if (in.zcan_loops == 0)
+        why |= arm_no_zcan;
+    if (in.acq_end == 0)
+        why |= arm_no_cycle;
+    /* ...and nothing may be inside one when the baseline is taken, or the first judgement after the
+     * grace period would be about work that began before anybody armed anything. */
+    if (in.send_begin != in.send_end)
+        why |= arm_send_in_flight;
+    if (in.health_begin != in.health_end)
+        why |= arm_health_in_flight;
+    if (in.acq_begin != in.acq_end)
+        why |= arm_cycle_in_flight;
+    if (in.slot_active[0] || in.slot_active[1])
+        why |= arm_slot_active;
     return why;
 }
 

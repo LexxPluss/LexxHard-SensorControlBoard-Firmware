@@ -16,6 +16,7 @@
 #error "TOF_DIAG_HANG needs ENABLE_TOF_L7_ULD and TOF_DEV_NO_AUTO_CONFIRM"
 #endif
 
+#include <errno.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -34,12 +35,13 @@ namespace lexxhard::tof_diag {
 
 namespace {
 
-static_assert(sizeof(record) == 0x1f0, "the record layout is part of the reading procedure");
+static_assert(sizeof(record) == 0x1f4, "the record layout is part of the reading procedure");
+static_assert(offsetof(record, arm_blockers) == 0x1ec);
 static_assert(offsetof(record, slot) == 0x1bc);
 static_assert(offsetof(record, wdt_withheld) == 0x8c);
 static_assert(offsetof(record, fatal_reason) == 0x98);
 static_assert(offsetof(record, ring) == 0xbc);
-static_assert(offsetof(record, magic_end) == 0x1ec);
+static_assert(offsetof(record, magic_end) == 0x1f0);
 /* Inside DTCM, and the record does not run off its end. */
 static_assert(kRecordAddress >= DT_REG_ADDR(DT_CHOSEN(zephyr_dtcm)));
 static_assert(kRecordAddress + sizeof(record) <=
@@ -73,6 +75,8 @@ void ring(event code, uint32_t arg)
 
 watch_state watch_{};
 bool withheld_latched_{false};
+/* Seen by the 1 s evaluation, so the baseline is retaken in the same context that judges. */
+bool was_armed_{false};
 
 } // namespace
 
@@ -100,8 +104,25 @@ bool feed_allowed()
     if (withheld_latched_)
         return false;
 
-    const watch_input in{now,         r.acq_begin,    r.acq_end,    r.send_begin, r.send_end,
-                         r.health_begin, r.health_end, r.zcan_loops};
+    const bool armed_now{r.armed != 0};
+
+    /* `arm` proved everything works and nothing is in flight; the baseline starts there. */
+    if (armed_now && !was_armed_) {
+        watch_ = watch_state{};
+        was_armed_ = true;
+    }
+
+    watch_input in{};
+    in.now_ms = now;
+    in.acq_begin = r.acq_begin;
+    in.acq_end = r.acq_end;
+    in.send_begin = r.send_begin;
+    in.send_end = r.send_end;
+    in.health_begin = r.health_begin;
+    in.health_end = r.health_end;
+    in.zcan_loops = r.zcan_loops;
+    in.armed = armed_now;
+    in.armed_ms = r.armed_ms;
     const uint32_t why{evaluate(watch_, in)};
 
     if (why != 0) {
@@ -121,14 +142,33 @@ bool armed()
     return rec().armed != 0;
 }
 
-void arm()
+uint32_t arm()
 {
     volatile record &r{rec()};
     if (r.armed != 0)
-        return;
+        return 0;
+
+    arm_input in{};
+    in.acq_begin = r.acq_begin;
+    in.acq_end = r.acq_end;
+    in.send_begin = r.send_begin;
+    in.send_end = r.send_end;
+    in.health_begin = r.health_begin;
+    in.health_end = r.health_end;
+    in.zcan_loops = r.zcan_loops;
+    in.slot_active[0] = r.slot[0].active != 0;
+    in.slot_active[1] = r.slot[1].active != 0;
+
+    const uint32_t why{arm_blockers(in)};
+
+    r.arm_blockers = why;
+    if (why != 0)
+        return why;   // refused: the risky path stays off and the watchdog stays quiet
+
     r.armed_ms = now_ms();
     r.armed = 1;
     ring(ev_armed, TOF_DIAG_HANG);
+    return 0;
 }
 
 void cycle_begin()
@@ -392,10 +432,23 @@ namespace {
 
 int cmd_arm(const struct shell *sh, size_t, char **)
 {
-    arm();
+    if (const uint32_t why{arm()}; why != 0) {
+        static const char *const names[]{"no completed CAN send", "no completed health item",
+                                         "zcan loop has not run",  "no completed cycle",
+                                         "a CAN send is in flight", "a health item is in flight",
+                                         "a cycle is in flight",   "a sender slot is active"};
+        shell_print(sh, "REFUSED (0x%02x): the baseline is not healthy yet", why);
+        for (size_t i{0}; i < sizeof names / sizeof names[0]; ++i) {
+            if (why & (1U << i))
+                shell_print(sh, "  - %s", names[i]);
+        }
+        shell_print(sh, "wait for commissioning and the robot PC, then try again");
+        return -EAGAIN;
+    }
     shell_print(sh, "armed (mode %d): %s", TOF_DIAG_HANG,
                 TOF_DIAG_HANG == 1 ? "real L7 opens on the next cycle; grid frames stay off CAN"
                                    : "static grid frames go on CAN from the next cycle");
+    shell_print(sh, "everything is watched from now; the %u s grace starts here", kGraceMs / 1000);
     return 0;
 }
 
@@ -422,6 +475,8 @@ int cmd_status(const struct shell *sh, size_t, char **)
                     r.l7_read_end[i], static_cast<int>(r.l7_read_rc[i]), r.l7_fresh[i]);
     shell_print(sh, "wdt   feeds %u withheld %u reason 0x%x at %u ms (eval %u ms)", r.wdt_feeds,
                 r.wdt_withheld, r.wdt_reason, r.wdt_withheld_ms, r.eval_ms);
+    shell_print(sh, "arm   last refusal 0x%02x; unarmed revert at %u s", r.arm_blockers,
+                kUnarmedRevertMs / 1000);
     return 0;
 }
 

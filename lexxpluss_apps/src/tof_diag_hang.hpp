@@ -18,14 +18,18 @@
  *                    hang here points at the shared synchronous CAN transmit path.
  *
  * Neither starts its risky path at boot: `tofdiag arm` does, once the console and a CAN capture are
- * running.
+ * running -- and `arm` itself refuses until this boot has shown a completed CAN send, health item,
+ * acquisition cycle and zcan loop with nothing in flight, because until the robot PC is back on the
+ * bus after the DFU power cycle every synchronous send legitimately blocks.
  *
  * THREE THINGS SURVIVE A HANG NOW:
  *   - a progress record in DTCM (see kRecordAddress), which no image, and not MCUboot, links
  *     anything into, and which a reset -- unlike a power cycle -- does not clear. After the reset
  *     MCUboot reverts this unconfirmed image and E3 runs; `devmem` from E3 reads the record back.
- *   - a watchdog that is fed only while the watched work keeps finishing, so a thread-level hang
- *     becomes an IWDG reset instead of a board that is silent until somebody pulls the power.
+ *   - a watchdog that, ONCE ARMED, is fed only while the watched work keeps finishing, so a
+ *     thread-level hang becomes an IWDG reset instead of a board that is silent until somebody
+ *     pulls the power. Unarmed it judges only the clock, and hands the board back to the confirmed
+ *     image if nobody armed it within kUnarmedRevertMs.
  *   - a fatal-error handler that writes reason, PC, LR and thread into the record before halting.
  */
 
@@ -52,6 +56,24 @@ enum reason : uint32_t {
     stuck_send = 1U << 1,   // a ToF CAN send began and has not returned
     stuck_health = 1U << 2, // a health work item began and has not ended
     stuck_zcan = 1U << 3,   // the zcan_main loop has stopped going round
+    /* Not a hang: nobody armed this image. It is unconfirmed, so letting the watchdog go gives the
+     * board back to E3 instead of leaving a diagnostic image running forever. */
+    unarmed_timeout = 1U << 4,
+};
+
+/* Why `tofdiag arm` refused. The risky path may only start from a baseline where everything the
+ * watchdog will judge has already been seen to work on this boot -- otherwise the first judgement
+ * would be about the post-DFU boot, where every CAN send blocks until the robot PC is back on the
+ * bus to acknowledge a frame. */
+enum arm_block : uint32_t {
+    arm_no_send = 1U << 0,       // no ToF CAN send has completed
+    arm_no_health = 1U << 1,     // no health work item has completed
+    arm_no_zcan = 1U << 2,       // the zcan_main loop has not gone round
+    arm_no_cycle = 1U << 3,      // no acquisition cycle has completed (commissioning not done)
+    arm_send_in_flight = 1U << 4,
+    arm_health_in_flight = 1U << 5,
+    arm_cycle_in_flight = 1U << 6,
+    arm_slot_active = 1U << 7,   // a sender is inside a send right now
 };
 
 /* Everything is a 32-bit word so that `devmem` can read it back one word at a time. Offsets are part
@@ -111,7 +133,8 @@ struct record {
         uint32_t begin;    // sends begun by this sender
         uint32_t end;      // sends returned to this sender
     } slot[2];                // 0x1bc
-    uint32_t magic_end;       // 0x1ec
+    uint32_t arm_blockers;    // 0x1ec what the last refused `arm` was missing (0 = none refused)
+    uint32_t magic_end;       // 0x1f0
 };
 
 /* Ring event codes. */
@@ -132,7 +155,18 @@ enum event : uint32_t {
  * seconds while commissioning holds the chain, and a rule about recency would reset a board that is
  * behaving exactly as asked. A cycle, a send or a health item that has STARTED and not finished for
  * longer than its bound is not idle, it is stuck. The zcan loop is the exception: it never idles, so
- * for it recency is the right question. */
+ * for it recency is the right question.
+ *
+ * ARM IS THE BOUNDARY, and it is there because of what the first GATE 0 run showed: after a CAN DFU
+ * the SCB boots about 90 s before the robot PC, and until the PC is on the bus to acknowledge a
+ * frame every synchronous can_send blocks. Judging threads then is judging the boot, not the image,
+ * and it reset a healthy board. So nothing is judged while the image is unarmed; `arm` refuses
+ * unless every watched activity has already completed at least once and nothing is in flight; and
+ * the moment it succeeds the baseline is retaken and EVERYTHING is watched at once -- including the
+ * very first L7 open, the very first grid send, and the first cycle after them.
+ *
+ * The one thing judged while unarmed is time itself: an image nobody armed hands the board back to
+ * the confirmed E3 after kUnarmedRevertMs rather than sitting there forever. */
 struct watch_state {
     uint32_t last_acq_end{0}, acq_end_seen_ms{0};
     uint32_t last_send_end{0}, send_end_seen_ms{0};
@@ -147,9 +181,24 @@ struct watch_input {
     uint32_t send_begin, send_end;
     uint32_t health_begin, health_end;
     uint32_t zcan_loops;
+    bool armed{false};
+    uint32_t armed_ms{0};
 };
 
+/* What `arm` needs to see before it will let the risky path start. */
+struct arm_input {
+    uint32_t acq_begin, acq_end;
+    uint32_t send_begin, send_end;
+    uint32_t health_begin, health_end;
+    uint32_t zcan_loops;
+    bool slot_active[2];
+};
+
+/* Measured from the moment `arm` succeeded, not from boot. */
 inline constexpr uint32_t kGraceMs{60'000};
+/* An image nobody armed gives the board back to E3 after this. Long enough for the post-DFU boot,
+ * the PC's return and an unhurried set of pre-arm checks. */
+inline constexpr uint32_t kUnarmedRevertMs{600'000};
 /* A cycle may contain both ULD downloads after `arm` (about 2 s each at 400 kHz). */
 inline constexpr uint32_t kCycleBoundMs{20'000};
 /* One CAN frame is 130 us at 1 Mbit/s. Two seconds is four orders of magnitude of slack. */
@@ -162,13 +211,17 @@ int init_record_at_boot();
 /* Returns the reason bits of everything stuck now; 0 means feed. Updates st. */
 uint32_t evaluate(watch_state &st, const watch_input &in);
 
+/* Returns the arm_block bits of everything missing; 0 means `arm` may proceed. */
+uint32_t arm_blockers(const arm_input &in);
+
 /* Called once per second from the board controller's timer callback; true = feed the IWDG. ISR-safe.
  * Once it has returned false it keeps returning false: a board that hung once is not trusted to
  * have recovered. */
 bool feed_allowed();
 
 bool armed();
-void arm();
+/* 0 on success, otherwise the arm_block bits that refused it. */
+uint32_t arm();
 
 void cycle_begin();
 void cycle_end();
