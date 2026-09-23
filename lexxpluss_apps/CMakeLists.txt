@@ -37,15 +37,6 @@ if(TOF_DIAG_HANG)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_diag_hang.conf)
 endif()
 
-# The candidate I2C fix, kept a separate flag from the forensics so the two images differ in exactly
-# one thing: whether the driver correction is in. An image built without it is the one that hung.
-if(TOF_DIAG_I2C_FIX)
-    if(NOT TOF_DIAG_HANG)
-        message(FATAL_ERROR "TOF_DIAG_I2C_FIX is only useful with the forensics (TOF_DIAG_HANG)")
-    endif()
-    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_diag_i2c_fix.conf)
-endif()
-
 find_package(Zephyr)
 project(lexxpluss_apps)
 

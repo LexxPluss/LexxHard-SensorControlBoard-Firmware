@@ -22,12 +22,15 @@ is stop on an RXNE that arrives with current.len already 0 and no TC, TCR,
 STOPF or NACKF beside it -- an entry the handler can neither consume nor
 mask, so it re-enters about 890,000 times a second and starves every
 thread, including the one whose 500 ms transfer timeout has already expired
-in kernel time. The fix for that is patch 0004; this one only measures.
+in kernel time. The fix for that is patch 0005, the backport of the upstream ISR
+rework; this one only measures.
 
 That is a hypothesis about an interrupt, so it has to be measured in one.
-This patch adds two hooks, called on entry to the event and error
-interrupts before any flag is cleared and before current.* is advanced,
-carrying what the interrupt saw. The application counts entries, buckets
+This patch adds the Kconfig option, the two hook prototypes and the call on
+entry to the ERROR interrupt. The call on entry to the EVENT interrupt
+lives in patch 0005, which rewrites that handler: keeping it here would
+make the two patches overlap, and each one has to apply and reverse on its
+own for the delivery script to trust the tree. The application counts entries, buckets
 them by flag, and keeps per-second rates in a RAM region that survives the
 reset. Of the counters it keeps, the one that names the fault is "RXNE with
 len == 0 AND no completion flag to act on"; plain "RXNE with len == 0"
@@ -71,19 +74,7 @@ this patch.
  #define STM32_I2C_TRANSFER_TIMEOUT_MSEC  500
  
  static inline void msg_init(const struct device *dev, struct i2c_msg *msg,
-@@ -363,6 +375,11 @@
- 	struct i2c_stm32_data *data = dev->data;
- 	I2C_TypeDef *i2c = cfg->i2c;
- 
-+#ifdef CONFIG_I2C_STM32_LEXX_ISR_FORENSICS
-+	lexx_i2c_forensics_event(dev, i2c->ISR, i2c->CR1, i2c->CR2, data->current.len,
-+				 data->current.buf);
-+#endif
-+
- #if defined(CONFIG_I2C_TARGET)
- 	if (data->slave_attached && !data->master_active) {
- 		stm32_i2c_slave_event(dev);
-@@ -426,6 +443,11 @@
+@@ -426,6 +438,11 @@
  	struct i2c_stm32_data *data = dev->data;
  	I2C_TypeDef *i2c = cfg->i2c;
  
