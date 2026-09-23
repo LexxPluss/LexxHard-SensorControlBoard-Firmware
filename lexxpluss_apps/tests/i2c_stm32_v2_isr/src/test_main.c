@@ -53,6 +53,10 @@ static struct k_thread xfer_thread;
 static struct k_sem xfer_started;
 static struct k_sem xfer_done;
 static volatile int xfer_result;
+/* Whether the transfer has returned, kept apart from the semaphore. A test that waits for the
+ * result consumes the semaphore, and the fixture must not then wait for a signal that has already
+ * been taken -- which is what made every such test cost two seconds of nothing. */
+static volatile bool xfer_finished;
 static bool xfer_live;
 static struct i2c_msg xfer_msg;
 static uint8_t *xfer_next_flags;
@@ -82,6 +86,7 @@ static void xfer_entry(void *a, void *b, void *c)
 	ARG_UNUSED(c);
 	k_sem_give(&xfer_started);
 	xfer_result = stm32_i2c_transaction(&dut, xfer_msg, xfer_next_flags, 0x2b);
+	xfer_finished = true;
 	k_sem_give(&xfer_done);
 }
 
@@ -90,6 +95,7 @@ static void start_xfer(struct i2c_msg msg, uint8_t *next_flags)
 	xfer_msg = msg;
 	xfer_next_flags = next_flags;
 	xfer_result = 0x7fffffff;
+	xfer_finished = false;
 	k_sem_init(&xfer_started, 0, 1);
 	k_sem_init(&xfer_done, 0, 1);
 	/* Cooperative and higher priority than the test thread: once created it runs without being
@@ -167,9 +173,12 @@ static int xfer_wait(k_timeout_t t)
 	return xfer_result;
 }
 
+/* Asking must not consume the completion, which is why this reads the flag and not the
+ * semaphore: a test that checks whether the driver is still waiting would otherwise take the
+ * signal it was only asking about. */
 static bool xfer_still_waiting(void)
 {
-	return k_sem_take(&xfer_done, K_NO_WAIT) != 0;
+	return !xfer_finished;
 }
 
 static uint32_t nbytes(void) { return (regs.CR2 & I2C_CR2_NBYTES_Msk) >> I2C_CR2_NBYTES_Pos; }
@@ -184,7 +193,7 @@ static void end_xfer(void *unused)
 	if (!xfer_live) {
 		return;
 	}
-	if (k_sem_take(&xfer_done, K_NO_WAIT) != 0) {
+	if (!xfer_finished) {
 		regs.ISR |= I2C_ISR_STOPF;
 		if ((regs.CR1 & I2C_CR1_PE) != 0U) {
 			stm32_i2c_event_isr((void *)&dut);
