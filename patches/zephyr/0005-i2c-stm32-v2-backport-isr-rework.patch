@@ -48,13 +48,16 @@ RELOAD for a final segment, TC generating the STOP, and segmentation of
 messages over 255 bytes done inside the handler instead of by the calling
 thread re-entering a half-configured peripheral.
 
-ONE CORRECTION TO UPSTREAM, not a transcription: on timeout this driver
-disables the transfer interrupts with interrupts locked and then empties
-the completion semaphore. Upstream only disables the peripheral, and the
+TWO CORRECTIONS TO UPSTREAM, not transcriptions, both about a completion
+outliving the transfer that caused it. On timeout this driver disables the
+transfer interrupts with interrupts locked and then empties the completion
+semaphore; and every transfer empties it again before it starts, so the
+guarantee does not depend on how the previous one ended. Upstream only disables the peripheral, and the
 v3.6 code it replaces did the equivalent through master_mode_end and an
 explicit give/take pair. Without it, a completion that races the 500 ms
 timeout leaves a token behind and the NEXT transfer takes it and returns
-success before the hardware has done anything.
+success before the hardware has done anything. Both are covered by the
+host tests in lexxpluss_apps/tests/i2c_stm32_v2_isr.
 
 KEPT FROM THIS INTEGRATION, deliberately diverging from upstream:
 
@@ -178,18 +181,18 @@ reaches that.
 +			}
 +			LL_I2C_WriteReg(i2c, CR2, cr2);
 +		}
++
++	} else if ((isr & I2C_ISR_TXIS) != 0U) {
++		__ASSERT_NO_MSG(data->current.len != 0U);
++		LL_I2C_TransmitData8(i2c, *data->current.buf);
++		data->current.len--;
++		data->current.buf++;
  
 -	/* Transfer Complete or Transfer Complete Reload */
 -	if (LL_I2C_IsActiveFlag_TC(i2c) ||
 -	    LL_I2C_IsActiveFlag_TCR(i2c)) {
 -		/* Issue stop condition if necessary */
 -		if (data->current.msg->flags & I2C_MSG_STOP) {
-+	} else if ((isr & I2C_ISR_TXIS) != 0U) {
-+		__ASSERT_NO_MSG(data->current.len != 0U);
-+		LL_I2C_TransmitData8(i2c, *data->current.buf);
-+		data->current.len--;
-+		data->current.buf++;
-+
 +	} else if ((isr & I2C_ISR_TC) != 0U) {
 +		/* Transfer complete with no reload: stop here, or hand back for a restart */
 +		if ((data->current.msg->flags & I2C_MSG_STOP) != 0U) {
@@ -238,7 +241,7 @@ reaches that.
  {
  	const struct i2c_stm32_config *cfg = dev->config;
  	struct i2c_stm32_data *data = dev->data;
-@@ -515,111 +564,171 @@
+@@ -515,111 +564,178 @@
  
  	data->current.len = msg->len;
  	data->current.buf = msg->buf;
@@ -249,14 +252,18 @@ reaches that.
  	data->current.msg = msg;
  
 -	msg_init(dev, msg, next_msg_flags, slave, LL_I2C_REQUEST_WRITE);
-+#if defined(CONFIG_I2C_TARGET)
-+	data->master_active = true;
-+#endif
++	/* Start owing nothing. A completion belonging to an ABANDONED transfer -- one this driver
++	 * gave up on at its timeout -- must never be what ends this one: that would report success
++	 * before a byte had moved. The timeout path empties this already; doing it here as well
++	 * makes the guarantee independent of how the previous transfer ended.
++	 */
++	k_sem_reset(&data->device_sync_sem);
  
 -	stm32_i2c_enable_transfer_interrupts(dev);
 -	LL_I2C_EnableIT_TX(i2c);
-+	/* Flush TX register */
-+	LL_I2C_ClearFlag_TXE(i2c);
++#if defined(CONFIG_I2C_TARGET)
++	data->master_active = true;
++#endif
  
 -	if (k_sem_take(&data->device_sync_sem,
 -		       K_MSEC(STM32_I2C_TRANSFER_TIMEOUT_MSEC)) != 0) {
@@ -264,15 +271,15 @@ reaches that.
 -		k_sem_take(&data->device_sync_sem, K_FOREVER);
 -		is_timeout = true;
 -	}
-+	/* Enable I2C peripheral if not already done */
-+	LL_I2C_Enable(i2c);
++	/* Flush TX register */
++	LL_I2C_ClearFlag_TXE(i2c);
  
 -	if (data->current.is_nack || data->current.is_err ||
 -	    data->current.is_arlo || is_timeout) {
 -		goto error;
 -	}
-+	uint32_t cr2 = LL_I2C_ReadReg(i2c, CR2);
-+	uint32_t isr = LL_I2C_ReadReg(i2c, ISR);
++	/* Enable I2C peripheral if not already done */
++	LL_I2C_Enable(i2c);
  
 -	return 0;
 -error:
@@ -281,23 +288,29 @@ reaches that.
 -				    data->current.is_arlo);
 -		data->current.is_arlo = 0U;
 -	}
-+	/* Clear the fields this function fills in below */
-+	cr2 &= ~(I2C_CR2_RELOAD | I2C_CR2_AUTOEND | I2C_CR2_NBYTES_Msk | I2C_CR2_SADD_Msk |
-+		 I2C_CR2_ADD10);
++	uint32_t cr2 = LL_I2C_ReadReg(i2c, CR2);
++	uint32_t isr = LL_I2C_ReadReg(i2c, ISR);
  
 -	if (data->current.is_nack) {
 -		LOG_DBG("%s: NACK", __func__);
 -		data->current.is_nack = 0U;
+-	}
++	/* Clear the fields this function fills in below */
++	cr2 &= ~(I2C_CR2_RELOAD | I2C_CR2_AUTOEND | I2C_CR2_NBYTES_Msk | I2C_CR2_SADD_Msk |
++		 I2C_CR2_ADD10);
+ 
+-	if (data->current.is_err) {
+-		LOG_DBG("%s: ERR %d", __func__,
+-				    data->current.is_err);
+-		data->current.is_err = 0U;
 +	if ((I2C_ADDR_10_BITS & data->dev_config) != 0U) {
 +		cr2 |= (uint32_t)slave | I2C_CR2_ADD10;
 +	} else {
 +		cr2 |= (uint32_t)slave << 1;
  	}
  
--	if (data->current.is_err) {
--		LOG_DBG("%s: ERR %d", __func__,
--				    data->current.is_err);
--		data->current.is_err = 0U;
+-	if (is_timeout) {
+-		LOG_DBG("%s: TIMEOUT", __func__);
 +	/* Not a STOP message and the next one continues in the same direction: this transaction
 +	 * runs in reload mode, and the handler is told to keep it on for the message after.
 +	 */
@@ -307,18 +320,6 @@ reaches that.
 +		data->current.continue_in_next = true;
 +	} else {
 +		data->current.continue_in_next = false;
- 	}
- 
--	if (is_timeout) {
--		LOG_DBG("%s: TIMEOUT", __func__);
-+	/* Anything over what the controller can count in one go is segmented by the HANDLER now,
-+	 * not by the calling thread. That is the point of this backport: the thread no longer
-+	 * takes a message apart and re-enters with the peripheral half configured.
-+	 */
-+	if (msg->len > 255U) {
-+		cr2 |= (255U << I2C_CR2_NBYTES_Pos) | I2C_CR2_RELOAD;
-+	} else {
-+		cr2 |= msg->len << I2C_CR2_NBYTES_Pos;
  	}
  
 -	return -EIO;
@@ -331,7 +332,16 @@ reaches that.
 -	struct i2c_stm32_data *data = dev->data;
 -	I2C_TypeDef *i2c = cfg->i2c;
 -	bool is_timeout = false;
--
++	/* Anything over what the controller can count in one go is segmented by the HANDLER now,
++	 * not by the calling thread. That is the point of this backport: the thread no longer
++	 * takes a message apart and re-enters with the peripheral half configured.
++	 */
++	if (msg->len > 255U) {
++		cr2 |= (255U << I2C_CR2_NBYTES_Pos) | I2C_CR2_RELOAD;
++	} else {
++		cr2 |= msg->len << I2C_CR2_NBYTES_Pos;
++	}
+ 
 -	data->current.len = msg->len;
 -	data->current.buf = msg->buf;
 -	data->current.is_write = 0U;
@@ -483,7 +493,7 @@ reaches that.
  }
  
  #else /* !CONFIG_I2C_STM32_INTERRUPT */
-@@ -835,6 +944,12 @@
+@@ -835,6 +951,12 @@
  	 * which will make the combination of all chunks to look like one big
  	 * transaction on the wire.
  	 */
@@ -496,7 +506,7 @@ reaches that.
  	const uint32_t i2c_stm32_maxchunk = 255U;
  	const uint8_t saved_flags = msg.flags;
  	uint8_t combine_flags =
-@@ -866,4 +981,5 @@
+@@ -866,4 +988,5 @@
  	} while (rest > 0U);
  
  	return ret;
