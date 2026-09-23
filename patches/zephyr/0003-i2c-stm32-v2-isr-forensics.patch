@@ -1,0 +1,125 @@
+Subject: [PATCH] drivers: i2c: stm32_v2: DEV-only interrupt forensics hooks
+
+Baseline: zephyr v3.6.0 (468eb56cf242eedba62006ee758700ee6148763f)
+Applies to: drivers/i2c/i2c_ll_stm32_v2.c (interrupt mode) and
+drivers/i2c/Kconfig.stm32. Independent of 0001, which touches the
+completion paths further down the same file.
+
+WHY WE NEED IT, measured on DS20001 2026-09-23. The L7 diagnostic image
+stopped every thread on the board in the same millisecond -- the
+acquisition thread inside an i2c2 read, the system work queue and the CAN
+poll loop, with no transfer of any kind in flight -- while the 1 s timer
+callback that feeds the watchdog went on running for another 5.7 s. Thread
+level dead, interrupt level alive. The recorded state cannot say why,
+because everything that could have recorded it is a thread.
+
+The suspicion is this driver's event ISR: it advances current.buf and
+current.len whenever current.len != 0, without first checking that this
+entry actually carried RXNE or TXIS. An entry carrying neither consumes a
+byte that never arrived; the real byte then finds current.len == 0, is
+never read out of RXDR, and RXNE stays asserted with RXIE enabled -- an
+interrupt nothing will clear again. Every thread starves, including the one
+whose 500 ms transfer timeout has already expired in kernel time.
+
+That is a hypothesis about an interrupt, so it has to be measured in one.
+This patch adds two hooks, called on entry to the event and error
+interrupts before any flag is cleared and before current.* is advanced,
+carrying what the interrupt saw. The application counts entries, buckets
+them by flag, and keeps per-second rates in a RAM region that survives the
+reset -- in particular "len != 0 with neither RXNE nor TXIS" (the phantom
+byte) and "RXNE with len == 0" (the uncleanable interrupt).
+
+The option defaults to n and no released image sets it, so production
+builds are byte for byte unchanged; that is checked by the usual flag-off
+A/B comparison. When it is on, the build requires the application to
+provide both symbols, which is deliberate: a diagnostic image that silently
+lost its instrumentation would be worse than one that fails to link.
+
+Enabling it is not free, and the help text says so rather than claiming the
+hooks are invisible. They take no lock, no log and no clock on their fast
+path, but they do lengthen every I2C interrupt, and what they are hunting
+is a race about interrupt timing: an instrumented run that stops
+reproducing a hang has moved the window, not fixed anything.
+
+This is instrumentation, not a fix. If the measurement confirms the race,
+the fix is the upstream rework of this ISR (or the minimal equivalent), not
+this patch.
+
+---
+--- a/drivers/i2c/i2c_ll_stm32_v2.c
++++ b/drivers/i2c/i2c_ll_stm32_v2.c
+@@ -27,6 +27,18 @@
+ 
+ #include "i2c-priv.h"
+ 
++#ifdef CONFIG_I2C_STM32_LEXX_ISR_FORENSICS
++/* DEV ONLY. Implemented by the application (lexxpluss_apps/src/tof_diag_i2c.cpp), which is the only
++ * thing that turns this option on. The hooks are called on entry to each interrupt, before any flag
++ * is cleared and before current.buf/current.len are advanced, so what they record is what the ISR
++ * itself saw. They must not block, log or clear anything.
++ */
++void lexx_i2c_forensics_event(const struct device *dev, uint32_t isr, uint32_t cr1, uint32_t cr2,
++			      uint32_t sw_len, const uint8_t *sw_buf);
++void lexx_i2c_forensics_error(const struct device *dev, uint32_t isr, uint32_t cr1, uint32_t cr2,
++			      uint32_t sw_len, const uint8_t *sw_buf);
++#endif
++
+ #define STM32_I2C_TRANSFER_TIMEOUT_MSEC  500
+ 
+ static inline void msg_init(const struct device *dev, struct i2c_msg *msg,
+@@ -363,6 +375,11 @@
+ 	struct i2c_stm32_data *data = dev->data;
+ 	I2C_TypeDef *i2c = cfg->i2c;
+ 
++#ifdef CONFIG_I2C_STM32_LEXX_ISR_FORENSICS
++	lexx_i2c_forensics_event(dev, i2c->ISR, i2c->CR1, i2c->CR2, data->current.len,
++				 data->current.buf);
++#endif
++
+ #if defined(CONFIG_I2C_TARGET)
+ 	if (data->slave_attached && !data->master_active) {
+ 		stm32_i2c_slave_event(dev);
+@@ -426,6 +443,11 @@
+ 	struct i2c_stm32_data *data = dev->data;
+ 	I2C_TypeDef *i2c = cfg->i2c;
+ 
++#ifdef CONFIG_I2C_STM32_LEXX_ISR_FORENSICS
++	lexx_i2c_forensics_error(dev, i2c->ISR, i2c->CR1, i2c->CR2, data->current.len,
++				 data->current.buf);
++#endif
++
+ #if defined(CONFIG_I2C_TARGET)
+ 	if (data->slave_attached && !data->master_active) {
+ 		/* No need for a slave error function right now. */
+--- a/drivers/i2c/Kconfig.stm32
++++ b/drivers/i2c/Kconfig.stm32
+@@ -38,6 +38,29 @@
+ 	help
+ 	  Enable Interrupt support for the I2C Driver
+ 
++config I2C_STM32_LEXX_ISR_FORENSICS
++	bool "DEV: LexxPluss I2C interrupt forensics hooks"
++	depends on I2C_STM32_V2 && I2C_STM32_INTERRUPT
++	default n
++	help
++	  DEV ONLY, and off in every released image. Calls two application
++	  supplied hooks on entry to the I2C event and error interrupts,
++	  passing the ISR/CR1/CR2 the interrupt saw together with the
++	  driver's current.len and current.buf. It exists to measure whether
++	  a wedged bus is an interrupt that can no longer be cleared, which
++	  no thread level instrumentation can observe because such a bus
++	  starves every thread.
++
++	  The hooks only count and store, and take no lock, no log and no
++	  clock on their fast path -- but they do lengthen every I2C
++	  interrupt, and the fault they are looking for is a race about
++	  interrupt timing. Enabling this can therefore move the window it
++	  is meant to catch; if an instrumented run stops reproducing a
++	  hang, that is not evidence the hang is gone. It also makes the
++	  build depend on the application providing both symbols, which is
++	  deliberate: a diagnostic image that silently lost its
++	  instrumentation would be worse than one that fails to link.
++
+ config I2C_STM32_COMBINED_INTERRUPT
+ 	bool
+ 	depends on I2C_STM32_INTERRUPT

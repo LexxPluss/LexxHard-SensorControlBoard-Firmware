@@ -29,6 +29,7 @@
 #include <zephyr/sys/atomic.h>
 
 #include "tof_acquisition.hpp"
+#include "tof_diag_i2c.hpp"
 #include "tof_l7_sensor.hpp"
 
 namespace lexxhard::tof_diag {
@@ -101,10 +102,12 @@ bool feed_allowed()
     const uint32_t now{now_ms()};
 
     r.eval_ms = now;
+    const bool armed_now{r.armed != 0};
+    /* Before the latch check, so the seconds AFTER the feed stops -- the ones that say whether the
+     * i2c2 interrupt is storming while every thread is starved -- are recorded too. */
+    tof_diag_i2c::sample(now, armed_now);
     if (withheld_latched_)
         return false;
-
-    const bool armed_now{r.armed != 0};
 
     /* `arm` proved everything works and nothing is in flight; the baseline starts there. */
     if (armed_now && !was_armed_) {
@@ -480,9 +483,15 @@ int cmd_status(const struct shell *sh, size_t, char **)
     return 0;
 }
 
+int cmd_i2c(const struct shell *sh, size_t, char **)
+{
+    return tof_diag_i2c::shell_status(sh);
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tofdiag,
     SHELL_CMD(arm, NULL, "start the risky path of this image", cmd_arm),
     SHELL_CMD(status, NULL, "progress record", cmd_status),
+    SHELL_CMD(i2c, NULL, "i2c2 interrupt forensics", cmd_i2c),
     SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(tofdiag, &sub_tofdiag, "L7 hang-isolation diagnostics (DEV)", NULL);
 
@@ -516,7 +525,9 @@ void k_sys_fatal_error_handler(unsigned int reason, const z_arch_esf_t *esf)
 /* Before anything that could mark progress runs. At global scope: SYS_INIT places a section entry. */
 static int tof_diag_init_record()
 {
-    return lexxhard::tof_diag::init_record_at_boot();
+    const int rc{lexxhard::tof_diag::init_record_at_boot()};
+    const int rc_i2c{lexxhard::tof_diag_i2c::init_record_at_boot()};
+    return rc != 0 ? rc : rc_i2c;
 }
 SYS_INIT(tof_diag_init_record, PRE_KERNEL_1, 0);
 

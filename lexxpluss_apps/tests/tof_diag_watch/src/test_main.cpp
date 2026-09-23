@@ -15,6 +15,7 @@
 #include <zephyr/ztest.h>
 
 #include "tof_diag_hang.hpp"
+#include "tof_diag_i2c.hpp"
 
 namespace d = lexxhard::tof_diag;
 
@@ -286,3 +287,84 @@ ZTEST(tof_diag_watch, test_uptime_wrap_of_the_32_bit_millisecond_counter_is_harm
         zassert_equal(d::evaluate(st, in), 0u, "refused across the wrap at step %u", k);
     }
 }
+
+/* The other half of the diagnosis: what one i2c2 event-interrupt entry means.
+ *
+ * The Zephyr 3.6 STM32 I2C v2 event ISR advances current.buf and current.len whenever
+ * current.len != 0, without checking that this entry carried RXNE or TXIS. These cases are the two
+ * ends of the desync that follows -- the entry that consumes a byte which never arrived, and the
+ * byte that then finds current.len == 0 and is never read, leaving RXNE asserted for ever. The
+ * classification is pure so this test and the interrupt agree by construction. */
+namespace i2c = lexxhard::tof_diag_i2c;
+
+ZTEST(tof_diag_i2c_entry, test_ordinary_transfers_are_not_signatures)
+{
+    /* A byte arriving with room for it, and a byte going out with more to send: the normal case,
+     * which must never be counted as a fault or the measurement is worthless. */
+    zassert_equal(i2c::classify_event(i2c::bit_rxne, 5), 0U);
+    zassert_equal(i2c::classify_event(i2c::bit_txis, 5), 0U);
+    /* The last byte of a chunk arrives together with the reload boundary. */
+    zassert_equal(i2c::classify_event(i2c::bit_rxne | i2c::bit_tcr, 1), 0U);
+}
+
+ZTEST(tof_diag_i2c_entry, test_reload_boundary_with_nothing_left_is_not_a_phantom)
+{
+    /* TCR or TC after the chunk is fully transferred is how a 255 + 73 read legitimately ends:
+     * len is already 0, so nothing is advanced and nothing is stuck. */
+    zassert_equal(i2c::classify_event(i2c::bit_tcr, 0), 0U);
+    zassert_equal(i2c::classify_event(i2c::bit_tc, 0), 0U);
+    zassert_equal(i2c::classify_event(i2c::bit_stopf, 0), 0U);
+}
+
+ZTEST(tof_diag_i2c_entry, test_entry_without_data_while_bytes_remain_is_the_phantom_byte)
+{
+    /* Bytes still expected, but this entry carried no data flag: the driver advances anyway. */
+    zassert_equal(i2c::classify_event(i2c::bit_tcr, 3), i2c::entry_advance_no_data);
+    zassert_equal(i2c::classify_event(i2c::bit_nackf, 3), i2c::entry_advance_no_data);
+    zassert_equal(i2c::classify_event(i2c::bit_stopf, 1), i2c::entry_advance_no_data);
+    /* ADDR is not a controller-transfer flag, so it counts as no flag at all AND advances. */
+    zassert_equal(i2c::classify_event(i2c::bit_addr, 2),
+                  i2c::entry_advance_no_data | i2c::entry_no_flag);
+}
+
+ZTEST(tof_diag_i2c_entry, test_data_flag_with_nothing_left_is_the_uncleanable_interrupt)
+{
+    /* The end state: RXNE is set, the ISR will not read RXDR because len is 0, the flag cannot
+     * clear, and the interrupt re-enters until something resets the board. */
+    zassert_equal(i2c::classify_event(i2c::bit_rxne, 0), i2c::entry_rxne_with_len0);
+    zassert_equal(i2c::classify_event(i2c::bit_txis, 0), i2c::entry_txis_with_len0);
+    /* And it keeps being reported, entry after entry -- the count is the storm. */
+    for (int i{0}; i < 4; ++i)
+        zassert_equal(i2c::classify_event(i2c::bit_rxne, 0), i2c::entry_rxne_with_len0);
+}
+
+ZTEST(tof_diag_i2c_entry, test_flags_already_gone_when_the_isr_read_them)
+{
+    /* The shape the later upstream rework of this driver exists for. With bytes outstanding it is
+     * also a phantom byte; with none it is only a spurious entry. */
+    zassert_equal(i2c::classify_event(0, 0), i2c::entry_no_flag);
+    zassert_equal(i2c::classify_event(0, 7), i2c::entry_no_flag | i2c::entry_advance_no_data);
+}
+
+ZTEST(tof_diag_i2c_entry, test_every_error_source_errie_can_raise_has_a_bucket)
+{
+    /* PEC, SMBus timeout and SMBAlert are not configured on this bus. That is a reason to give them
+     * their own counters, not to leave them falling into "an error we did not classify": an error
+     * source nobody clears is the shortest path to an interrupt that re-enters for ever, and it
+     * would be the most valuable thing this run could find. */
+    const uint32_t every[]{i2c::bit_berr,   i2c::bit_arlo,    i2c::bit_ovr,
+                           i2c::bit_pecerr, i2c::bit_timeout, i2c::bit_alert};
+    for (uint32_t bit : every)
+        zassert_true((i2c::kAnyErrorFlag & bit) != 0U, "an error source with no bucket: 0x%x", bit);
+}
+
+ZTEST(tof_diag_i2c_entry, test_error_flags_are_not_counted_as_a_flagless_entry)
+{
+    /* An event entry carrying only an error flag has carried something, so it must not inflate the
+     * "flags had already gone" count, which is the one that would point at a different fault. */
+    const uint32_t errors[]{i2c::bit_pecerr, i2c::bit_timeout, i2c::bit_alert, i2c::bit_ovr};
+    for (uint32_t bit : errors)
+        zassert_equal(i2c::classify_event(bit, 0), 0U, "bit 0x%x counted as flagless", bit);
+}
+
+ZTEST_SUITE(tof_diag_i2c_entry, NULL, NULL, NULL, NULL, NULL);

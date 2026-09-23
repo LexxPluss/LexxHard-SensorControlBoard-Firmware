@@ -30,6 +30,13 @@ if(ENABLE_TOF_L7_ULD)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
 endif()
 
+# The hang-isolation images measure the i2c2 interrupt itself, which needs the driver hooks turned
+# on. Same reason as above for putting it here: Kconfig is fixed by find_package(Zephyr). The
+# TOF_DIAG_HANG value is validated further down, where the rest of the diagnostic build lives.
+if(TOF_DIAG_HANG)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_diag_hang.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 

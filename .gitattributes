@@ -1,0 +1,6 @@
+# A unified diff carries the whitespace of the file it patches, so the whitespace checks have to be
+# switched off for these: a blank context line IS a single space, and a context line of tab-indented
+# C IS a space followed by a tab. "Cleaning" either one stops the patch applying, which is why the
+# exemption lives here rather than in the patches. All three patches under patches/zephyr have
+# always had these characters; only the check is new.
+patches/zephyr/*.patch -whitespace

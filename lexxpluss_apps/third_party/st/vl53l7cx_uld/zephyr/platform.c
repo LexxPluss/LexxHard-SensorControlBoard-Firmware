@@ -21,6 +21,16 @@
 #include "vl53l7cx_api.h"
 #include "vl53l7cx_port.h"
 
+#ifdef TOF_DIAG_HANG
+/* DEV ONLY (see src/tof_diag_i2c.hpp). Records what this layer asked of the bus, so a transfer that
+ * never returns can still be named afterwards: which sensor, which register, and which chunk of a
+ * request the controller has to split again. */
+void lexx_tof_port_begin(uint32_t addr8, uint16_t addr7, int is_read, uint16_t reg_index,
+                         uint32_t total_len, uint32_t chunk_index, uint32_t chunk_off,
+                         uint32_t chunk_len, const uint8_t *buf_base);
+void lexx_tof_port_end(int rc);
+#endif
+
 _Static_assert(VL53L7CX_MAX_RESULTS_SIZE <= VL53L7CX_PORT_MAX_TRANSFER,
                "the selected L7 grid fields must fit one proven transfer");
 
@@ -112,6 +122,7 @@ static uint8_t transfer(VL53L7CX_Platform *platform, uint16_t register_address, 
     }
 
     uint32_t done = 0;
+    uint32_t chunk_index = 0;
     do {
         const uint32_t remaining = size - done;
         const uint32_t take = remaining < VL53L7CX_PORT_MAX_TRANSFER
@@ -119,8 +130,19 @@ static uint8_t transfer(VL53L7CX_Platform *platform, uint16_t register_address, 
                                   : VL53L7CX_PORT_MAX_TRANSFER;
         const uint32_t indexed = (uint32_t)register_address + done;
 
+#ifdef TOF_DIAG_HANG
+        /* The payload base, not the register index bytes: the controller driver splits anything
+         * over 255 bytes again, and the distance from here to its current.buf is the only way to
+         * see which of those segments it stopped in. */
+        lexx_tof_port_begin(platform->address, address, read ? 1 : 0, (uint16_t)indexed, size,
+                            chunk_index, done, take, values + done);
+#endif
         rc = read ? read_chunk(address, (uint16_t)indexed, values + done, take)
                   : write_chunk(address, (uint16_t)indexed, values + done, take);
+#ifdef TOF_DIAG_HANG
+        lexx_tof_port_end(rc);
+#endif
+        ++chunk_index;
         if (rc != 0) {
             remember_error(rc);
             return VL53L7CX_STATUS_ERROR;
