@@ -13,21 +13,25 @@ callback that feeds the watchdog went on running for another 5.7 s. Thread
 level dead, interrupt level alive. The recorded state cannot say why,
 because everything that could have recorded it is a thread.
 
-The suspicion is this driver's event ISR: it advances current.buf and
-current.len whenever current.len != 0, without first checking that this
-entry actually carried RXNE or TXIS. An entry carrying neither consumes a
-byte that never arrived; the real byte then finds current.len == 0, is
-never read out of RXDR, and RXNE stays asserted with RXIE enabled -- an
-interrupt nothing will clear again. Every thread starves, including the one
-whose 500 ms transfer timeout has already expired in kernel time.
+The suspicion when this was written was that the event ISR advances
+current.buf and current.len whenever current.len != 0 without first
+checking that the entry carried RXNE or TXIS, consuming a byte that never
+arrived. The measurement this patch made possible REFUTED that: the counter
+for it stayed 0 through 27 million interrupts. What the board actually does
+is stop on an RXNE that arrives with current.len already 0 and no TC, TCR,
+STOPF or NACKF beside it -- an entry the handler can neither consume nor
+mask, so it re-enters about 890,000 times a second and starves every
+thread, including the one whose 500 ms transfer timeout has already expired
+in kernel time. The fix for that is patch 0004; this one only measures.
 
 That is a hypothesis about an interrupt, so it has to be measured in one.
 This patch adds two hooks, called on entry to the event and error
 interrupts before any flag is cleared and before current.* is advanced,
 carrying what the interrupt saw. The application counts entries, buckets
 them by flag, and keeps per-second rates in a RAM region that survives the
-reset -- in particular "len != 0 with neither RXNE nor TXIS" (the phantom
-byte) and "RXNE with len == 0" (the uncleanable interrupt).
+reset. Of the counters it keeps, the one that names the fault is "RXNE with
+len == 0 AND no completion flag to act on"; plain "RXNE with len == 0"
+turned out to be ordinary, about one per read on a healthy board.
 
 The option defaults to n and no released image sets it, so production
 builds are byte for byte unchanged; that is checked by the usual flag-off

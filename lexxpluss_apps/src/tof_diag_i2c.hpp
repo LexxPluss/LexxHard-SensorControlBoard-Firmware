@@ -12,32 +12,42 @@
  * with nothing in flight -- while the board controller's 1 s timer callback went on running for
  * another 5.7 s until the watchdog withheld the feed. Thread level dead, interrupt level alive.
  *
- * The leading explanation is a wedged i2c2: the Zephyr 3.6 STM32 I2C v2 event ISR advances
- * current.buf/current.len whenever current.len != 0, WITHOUT first checking that this entry really
- * carried RXNE or TXIS. An entry that carries neither consumes a byte that never arrived; the real
- * byte then finds current.len == 0, is never read out of RXDR, and RXNE stays asserted with RXIE
- * still enabled -- a level-triggered interrupt that can no longer be cleared. Every thread starves,
- * the 500 ms transfer timeout expires in kernel time but its thread never runs again, and the timer
- * ISR keeps the board alive-looking. That is exactly the recorded shape, but it is inference from
- * the clock, not a measurement.
+ * MEASURED, 2026-09-23 16:33 (run2, evidence in allmemory/hanging_object/l7_e2e_2026-09-22):
+ * the board wedges at interrupt level on i2c2. For fourteen consecutive one-second windows the
+ * state was identical -- ISR RXNE|TXE|BUSY, CR1 with RXIE still enabled, the driver's current.len
+ * already 0, CR2 holding NBYTES 65 with RELOAD still set, and TC, TCR, STOPF and NACKF all clear.
+ * The event ISR then takes no branch at all: it will not read RXDR (that is guarded by
+ * current.len), it will not generate a STOP and it will not disable the interrupt, so it is
+ * re-entered about 890,000 times a second against a healthy 35,500. Every thread starves, the
+ * 500 ms transfer timeout expires in kernel time but its thread never runs again, and only the
+ * timer callback -- interrupt level -- survives to let the watchdog reset the board.
  *
- * This block measures it.
+ * The hypothesis this block was first built to test is REFUTED: advance_no_data stayed 0 through
+ * 27 million interrupts, so the ISR's unconditional buffer advance is not how the desync starts.
+ * What starts it is still open; the registers point at the final reload segment.
  *
  * OBSERVER EFFECT. Measuring an interrupt from inside it is not free, and this is a race about
  * interrupt timing, so the cost is kept where it can be stated rather than pretended away. The fast
  * path makes no kernel call at all: it compares flags, increments counters and stores registers. In
  * particular it does NOT read the uptime -- the 1 s sampler leaves a coarse epoch behind and the
  * fast path copies that, so ordinary entry timestamps are good to about a second. A real clock read
- * happens at most three times in the life of a boot, on the FIRST occurrence of each signature,
- * where the precise instant is what the whole run is for. What remains is still a handful of
- * instructions added to every I2C interrupt: if a run with this instrumentation stops reproducing
+ * happens at most four times in the life of a boot: once on the FIRST occurrence of each of the
+ * four things worth an exact instant, where that instant is what the whole run is for. What remains
+ * is still a handful of instructions added to every I2C interrupt: if a run with this
+ * instrumentation stops reproducing
  * the hang, the honest reading is "the window moved", not "the fault is gone".
  *
- * WHAT DECIDES THE QUESTION, in one run:
- *   - advance_no_data      an event ISR entry with current.len != 0 carrying neither RXNE nor TXIS,
- *                          i.e. the phantom byte itself. Non-zero names the race directly.
- *   - rxne_with_len0       an entry with RXNE set that the ISR will not read because current.len is
- *                          already 0, i.e. the interrupt that can never be cleared.
+ * WHAT EACH COUNTER ACTUALLY MEANS, now that one run has been read:
+ *   - orphan_rxne_len0     RXNE with current.len == 0 and NONE of TC, TCR, STOPF or NACKF. This is
+ *                          the wedged state itself: the entry the ISR cannot service and cannot
+ *                          clear. It is the fault indicator.
+ *   - rxne_with_len0       RXNE with current.len == 0, whatever else is set. This is NOT a fault:
+ *                          it fired 13.8 million times in one run and tracked the L7 reads about
+ *                          one for one while the board was healthy, because the state is reached
+ *                          routinely and left again within microseconds. Kept as the background
+ *                          rate that orphan_rxne_len0 has to be read against.
+ *   - advance_no_data      an entry with current.len != 0 carrying neither RXNE nor TXIS. Measured
+ *                          at 0; kept because a change would mean something new.
  *   - event_entries delta  per second. A storm is orders of magnitude above the same board's own
  *                          healthy windows, which is why the pre-arm and post-arm windows are kept
  *                          rather than compared against an assumed "normal" rate.
@@ -67,7 +77,10 @@ namespace lexxhard::tof_diag_i2c {
 inline constexpr uintptr_t kRecordAddress{0x2001F200};
 inline constexpr uint32_t kMagic{0x46433249};    // "I2CF"
 inline constexpr uint32_t kMagicEnd{0x45433249}; // "I2CE"
-inline constexpr uint32_t kVersion{3};
+/* 4: orphan_rxne and its three words were inserted at 0x0a4 and everything after them moved. A
+ * reader that does not check this will decode a version 3 block at the wrong offsets and believe
+ * the result, so the decoder refuses anything but an exact match. */
+inline constexpr uint32_t kVersion{4};
 inline constexpr int kWindows{32};    // rolling, the last 32 seconds before the reset
 inline constexpr int kPostArm{8};     // kept: the first 8 seconds of the risky path
 inline constexpr int kEventFlags{10}; // TXIS RXNE ADDR NACKF STOPF TC TCR BERR ARLO OVR
@@ -102,25 +115,36 @@ inline constexpr uint32_t kAnyErrorFlag{bit_berr | bit_arlo | bit_ovr | bit_pece
 
 /* What one event-interrupt entry means. */
 enum entry : uint32_t {
-    /* current.len != 0 and neither RXNE nor TXIS: the driver is about to advance current.buf and
-     * current.len for a byte that was never transferred. The phantom byte. */
+    /* current.len != 0 and neither RXNE nor TXIS: the driver would advance current.buf and
+     * current.len for a byte that was never transferred. Measured at 0 -- not how this starts. */
     entry_advance_no_data = 1U << 0,
-    /* RXNE with current.len == 0: the ISR will not read RXDR, so the flag stays asserted and the
-     * interrupt re-enters for ever. The end state of the same desync. */
+    /* RXNE with current.len == 0. Ordinary: the healthy background, about one per read. */
     entry_rxne_with_len0 = 1U << 1,
     entry_txis_with_len0 = 1U << 2,
     /* Nothing was set by the time the ISR read the register. */
     entry_no_flag = 1U << 3,
+    /* THE FAULT. RXNE with current.len == 0 and no completion flag to act on: the ISR will not read
+     * RXDR, will not issue a STOP and will not mask the interrupt, so it re-enters until the board
+     * is reset. Distinguishing this from the harmless case above is the whole point of the
+     * counter -- the aggregate rxne_with_len0 cannot, because both look the same in it. */
+    entry_orphan_rxne = 1U << 4,
 };
 
 /* Pure, so the host test and the interrupt share one definition of the fault being looked for. */
+/* What the ISR can still act on when the buffer is already full: a completion or an abort. An RXNE
+ * arriving with none of these is the entry nothing will consume. */
+inline constexpr uint32_t kServiceable{bit_tc | bit_tcr | bit_stopf | bit_nackf};
+
 inline constexpr uint32_t classify_event(uint32_t isr, uint32_t sw_len)
 {
     uint32_t bits{0};
     if (sw_len != 0U && (isr & (bit_rxne | bit_txis)) == 0U)
         bits |= entry_advance_no_data;
-    if (sw_len == 0U && (isr & bit_rxne) != 0U)
+    if (sw_len == 0U && (isr & bit_rxne) != 0U) {
         bits |= entry_rxne_with_len0;
+        if ((isr & kServiceable) == 0U)
+            bits |= entry_orphan_rxne;
+    }
     if (sw_len == 0U && (isr & bit_txis) != 0U)
         bits |= entry_txis_with_len0;
     if ((isr & kAnyEventFlag) == 0U)
@@ -151,11 +175,13 @@ struct record {
     uint32_t ev_none;              // 0x038 entry with none of the flags above set
     uint32_t er_flag[kErrorFlags]; // 0x03c
     uint32_t er_none;              // 0x054 an error interrupt raising no error flag we know of
-    uint32_t rxne_with_len0;       // 0x058 RXNE the ISR will not read: the uncleanable interrupt
+    uint32_t rxne_with_len0;       // 0x058 RXNE with len already 0, whatever else is set. ORDINARY:
+                                   //       about one per read on a healthy board. The background
+                                   //       rate that orphan_rxne (+0x0a4) is read against
     uint32_t rxne_with_len0_ms;    // 0x05c when that was first seen (exact: a real clock read)
     uint32_t txis_with_len0;       // 0x060
     uint32_t txis_with_len0_ms;    // 0x064 (exact)
-    uint32_t advance_no_data;      // 0x068 len != 0, no RXNE and no TXIS: the phantom byte
+    uint32_t advance_no_data;      // 0x068 len != 0, no RXNE and no TXIS: measured at 0
     uint32_t advance_no_data_ms;   // 0x06c (exact)
     uint32_t advance_no_data_isr;  // 0x070 the flags that entry did carry
     uint32_t last_isr;             // 0x074 the last event entry, whatever it was
@@ -170,42 +196,48 @@ struct record {
     uint32_t last_err_sw_len;      // 0x098
     uint32_t last_err_sw_buf;      // 0x09c
     uint32_t last_err_ms;          // 0x0a0 coarse
+    /* THE FAULT INDICATOR: RXNE, len 0, and no TC/TCR/STOPF/NACKF to act on. Expected to stay 0 on
+     * a healthy run however large rxne_with_len0 grows. */
+    uint32_t orphan_rxne;          // 0x0a4
+    uint32_t orphan_rxne_ms;       // 0x0a8 (exact: the first one)
+    uint32_t orphan_rxne_isr;      // 0x0ac
+    uint32_t orphan_rxne_cr2;      // 0x0b0 NBYTES and RELOAD as the wedged entry saw them
     /* The port layer around each ULD transaction. Written before the call and after it returns, so
      * a stuck transfer leaves begin > end with everything about it still readable. These are copies:
      * the 1 s sampler must never dereference the driver's current.msg, which may already be gone. */
-    uint32_t port_begin;           // 0x0a4
-    uint32_t port_end;             // 0x0a8
-    uint32_t port_addr8;           // 0x0ac the ULD platform's 8-bit wire address: which sensor this
+    uint32_t port_begin;           // 0x0b4
+    uint32_t port_end;             // 0x0b8
+    uint32_t port_addr8;           // 0x0bc the ULD platform's 8-bit wire address: which sensor this
                                    //       was, as the port layer knows it
-    uint32_t port_addr;            // 0x0b0 7-bit address
-    uint32_t port_is_read;         // 0x0b4
-    uint32_t port_reg;             // 0x0b8 16-bit register index of this chunk
-    uint32_t port_total_len;       // 0x0bc the whole ULD request
-    uint32_t port_chunk_index;     // 0x0c0 which chunk of it
-    uint32_t port_chunk_off;       // 0x0c4
-    uint32_t port_chunk_len;       // 0x0c8 > 255: the controller splits it again into 255 + rest
+    uint32_t port_addr;            // 0x0c0 7-bit address
+    uint32_t port_is_read;         // 0x0c4
+    uint32_t port_reg;             // 0x0c8 16-bit register index of this chunk
+    uint32_t port_total_len;       // 0x0cc the whole ULD request
+    uint32_t port_chunk_index;     // 0x0d0 which chunk of it
+    uint32_t port_chunk_off;       // 0x0d4
+    uint32_t port_chunk_len;       // 0x0d8 > 255: the controller splits it again into 255 + rest
     /* Where this chunk's payload starts. last_sw_buf - port_buf_base is how far the driver got
      * INSIDE the chunk, which is the only way to tell the 255-byte segment from the 73-byte one --
      * that split happens inside the controller driver and the port layer never sees it. */
-    uint32_t port_buf_base;        // 0x0cc
-    uint32_t port_begin_ms;        // 0x0d0 exact: the port layer runs in a thread
-    uint32_t port_end_ms;          // 0x0d4 exact
-    uint32_t port_last_rc;         // 0x0d8
+    uint32_t port_buf_base;        // 0x0dc
+    uint32_t port_begin_ms;        // 0x0e0 exact: the port layer runs in a thread
+    uint32_t port_end_ms;          // 0x0e4 exact
+    uint32_t port_last_rc;         // 0x0e8
     /* TIMINGR is set when the bus is configured, but a bench command can change the bitrate at
      * runtime, so both the boot value and the latest one are kept. */
-    uint32_t timingr_boot;         // 0x0dc
-    uint32_t timingr_last;         // 0x0e0
+    uint32_t timingr_boot;         // 0x0ec
+    uint32_t timingr_last;         // 0x0f0
     /* The epoch the interrupt copies instead of reading the clock. It stops advancing exactly when
      * the 1 s callback stops, which is itself worth seeing. */
-    uint32_t coarse_ms;            // 0x0e4
-    uint32_t reserved0[2];         // 0x0e8
-    window pre_arm;                // 0x0f0 the last window before `arm`: the healthy L4-only baseline
-    window post_arm[kPostArm];     // 0x110 the first 8 windows after `arm`: healthy WITH the L7
-    uint32_t ring_next;            // 0x210
-    uint32_t windows_sampled;      // 0x214
-    uint32_t reserved1[2];         // 0x218
-    window ring[kWindows];         // 0x220 rolling: the seconds around the stall
-    uint32_t magic_end;            // 0x620
+    uint32_t coarse_ms;            // 0x0f4
+    uint32_t reserved0[2];         // 0x0f8
+    window pre_arm;                // 0x100 the last window before `arm`: the healthy L4-only baseline
+    window post_arm[kPostArm];     // 0x120 the first 8 windows after `arm`: healthy WITH the L7
+    uint32_t ring_next;            // 0x220
+    uint32_t windows_sampled;      // 0x224
+    uint32_t reserved1[2];         // 0x228
+    window ring[kWindows];         // 0x230 rolling: the seconds around the stall
+    uint32_t magic_end;            // 0x630
 };
 
 int init_record_at_boot();

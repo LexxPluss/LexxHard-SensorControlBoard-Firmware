@@ -327,15 +327,30 @@ ZTEST(tof_diag_i2c_entry, test_entry_without_data_while_bytes_remain_is_the_phan
                   i2c::entry_advance_no_data | i2c::entry_no_flag);
 }
 
-ZTEST(tof_diag_i2c_entry, test_data_flag_with_nothing_left_is_the_uncleanable_interrupt)
+ZTEST(tof_diag_i2c_entry, test_rxne_with_nothing_left_but_a_flag_to_act_on_is_ordinary)
 {
-    /* The end state: RXNE is set, the ISR will not read RXDR because len is 0, the flag cannot
-     * clear, and the interrupt re-enters until something resets the board. */
-    zassert_equal(i2c::classify_event(i2c::bit_rxne, 0), i2c::entry_rxne_with_len0);
+    /* Measured on the board: this state is reached about once per read, 13.8 million times in the
+     * run that hung, and left again within microseconds -- because the same entry carries a
+     * completion or an abort that the handler does act on. It must NOT be reported as the fault,
+     * or the fault indicator is worthless. */
+    const uint32_t serviceable[]{i2c::bit_tc, i2c::bit_tcr, i2c::bit_stopf, i2c::bit_nackf};
+    for (uint32_t flag : serviceable)
+        zassert_equal(i2c::classify_event(i2c::bit_rxne | flag, 0), i2c::entry_rxne_with_len0,
+                      "RXNE with 0x%x must not be the fault", flag);
     zassert_equal(i2c::classify_event(i2c::bit_txis, 0), i2c::entry_txis_with_len0);
+}
+
+ZTEST(tof_diag_i2c_entry, test_rxne_with_nothing_left_and_nothing_to_act_on_is_the_fault)
+{
+    /* The wedge itself, as the board recorded it: ISR 0x8005 -- RXNE, TXE, BUSY -- with len 0 and
+     * no TC, TCR, STOPF or NACKF. The handler can neither consume the byte nor mask the line. */
+    const uint32_t wedged{i2c::bit_rxne | 1U /* TXE */ | (1U << 15) /* BUSY */};
+    zassert_equal(i2c::classify_event(wedged, 0),
+                  i2c::entry_rxne_with_len0 | i2c::entry_orphan_rxne);
     /* And it keeps being reported, entry after entry -- the count is the storm. */
     for (int i{0}; i < 4; ++i)
-        zassert_equal(i2c::classify_event(i2c::bit_rxne, 0), i2c::entry_rxne_with_len0);
+        zassert_equal(i2c::classify_event(i2c::bit_rxne, 0),
+                      i2c::entry_rxne_with_len0 | i2c::entry_orphan_rxne);
 }
 
 ZTEST(tof_diag_i2c_entry, test_flags_already_gone_when_the_isr_read_them)
@@ -365,6 +380,10 @@ ZTEST(tof_diag_i2c_entry, test_error_flags_are_not_counted_as_a_flagless_entry)
     const uint32_t errors[]{i2c::bit_pecerr, i2c::bit_timeout, i2c::bit_alert, i2c::bit_ovr};
     for (uint32_t bit : errors)
         zassert_equal(i2c::classify_event(bit, 0), 0U, "bit 0x%x counted as flagless", bit);
+    /* An error flag is not something the handler's completion paths act on, so an RXNE that
+     * arrives with only an error beside it is still the orphan. */
+    zassert_equal(i2c::classify_event(i2c::bit_rxne | i2c::bit_ovr, 0),
+                  i2c::entry_rxne_with_len0 | i2c::entry_orphan_rxne);
 }
 
 ZTEST_SUITE(tof_diag_i2c_entry, NULL, NULL, NULL, NULL, NULL);

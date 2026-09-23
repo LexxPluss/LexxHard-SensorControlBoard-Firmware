@@ -23,7 +23,7 @@ namespace lexxhard::tof_diag_i2c {
 
 namespace {
 
-static_assert(sizeof(record) == 0x624, "the layout is part of the reading procedure");
+static_assert(sizeof(record) == 0x634, "the layout is part of the reading procedure");
 static_assert(offsetof(record, ev_none) == 0x038);
 static_assert(offsetof(record, er_flag) == 0x03c);
 static_assert(offsetof(record, er_none) == 0x054);
@@ -31,15 +31,16 @@ static_assert(offsetof(record, rxne_with_len0) == 0x058);
 static_assert(offsetof(record, advance_no_data) == 0x068);
 static_assert(offsetof(record, last_isr) == 0x074);
 static_assert(offsetof(record, last_err_isr) == 0x08c);
-static_assert(offsetof(record, port_begin) == 0x0a4);
-static_assert(offsetof(record, port_buf_base) == 0x0cc);
-static_assert(offsetof(record, timingr_boot) == 0x0dc);
-static_assert(offsetof(record, coarse_ms) == 0x0e4);
-static_assert(offsetof(record, pre_arm) == 0x0f0);
-static_assert(offsetof(record, post_arm) == 0x110);
-static_assert(offsetof(record, ring_next) == 0x210);
-static_assert(offsetof(record, ring) == 0x220);
-static_assert(offsetof(record, magic_end) == 0x620);
+static_assert(offsetof(record, orphan_rxne) == 0x0a4);
+static_assert(offsetof(record, port_begin) == 0x0b4);
+static_assert(offsetof(record, port_buf_base) == 0x0dc);
+static_assert(offsetof(record, timingr_boot) == 0x0ec);
+static_assert(offsetof(record, coarse_ms) == 0x0f4);
+static_assert(offsetof(record, pre_arm) == 0x100);
+static_assert(offsetof(record, post_arm) == 0x120);
+static_assert(offsetof(record, ring_next) == 0x220);
+static_assert(offsetof(record, ring) == 0x230);
+static_assert(offsetof(record, magic_end) == 0x630);
 /* Inside DTCM, and clear of the 0x1f4-byte progress record that starts at 0x2001F000. */
 static_assert(kRecordAddress >= 0x2001F000 + 0x1f4);
 static_assert(kRecordAddress >= DT_REG_ADDR(DT_CHOSEN(zephyr_dtcm)));
@@ -217,10 +218,12 @@ int shell_status(const struct shell *sh)
     for (int i{0}; i < kErrorFlags; ++i)
         shell_fprintf(sh, SHELL_NORMAL, "%s %u  ", er_names[i], r.er_flag[i]);
     shell_print(sh, "");
-    shell_print(sh, "SIGNATURES advance_no_data %u (first %u ms, isr 0x%08x)  rxne_len0 %u (%u ms)"
-                    "  txis_len0 %u (%u ms)",
-                r.advance_no_data, r.advance_no_data_ms, r.advance_no_data_isr, r.rxne_with_len0,
-                r.rxne_with_len0_ms, r.txis_with_len0, r.txis_with_len0_ms);
+    shell_print(sh, "FAULT    orphan_rxne %u (first %u ms, isr 0x%08x cr2 0x%08x)  <- must stay 0",
+                r.orphan_rxne, r.orphan_rxne_ms, r.orphan_rxne_isr, r.orphan_rxne_cr2);
+    shell_print(sh, "backgnd  rxne_len0 %u (%u ms)  txis_len0 %u (%u ms)  advance_no_data %u (%u ms,"
+                    " isr 0x%08x)",
+                r.rxne_with_len0, r.rxne_with_len0_ms, r.txis_with_len0, r.txis_with_len0_ms,
+                r.advance_no_data, r.advance_no_data_ms, r.advance_no_data_isr);
     shell_print(sh, "last ev  isr 0x%08x cr1 0x%08x cr2 0x%08x len %u buf 0x%08x at ~%u ms",
                 r.last_isr, r.last_cr1, r.last_cr2, r.last_sw_len, r.last_sw_buf, r.last_entry_ms);
     shell_print(sh, "last er  isr 0x%08x cr1 0x%08x cr2 0x%08x len %u buf 0x%08x at ~%u ms",
@@ -321,6 +324,14 @@ extern "C" void lexx_i2c_forensics_event(const struct device *dev, uint32_t isr,
         if (r.rxne_with_len0 == 0U)
             r.rxne_with_len0_ms = k_uptime_get_32();
         r.rxne_with_len0 = r.rxne_with_len0 + 1;
+    }
+    if (what & entry_orphan_rxne) {
+        if (r.orphan_rxne == 0U) {
+            r.orphan_rxne_ms = k_uptime_get_32();
+            r.orphan_rxne_isr = isr;
+            r.orphan_rxne_cr2 = cr2;
+        }
+        r.orphan_rxne = r.orphan_rxne + 1;
     }
     if (what & entry_txis_with_len0) {
         if (r.txis_with_len0 == 0U)
