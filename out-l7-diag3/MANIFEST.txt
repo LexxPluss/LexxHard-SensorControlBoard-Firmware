@@ -52,7 +52,17 @@ TESTS
 
 WHAT STILL HAS TO HAPPEN BEFORE THIS IS FLASHED
 
-  A full battery power cycle first. After any run that opened the L7, E3 cannot complete
-  commissioning -- the sensors keep half-finished transaction state across an SCB reset -- so the
-  clean starting point has to be re-established and checked (E3 3.6.0-144-gdd12e1b7 confirmed,
-  commissioning finished, four roles, 0x216 about 200 frames/s, blob still committed/valid).
+  A clean E3 starting point, established by a full battery power cycle. After any run that opened
+  the L7, E3 cannot complete commissioning.
+
+  WHAT IS PROVEN, AND WHAT IS NOT. Proven: SOME L7 internal state survives an SCB-only reset, and
+  only cutting the sensor power rail clears it. An SCB or MCUboot reset restarts the STM32 but does
+  not reliably drop power to the ToF chain, while E3 comes up and re-enumerates the chain as if
+  from cold -- hence scb_attempts_exhausted, roles 255 and 0x216 at zero. NOT proven: which state
+  it is. Downloaded ULD, an active ranging session, a latched address, an unfinished transaction
+  are all consistent with what has been observed, and nothing so far distinguishes them. Earlier
+  copies of this note said "half-finished transaction state", which claimed one of those without
+  evidence.
+
+  Checks for the clean point: E3 3.6.0-144-gdd12e1b7 confirmed, commissioning finished, four roles,
+  0x216 about 200 frames/s, blob still committed/valid.
