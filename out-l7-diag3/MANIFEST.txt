@@ -1,0 +1,58 @@
+L7 DIAG MODE 3 -- DEV / NO-FAT / NOT FOR RELEASE / NEVER CONFIRMS ITSELF
+built 2026-09-24 from experiment/AMRSW-2322-l7-hang-isolation @ bb21e54f
+
+WHAT IT IS, AND WHAT IT IS NOT
+
+Mode 1 (diag1-v5) ran thirty minutes armed on dasher2 with the ISR backport and did not wedge:
+187,000 port transactions, 70 million I2C interrupts, orphan_rxne 0. It proved the firmware can
+READ the real L7. It then dropped every grid frame at the last step, which is why nothing above
+the SCB -- driver, assembler, detector -- has ever seen a real L7 distance.
+
+Mode 3 removes that one drop and nothing else. It is NOT a step towards release. It is still DEV,
+still NO-FAT, still safety-lidar bypassed, still unconfirmed, and the robot is still not driveable.
+
+diag3  3.6.0-163-gbb21e54f-DEV-NOFAT-L7-DIAG3-REALL7-GRIDTX-UNCONFIRMED
+       signed 249,324 B   (ceiling 261,712, leaves 12,388)
+       36a407087a58b252a8fbc3e5fe85c2680d91ff2354660e4376dc9acee3829732  fw_l7_diag3.test.bin
+       Real L7 AND its grid frames on CAN. Forensics block unchanged (0x634 B at 0x2001F200,
+       version 4), so the same reader and decoder work.
+
+CHECKS ON THE ARTEFACT
+
+  262,144 B; image_ok byte at size-24 = 0xff; MCUboot magic tail 77c295f360d2ef7f3552500f2cb67980
+  The .test.bin is the confirmed image with ONE byte changed -- image_ok 0x01 -> 0xff -- which is
+  what the diag1-v5 artefacts are too, verified by differencing them rather than by trusting a
+  recipe: exactly one offset differs, 262120.
+  CONFIG_MAIN_STACK_SIZE=2048; CONFIG_FILE_SYSTEM not set; CONFIG_I2C_STM32_LEXX_ISR_FORENSICS=y
+  boot_write_img_confirmed: 0 call sites -- any reset gives the board back to the confirmed E3
+
+  Mode 3 is in the BINARY, not only in the source: tof_diag::grid_sent is linked and
+  tof_diag::grid_suppressed is ABSENT from the image. In mode 1 it is the other way round. The
+  suppression path cannot run because it is not there.
+
+  The I2C backport and the L7 port layer are byte-for-byte what the thirty-minute run used:
+  `git diff 4f76176d..bb21e54f -- patches/ tof_l7_port.cpp tof_acquisition.cpp` is empty, and
+  manage_zephyr_patches.sh verified 0003 and 0005 before the build. Only the diag mode plumbing,
+  its tests and the Makefile target changed.
+
+  NOT VERIFIED THE WAY THE v5 MANIFEST CLAIMED: that manifest counted "two k_sem_reset call sites
+  inside stm32_i2c_transaction" in the image. That function is static and fully inlined, so no such
+  symbol exists to disassemble -- the same command returns nothing on the v5 ELF too. The patch
+  verification and the empty source diff are what stand behind the backport being present here.
+
+TESTS
+
+  tof_diag_mode        3/3 in each of modes 1, 2 and 3, against the production header.
+                       Mutation-checked: putting the transmit guard back to `TOF_DIAG_HANG == 1`
+                       fails test_the_tx_seam_is_keyed_on_the_axis_not_on_a_mode_number in all
+                       three modes, and nothing else. Without that check a re-hardcoded mode
+                       number would put mode 3 back to dropping every frame with every other
+                       assertion still green.
+  i2c_stm32_v2_isr     17/17 with assertions off (as the product ships) and on.
+
+WHAT STILL HAS TO HAPPEN BEFORE THIS IS FLASHED
+
+  A full battery power cycle first. After any run that opened the L7, E3 cannot complete
+  commissioning -- the sensors keep half-finished transaction state across an SCB reset -- so the
+  clean starting point has to be re-established and checked (E3 3.6.0-144-gdd12e1b7 confirmed,
+  commissioning finished, four roles, 0x216 about 200 frames/s, blob still committed/valid).
