@@ -4,7 +4,7 @@
  *
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * DEV ONLY: the instrumentation of the L7 hang-isolation images (TOF_DIAG_HANG = 1 or 2).
+ * DEV ONLY: the instrumentation of the L7 hang-isolation images (TOF_DIAG_HANG = 1, 2 or 3).
  *
  * WHY IT EXISTS. The first long run of the L7 E2E image stopped every thread on the SCB after about
  * nine minutes -- no CAN frame, no shell -- while the IWDG, fed from a timer callback, kept the board
@@ -16,6 +16,18 @@
  *   TOF_DIAG_HANG=2  NO L7 bus access; a static grid is fed through the real grid publisher and
  *                    the real synchronous CAN send at the same 2 x 16 + health, 5 Hz cadence. A
  *                    hang here points at the shared synchronous CAN transmit path.
+ *
+ * Mode 1 answered the question: with the ISR backport the real L7 read path ran thirty minutes
+ * armed without wedging. But mode 1 drops every grid frame at the last step, so no real L7 distance
+ * has ever left the SCB, and the driver, the assembler and the detector above it have never seen
+ * one. Hence a third mode:
+ *
+ *   TOF_DIAG_HANG=3  mode 1 with that one drop removed: the real L7 AND its grid frames on CAN.
+ *                    It is the smallest change that lets the observe-only end-to-end run happen,
+ *                    and it deliberately keeps everything mode 1 earned -- the ISR backport, the
+ *                    DTCM record, the armed watchdog, `arm` before anything risky starts, and an
+ *                    unconfirmed image that any reset reverts to E3. It is NOT a step towards
+ *                    release: still DEV, still NO-FAT, still bypassed, still not driveable.
  *
  * Neither starts its risky path at boot: `tofdiag arm` does, once the console and a CAN capture are
  * running -- and `arm` itself refuses until this boot has shown a completed CAN send, health item,
@@ -38,6 +50,14 @@
 #include <stdint.h>
 
 #if defined(TOF_DIAG_HANG)
+
+/* The mode number is two independent choices, and naming them separately is what stops a third
+ * mode from being a third copy of everything. Reading the real sensors and putting grid frames on
+ * CAN are unrelated: mode 1 does the first, mode 2 the second, mode 3 both. Every site that used
+ * to ask "is this mode 1" asks one of these instead, so adding mode 3 changed no behaviour in the
+ * two modes that were already measured. */
+#define TOF_DIAG_REAL_L7   (TOF_DIAG_HANG == 1 || TOF_DIAG_HANG == 3)
+#define TOF_DIAG_SEND_GRID (TOF_DIAG_HANG == 2 || TOF_DIAG_HANG == 3)
 
 #define TOF_DIAG(stmt) stmt
 

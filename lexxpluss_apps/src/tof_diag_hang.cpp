@@ -9,9 +9,11 @@
 
 #if defined(TOF_DIAG_HANG)
 
-#if TOF_DIAG_HANG != 1 && TOF_DIAG_HANG != 2
-#error "TOF_DIAG_HANG must be 1 (real L7, no grid TX) or 2 (static grid, no L7)"
+#if TOF_DIAG_HANG != 1 && TOF_DIAG_HANG != 2 && TOF_DIAG_HANG != 3
+#error "TOF_DIAG_HANG must be 1 (real L7, no grid TX), 2 (static grid, no L7) or 3 (real L7, grid TX)"
 #endif
+
+/* TOF_DIAG_REAL_L7 and TOF_DIAG_SEND_GRID come from the header, where the pair is explained. */
 #if !defined(ENABLE_TOF_L7_ULD) || !defined(TOF_DEV_NO_AUTO_CONFIRM)
 #error "TOF_DIAG_HANG needs ENABLE_TOF_L7_ULD and TOF_DEV_NO_AUTO_CONFIRM"
 #endif
@@ -270,7 +272,7 @@ uint8_t freq_[2]{};
 bool opened_[2]{};
 uint8_t open_attempts_[2]{};
 bool first_fresh_[2]{};
-#if TOF_DIAG_HANG == 2
+#if !TOF_DIAG_REAL_L7
 uint32_t last_fresh_ms_[2]{};
 #endif
 
@@ -322,7 +324,7 @@ int diag_start(void *, tof_l7::operation_status *st)
 int diag_stop(void *dev, tof_l7::operation_status *st)
 {
     *st = tof_l7::operation_status{};
-#if TOF_DIAG_HANG == 1
+#if TOF_DIAG_REAL_L7
     const int i{index_of(dev)};
     if (i >= 0 && opened_[i]) {
         opened_[i] = false;
@@ -334,7 +336,7 @@ int diag_stop(void *dev, tof_l7::operation_status *st)
     return 0;
 }
 
-#if TOF_DIAG_HANG == 1
+#if TOF_DIAG_REAL_L7
 /* The real L7, opened on the first read after `arm`, inside the cycle and under the chain lock --
  * where start() would have done it. Two attempts per sensor per bring-up, then it stays closed. */
 int diag_read(void *dev, void *scratch, tof_l7::sample *out, tof_l7::operation_status *st)
@@ -449,8 +451,14 @@ int cmd_arm(const struct shell *sh, size_t, char **)
         return -EAGAIN;
     }
     shell_print(sh, "armed (mode %d): %s", TOF_DIAG_HANG,
-                TOF_DIAG_HANG == 1 ? "real L7 opens on the next cycle; grid frames stay off CAN"
-                                   : "static grid frames go on CAN from the next cycle");
+#if TOF_DIAG_HANG == 1
+                "real L7 opens on the next cycle; grid frames stay off CAN"
+#elif TOF_DIAG_HANG == 2
+                "static grid frames go on CAN from the next cycle"
+#else
+                "real L7 opens on the next cycle AND its grid frames go on CAN"
+#endif
+    );
     shell_print(sh, "everything is watched from now; the %u s grace starts here", kGraceMs / 1000);
     return 0;
 }

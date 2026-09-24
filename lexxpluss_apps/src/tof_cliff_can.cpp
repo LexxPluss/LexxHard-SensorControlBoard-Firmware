@@ -88,20 +88,26 @@ int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
 }
 
 #if defined(TOF_DIAG_HANG) && defined(ENABLE_TOF_L7_ULD)
-/* DEV hang isolation. Mode 1 keeps every grid frame off the bus -- the publisher, packer and its
- * accounting all run, only the transmit is replaced -- so the real L7 path can run without adding a
- * single frame to the shared CAN transmit path. Mode 2 sends them, counted. */
+/* DEV hang isolation, and THE one line that separates mode 1 from mode 3.
+ *
+ * Mode 1 keeps every grid frame off the bus -- the publisher, the packer and all of their
+ * accounting still run, only the transmit is replaced -- so the real L7 path could be run without
+ * adding a single frame to the shared CAN transmit path. That was the right isolation while the
+ * question was which of the two suspects hung the board, and it is exactly why no real L7 distance
+ * has ever reached the driver: the frames were built and then dropped here.
+ *
+ * Modes 2 and 3 send them, counted. Mode 2's are fabricated, mode 3's are the real sensors'. */
 int send_grid(uint16_t can_id, const uint8_t *data, uint8_t dlc)
 {
-#if TOF_DIAG_HANG == 1
+#if TOF_DIAG_SEND_GRID
+    tof_diag::grid_sent();
+    return send(can_id, data, dlc);
+#else
     (void)can_id;
     (void)data;
     (void)dlc;
     tof_diag::grid_suppressed();
     return 0;
-#else
-    tof_diag::grid_sent();
-    return send(can_id, data, dlc);
 #endif
 }
 #endif

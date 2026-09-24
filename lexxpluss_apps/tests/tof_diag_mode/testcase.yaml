@@ -1,0 +1,13 @@
+common:
+  platform_allow: native_sim
+  tags: tof diag
+tests:
+  # Real L7, grid frames kept off CAN. Thirty minutes armed on dasher2 with the ISR backport.
+  tof.diag.mode.one:
+    extra_args: TOF_DIAG_TEST_MODE=1
+  # Static grid on CAN, no L7 bus access. Kept as the interrupt-rate control.
+  tof.diag.mode.two:
+    extra_args: TOF_DIAG_TEST_MODE=2
+  # Real L7 AND its grid frames on CAN: the observe-only end-to-end image.
+  tof.diag.mode.three:
+    extra_args: TOF_DIAG_TEST_MODE=3
