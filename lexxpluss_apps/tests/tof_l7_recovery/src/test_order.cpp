@@ -6,13 +6,14 @@
  *
  * The boot order, which is the one part of this work whose content IS the order.
  *
- * A surviving L7 can only be told anything while it is still enabled, and the first
- * gpio_pin_configure_dt on the data line ends that: the chain goes to a known state, the sensor
- * goes silent, and it keeps every bit of the state that made recovery necessary while losing the
- * only channel that could clear it. So recovery before the first control-line change is not a
- * preference; it is the difference between a recovery that can run and one that cannot, and that
- * is the sort of constraint which survives in a comment for a while and then quietly stops being
- * true.
+ * A surviving L7 can only be told anything while it is still reachable, and the first
+ * gpio_pin_configure_dt on the data line is the first thing this firmware does that can change
+ * that: afterwards the chain's enable state is this boot's decision rather than the previous
+ * boot's. What is proven is that an SCB-only reset does not clear an L7; that a survivor is still
+ * answering when the application starts is the expectation the next robot experiment settles. The
+ * ordering is chosen because it is the only one that can work if that expectation holds and costs
+ * two probes if it does not, and it is the sort of constraint which survives in a comment for a
+ * while and then quietly stops being true.
  *
  * The other half of the design is what is allowed to stop a boot. The two pin configurations are --
  * a chain whose control lines will not configure has nothing to enumerate. Nothing on the recovery

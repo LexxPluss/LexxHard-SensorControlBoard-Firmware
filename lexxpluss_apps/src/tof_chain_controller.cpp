@@ -368,9 +368,11 @@ int boot_read_back_speed(void *, bool *matches)
     *matches = false;
 
     /* STATED PRECISELY, because the word "readback" promises more than this delivers: the driver
-     * returns the configuration it recorded, not the peripheral's timing register. It catches a
-     * configure that was refused or never applied, which is what the check is for, and it does not
-     * prove the bus is clocking at 100 kHz. Only a scope proves that. */
+     * returns the configuration it RECORDED, not the peripheral's timing register. What it catches
+     * is a refusal, a call that was never made, and a driver record that disagrees with what was
+     * asked for. What it cannot catch is the case that would matter most: i2c_configure() returning
+     * success and updating the driver's record while TIMINGR did not actually change. It does not
+     * prove the bus is clocking at 100 kHz, and only a scope does. */
     uint32_t cfg{0};
     if (const int rc{i2c_get_config(i2c2_dev, &cfg)}; rc != 0)
         return rc;
@@ -1325,12 +1327,13 @@ void init()
         return;
     }
     /* THE ORDER MATTERS HERE and it is not obvious, so it lives in tof_l7_boot_order rather than in
-     * the shape of this function. A surviving L7 is still enabled and still answering at its
-     * programmed address when the application starts, because the flip-flops that carry the enable
-     * chain are powered from the rail an SCB reset does not drop. The gpio_pin_configure_dt calls
-     * below end that: the chain goes to a known state, the sensor goes silent, and it keeps every
-     * bit of the state that made recovery necessary while losing the only channel that could clear
-     * it. So recovery goes first, and a host suite pins that it does. */
+     * the shape of this function. The reading behind it, kept separate from what is proven: an
+     * SCB-only reset demonstrably does not clear an L7, and a survivor is EXPECTED to still be
+     * enabled and answering at its programmed address when the application starts, because the
+     * enable chain's flip-flops are powered from the rail the reset does not drop. The
+     * gpio_pin_configure_dt calls below are the first thing that can change that, so the recovery
+     * is attempted before them and a host suite pins that it is. Whether the expectation holds is
+     * the next robot experiment's to answer. */
     tof_l7_boot_order::steps boot{};
     boot.configure_data_pin = boot_configure_data_pin;
     boot.configure_clock_pin = boot_configure_clock_pin;

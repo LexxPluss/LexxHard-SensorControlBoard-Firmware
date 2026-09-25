@@ -34,14 +34,15 @@
  * boots with nothing to recover. So a sensor is probed first and stopped only if it answers, and
  * the probe is the thing that keeps this pass free on the boots where it has no work.
  *
- * WHEN IT RUNS. Before the all-off, not after it. The flip-flops that carry the enable chain are
- * powered from the rail the reset does not drop, so a survivor is still enabled and still sitting
- * at its programmed address at the moment the application starts -- the same persistence that
- * causes the problem is what makes the survivor addressable before anything has been touched.
- * After an all-off the L7 is merely silent, which is worse: it still holds its state and can no
- * longer be told anything. That ordering is an assumption about the carrier, stated here so that a
- * pass which reports every position absent on a warm reset is read as evidence against it rather
- * than as a quiet success.
+ * WHEN IT RUNS. Before the all-off, not after it, and the reason is an inference rather than a
+ * measurement: the flip-flops carrying the enable chain are powered from the rail the reset does
+ * not drop, so a survivor should still be enabled and still sitting at its programmed address when
+ * the application starts. If that holds, the same persistence that causes the problem is what makes
+ * the survivor addressable before anything has been touched, and driving the control lines first
+ * would replace that state with this boot's own. Nobody has watched it happen yet. The ordering is
+ * chosen because it is the only one that can work if the inference is right and costs two probes if
+ * it is wrong, and a pass reporting every position absent on a warm reset is evidence against the
+ * inference rather than a quiet success.
  *
  * WHAT IT DOES NOT ESTABLISH. That stopping a ranging session clears whatever state actually
  * survives. What survives is not known: a downloaded ULD, an active session, a latched address and

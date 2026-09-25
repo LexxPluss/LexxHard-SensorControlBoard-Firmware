@@ -6,17 +6,26 @@
  *
  * The one part of boot whose ORDER is the whole content, kept where a host suite can link it.
  *
- * The L7 recovery pass can only talk to a survivor while the survivor is still enabled. The enable
- * chain is a row of D flip-flops powered from the rail an SCB reset does not drop, so after a
- * software, watchdog or post-DFU reset a survivor is still enabled and still answering at its
- * programmed address at the moment the application starts. The first gpio_pin_configure_dt on the
- * data line ends that: the chain goes to a known state, the L7 goes silent, and it keeps every bit
- * of the state that made recovery necessary while losing the only channel that could clear it.
+ * The L7 recovery pass can only talk to a survivor while the survivor is still reachable, and the
+ * first gpio_pin_configure_dt on the data line is the first thing this firmware does that can
+ * change that. Once the control lines are driven, the chain's enable state is whatever this boot
+ * decided rather than whatever the previous one left, and a survivor's reachability is no longer
+ * something the recovery pass can assume.
  *
- * So "recovery happens before the first control-line change" is not a preference about tidiness. It
- * is the difference between a recovery that can run and one that cannot, and it is exactly the kind
- * of constraint that survives in a comment for a while and then quietly stops being true. It lives
- * in a function instead.
+ * WHAT IS ESTABLISHED, AND WHAT IS REASONING. Established: an SCB-only reset does not clear an L7,
+ * because the enable chain gates that board's comms rather than resetting it and no XSHUT or
+ * power-rail control for it exists on this carrier. Reasoning, not yet confirmed on hardware: that
+ * a survivor is still enabled and still answering at its programmed address when the application
+ * starts, because the flip-flops carrying the enable chain are powered from the rail the reset does
+ * not drop. The next robot experiment is what settles that, and it settles it either way -- a pass
+ * that reports both positions absent on a warm reset is evidence against this reading, not a quiet
+ * success.
+ *
+ * Either way the ordering is the same, which is why it is safe to build on now: attempting the
+ * recovery before the first control-line operation is the only arrangement that can work if the
+ * reasoning holds, and costs two probes if it does not. It is also exactly the kind of constraint
+ * that survives in a comment for a while and then quietly stops being true, so it lives in a
+ * function instead.
  *
  * WHAT IS AND IS NOT FATAL. The two pin configurations are: a chain whose control lines cannot be
  * configured has nothing to enumerate, and that is a real refusal. Nothing on the recovery side is.
