@@ -213,6 +213,15 @@ test_tof_auto_commission:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Feeding the hardware watchdog on task progress rather than from a timer. Most of the suite is
+# about NOT firing: a watchdog that resets a healthy board is worse than one that never fires, and
+# the two easiest ways to build one -- a boot whose host has not arrived, and bring-up's long
+# operations -- are starting conditions rather than exotic faults.
+.PHONY: test_tof_task_watchdog
+test_tof_task_watchdog:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b native_sim lexxpluss_apps/tests/tof_task_watchdog -d build-test-tof-task-watchdog -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # The boot-time L7 recovery pass. It is the piece that decides whether an SCB reset needs an
 # operator to pull power before the grid sensors work again, so its two guards -- never stop an
 # address that did not answer, never let a failure end the boot -- are worth a suite of their own.
