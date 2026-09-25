@@ -6,43 +6,60 @@
  *
  * Feeding the IWDG only while the work it is supposed to protect keeps finishing.
  *
- * WHAT IT REPLACES. The product feeds the hardware watchdog from a timer, unconditionally. That
- * protects against the scheduler stopping and against nothing else: every thread-level hang this
- * project has actually hit -- an I2C transaction that never completes, a cycle that never returns --
- * leaves the timer running and the board fed, alive and doing nothing, for as long as anybody is
- * willing to wait. The hang-isolation images fed on task progress instead and that is what turned
- * those hangs into resets somebody could read afterwards. This is that idea as product code.
+ * WHAT IT REPLACES. The product feeds the hardware watchdog from a k_timer expiry, which on Zephyr
+ * runs in interrupt context, unconditionally. That protects against the scheduler stopping and
+ * against nothing else: every thread-level hang this project has actually hit -- an I2C transaction
+ * that never completes, a cycle that never returns -- leaves the timer running and the board fed,
+ * alive and doing nothing, for as long as anybody is willing to wait.
  *
- * THE DANGER IN IT, and the reason most of this file is about not firing. A watchdog that resets a
+ * TWO WAYS A TASK DIES, and an earlier version of this file only caught one of them.
+ *
+ * It can hang INSIDE its work: `begun != ended` with `ended` frozen. That is the I2C wedge, and it
+ * is what the diagnostic images were built to catch.
+ *
+ * Or it can stop being scheduled BETWEEN cycles, at which point `begun == ended` and the activity
+ * looks exactly like one that is idle. A thread that dies cleanly between two cycles is invisible
+ * to an in-flight test and can stay dead forever while the board is fed. So every activity that is
+ * PERIODIC after commissioning also has a silence bound: `ended` not moving for long enough is a
+ * fault whether or not anything was inside. The two bounds are separate because they mean different
+ * things and a reader after a reset wants to know which one it was.
+ *
+ * THE DANGER, and the reason much of this file is about not firing. A watchdog that resets a
  * healthy board is worse than one that never fires, because it takes the machine out of service and
  * hides its own cause. Two starting conditions make that easy to get wrong.
  *
  * The first is boot. A post-DFU boot legitimately blocks every CAN sender until the robot PC is
  * back on the bus, so "nothing has been sent" is the normal state of a board that is working
- * perfectly and waiting. Judging it would reset the board for the host's absence. So nothing is
- * judged until a BASELINE has been taken, and the baseline requires every watched activity to have
- * completed at least once on this boot -- not to be configured, not to be expected, to have
- * actually finished. Before that the answer is always feed.
+ * perfectly and waiting. Nothing is judged until a BASELINE has been taken, and the baseline
+ * requires every watched activity to have actually finished once on this boot. Before that the
+ * answer is always feed.
  *
- * The second is the long operations that are part of ordinary bring-up. Downloading 86 KB of ULD
- * firmware to an L7 takes about two seconds per sensor over I2C, and commissioning takes longer
- * still. Both dwarf any per-cycle bound. They are declared rather than inferred, and the window
- * they get is bounded: a declared long operation suspends the bounds it covers and has a cap of its
- * own, because "the firmware said it was busy" is exactly the shape of excuse a hang would offer.
+ * The second is the long operations that are part of ordinary bring-up: an ULD download is about
+ * two seconds per sensor and commissioning is longer. They are declared rather than inferred, and
+ * -- this is the part an earlier version got wrong -- a declaration suspends a FIXED, NAMED set of
+ * activities and nothing else. Downloading firmware to an L7 says nothing about whether the CAN
+ * heartbeat is still going out, and a declaration that bought thirty seconds of silence for every
+ * unrelated task would be a hole shaped exactly like the hang it is meant to survive.
  *
- * WHERE THE BASELINE IS TAKEN. After automatic commissioning has finished and before the first L7
- * is opened. Earlier and the chain is still being enumerated, which is one of the long operations;
- * later and the first L7 open -- the single operation most likely to hang, and the one this whole
- * investigation started from -- would fall outside the watched window.
+ * THE L7 IS WATCHED FROM ITS FIRST OPEN, not from the baseline. The baseline is taken after
+ * commissioning and BEFORE any L7 has been opened, so at that moment an L7 has necessarily
+ * completed nothing; requiring otherwise would make the documented arming point unreachable. So the
+ * L7 monitor starts when the first open BEGINS, and from that instant a first open that never
+ * returns is a fault -- which matters, because that single operation is the one this whole
+ * investigation started from.
+ *
+ * THE TWO CAN SENDERS ARE WATCHED SEPARATELY, because the board has two and they can fail
+ * independently: the acquisition slot carries 0x214, 0x215, 0x216 and the cycle health frame, and
+ * the system workqueue carries the 0x217 heartbeat. One summed counter would let a live heartbeat
+ * refresh the timestamp of a wedged acquisition sender forever. The diagnostic images split them
+ * for exactly this reason and the product logic keeps the split.
  *
  * IT LATCHES. Once this decides to stop feeding, this boot never feeds again, whatever the counters
- * do afterwards. A watchdog that can change its mind gives a board that hangs intermittently an
- * indefinite number of chances to look healthy between hangs, and the reset it was supposed to
- * cause never happens. The reset is the point.
+ * do afterwards. A board that hangs intermittently would otherwise get an unlimited number of
+ * chances to look healthy between hangs, and the reset it was supposed to cause never happens.
  *
- * WHAT IT DOES NOT DO. It does not know which subsystem matters more, and it does not decide
- * whether the chain is usable -- enumeration owns that. It answers one question, every time it is
- * asked: may the watchdog be fed right now.
+ * WHAT IT DOES NOT DO. It does not decide whether the chain is usable -- enumeration owns that. It
+ * answers one question, every time it is asked: may the watchdog be fed right now.
  */
 
 #pragma once
@@ -52,14 +69,21 @@
 namespace lexxhard::tof_task_watchdog {
 
 /* Why feeding stopped. A bitmask because more than one can be true, and which ones were true is the
- * first thing anybody wants from the forensics block after an unexplained reset. */
+ * first thing anybody wants after an unexplained reset. `stuck_` is a task that went in and did not
+ * come out; `silent_` is a periodic task that stopped running at all. */
 enum reason : uint32_t {
     stuck_cycle          = 1U << 0,
-    stuck_send           = 1U << 1,
-    stuck_health         = 1U << 2,
-    stuck_zcan           = 1U << 3,
-    stuck_l7             = 1U << 4,
-    long_operation_over  = 1U << 5,
+    silent_cycle         = 1U << 1,
+    stuck_send_acq       = 1U << 2,
+    silent_send_acq      = 1U << 3,
+    stuck_send_workq     = 1U << 4,
+    silent_send_workq    = 1U << 5,
+    stuck_health         = 1U << 6,
+    silent_health        = 1U << 7,
+    stuck_l7             = 1U << 8,
+    silent_l7            = 1U << 9,
+    silent_zcan          = 1U << 10,
+    long_operation_over  = 1U << 11,
 };
 
 enum class phase : uint8_t {
@@ -68,22 +92,37 @@ enum class phase : uint8_t {
     stopped,   // latched. Never feeds again this boot
 };
 
-/* One watched activity. `begun != ended` means something is inside it; a hang is that condition
- * persisting while `ended` does not move. Both wrap, and every comparison here is either equality
- * or unsigned subtraction, so a wrap is not an event. */
+/* One watched activity. `begun != ended` means something is inside it. Both wrap, and every
+ * comparison here is either equality or unsigned subtraction, so a wrap is not an event. */
 struct progress {
     uint32_t begun{0};
     uint32_t ended{0};
 };
 
+/* WHAT A DECLARED LONG OPERATION MAY SUSPEND, fixed here rather than supplied by the caller.
+ *
+ * An ULD download and a commissioning pass hold the chain, so they hold acquisition and the L7. They
+ * do not hold the CAN heartbeat, the health work item or the zcan loop, and a caller able to say
+ * otherwise would be able to buy silence for tasks the operation never touched. Making it a
+ * constant means no call site can widen it. */
+inline constexpr uint32_t kLongOperationSuspends{stuck_cycle | silent_cycle | stuck_l7 | silent_l7};
+
 struct bounds {
     /* After the baseline, before anything is judged. Covers the first cycle of each activity. */
     uint32_t grace_ms{2000};
+    /* In-flight: something went in and has not come out. */
     uint32_t cycle_ms{2000};
     uint32_t send_ms{2000};
     uint32_t health_ms{3000};
-    uint32_t zcan_ms{2000};
     uint32_t l7_ms{5000};
+    /* Silence: a periodic activity has completed nothing for this long, in flight or not. Longer
+     * than the in-flight bounds because a periodic task is allowed to be late before it is
+     * declared dead, and because the 5 Hz grid is the slowest thing being watched. */
+    uint32_t cycle_silence_ms{5000};
+    uint32_t send_silence_ms{5000};
+    uint32_t health_silence_ms{5000};
+    uint32_t l7_silence_ms{10000};
+    uint32_t zcan_silence_ms{2000};
     /* The cap on a declared long operation. Generous enough for two ULD downloads and a
      * commissioning pass, and finite because an unbounded declaration is not a bound. */
     uint32_t long_operation_ms{30000};
@@ -91,21 +130,21 @@ struct bounds {
 
 struct input {
     uint32_t now_ms{0};
-    /* Automatic commissioning has finished and no L7 has been opened yet. The baseline is taken on
-     * the first evaluation where this is true and every activity has moved. */
+    /* Automatic commissioning has finished and no L7 has been opened yet. */
     bool baseline_point{false};
-    /* Does this image expect an L7 to make progress? False for a build without the ULD, or with no
-     * grid position, and then L7 progress is neither required nor judged. */
+    /* Does this image expect an L7 at all? False for a build without the ULD or with no grid
+     * position, and then no L7 progress is ever required or judged. */
     bool l7_expected{false};
     progress acquisition{};
-    progress can_send{};
+    /* The two senders, watched separately. `send_acq` carries 0x214/0x215/0x216 and the cycle
+     * health frame from the acquisition slot; `send_workq` carries the 0x217 heartbeat from the
+     * system workqueue. */
+    progress send_acq{};
+    progress send_workq{};
     progress health{};
     progress l7{};
-    /* Free-running, so unlike the others it is judged on movement alone: there is no "inside" a
-     * zcan loop to be stuck in. */
+    /* Free-running, so it has no inside to be stuck in: silence is its whole symptom. */
     uint32_t zcan_loops{0};
-    /* A declared long operation -- an ULD download, a commissioning pass. Suspends the bounds of
-     * the activities it runs inside, and is itself bounded. */
     bool long_operation{false};
     uint32_t long_operation_began_ms{0};
 };
@@ -115,13 +154,17 @@ struct state {
     uint32_t why{0};
     /* When each activity's `ended` was last seen to move. */
     uint32_t acq_seen_ms{0};
-    uint32_t send_seen_ms{0};
+    uint32_t send_acq_seen_ms{0};
+    uint32_t send_workq_seen_ms{0};
     uint32_t health_seen_ms{0};
     uint32_t zcan_seen_ms{0};
     uint32_t l7_seen_ms{0};
     uint32_t armed_ms{0};
+    /* The L7 monitor starts at the first open rather than at the baseline; see the header. */
+    bool l7_watching{false};
     progress last_acq{};
-    progress last_send{};
+    progress last_send_acq{};
+    progress last_send_workq{};
     progress last_health{};
     progress last_l7{};
     uint32_t last_zcan{0};
