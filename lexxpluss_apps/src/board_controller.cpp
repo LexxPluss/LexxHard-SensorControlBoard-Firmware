@@ -43,6 +43,7 @@
 #include "led_controller.hpp"
 #include "power_state.hpp"
 #include "tof_diag_hang.hpp"
+#include "tof_watchdog_feeder.hpp"
 
 namespace {
     constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{5000};
@@ -1312,6 +1313,20 @@ public:
             return;
         }
 
+        /* Whatever the previous boot left, said out loud before this one can overwrite the
+         * conditions that produced it. Silent when there is nothing, which is the ordinary case. */
+        tof_watchdog_feeder::report_previous_stop();
+
+        /* THE FEEDER IS CREATED BEFORE THE WATCHDOG EXISTS, and blocks. There is no interval in
+         * which the IWDG is running and nobody is ready to feed it, and there is no handover from
+         * an interrupt -- this image never feeds from one. See tof_watchdog_feeder.hpp. */
+        if (int rc = tof_watchdog_feeder::start(); rc != 0) {
+            /* An IWDG with nobody to feed it is a guaranteed reset in ten seconds. Leaving it off
+             * and saying so is the only honest failure here; arming it would be choosing the reset. */
+            LOG_ERR("watchdog feeder thread could not be created (%d): the watchdog stays OFF", rc);
+            return;
+        }
+
         struct wdt_timeout_cfg wdt_config;
         wdt_config.flags = WDT_FLAG_RESET_SOC;
         wdt_config.window.min = 0;
@@ -1329,6 +1344,14 @@ public:
             LOG_ERR("WDT setup error: %d\n", err_setup);
             return;
         }
+
+        /* Published, released, and then WAITED FOR. Nothing else in this init runs until one real
+         * feed has succeeded, so the long operations further down cannot be what the first ten
+         * seconds are spent on. The bound is a fifth of the watchdog window. */
+        tof_watchdog_feeder::release(dev_wdi, wdt_channel_id);
+        if (int rc = tof_watchdog_feeder::wait_first_feed(); rc != 0)
+            LOG_ERR("no watchdog feed within the startup bound (%d): this boot is heading for a reset",
+                    rc);
 
         // eo_option_1 is used as power source for third inductive sensor
         {
@@ -1943,18 +1966,14 @@ private:
             k_msgq_purge(&msgq_board_pb_tx);
         }
     }
+    /* THE WATCHDOG IS NO LONGER FED HERE, and this comment is the marker for anyone who comes
+     * looking. A k_timer expiry runs in interrupt context, so feeding from it protected against the
+     * scheduler stopping and against nothing else: every thread-level hang this project has hit left
+     * this timer running and the board fed, alive and doing nothing, for as long as anybody was
+     * willing to wait. Feeding belongs to tof_watchdog_feeder, which is a thread, feeds only while
+     * the watched work keeps finishing, and holds the only wdt_feed() call in the image. Putting one
+     * back here would restore the failure, not the safety. */
     void poll_1s() {
-        if (!device_is_ready(dev_wdi)){
-            LOG_INF("Watchdog device is not ready\n");
-            return;
-        }
-#if defined(TOF_DIAG_HANG)
-        /* DEV hang isolation: fed only while the watched work keeps finishing, so a thread-level
-         * hang becomes an IWDG reset. See tof_diag_hang.hpp. */
-        if (!tof_diag::feed_allowed())
-            return;
-#endif
-        wdt_feed(dev_wdi, 0);   // Feed the watchdog, Second value will not be used for STM32
     }
     bool should_lockdown() const {
         return (mbd.is_dead() || mbd.lockdown_from_ros()) && !esw.is_asserted();

@@ -19,6 +19,7 @@
 #include "tof_acquisition.hpp"
 #include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
+#include "tof_watchdog_feeder.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
 #include "tof_grid_publisher.hpp"
@@ -338,6 +339,16 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
     keyed_ = true;
     keyed_epoch_ = epoch;
     LOG_INF("descriptors keyed from the installed mapping under epoch %u", epoch);
+
+    /* COMMISSIONING IS FINISHED, and this is the moment -- inside the commit, after the last thing
+     * that could refuse it. It is the signal the watchdog waits for before it judges anything: until
+     * a mapping is installed the chain is still being enumerated and every activity is legitimately
+     * irregular. An atomic store, so holding the chain lock costs nothing here.
+     *
+     * It is not, by itself, "before the first L7 open". The L7 monitor starts at the first open
+     * wherever that falls, which is what makes this safe to set from the one place that knows
+     * commissioning succeeded rather than from a place that also knows what happens next. */
+    tof_watchdog_feeder::set_baseline_point(true);
     return 0;
 }
 

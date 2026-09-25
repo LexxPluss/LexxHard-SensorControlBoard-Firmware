@@ -226,6 +226,14 @@ test_tof_auto_commission:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# The startup handshake: the feeder thread exists and is blocked before the watchdog is installed,
+# is released after it, makes one real feed, and initialisation waits for that feed. There is no
+# handover from the interrupt in this image, so the order is the only thing closing that window.
+.PHONY: test_tof_watchdog_feeder
+test_tof_watchdog_feeder:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b native_sim lexxpluss_apps/tests/tof_watchdog_feeder -d build-test-feeder -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # The six heartbeats the feeder reads. Needs a real kernel rather than a host stub, because the CAN
 # slot discrimination is a comparison against the system work queue's thread.
 .PHONY: test_tof_progress

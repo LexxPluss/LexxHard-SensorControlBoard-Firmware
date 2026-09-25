@@ -58,6 +58,7 @@
  * the boot, so a header pulled in only when the cliff ULD is present would leave the chain-only
  * configuration referring to a namespace it had never seen -- which is exactly how it broke. */
 #include "tof_l7_boot_order.hpp"
+#include "tof_watchdog_feeder.hpp"
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_runtime.hpp"
 #endif
@@ -1389,7 +1390,14 @@ void init()
     /* Integrity failure disables only L7. Cliff health must still come up: losing the hanging-object
      * feature is already fail-open for that hazard, and suppressing the independent cliff channel
      * would make the failure larger while hiding the diagnosis. */
-    if (const int rc{tof_l7_runtime::bootstrap()}; rc != 0) {
+    /* A declared long operation: verifying the stored blob hashes 86 KB on the main stack, which
+     * dwarfs every per-cycle bound. Declared rather than inferred, and bounded -- see
+     * tof_task_watchdog.hpp for what a declaration does and does not excuse. */
+    tof_watchdog_feeder::set_l7_expected(true);
+    tof_watchdog_feeder::long_operation_begin();
+    const int blob_rc{tof_l7_runtime::bootstrap()};
+    tof_watchdog_feeder::long_operation_end();
+    if (const int rc{blob_rc}; rc != 0) {
         const auto state{tof_l7_runtime::current()};
         LOG_ERR("L7 runtime bootstrap failed at %s (%s, %d); L7 remains unavailable",
                 tof_l7_runtime::stage_name(state.current_stage),
