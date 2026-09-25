@@ -126,6 +126,24 @@ const char *stage_name(stage st);
  * chain. */
 tof_enum::chain_spec &spec();
 
+#if defined(ENABLE_TOF_L7_ULD)
+}  // namespace lexxhard::tof_cliff_runtime
+
+namespace lexxhard::tof_l7 {
+struct sensor;
+}
+
+namespace lexxhard::tof_cliff_runtime {
+
+/* One of this module's own grid objects, lent to the boot recovery pass BEFORE bootstrap runs.
+ *
+ * It is lent rather than duplicated because VL53L7CX_Configuration is well over a kilobyte and a
+ * second one would buy nothing: recovery finishes before anything is opened into these objects, so
+ * at that moment they hold no state worth keeping. The borrow is valid only then. Calling this
+ * after bootstrap would hand out a live sensor's configuration to something that zeroes it. */
+tof_l7::sensor *l7_recovery_scratch();
+#endif
+
 /* Are the descriptors keyed by the mapping the authority currently reports as PROVEN?
  *
  * There is deliberately no public "apply" entry point any more. Keying happens INSIDE the authority's

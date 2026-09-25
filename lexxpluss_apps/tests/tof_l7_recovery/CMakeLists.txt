@@ -20,8 +20,10 @@ set(L7_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld)
 target_sources(app PRIVATE
     src/test_main.cpp
     src/test_ops.cpp
+    src/test_order.cpp
     ${APP_SRC_DIR}/tof_l7_recovery.cpp
-    ${APP_SRC_DIR}/tof_l7_recovery_ops.cpp)
+    ${APP_SRC_DIR}/tof_l7_recovery_ops.cpp
+    ${APP_SRC_DIR}/tof_l7_boot_order.cpp)
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}

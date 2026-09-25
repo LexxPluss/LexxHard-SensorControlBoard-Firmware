@@ -66,6 +66,11 @@
 #endif
 #include "tof_commission_wiring.hpp"
 #include "tof_commissioning.hpp"
+#include "tof_l7_boot_order.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_recovery.hpp"
+#include "tof_l7_recovery_ops.hpp"
+#endif
 #if defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET >= 6
 /* The budget probe is C, and this is the whole of its interface: one call, made after the bootstrap
  * this file performs. Declared here rather than in a header of its own because there is exactly one
@@ -330,6 +335,85 @@ int set_bus_speed_hw(tof_commissioning::bus_speed s)
                                                                        : I2C_SPEED_FAST};
     return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed));
 }
+
+/* ------------------------------------------------- the boot sequence's steps ------
+ *
+ * Supplied to tof_l7_boot_order::run(), which owns the ORDER. They are here because they are the
+ * pieces only this image has; the constraint they serve -- recovery before the first control-line
+ * change -- lives where a host suite can link it. */
+
+int boot_configure_data_pin(void *)
+{
+    return gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE);
+}
+
+int boot_configure_clock_pin(void *)
+{
+    return gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE);
+}
+
+#if defined(ENABLE_TOF_L7_ULD)
+int boot_set_recovery_speed(void *)
+{
+    /* The slower of the two. This is the only traffic on the bus before enumeration and it goes to
+     * a device in an unknown state; the product speed was chosen for an acquisition schedule, not
+     * for that. */
+    return set_bus_speed_hw(tof_commissioning::bus_speed::proof_100k);
+}
+
+int boot_read_back_speed(void *, bool *matches)
+{
+    if (matches == nullptr)
+        return -EINVAL;
+    *matches = false;
+
+    /* STATED PRECISELY, because the word "readback" promises more than this delivers: the driver
+     * returns the configuration it recorded, not the peripheral's timing register. It catches a
+     * configure that was refused or never applied, which is what the check is for, and it does not
+     * prove the bus is clocking at 100 kHz. Only a scope proves that. */
+    uint32_t cfg{0};
+    if (const int rc{i2c_get_config(i2c2_dev, &cfg)}; rc != 0)
+        return rc;
+
+    *matches = I2C_SPEED_GET(cfg) == I2C_SPEED_STANDARD;
+    return 0;
+}
+
+int boot_restore_product_speed(void *)
+{
+    return set_bus_speed_hw(tof_commissioning::bus_speed::product_400k);
+}
+
+int boot_recover_survivors(void *)
+{
+    /* The addresses come from the spec, so a chain whose grid positions move does not need this
+     * function changed -- and a chain with no grid position asks for nothing. */
+    tof_l7_recovery::request q{};
+    const tof_enum::chain_spec &spec{tof_cliff_runtime::spec()};
+    for (size_t i{0}; i < spec.positions && q.count < tof_l7_recovery::kMaxGridSensors; ++i) {
+        if (spec.at[i].expected != tof_enum::model::l7cx)
+            continue;
+        q.addr_7bit[q.count] = spec.at[i].target_addr;
+        ++q.count;
+    }
+
+    const tof_l7_recovery::report rep{tof_l7_recovery::run(
+        tof_l7_recovery::uld_ops(tof_cliff_runtime::l7_recovery_scratch()), q)};
+
+    for (size_t i{0}; i < rep.count; ++i)
+        LOG_INF("l7 boot recovery: 0x%02x %s", q.addr_7bit[i],
+                tof_l7_recovery::result_name(rep.at[i]));
+
+    /* Worth a warning rather than an info line: a stopped session means this boot was a warm one
+     * that left the sensors running, which is the condition that used to need an operator with a
+     * battery switch. Somebody reading a log after a field incident should not have to infer it. */
+    if (rep.stopped > 0)
+        LOG_WRN("l7 boot recovery stopped %u surviving session(s): this was a warm reset",
+                static_cast<unsigned>(rep.stopped));
+
+    return rep.any_failure ? -EIO : 0;
+}
+#endif
 
 /* The image's chain ops, at file scope because tof_commissioning::init() copies the configuration
  * and keeps this pointer: it has to outlive every proof. */
@@ -1240,16 +1324,41 @@ void init()
         init_status.store(-ENODEV);
         return;
     }
-    if (int const rc{gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
-        LOG_ERR("data pin not configurable (%d)", rc);
-        init_status.store(rc);
+    /* THE ORDER MATTERS HERE and it is not obvious, so it lives in tof_l7_boot_order rather than in
+     * the shape of this function. A surviving L7 is still enabled and still answering at its
+     * programmed address when the application starts, because the flip-flops that carry the enable
+     * chain are powered from the rail an SCB reset does not drop. The gpio_pin_configure_dt calls
+     * below end that: the chain goes to a known state, the sensor goes silent, and it keeps every
+     * bit of the state that made recovery necessary while losing the only channel that could clear
+     * it. So recovery goes first, and a host suite pins that it does. */
+    tof_l7_boot_order::steps boot{};
+    boot.configure_data_pin = boot_configure_data_pin;
+    boot.configure_clock_pin = boot_configure_clock_pin;
+#if defined(ENABLE_TOF_L7_ULD)
+    boot.set_recovery_speed = boot_set_recovery_speed;
+    boot.read_back_speed = boot_read_back_speed;
+    boot.recover_survivors = boot_recover_survivors;
+    boot.restore_product_speed = boot_restore_product_speed;
+#endif
+
+    const tof_l7_boot_order::report seq{tof_l7_boot_order::run(boot)};
+    if (!seq.pins_configured) {
+        LOG_ERR("%s failed (%d)", tof_l7_boot_order::step_name(seq.failed_at), seq.rc);
+        init_status.store(seq.rc);
         return;
     }
-    if (int const rc{gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
-        LOG_ERR("clock pin not configurable (%d)", rc);
-        init_status.store(rc);
-        return;
-    }
+#if defined(ENABLE_TOF_L7_ULD)
+    /* Said out loud on every boot, because "recovery did not run" and "recovery found nothing" look
+     * identical in a log that only reports survivors. */
+    if (!seq.recovery_ran)
+        LOG_WRN("l7 boot recovery skipped: bus speed set %d, readback %d",
+                static_cast<int>(seq.speed_set), static_cast<int>(seq.speed_readback_ok));
+    else if (seq.recovery_rc != 0)
+        LOG_WRN("l7 boot recovery reported a failure (%d); enumeration decides from here",
+                seq.recovery_rc);
+    if (seq.speed_set && !seq.product_speed_restored)
+        LOG_ERR("bus left at the recovery speed: the acquisition schedule assumes the product speed");
+#endif
     init_status.store(0);
     // Deliberately NO enumeration here: `tof enum` is a manual commissioning
     // step, and the acquisition thread (Phase 3) will own the boot-time

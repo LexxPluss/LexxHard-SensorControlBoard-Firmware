@@ -561,6 +561,15 @@ const char *stage_name(stage st)
     return "?";
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+tof_l7::sensor *l7_recovery_scratch()
+{
+    /* The first grid object, and the choice does not matter: the recovery pass zeroes whatever it
+     * is given before each call, and it runs before either object has been opened. */
+    return &l7_objs_[0];
+}
+#endif
+
 enm::chain_spec &spec()
 {
     return spec_;
