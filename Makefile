@@ -332,9 +332,9 @@ firmware_tof_l7:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}-NOFAT
-# The image says NO-FAT in its own version string, and the build refuses to proceed if any of
-# the six settings that make it so came back on. A capacity decision that is only written in a
-# conf file is one somebody overrides by accident; this checks the .config that was produced.
+# Second layer. CMake already fails an L7 build whose Kconfig came back with any of these on; this
+# reads the .config that was actually written, so a target keeps its own check even if the
+# CMake-side condition is ever changed.
 	@for sym in CONFIG_DISK_ACCESS CONFIG_DISK_DRIVER_SDMMC CONFIG_FILE_SYSTEM \
 	            CONFIG_FAT_FILESYSTEM_ELM CONFIG_FILE_SYSTEM_SHELL CONFIG_FS_FATFS_LFN; do \
 	    if grep -q "^$$sym=y" build-tof-l7/zephyr/.config; then \

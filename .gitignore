@@ -33,3 +33,6 @@
 /tools/
 /zephyr/
 /compile_commands.json
+
+# Makefile output directory: signed images and the padded test images built from them.
+/out/

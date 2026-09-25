@@ -28,10 +28,10 @@ cmake_minimum_required(VERSION 3.13.1)
 # here, before it, and only for L7 builds -- every other image is configured exactly as before.
 if(ENABLE_TOF_L7_ULD)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
-    # And the filesystem comes out. An L7 image with the FAT stack in place does not fit -- see
-    # overlays/tof_l7_nofat.conf for the measurement -- so NO-FAT is part of what an L7 image IS,
-    # not a flag somebody has to remember on the build command.
-    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7_nofat.conf)
+    # And the filesystem comes out. An L7 image with the FAT stack in place does not fit, so NO-FAT
+    # is part of what an L7 image IS rather than a flag somebody has to remember. Enforced below,
+    # after Kconfig has run, because appending a fragment is not the same as the result it asked for.
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/no_filesystem.conf)
 endif()
 
 # The hang-isolation images measure the i2c2 interrupt itself, which needs the driver hooks turned
@@ -49,6 +49,23 @@ list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_
 
 find_package(Zephyr)
 project(lexxpluss_apps)
+
+# THE FRAGMENT IS A REQUEST; THIS IS THE RESULT. A later fragment, a board default or a command-line
+# -DCONFIG_... can turn any of these back on, and the failure that follows is a link-time overflow
+# whose cause is nowhere near the thing that caused it. Checked here for EVERY L7 image, so that RC
+# and diagnostic builds pass the same gate as the firmware_tof_l7 target rather than happening to be
+# configured the same way. The Makefile re-checks the produced .config as a second layer.
+if(ENABLE_TOF_L7_ULD)
+    foreach(sym CONFIG_DISK_ACCESS CONFIG_DISK_DRIVER_SDMMC CONFIG_FILE_SYSTEM
+                CONFIG_FAT_FILESYSTEM_ELM CONFIG_FILE_SYSTEM_SHELL CONFIG_FS_FATFS_LFN)
+        if(${sym})
+            message(FATAL_ERROR
+                "${sym} is enabled in an ENABLE_TOF_L7_ULD image. The filesystem stack does not fit "
+                "beside the L7 ULD and its vendored device firmware, and nothing in this firmware "
+                "calls it. See lexxpluss_apps/overlays/no_filesystem.conf.")
+        endif()
+    endforeach()
+endif()
 
 FILE(GLOB app_sources src/*.cpp)
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
