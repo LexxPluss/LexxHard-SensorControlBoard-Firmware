@@ -54,6 +54,10 @@
 #include "tof_chain_controller.hpp"
 #include "tof_chain_spec.hpp"
 #include "tof_l7_blob_provider.hpp"
+/* Outside every feature guard on purpose. init() runs in EVERY chain image and uses this to order
+ * the boot, so a header pulled in only when the cliff ULD is present would leave the chain-only
+ * configuration referring to a namespace it had never seen -- which is exactly how it broke. */
+#include "tof_l7_boot_order.hpp"
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_runtime.hpp"
 #endif
@@ -66,7 +70,6 @@
 #endif
 #include "tof_commission_wiring.hpp"
 #include "tof_commissioning.hpp"
-#include "tof_l7_boot_order.hpp"
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_recovery.hpp"
 #include "tof_l7_recovery_ops.hpp"
@@ -336,23 +339,23 @@ int set_bus_speed_hw(tof_commissioning::bus_speed s)
     return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed));
 }
 
+/* The recovery steps need set_bus_speed_hw(), which belongs to the cliff runtime, so the boot-time
+ * L7 recovery is available only where BOTH are built. Stated as one condition rather than left to
+ * the reader to notice: an L7 image without the cliff ULD would otherwise refer to helpers that do
+ * not exist, which is how the chain-only configuration broke. */
+#if defined(ENABLE_TOF_L7_ULD) && defined(ENABLE_TOF_CLIFF_ULD)
+#define TOF_BOOT_RECOVERY 1
+#else
+#define TOF_BOOT_RECOVERY 0
+#endif
+
 /* ------------------------------------------------- the boot sequence's steps ------
  *
  * Supplied to tof_l7_boot_order::run(), which owns the ORDER. They are here because they are the
  * pieces only this image has; the constraint they serve -- recovery before the first control-line
  * change -- lives where a host suite can link it. */
 
-int boot_configure_data_pin(void *)
-{
-    return gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE);
-}
-
-int boot_configure_clock_pin(void *)
-{
-    return gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE);
-}
-
-#if defined(ENABLE_TOF_L7_ULD)
+#if TOF_BOOT_RECOVERY
 int boot_set_recovery_speed(void *)
 {
     /* The slower of the two. This is the only traffic on the bus before enumeration and it goes to
@@ -415,7 +418,7 @@ int boot_recover_survivors(void *)
 
     return rep.any_failure ? -EIO : 0;
 }
-#endif
+#endif  /* TOF_BOOT_RECOVERY */
 
 /* The image's chain ops, at file scope because tof_commissioning::init() copies the configuration
  * and keeps this pointer: it has to outlive every proof. */
@@ -1314,6 +1317,18 @@ bool glue_ready()
     return init_status.load() == 0;
 }
 
+/* The chain's own control lines, and every chain image configures them -- so unlike the recovery
+ * steps these are not behind any feature guard. */
+int boot_configure_data_pin(void *)
+{
+    return gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE);
+}
+
+int boot_configure_clock_pin(void *)
+{
+    return gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE);
+}
+
 void init()
 {
     if (!device_is_ready(i2c2_dev)) {
@@ -1337,7 +1352,7 @@ void init()
     tof_l7_boot_order::steps boot{};
     boot.configure_data_pin = boot_configure_data_pin;
     boot.configure_clock_pin = boot_configure_clock_pin;
-#if defined(ENABLE_TOF_L7_ULD)
+#if TOF_BOOT_RECOVERY
     boot.set_recovery_speed = boot_set_recovery_speed;
     boot.read_back_speed = boot_read_back_speed;
     boot.recover_survivors = boot_recover_survivors;
@@ -1350,7 +1365,7 @@ void init()
         init_status.store(seq.rc);
         return;
     }
-#if defined(ENABLE_TOF_L7_ULD)
+#if TOF_BOOT_RECOVERY
     /* Said out loud on every boot, because "recovery did not run" and "recovery found nothing" look
      * identical in a log that only reports survivors. */
     if (!seq.recovery_ran)

@@ -47,6 +47,8 @@ target_sources(app PRIVATE
     src/test_main.cpp
     src/test_runtime.cpp
     ${APP_SRC_DIR}/tof_acquisition.cpp
+    # The watchdog heartbeats live in the hooked sources, so any suite that links them links this.
+    ${APP_SRC_DIR}/tof_progress.cpp
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_runtime.cpp

@@ -213,6 +213,13 @@ test_tof_auto_commission:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# The six heartbeats the feeder reads. Needs a real kernel rather than a host stub, because the CAN
+# slot discrimination is a comparison against the system work queue's thread.
+.PHONY: test_tof_progress
+test_tof_progress:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b native_sim lexxpluss_apps/tests/tof_progress -d build-test-tof-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Feeding the hardware watchdog on task progress rather than from a timer. Most of the suite is
 # about NOT firing: a watchdog that resets a healthy board is worse than one that never fires, and
 # the two easiest ways to build one -- a boot whose host has not arrived, and bring-up's long

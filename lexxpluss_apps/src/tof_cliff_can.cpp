@@ -22,6 +22,7 @@
 #include "tof_mapping_authority.hpp"
 #include "tof_mapping_proof.hpp"
 #include "tof_diag_hang.hpp"
+#include "tof_progress.hpp"
 
 namespace lexxhard::tof_cliff_can {
 
@@ -77,14 +78,23 @@ int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
      * and a completion callback would put the counter update in yet another context for no
      * gain. Note that "blocking" here is unbounded on the completion side -- see kSendTimeout
      * above for what the 1 ms does and does not cover. */
+    /* WHICH SENDER THIS IS, decided from the calling thread rather than from the CAN id: the id
+     * says what the frame is, the thread says who would be stuck in it. The acquisition slot carries
+     * 0x214, 0x215, 0x216 and the cycle health frame; the system work queue carries the 0x217
+     * heartbeat. They wedge independently, so the watchdog watches them independently. */
+    const tof_progress::activity slot{tof_progress::current_send_slot()};
+    tof_progress::begin(slot);
 #if defined(TOF_DIAG_HANG)
     tof_diag::send_begin(can_id);
     const int rc{can_send(dev_, &frame, kSendTimeout, nullptr, nullptr)};
     tof_diag::send_end(rc);
-    return rc;
 #else
-    return can_send(dev_, &frame, kSendTimeout, nullptr, nullptr);
+    const int rc{can_send(dev_, &frame, kSendTimeout, nullptr, nullptr)};
 #endif
+    /* Counted on return whatever the result. A send that failed is a sender that is alive; a sender
+     * that never returns is the thing being watched for, and it never reaches this line. */
+    tof_progress::end(slot);
+    return rc;
 }
 
 #if defined(TOF_DIAG_HANG) && defined(ENABLE_TOF_L7_ULD)
