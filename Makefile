@@ -25,6 +25,19 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 WORKDIR:=$(if $(WORKDIR),$(),workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
+# What a NO-FAT image must show in the .config it actually produced, checked by every target that
+# claims to be one. A fragment is a request; this is the result. For L7 images CMake refuses the
+# build outright and this is the second layer; for the auto-commission image it is the only layer,
+# because that image applies the fragment from its own target rather than from a feature guard.
+define check_no_filesystem
+@for sym in CONFIG_DISK_ACCESS CONFIG_DISK_DRIVER_SDMMC CONFIG_FILE_SYSTEM \
+            CONFIG_FAT_FILESYSTEM_ELM CONFIG_FILE_SYSTEM_SHELL CONFIG_FS_FATFS_LFN; do \
+    if grep -q "^$$sym=y" $(1)/zephyr/.config; then \
+        echo "NO-FAT check failed in $(1): $$sym is enabled"; exit 1; \
+    fi; \
+done; echo 'NO-FAT verified in $(1): filesystem and disk stacks are absent'
+endef
+
 .PHONY: all
 all: bootloader firmware
 
@@ -332,15 +345,7 @@ firmware_tof_l7:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}-NOFAT
-# Second layer. CMake already fails an L7 build whose Kconfig came back with any of these on; this
-# reads the .config that was actually written, so a target keeps its own check even if the
-# CMake-side condition is ever changed.
-	@for sym in CONFIG_DISK_ACCESS CONFIG_DISK_DRIVER_SDMMC CONFIG_FILE_SYSTEM \
-	            CONFIG_FAT_FILESYSTEM_ELM CONFIG_FILE_SYSTEM_SHELL CONFIG_FS_FATFS_LFN; do \
-	    if grep -q "^$$sym=y" build-tof-l7/zephyr/.config; then \
-	        echo "NO-FAT check failed: $$sym is enabled"; exit 1; \
-	    fi; \
-	done; echo 'NO-FAT verified in .config: filesystem and disk stacks are absent'
+	$(call check_no_filesystem,build-tof-l7)
 	mv build-tof-l7/zephyr/zephyr.signed.bin out/zephyr_tof_l7.signed.bin
 	mv build-tof-l7/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_l7.signed.confirmed.bin
 	cp out/zephyr_tof_l7.signed.confirmed.bin out/zephyr_tof_l7.test.bin
@@ -396,7 +401,8 @@ firmware_tof_cliff:
 firmware_auto_commission:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DTOF_AUTO_COMMISSION_PROFILE=1 -DTOF_AUTO_COMMISSION_PERMIT_ENUMERATION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DTOF_AUTO_COMMISSION_PROFILE=1 -DTOF_AUTO_COMMISSION_PERMIT_ENUMERATION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" "-DEXTRA_CONF_FILE=overlays/auto_commission.conf;overlays/no_filesystem.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}-NOFAT
+	$(call check_no_filesystem,build-auto-commission)
 	mv build-auto-commission/zephyr/zephyr.signed.bin out/zephyr_auto_commission.signed.bin
 	mv build-auto-commission/zephyr/zephyr.signed.confirmed.bin out/zephyr_auto_commission.signed.confirmed.bin
 	cp out/zephyr_auto_commission.signed.confirmed.bin out/zephyr_auto_commission.test.bin
