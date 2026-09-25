@@ -24,11 +24,17 @@
  *
  * THE COMMIT ORDER IS THE WHOLE INTEGRITY STORY. A reset can land between any two stores, so a
  * record that is written front to back can be read back half-written and believed. The body and its
- * checksum are written first, a memory barrier follows, and the committed magic is written last. A
- * record whose magic is present therefore has a body that was complete before the magic existed.
- * Anything else -- a missing magic, a version this build does not know, a size that disagrees, a
- * checksum that fails -- is refused rather than interpreted, because a half-read tombstone pointing
- * at the wrong subsystem is worse than no tombstone at all.
+ * checksum are written first, a REAL memory barrier follows, and the committed magic is written
+ * last. A record whose magic is present therefore has a body that was complete before the magic
+ * existed. Anything else -- a missing magic, a version this build does not know, a size that
+ * disagrees, a checksum that fails -- is refused rather than interpreted, because a half-read
+ * tombstone pointing at the wrong subsystem is worse than no tombstone at all.
+ *
+ * THE BARRIER IS NOT THE CALLER'S TO SUPPLY. An earlier version took it as a nullable callback, so
+ * the guarantee the format rests on held only if every call site passed the right thing -- and a
+ * call site passing nothing still got a committed magic. It is now issued here, unconditionally,
+ * and if a port has no barrier available this refuses to write the magic at all: a record nobody
+ * can trust is worth less than a region that reads as empty.
  *
  * IT IS WRITE-ONCE PER BOOT. The watchdog latches, so there is exactly one armed-to-stopped
  * transition, and this is written inside it. Nothing rewrites it afterwards: a second write could
@@ -110,10 +116,18 @@ enum class status : uint8_t {
     bad_checksum,
 };
 
-/* Fills every word except the committed magic, calls `fence`, then writes the magic. The fence is a
- * parameter so a host suite can inspect the region at exactly that instant and prove the body was
- * complete and the magic still absent -- which is the property the whole format rests on. */
-void write_once(volatile uint32_t *dst, const record &r, void (*fence)(void *), void *fence_ctx);
+/* True when this build can issue a real data-memory barrier. When it is false nothing is committed,
+ * and the suite pins it so a port that loses the barrier fails a test rather than shipping records
+ * that cannot be trusted. */
+extern const bool kBarrierAvailable;
+
+/* Fills every word except the committed magic, issues the barrier, then writes the magic.
+ *
+ * `observer` is called after the body is down and BEFORE the barrier, and it is exactly that: an
+ * observation point for the host suite, which uses it to prove the body was complete and the magic
+ * still absent. It does not supply the barrier and passing nullptr changes nothing about ordering. */
+void write_once(volatile uint32_t *dst, const record &r, void (*observer)(void *) = nullptr,
+                void *observer_ctx = nullptr);
 
 status read(const volatile uint32_t *src, record &out);
 

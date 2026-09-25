@@ -9,6 +9,26 @@
 
 #include "tof_watchdog_tombstone.hpp"
 
+#if defined(__ZEPHYR__)
+#include <zephyr/devicetree.h>
+#include <zephyr/sys/barrier.h>
+#define TOMBSTONE_BARRIER 1
+#else
+#define TOMBSTONE_BARRIER 0
+#endif
+
+/* Bounded against the reserved region rather than against DTCM, for the reason
+ * overlays/forensics_dtcm.overlay gives. Guarded because this file is also linked into a host suite
+ * that applies no overlay and has no devicetree to check against. */
+#if TOMBSTONE_BARRIER && DT_NODE_EXISTS(DT_NODELABEL(forensics_dtcm))
+static_assert(lexxhard::tof_watchdog_tombstone::kAddress >=
+              DT_REG_ADDR(DT_NODELABEL(forensics_dtcm)));
+static_assert(lexxhard::tof_watchdog_tombstone::kAddress +
+                  lexxhard::tof_watchdog_tombstone::kSize <=
+              DT_REG_ADDR(DT_NODELABEL(forensics_dtcm)) +
+                  DT_REG_SIZE(DT_NODELABEL(forensics_dtcm)));
+#endif
+
 namespace lexxhard::tof_watchdog_tombstone {
 
 namespace {
@@ -33,7 +53,10 @@ uint32_t checksum_of(const volatile uint32_t *w)
 
 }  // namespace
 
-void write_once(volatile uint32_t *dst, const record &r, void (*fence)(void *), void *fence_ctx)
+const bool kBarrierAvailable{TOMBSTONE_BARRIER != 0};
+
+void write_once(volatile uint32_t *dst, const record &r, void (*observer)(void *),
+                void *observer_ctx)
 {
     if (dst == nullptr)
         return;
@@ -69,12 +92,22 @@ void write_once(volatile uint32_t *dst, const record &r, void (*fence)(void *), 
 
     dst[kOffChecksum] = checksum_of(dst);
 
+    /* An observation point, and only that: the host suite looks at the region here to prove the
+     * body is complete and the magic absent. It is deliberately before the barrier and it supplies
+     * nothing -- an earlier version let the caller pass the barrier, which made the format's one
+     * guarantee depend on every call site getting it right. */
+    if (observer != nullptr)
+        observer(observer_ctx);
+
+#if TOMBSTONE_BARRIER
     /* EVERYTHING ABOVE MUST BE VISIBLE BEFORE THE MAGIC BELOW. A reset can land between any two
      * stores; this is what makes "the magic is present" mean "the body was already complete". */
-    if (fence != nullptr)
-        fence(fence_ctx);
-
+    barrier_dmem_fence_full();
     dst[kOffCommitted] = kMagicCommitted;
+#else
+    /* No barrier on this port, so the magic is NOT written. A region that reads as empty is worth
+     * more than a record whose body may not have landed before the word that vouches for it. */
+#endif
 }
 
 status read(const volatile uint32_t *src, record &out)

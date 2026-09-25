@@ -37,6 +37,12 @@ if(TOF_DIAG_HANG)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_diag_hang.conf)
 endif()
 
+# The DTCM reservation that turns the forensics records into reserved memory rather than memory
+# nobody happens to use yet. Applied to EVERY image, not named per target: a build that carries one
+# of those records must not be configurable without it, and each record asserts its own bounds
+# against the FORENSICS node this declares.
+list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_dtcm.overlay)
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 

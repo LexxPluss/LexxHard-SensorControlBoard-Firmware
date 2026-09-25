@@ -30,9 +30,10 @@ constexpr size_t kWords{tomb::kSize / sizeof(uint32_t)};
 
 uint32_t region_[kWords];
 
-/* What the fence saw. The whole format rests on the body being complete at this instant and the
- * magic still absent, so the suite inspects it here rather than taking the comment's word. */
-struct fence_observation {
+/* What the observer saw. The whole format rests on the body being complete at this instant and the
+ * magic still absent, so the suite inspects it here rather than taking the comment's word. The
+ * observer does NOT supply the barrier -- that is issued inside write_once, unconditionally. */
+struct observation {
     bool ran{false};
     uint32_t committed_at_fence{0xDEADBEEFU};
     uint32_t reason_at_fence{0};
@@ -40,9 +41,9 @@ struct fence_observation {
     uint32_t checksum_at_fence{0};
 };
 
-fence_observation obs_{};
+observation obs_{};
 
-void observing_fence(void *)
+void observe(void *)
 {
     obs_.ran = true;
     obs_.committed_at_fence = region_[tomb::kOffCommitted];
@@ -74,7 +75,7 @@ tomb::record sample()
 void clear_region()
 {
     memset(region_, 0, sizeof(region_));
-    obs_ = fence_observation{};
+    obs_ = observation{};
 }
 
 }  // namespace
@@ -82,12 +83,12 @@ void clear_region()
 ZTEST_SUITE(tof_watchdog_tombstone, nullptr, nullptr, nullptr, nullptr, nullptr);
 
 /* THE ORDERING, which is the one property everything else depends on. */
-ZTEST(tof_watchdog_tombstone, test_the_body_is_complete_and_the_magic_absent_when_the_fence_runs)
+ZTEST(tof_watchdog_tombstone, test_the_body_is_complete_and_the_magic_absent_before_the_barrier)
 {
     clear_region();
-    tomb::write_once(region_, sample(), observing_fence, nullptr);
+    tomb::write_once(region_, sample(), observe, nullptr);
 
-    zassert_true(obs_.ran, "a fence that never runs is not a barrier");
+    zassert_true(obs_.ran, "the observation point must actually be reached");
     zassert_equal(obs_.committed_at_fence, 0U,
                   "the magic must not exist yet, or a reset here leaves a believable half-record");
     zassert_equal(obs_.reason_at_fence, 0x0480U, "the body was already down");
@@ -99,7 +100,7 @@ ZTEST(tof_watchdog_tombstone, test_the_body_is_complete_and_the_magic_absent_whe
 ZTEST(tof_watchdog_tombstone, test_a_record_interrupted_before_its_magic_is_refused)
 {
     clear_region();
-    tomb::write_once(region_, sample(), observing_fence, nullptr);
+    tomb::write_once(region_, sample(), observe, nullptr);
     region_[tomb::kOffCommitted] = 0;   /* as if the reset arrived one store early */
 
     tomb::record out{};
@@ -111,7 +112,7 @@ ZTEST(tof_watchdog_tombstone, test_a_written_record_reads_back_field_for_field)
 {
     clear_region();
     const tomb::record in{sample()};
-    tomb::write_once(region_, in, observing_fence, nullptr);
+    tomb::write_once(region_, in, observe, nullptr);
 
     tomb::record out{};
     zassert_equal(tomb::read(region_, out), tomb::status::valid);
@@ -145,7 +146,7 @@ ZTEST(tof_watchdog_tombstone, test_the_two_send_slots_land_in_their_own_fields)
     tomb::record in{};
     in.send_acq_begun = 0x11111111U;   in.send_acq_ended = 0x22222222U;
     in.send_workq_begun = 0x33333333U; in.send_workq_ended = 0x44444444U;
-    tomb::write_once(region_, in, observing_fence, nullptr);
+    tomb::write_once(region_, in, observe, nullptr);
 
     tomb::record out{};
     zassert_equal(tomb::read(region_, out), tomb::status::valid);
@@ -158,7 +159,7 @@ ZTEST(tof_watchdog_tombstone, test_the_two_send_slots_land_in_their_own_fields)
 ZTEST(tof_watchdog_tombstone, test_a_corrupted_word_fails_the_checksum)
 {
     clear_region();
-    tomb::write_once(region_, sample(), observing_fence, nullptr);
+    tomb::write_once(region_, sample(), observe, nullptr);
     region_[tomb::kOffZcanLoops] ^= 1U;
 
     tomb::record out{};
@@ -169,7 +170,7 @@ ZTEST(tof_watchdog_tombstone, test_a_corrupted_word_fails_the_checksum)
 ZTEST(tof_watchdog_tombstone, test_two_swapped_words_do_not_produce_the_same_checksum)
 {
     clear_region();
-    tomb::write_once(region_, sample(), observing_fence, nullptr);
+    tomb::write_once(region_, sample(), observe, nullptr);
     const uint32_t a{region_[tomb::kOffAcqBegun]};
     region_[tomb::kOffAcqBegun] = region_[tomb::kOffSendWorkqBegun];
     region_[tomb::kOffSendWorkqBegun] = a;
@@ -182,7 +183,7 @@ ZTEST(tof_watchdog_tombstone, test_two_swapped_words_do_not_produce_the_same_che
 ZTEST(tof_watchdog_tombstone, test_an_unknown_version_is_refused_before_anything_else_is_believed)
 {
     clear_region();
-    tomb::write_once(region_, sample(), observing_fence, nullptr);
+    tomb::write_once(region_, sample(), observe, nullptr);
     region_[tomb::kOffVersion] = tomb::kVersion + 1;
 
     tomb::record out{};
@@ -193,7 +194,7 @@ ZTEST(tof_watchdog_tombstone, test_an_unknown_version_is_refused_before_anything
 ZTEST(tof_watchdog_tombstone, test_a_disagreeing_size_is_refused)
 {
     clear_region();
-    tomb::write_once(region_, sample(), observing_fence, nullptr);
+    tomb::write_once(region_, sample(), observe, nullptr);
     region_[tomb::kOffSize] = 128;
 
     tomb::record out{};
@@ -205,7 +206,7 @@ ZTEST(tof_watchdog_tombstone, test_a_disagreeing_size_is_refused)
 ZTEST(tof_watchdog_tombstone, test_a_missing_tail_is_refused)
 {
     clear_region();
-    tomb::write_once(region_, sample(), observing_fence, nullptr);
+    tomb::write_once(region_, sample(), observe, nullptr);
     region_[tomb::kOffEndMagic] = 0;
 
     tomb::record out{};
@@ -228,11 +229,11 @@ ZTEST(tof_watchdog_tombstone, test_a_stale_record_is_cleared_rather_than_written
     tomb::record old{sample()};
     old.reason = 0xFFFFFFFFU;
     old.boot_seq = 99;
-    tomb::write_once(region_, old, observing_fence, nullptr);
+    tomb::write_once(region_, old, observe, nullptr);
 
     tomb::record fresh{};
     fresh.reason = 0x1;
-    tomb::write_once(region_, fresh, observing_fence, nullptr);
+    tomb::write_once(region_, fresh, observe, nullptr);
 
     tomb::record out{};
     zassert_equal(tomb::read(region_, out), tomb::status::valid);
@@ -250,6 +251,28 @@ ZTEST(tof_watchdog_tombstone, test_the_region_clears_both_diagnostic_blocks_and_
     zassert_true(tomb::kAddress >= 0x2001F000U + 0x1f4U, "must not overlap the hang record");
     zassert_equal(tomb::kAddress + tomb::kSize, 0x20020000U, "ends at the top of the 128 KiB DTCM");
     zassert_true(tomb::kAddress >= 0x2001F000U, "inside the 4 KiB the overlay removes from the region");
+}
+
+/* THE BARRIER IS NOT OPTIONAL AND NOT THE CALLER'S. An earlier version took it as a nullable
+ * callback, so a call site that passed nothing still got a committed magic and the format's one
+ * guarantee quietly did not hold. A record written with no observer at all must be just as valid. */
+ZTEST(tof_watchdog_tombstone, test_a_record_written_with_no_observer_is_still_committed)
+{
+    clear_region();
+    tomb::write_once(region_, sample());
+
+    tomb::record out{};
+    zassert_equal(tomb::read(region_, out), tomb::status::valid,
+                  "ordering is issued inside write_once, not supplied by the caller");
+    zassert_equal(out.reason, 0x0480U);
+}
+
+/* Pinned so that a port which loses its barrier fails a test here rather than shipping records
+ * nobody can trust. */
+ZTEST(tof_watchdog_tombstone, test_this_build_has_a_real_barrier)
+{
+    zassert_true(tomb::kBarrierAvailable,
+                 "without a barrier write_once refuses to commit, and this build must not be that");
 }
 
 ZTEST(tof_watchdog_tombstone, test_every_status_has_its_own_name)

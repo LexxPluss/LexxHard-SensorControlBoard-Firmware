@@ -43,9 +43,13 @@ static_assert(offsetof(record, ring) == 0x230);
 static_assert(offsetof(record, magic_end) == 0x630);
 /* Inside DTCM, and clear of the 0x1f4-byte progress record that starts at 0x2001F000. */
 static_assert(kRecordAddress >= 0x2001F000 + 0x1f4);
-static_assert(kRecordAddress >= DT_REG_ADDR(DT_CHOSEN(zephyr_dtcm)));
+/* Bounded against the RESERVED region, not against DTCM. The two are no longer the same thing:
+ * overlays/forensics_dtcm.overlay takes this 4 KiB out of the region the linker allocates from,
+ * which is what makes the record survive a future change that wants DTCM. Asserting against the
+ * DTCM node here would assert against the region this record was deliberately moved out of. */
+static_assert(kRecordAddress >= DT_REG_ADDR(DT_NODELABEL(forensics_dtcm)));
 static_assert(kRecordAddress + sizeof(record) <=
-              DT_REG_ADDR(DT_CHOSEN(zephyr_dtcm)) + DT_REG_SIZE(DT_CHOSEN(zephyr_dtcm)));
+              DT_REG_ADDR(DT_NODELABEL(forensics_dtcm)) + DT_REG_SIZE(DT_NODELABEL(forensics_dtcm)));
 
 /* The bus this is about. Every other I2C controller's interrupts are ignored, so the counts mean
  * what the decoder says they mean. */
