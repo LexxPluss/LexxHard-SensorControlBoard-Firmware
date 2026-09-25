@@ -213,6 +213,14 @@ test_tof_auto_commission:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# The boot-time L7 recovery pass. It is the piece that decides whether an SCB reset needs an
+# operator to pull power before the grid sensors work again, so its two guards -- never stop an
+# address that did not answer, never let a failure end the boot -- are worth a suite of their own.
+.PHONY: test_tof_l7_recovery
+test_tof_l7_recovery:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b native_sim lexxpluss_apps/tests/tof_l7_recovery -d build-test-tof-l7-recovery -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side test of what a hang-isolation mode actually does: read the real L7, and put grid
 # frames on CAN. All THREE modes are built, not only the new one -- mode 3 was added by splitting
 # the mode number into those two axes, and the risk in that is not mode 3 being wrong but mode 1
