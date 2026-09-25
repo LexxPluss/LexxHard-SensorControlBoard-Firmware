@@ -28,6 +28,10 @@ cmake_minimum_required(VERSION 3.13.1)
 # here, before it, and only for L7 builds -- every other image is configured exactly as before.
 if(ENABLE_TOF_L7_ULD)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
+    # And the filesystem comes out. An L7 image with the FAT stack in place does not fit -- see
+    # overlays/tof_l7_nofat.conf for the measurement -- so NO-FAT is part of what an L7 image IS,
+    # not a flag somebody has to remember on the build command.
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7_nofat.conf)
 endif()
 
 # The hang-isolation images measure the i2c2 interrupt itself, which needs the driver hooks turned
