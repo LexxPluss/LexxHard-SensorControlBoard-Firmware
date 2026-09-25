@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Reserving the top 4 KiB of DTCM for records that must survive a reset.
+ *
+ * WHY THIS FILE EXISTS RATHER THAN A COMMENT. The diagnostic images place their forensics blocks at
+ * 0x2001F000 and 0x2001F200 on the strength of an observation -- that the application links nothing
+ * into DTCM, so its .dtcm sections are empty in every image built so far. That is true and it is not
+ * a reservation: the first translation unit to ask for DTCM would be placed there by a linker that
+ * has never been told the region is spoken for, and nothing would fail to build.
+ *
+ * Shrinking the memory node is a reservation the toolchain enforces. The 4 KiB above 0x2001F000 is
+ * no longer part of the region the linker allocates from, so no section can land in it, and the
+ * failure mode if somebody later needs that space is an out-of-region link error rather than a
+ * forensics record that silently stopped being one.
+ *
+ * WHAT LIVES THERE. 0x2001F000 the hang record and 0x2001F200 the I2C forensics block, both DEV
+ * only; 0x2001FF00 the watchdog tombstone, 256 bytes, which is the only one a released image
+ * carries. The tombstone's own header asserts that it clears the other two.
+ *
+ * COST. Nothing measurable today: DTCM holds no application data, so the region being 124 KiB
+ * instead of 128 changes no placement. It is written down here so that a future change which does
+ * want DTCM meets the reservation instead of the records.
+ */
+
+&dtcm {
+	reg = <0x20000000 DT_SIZE_K(124)>;
+};

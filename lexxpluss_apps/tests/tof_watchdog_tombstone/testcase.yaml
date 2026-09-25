@@ -1,0 +1,5 @@
+common:
+  platform_allow: native_sim
+  tags: tof watchdog forensics
+tests:
+  tof.watchdog.tombstone: {}
