@@ -12,7 +12,18 @@ project(tof_l7_recovery_test)
 
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 
+set(L7_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld)
+
+# The adapter is built in alongside the pure pass, against fake ULD and port symbols, so the
+# translation and the logic it serves are proven in one binary rather than in two that agree by
+# assumption.
 target_sources(app PRIVATE
     src/test_main.cpp
-    ${APP_SRC_DIR}/tof_l7_recovery.cpp)
-target_include_directories(app PRIVATE ${APP_SRC_DIR})
+    src/test_ops.cpp
+    ${APP_SRC_DIR}/tof_l7_recovery.cpp
+    ${APP_SRC_DIR}/tof_l7_recovery_ops.cpp)
+target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_L7_ULD)
+target_include_directories(app PRIVATE
+    ${APP_SRC_DIR}
+    ${L7_DIR}/zephyr
+    ${L7_DIR}/upstream/modules)
