@@ -134,6 +134,28 @@ reduction reduce(const struct tof_cliff_sample &sample)
          * expected, so a spurious near return must never mask a real drop behind it.
          * Strict `>` keeps the lowest-indexed target when two are equally far, which
          * matches the lowest-index rule used for every other class. */
+        /* Every valid target is checked BEFORE one is selected, not just the winner.
+         * The read layer keeps the range signed and unclamped on purpose, so a negative
+         * value reaches here intact. It cannot be encoded, and the ULD is supposed to
+         * have flagged it as status 14 -- so seeing it under a VALID_RANGE class means
+         * the two disagree, which is a defect rather than a distance.
+         *
+         * Checking only the selected target let the contradiction ride along whenever
+         * some other valid target happened to be farther: the frame went out as an
+         * ordinary distance from a sensor that had just contradicted itself, on the path
+         * where a distance is what decides whether the floor is where it should be.
+         *
+         * The scan uses each target's CLASS, exactly as the selection below does. A
+         * target that is not VALID_RANGE carries a placeholder rather than a
+         * measurement, and reading that as a contradiction would refuse frames that are
+         * merely uninteresting. */
+        for (uint8_t i = 0; i < sample.target_count; ++i) {
+            if (rows[i]->cls != status_class::valid_range)
+                continue;
+            if (sample.entries[i].range_mm < 0)
+                return refuse(reason::valid_range_negative, sample.entries[i].range_status);
+        }
+
         uint8_t best{0};
         bool have_best{false};
         for (uint8_t i = 0; i < sample.target_count; ++i) {
@@ -145,12 +167,6 @@ reduction reduce(const struct tof_cliff_sample &sample)
             }
         }
         const int16_t mm{sample.entries[best].range_mm};
-        /* The read layer keeps the range signed and unclamped on purpose, so a negative
-         * value reaches here intact. It cannot be encoded, and the ULD is supposed to
-         * have flagged it as status 14 -- so seeing it under a VALID_RANGE class means
-         * the two disagree, which is a defect rather than a distance. */
-        if (mm < 0)
-            return refuse(reason::valid_range_negative, sample.entries[best].range_status);
         if (static_cast<uint16_t>(mm) == kSentinelInvalid)
             return refuse(reason::valid_range_is_sentinel, sample.entries[best].range_status);
 
@@ -217,6 +233,16 @@ bool encode_measurement(const reduction &r, uint8_t source_id, uint8_t mapping_e
      * anything that forgets to check the return value. */
     if (r.outcome != result::frame_ready)
         return false;
+    /* A result that contradicts itself is not encodable, whatever `outcome` says.
+     * reduce() can never produce this pairing -- refuse() sets outcome to unencodable --
+     * but `reduction` is public and assembled by hand in tests and diagnostics, so the
+     * encoder judges the whole result rather than one field of it. Same reason the layer
+     * refuses impossible field combinations instead of masking them. */
+    if (r.error != 0 || r.why != reason::none) {
+        if (why != nullptr)
+            *why = reason::reduction_inconsistent;
+        return false;
+    }
     if (source_id >= kSourceCount) {
         if (why != nullptr)
             *why = reason::source_id_out_of_range;
