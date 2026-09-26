@@ -6,14 +6,18 @@
  *
  * Port-level sticky transport error.
  *
- * The ULD loses transport failures. VL53LX_GetMultiRangingData runs
- * VL53LX_get_device_results and then overwrites Status with SetMeasurementData's
- * result unconditionally (vl53lx_api.c, the two consecutive assignments), so an I2C
- * failure during the results read can come back as success. The BSP wrapper is worse:
- * its poll helper casts VL53LX_GetMeasurementDataReady's return to void.
+ * Upstream loses transport failures in two ways. VL53LX_GetMultiRangingData ran
+ * VL53LX_get_device_results and then overwrote Status with SetMeasurementData's result
+ * unconditionally (vl53lx_api.c, the two consecutive assignments), so an I2C failure
+ * during the results read came back as success -- that one is FIXED in this build by
+ * patches/0001-propagate-get-device-results-status.patch. The BSP wrapper is not fixed
+ * and is worse: its poll helper casts VL53LX_GetMeasurementDataReady's return to void.
  *
  * So the port records the FIRST raw Zephyr errno it saw and the caller treats that as
- * authoritative, ahead of the ULD's return code. Reset it immediately before each ULD
+ * authoritative, ahead of the ULD's return code. That ordering is not made redundant by
+ * patch 0001: a VL53LX_Error cannot express a Zephyr errno, and a layer whose
+ * correctness depends on the vendor tree staying patched is one upstream bump away from
+ * losing transport failures again. Reset it immediately before each ULD
  * operation, read it immediately after.
  *
  * Precondition: one acquisition thread. The sticky value is per bus, not per device,

@@ -35,8 +35,11 @@
 #                         VL53L4CX register map well enough to drive it would freeze
 #                         a vendor-internal register sequence into our tests, which is
 #                         precisely the coupling to avoid. The fakes reproduce the
-#                         ULD's observable defects instead, including a transport
-#                         failure masked by a successful return code.
+#                         ULD's observable behaviour instead, and pose a transport
+#                         failure under a success return so the adapter's defence
+#                         against that class is exercised. Patch 0001 fixes the ULD
+#                         path that used to produce that shape by itself; the defence
+#                         is tested here regardless of the vendor tree's state.
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})

@@ -40,12 +40,14 @@
  * into BDTable at vl53lx_api.c:70). It is a tuning parameter, not a constant:
  * VL53LX_SetTuningParameter can move it, so code must not hard-code -30.
  *
- * The consequence for this layer: a VALID negative range cannot arrive here. A negative
- * value that does arrive is carried with a non-VALID status, and a below-floor reading
- * inside the threshold arrives as a VALID 0 mm. This layer neither re-clamps nor
- * un-clamps; it copies what the ULD produced, which is the only thing it can honestly
- * do. The wire contract still refuses a VALID negative, as defence against a producer or
- * device combination the ULD is not supposed to be able to emit.
+ * The consequence for this layer: on the normal output of this ULD a VALID negative
+ * range cannot arrive here. A negative value that does arrive is carried with a
+ * non-VALID status, and a below-floor reading inside the threshold arrives as a VALID
+ * 0 mm. That describes what this ULD emits; it is not an invariant this layer enforces.
+ * This layer neither re-clamps nor un-clamps; it copies what the ULD produced, which is
+ * the only thing it can honestly do. The wire contract refuses a VALID negative
+ * outright, as defence against a producer or device combination this ULD is not
+ * supposed to be able to emit -- not as a guard on its normal path.
  *
  * WHAT THIS LAYER MUST NOT DO
  *
@@ -143,9 +145,12 @@ struct tof_cliff_read_status {
 	enum tof_cliff_stage stage;
 
 	/* First raw Zephyr errno the port recorded during this operation, 0 if none.
-	 * Authoritative over uld_rc: VL53LX_GetMultiRangingData overwrites its Status
-	 * with SetMeasurementData's result unconditionally, so a transport failure can
-	 * arrive here as success. */
+	 * Authoritative over uld_rc, for two reasons. It is the only field that can carry a
+	 * raw Zephyr errno, which is the granularity triage needs and which a VL53LX_Error
+	 * cannot express. And it is the fail-closed backstop if a transport failure is ever
+	 * lost on its way up again -- the specific case that motivated it,
+	 * VL53LX_GetMultiRangingData overwriting its Status with SetMeasurementData's, is
+	 * fixed in this build by patch 0001. */
 	int port_errno;
 
 	int uld_rc; /* raw VL53LX_Error, for the log and for triage */

@@ -17,10 +17,19 @@
  *
  *   reset the port's sticky errno -> make the call -> read the sticky errno back
  *
- * and the sticky value wins. VL53LX_GetMultiRangingData runs get_device_results and
- * then assigns SetMeasurementData's result over the same Status variable, so a failed
- * transfer inside the results read can return VL53LX_ERROR_NONE. Without the sticky
- * check there is no way to tell that apart from a good read.
+ * and the sticky value wins.
+ *
+ * The ULD defect that motivated this shape -- VL53LX_GetMultiRangingData assigning
+ * SetMeasurementData's result over the status get_device_results produced, so a failed
+ * transfer could return VL53LX_ERROR_NONE -- is FIXED in this build by
+ * third_party/st/vl53l4cx_uld/zephyr/patches/0001-propagate-get-device-results-status.patch.
+ *
+ * The sticky check stays for two reasons that outlive that patch. It carries the raw
+ * Zephyr errno, which a VL53LX_Error cannot express and which is what triage needs. And
+ * it is the fail-closed backstop for the same class of defect reappearing: an upstream
+ * bump, a path the patch does not cover, or any future call that loses a transport
+ * error. Reading the ULD's return code alone would make this layer's correctness depend
+ * on a vendor tree staying patched.
  */
 static int tof_cliff_finish(struct tof_cliff_read_status *st, enum tof_cliff_stage stage,
 			    VL53LX_Error rc)
@@ -374,10 +383,12 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 		return tof_cliff_rearm_after_refusal(obj, st, TOF_CLIFF_STAGE_FETCH, ret);
 	}
 
-	/* GetMultiRangingData can return success after an internal failure and leave the
-	 * previous result in its output. The sticky port errno catches transport failures,
-	 * but not every ULD-internal failure. A ready result whose stream count did not
-	 * advance is therefore a replay, never a fresh sample. The comparison is per device;
+	/* An independent defence, against duplicate frames rather than against a lost
+	 * status. Patch 0001 makes a failed results read report itself, and the sticky port
+	 * errno catches transport failures, but neither can prove the bytes in hand are new:
+	 * a device that re-presents its previous result while every layer reports success
+	 * defeats both. A ready result whose stream count did not advance is therefore a
+	 * replay, never a fresh sample. The comparison is per device;
 	 * different sensors are allowed to report the same count, which is also why this
 	 * history cannot live in the scratch - one scratch is shared by all four L4s.
 	 *

@@ -15,14 +15,17 @@
  *
  *   - a zero-target cycle still carries RangeData[0], because SetMeasurementData forces
  *     iteration = 1 when active_results < 1;
- *   - a fetch can fail on the bus and still return VL53LX_ERROR_NONE, because
- *     VL53LX_GetMultiRangingData assigns SetMeasurementData's result over the status
- *     that get_device_results produced.
+ *   - a call can fail on the bus and still return VL53LX_ERROR_NONE.
  *
- * The second one is not mocked at the sticky-errno level. The fake performs a REAL port
- * transfer through the emulated controller, has it fail, and then returns success - the
- * exact shape of the defect. If the sticky mechanism were removed, these tests would
- * fail rather than silently pass.
+ * The second shape is posed deliberately, and is NOT a claim about the ULD in this
+ * build. VL53LX_GetMultiRangingData did assign SetMeasurementData's result over the
+ * status get_device_results produced, and patch 0001 fixes exactly that. What the fakes
+ * here exercise is the adapter's defence against the class: they perform a REAL port
+ * transfer through the emulated controller, have it fail, and then return success. That
+ * is what the sticky errno is for, and it has to keep working whether or not the vendor
+ * tree is patched -- an upstream bump, or any path the patch does not cover, puts the
+ * shape back. If the sticky mechanism were removed, these tests would fail rather than
+ * silently pass.
  */
 
 #include <errno.h>
@@ -45,7 +48,7 @@ static struct {
 	VL53LX_Error fetch_rc;
 	VL53LX_Error rearm_rc;
 	int fetch_bus_xfers; /* real port transfers the fetch performs before returning */
-	int rearm_bus_xfers; /* same, for the re-arm, so a masked bus failure can be posed */
+	int rearm_bus_xfers; /* same, for the re-arm, so a bus failure under success can be posed */
 	VL53LX_MultiRangingData_t canned;
 	int ready_calls;
 	int fetch_calls;
@@ -115,7 +118,7 @@ VL53LX_Error VL53LX_ClearInterruptAndStartMeasurement(VL53LX_DEV Dev)
 	order_add('c');
 
 	/* Real traffic when asked for, so the re-arm can fail on the bus while the ULD still
-	 * reports success - the same masking shape as the fetch and the stop. */
+	 * reports success - the same posed shape as the fetch and the stop. */
 	for (int i = 0; i < f.rearm_bus_xfers; i++) {
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0300 + i), 0x00);
 	}
@@ -178,7 +181,7 @@ VL53LX_Error VL53LX_StopMeasurement(VL53LX_DEV Dev)
 	order_add('P');
 
 	/* Real traffic when asked for, so a stop can fail on the bus while the ULD still
-	 * reports success - the same masking shape as the fetch. */
+	 * reports success - the same posed shape as the fetch. */
 	for (int i = 0; i < f.stop_bus_xfers; i++) {
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0200 + i), 0x00);
 	}
@@ -432,7 +435,7 @@ ZTEST(tof_cliff_adapter, test_fetch_failure_yields_no_sample)
 	zassert_false(st.rearm_failed, "the re-arm itself succeeded");
 }
 
-ZTEST(tof_cliff_adapter, test_bus_failure_masked_by_a_successful_return_code_is_still_caught)
+ZTEST(tof_cliff_adapter, test_a_bus_failure_under_a_success_return_is_still_caught)
 {
 	const int16_t mm[1] = {500};
 	const uint8_t status[1] = {0};
@@ -442,8 +445,10 @@ ZTEST(tof_cliff_adapter, test_bus_failure_masked_by_a_successful_return_code_is_
 	for (size_t i = 0; i < ARRAY_SIZE(at); i++) {
 		before(NULL);
 		canned_targets(1, mm, status, 1);
-		/* This is the defect, reproduced exactly: the transport failed and the
-		 * ULD returns VL53LX_ERROR_NONE anyway. */
+		/* The shape the sticky errno defends against, posed on purpose: the
+		 * transport failed and the ULD returns VL53LX_ERROR_NONE anyway. Patch
+		 * 0001 removes the ULD path that used to produce this shape by itself;
+		 * the defence has to hold regardless, so it is still exercised here. */
 		f.fetch_rc = VL53LX_ERROR_NONE;
 		fake_i2c_fail_on(at[i], -EIO);
 
@@ -662,13 +667,13 @@ ZTEST(tof_cliff_adapter, test_reading_never_stops_or_restarts_the_device)
 	zassert_equal(f.rearm_calls - rearm_after_start, 5, "one re-arm per cycle, no more");
 }
 
-/* C1. GetMultiRangingData can fail internally, overwrite its own status with the copy
- * step's success and leave the PREVIOUS result in its output buffer. The sticky port
- * record catches that only when the bus was involved, so a healthy-bus internal failure
- * would otherwise republish the last range with fresh == true - the floor read while
- * still on the floor, handed up every cycle as current while the robot drives off a
- * ledge. The stream count is the only material already being carried that can tell the
- * two apart. */
+/* C1. The replay guard is an independent defence, and the one that does not depend on
+ * any status being reported correctly. A device that re-presents its PREVIOUS result
+ * while the bus is healthy and every layer returns success defeats both patch 0001 and
+ * the sticky port record - and republishing that range with fresh == true is the floor
+ * read while still on the floor, handed up every cycle as current while the robot drives
+ * off a ledge. The stream count is the only material already being carried that can tell
+ * the two apart. */
 ZTEST(tof_cliff_adapter, test_an_unchanged_stream_count_is_a_replay_not_a_fresh_sample)
 {
 	const int16_t mm[1] = {120};
@@ -770,15 +775,16 @@ ZTEST(tof_cliff_adapter, test_the_frame_held_through_a_failure_is_not_published_
 /* The same release is owed when the ULD returns success and only the bus says otherwise.
  * That path is the reason the sticky errno exists, and it refuses the frame just as hard,
  * so it must not be the one refusal that leaves the device wedged. */
-ZTEST(tof_cliff_adapter, test_a_transport_failure_hidden_behind_a_good_return_code_still_rearms)
+ZTEST(tof_cliff_adapter, test_a_transport_failure_under_a_success_return_still_rearms)
 {
 	const int16_t mm[1] = {400};
 	const uint8_t status[1] = {0};
 
 	canned_targets(1, mm, status, 1);
-	/* The defect shape the sticky errno exists for: the transport failed and the ULD
-	 * returned VL53LX_ERROR_NONE anyway. The injection is on the fetch's first transfer
-	 * only, so the re-arm that follows runs on a healthy bus. */
+	/* The shape the sticky errno defends against, posed on purpose rather than claimed
+	 * of the patched ULD: the transport failed and the ULD returned VL53LX_ERROR_NONE
+	 * anyway. The injection is on the fetch's first transfer only, so the re-arm that
+	 * follows runs on a healthy bus. */
 	f.fetch_rc = VL53LX_ERROR_NONE;
 	fake_i2c_fail_on(1, -EIO);
 
@@ -1042,11 +1048,12 @@ ZTEST(tof_cliff_adapter, test_only_a_start_that_completed_both_calls_clears_the_
 	zassert_false(st.stale_replay);
 }
 
-/* The masking shape the sticky errno exists for, applied to the new call: the ULD returns
- * VL53LX_ERROR_NONE while the transfer under it failed. Taking the ULD's word here would
- * record an unarmed device as armed, and the very first read would hand back the previous
- * session's frame - exactly the defect this change removes, reintroduced silently. */
-ZTEST(tof_cliff_adapter, test_the_second_calls_bus_failure_is_not_masked_by_its_uld_result)
+/* The same posed shape, applied to the new call: the ULD returns VL53LX_ERROR_NONE while
+ * the transfer under it failed. Taking the ULD's word here would record an unarmed device
+ * as armed, and the very first read would hand back the previous session's frame. Patch
+ * 0001 does not cover this call, and the sticky errno is what makes the adapter safe
+ * against it either way. */
+ZTEST(tof_cliff_adapter, test_the_second_calls_bus_failure_outranks_its_uld_result)
 {
 	f.rearm_bus_xfers = 1;
 	f.rearm_rc = VL53LX_ERROR_NONE;
