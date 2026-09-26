@@ -43,17 +43,41 @@ editor nor a future repository-wide formatter rewrites vendor code. Nothing else
 
 ## Local modifications
 
-**None to upstream files.** Upstream is never edited in place. All local code lives in
-`zephyr/`:
+**None in place.** Upstream is never edited where it sits. One upstream file is
+compiled from a patched copy in the build directory -- see *Local patch* below -- and
+everything else local lives in `zephyr/`:
 
 | File | Role |
 | --- | --- |
 | `zephyr/vl53lx_platform.c` | The platform layer the ULD requires, on Zephyr I2C |
 | `zephyr/vl53l4cx_bus_io.c/.h` | The `VL53L4CX_IO_t` block registered with the BSP wrapper |
 
-If an upstream change ever becomes unavoidable, it lands as a numbered patch file
-under `zephyr/patches/` with a note here — never as an in-place edit, because that
-would break the manifest's meaning.
+If a further upstream change ever becomes unavoidable, it lands the same way: a
+numbered patch file under `zephyr/patches/` with a note here — never as an in-place
+edit, because that would break the manifest's meaning.
+
+## Local patch
+
+`zephyr/patches/0001-propagate-get-device-results-status.patch` is applied to a copy of
+`upstream/modules/vl53lx_api.c` in the build directory, and that copy is what
+`vl53l4cx_sources.cmake` compiles. It makes one change:
+`VL53LX_GetMultiRangingData()` calls `SetMeasurementData()` only when
+`VL53LX_get_device_results()` succeeded.
+
+Without it, a fetch that failed part-way through is returned as
+`VL53LX_ERROR_NONE` carrying whatever was written before the failure — including an
+already-advanced stream count, which is exactly what a consumer's replay guard relies
+on to tell a repeated frame from a new one. `SetMeasurementData()` also updates
+`pdev->PreviousStreamCount` unconditionally, so the device's own history moved on a
+read that never succeeded. The patch header carries the upstream line references.
+
+Because the patch is never applied in place, `SHA256SUMS` still answers "has anyone
+edited upstream?" with one command. And because it is applied at configure time with
+fixed context, a snapshot refresh that moves this function fails the build rather than
+quietly dropping the fix.
+
+`tests/tof_uld_status` compiles the patched copy and pins the behaviour, including
+that reverting the guard fails the suite.
 
 `upstream/porting/vl53lx_platform.c` is kept **as provenance and is not compiled**. It
 is the upstream example layer: it carries a single file-scope `_I2CBuffer[256]` shared

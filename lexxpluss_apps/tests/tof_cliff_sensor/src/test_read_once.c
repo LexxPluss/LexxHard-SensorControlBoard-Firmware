@@ -656,6 +656,61 @@ ZTEST(tof_cliff_adapter, test_an_unchanged_stream_count_is_a_replay_not_a_fresh_
 	zassert_equal(f.rearm_calls, 2);
 }
 
+/* The other half of C1, and the half that needed a fix in the vendor tree rather than
+ * here: once the ULD reports the failure instead of masking it, this layer must not have
+ * recorded anything from it. The stream history is the part that matters -- it is what
+ * decides whether the NEXT frame looks fresh -- and a failed fetch returns before the
+ * history is written, so a recovery frame carrying the count the failure was going to
+ * claim is still judged on its own merits.
+ *
+ * tests/tof_uld_status pins the vendor half: that the failure is reported at all. */
+ZTEST(tof_cliff_adapter, test_a_failed_fetch_leaves_the_stream_history_alone)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.canned.StreamCount = 5;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(stream.last_stream_count, 5);
+	zassert_true(stream.valid);
+
+	/* The fetch fails, and the count it would have carried is one the guard has never
+	 * seen. Nothing about it may be remembered. */
+	f.canned.StreamCount = 6;
+	f.fetch_rc = VL53LX_ERROR_RANGE_ERROR;
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_false(sample.fresh);
+	zassert_equal(stream.last_stream_count, 5,
+		      "a read that never succeeded must not become the history the next "
+		      "comparison is made against");
+	zassert_true(stream.valid, "and it must not discard the history either");
+}
+
+/* Failing closed must not latch: the sensor recovers, and the frame the failure would
+ * have consumed is published like any other. */
+ZTEST(tof_cliff_adapter, test_a_good_fetch_after_a_failed_one_is_published)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.canned.StreamCount = 5;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+
+	f.canned.StreamCount = 6;
+	f.fetch_rc = VL53LX_ERROR_RANGE_ERROR;
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+
+	f.fetch_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0,
+		      "count 6 was never recorded, so it is a fresh sample now");
+	zassert_true(sample.fresh);
+	zassert_false(st.stale_replay);
+	zassert_equal(sample.entries[0].range_mm, 300);
+	zassert_equal(stream.last_stream_count, 6);
+}
+
 /* The replay verdict and a failing re-arm are separate facts and both must survive. */
 ZTEST(tof_cliff_adapter, test_a_replay_whose_rearm_also_fails_reports_both)
 {
