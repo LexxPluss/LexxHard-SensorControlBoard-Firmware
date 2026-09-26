@@ -29,13 +29,18 @@ CHECKS ON THE ARTEFACT
 
   262,144 B; image_ok byte at size-24 = 0xff; MCUboot magic tail 77c295f360d2ef7f3552500f2cb67980
   The .test.bin is the confirmed image with EXACTLY ONE byte changed -- verified by differencing
-  the two rather than by trusting the recipe: `cmp -l` reports one line, at offset 262120
-  (0-based), 0x01 -> 0xff.
+  the two rather than by trusting the recipe: `cmp -l` reports one line, naming byte 262121, which
+  is 1-based. That is offset 262120 counting from zero, or size-24, and the value goes 0x01 ->
+  0xff.
 
   boot_write_img_confirmed: 0 symbols in the ELF. The self-confirm path is not merely skipped at
   runtime, it is absent from the image, so any reset of any kind hands the board back to the
-  previous one. That is the single build flag -- TOF_DEV_NO_AUTO_CONFIRM -- separating this from
-  the eventual deliverable; nothing else differs.
+  previous one.
+
+  The corresponding confirmed candidate built from the same source and configuration is intended to
+  differ by TOF_DEV_NO_AUTO_CONFIRM and trailer state only. THIS IS NOT THE EVENTUAL RELEASE IMAGE:
+  it still carries the safety-lidar bypass, and what a release needs beyond this is hardware
+  evidence that does not exist yet -- see the last section.
 
   NO-FAT enforced twice: CMake refuses any ENABLE_TOF_L7_ULD build whose Kconfig came back with
   CONFIG_DISK_ACCESS, DISK_DRIVER_SDMMC, FILE_SYSTEM, FAT_FILESYSTEM_ELM, FILE_SYSTEM_SHELL or
@@ -95,5 +100,14 @@ WHAT HAS TO HAPPEN BEFORE ANYTHING IS CONCLUDED FROM THIS IMAGE
   both positions `absent` on a warm reset is evidence against the reasoning the ordering rests on,
   not a quiet success.
 
-  See ../../allmemory/hanging_object/rc_recovery/onboard_checklist_draft.md for the procedure, and
+  See allmemory/hanging_object/rc_recovery/onboard_checklist_draft.md for the procedure, and
   decode_tombstone.py beside it for reading the record back through the E3 shell's devmem.
+
+ARCHIVE
+
+  Only this file is in the repository, which is not enough to re-check anything in it: the diag3
+  manifest had the same gap and its binaries never left one machine. The complete set is archived
+  at allmemory/hanging_object/rc_recovery/artefacts/ -- the test image, the signed and signed
+  confirmed forms, the ELF, the .config, the resolved DTS, the linker map and SHA256SUMS. The ELF
+  and the confirmed form are there specifically so somebody else can repeat the one-byte difference
+  and the absent-confirm-symbol checks rather than take them from this file.
