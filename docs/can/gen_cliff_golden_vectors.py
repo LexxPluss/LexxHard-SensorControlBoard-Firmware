@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """Golden vector generator for the cliff ToF CAN wire contract (AMRSW-2994).
 
-This is a **skeleton with a complete scenario catalogue and no output**. It cannot
-emit vectors yet, and refuses to try, because the contract it would generate from
-is still a draft with unresolved values. What it does carry is every scenario the
-vectors will contain, with its input sequence, its complete expected event
-multiset, its publication outcome, the parameters it depends on and whether it is
-blocked on hardware.
+This emits the **frame-layout** artefacts and refuses to emit the **decoder
+state-machine** vectors, and the split is deliberate. Layout depends on nothing
+that is still open: the identifiers are allocated, the field offsets and the
+status table are frozen, so `--emit` writes `tof_cliff_layout_vectors.json`,
+`tof_cliff_contract.h` and `tof_cliff_contract_vectors.h`. The state-machine
+vectors depend on timing values that are not yet measured and on two status rows
+that are still provisional, so generating them now would freeze guesses.
 
-The point of writing the catalogue before the numbers exist: the scenarios are
-where boundary gaps show up, and finding them now is cheap. Once the live capture
-allocates the health identifier, the schedule measurement fixes the timing values
-and the two provisional status rows are validated on hardware, the remaining work
-is to resolve the symbols, emit, and pin the SHA on both sides - not to design the
-cases.
+What the file carries either way is the complete scenario catalogue: every
+scenario the decoder vectors will contain, with its input sequence, its complete
+expected event multiset, its publication outcome, the parameters it depends on
+and whether it is blocked on hardware. The point of writing the catalogue before
+the numbers exist is that the scenarios are where boundary gaps show up, and
+finding them now is cheap. Once the schedule measurement fixes the timing values
+and the two provisional rows are validated on hardware, the remaining work is to
+resolve the symbols and emit - not to design the cases.
+
+Every emitted artefact carries three pinned values: the contract version, the
+SHA-256 of the contract text, and the artefact-set id, which hashes the contract
+text together with this file's own source. `--check` recomputes all three and
+regenerates each artefact in memory, comparing byte-for-byte with the committed
+copy; it never writes, because a check that repairs what it is checking cannot be
+used in CI.
 
 Usage:
     gen_cliff_golden_vectors.py --list     print the scenario catalogue
-    gen_cliff_golden_vectors.py --check    verify the catalogue's self-consistency
-    gen_cliff_golden_vectors.py           attempt generation (refuses, and says why)
+    gen_cliff_golden_vectors.py --check    verify the catalogue and the committed artefacts
+    gen_cliff_golden_vectors.py --emit     write the frame-layout artefacts
+    gen_cliff_golden_vectors.py           attempt state-machine generation (refuses, and says why)
 
 Nothing here reads or writes the grid contract's artefacts.
 """
