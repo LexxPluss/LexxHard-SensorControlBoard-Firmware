@@ -62,6 +62,23 @@ public:
     }
 
 private:
+    // Center is not an encoder-controlled actuator (Shutter has no encoder),
+    // so init/location requests for it never apply
+    // (actuator_controller::init_location()/to_location() ignore index 0).
+    // This only logs -- it doesn't change wire format or reject the request.
+    // Always logs at DBG (so real-hardware verification can confirm this
+    // code path is actually being exercised even when center is the
+    // all-zero default); escalates to WRN only for a non-degenerate request,
+    // since that indicates something upstream actually tried to move Center.
+    static void warn_if_center_requested(int8_t location, uint8_t power)
+    {
+        LOG_DBG("Center init/location request received (location:%d power:%u) -- ignored.", location, power);
+        if (location != 0 || power != 0) {
+            LOG_WRN("ignoring non-degenerate init/location request for Center (location:%d power:%u): "
+                     "Shutter is not an encoder-controlled actuator.", location, power);
+        }
+    }
+
     std::optional<struct msg_response> handle_request(struct  msg_request const& msg_req)
     {
         if(msg_req.mode == service_mode::INIT) {
@@ -76,6 +93,7 @@ private:
 
     struct msg_response do_init_service(struct msg_request const& msg_req)
     {
+        warn_if_center_requested(msg_req.center.location, msg_req.center.power);
         int8_t const directions[3]{
             msg_req.center.location,
             msg_req.left.location,
@@ -94,6 +112,7 @@ private:
 
     struct msg_response do_location_service(struct msg_request const& msg_req)
     {
+        warn_if_center_requested(msg_req.center.location, msg_req.center.power);
         int8_t const location[3]{
             msg_req.center.location,
             msg_req.left.location,

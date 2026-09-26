@@ -57,12 +57,11 @@ public:
     }
 
     // Called once per iteration of the caller's own loop (currently
-    // actuator_controller's ~10ms cycle) -- no sleep/loop of its own here.
-    // Plain polling: no EXTI (see
-    // INVESTIGATION_shutter_limit_switch_exti_conflict_20260713.md -- the
-    // Open signal's EXTI line was already claimed by another sensor's
-    // interrupt). EMX4-T12C has no mechanical bounce, so an unconditional
-    // level copy needs no debounce.
+    // shutter_motor_controller's ~1ms Minor loop) -- no sleep/loop of its
+    // own here. Plain polling, not EXTI: the Open signal's EXTI line was
+    // already claimed by another sensor's interrupt, a pin-allocation
+    // conflict not fixable in this module. EMX4-T12C has no mechanical
+    // bounce, so an unconditional level copy needs no debounce.
     void poll() {
         auto const elapsed{static_cast<uint32_t>(k_uptime_get() - start_time)};
         if (!shutter_limit_detector::is_power_on_masked(elapsed))

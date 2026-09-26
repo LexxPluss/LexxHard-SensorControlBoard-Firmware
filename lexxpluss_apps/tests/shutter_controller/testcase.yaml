@@ -1,0 +1,4 @@
+tests:
+  shutter.controller:
+    platform_allow: native_sim
+    tags: shutter

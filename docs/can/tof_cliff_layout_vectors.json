@@ -1,8 +1,8 @@
 {
   "contract_file": "tof_cliff_wire_contract.md",
-  "contract_version": "commissioning-2026-08-18c",
-  "contract_sha256": "fb94706a4d2488aa9acdc7c7defcd7fac92379cba01964ab31f949fa50955188",
-  "artefact_set_id": "3db018e9f0be3ae85a295240a8314fff97491b587ec909021b8e478745caf9aa",
+  "contract_version": "commissioning-2026-09-19f",
+  "contract_sha256": "2735391f640901cf4877e523d908845545683e05d581d62a4454f22c53d67c31",
+  "artefact_set_id": "79629d287664bc3917cc9557a7f7ce04868bf16685ede97bddf2b1dea08e97f0",
   "profile_name": "commissioning-cliff-only-400k",
   "release_forbidden": true,
   "banner": "COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.",
@@ -11,6 +11,8 @@
   "resolved": {
     "TOF_CLIFF_MEAS_ID": 534,
     "TOF_CLIFF_HEALTH_ID": 535,
+    "TOF_CLIFF_COMMISSION_REQUEST_ID": 536,
+    "TOF_CLIFF_COMMISSION_STATUS_ID": 537,
     "PROTOCOL_VERSION": 1,
     "SENTINEL_INVALID": 65535,
     "SOURCE_COUNT": 4,

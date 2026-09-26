@@ -1,0 +1,4 @@
+tests:
+  motor_driver.calc:
+    platform_allow: native_sim
+    tags: motor_driver

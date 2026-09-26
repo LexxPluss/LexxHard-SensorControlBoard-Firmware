@@ -88,89 +88,45 @@ public:
         }
     }
     uint32_t get_rsoc() const {
-        return msg.rsoc;
+        return msg.f100.rsoc_min;
     }
 
     void bmu_info(const shell *shell) const {
         shell_print(shell,
-                    "MOD:0x%02x/%02x BMU:0x%02x\n"
-                    "ASOC:%u RSOC:%u SOH:%u\n"
-                    "FET:%d Current:%d ChargeCurrent:%u\n"
-                    "Voltage:%u Capacity(design):%u Capacity(full):%u Capacity(remain):%u\n"
+                    "FailStatus1:0x%02x/0x%02x LeaderBMStatus:0x%02x\n"
+                    "ASOCmin:%u RSOCmin:%u SOHmin:%u\n"
+                    "MaxFETTemp:%d AvgCurrent:%d MaxChgCurrent:%u\n"
+                    "BMVoltageMax:%u Capacity(design):%u Capacity(FCCmin):%u Capacity(RCmin):%u FETStatus:0x%02x\n"
                     "Max Voltage:%u/%u Min Voltage:%u/%u\n"
                     "Max Temp:%d/%u Min Temp:%d/%u\n"
                     "Max Current:%d/%u Min Current:%d/%u\n"
-                    "BMUFW:0x%02x MODFW:0x%02x SER:0x%02x PAR:0x%02x\n"
-                    "ALM1:0x%02x ALM2:0x%02x\n"
+                    "FWVer:0x%02x DataVer:0x%02x ConnectedBMNum:0x%02x\n"
+                    "LeaderAlarm1:0x%02x LeaderAlarm2:0x%02x FailStatus3:0x%02x\n"
                     "Max Cell Voltage:%u/%u Min Cell Voltage:%u/%u\n"
-                    "Manufacture:%u Inspection:%u Serial:%u\n",
-                    msg.mod_status1, msg.mod_status2, msg.bmu_status,
-                    msg.asoc, msg.rsoc, msg.soh,
-                    msg.fet_temp, msg.pack_current, msg.charging_current,
-                    msg.pack_voltage, msg.design_capacity, msg.full_charge_capacity, msg.remain_capacity,
-                    msg.max_voltage.value, msg.max_voltage.id, msg.min_voltage.value, msg.min_voltage.id,
-                    msg.max_temp.value, msg.max_temp.id, msg.min_temp.value, msg.min_temp.id,
-                    msg.max_current.value, msg.max_current.id, msg.min_current.value, msg.min_current.id,
-                    msg.bmu_fw_ver, msg.mod_fw_ver, msg.serial_config, msg.parallel_config,
-                    msg.bmu_alarm1, msg.bmu_alarm2,
-                    msg.max_cell_voltage.value, msg.max_cell_voltage.id, msg.min_cell_voltage.value, msg.min_cell_voltage.id,
-                    msg.manufacturing, msg.inspection, msg.serial);
+                    "Manufacture:%u Inspection:%u Serial:%u\n"
+                    "AccumulatedCapacity:%u\n",
+                    msg.f100.fail_status1, msg.f101.fail_status2, msg.f100.leader_battery_status,
+                    msg.f100.asoc_min, msg.f100.rsoc_min, msg.f100.soh_min,
+                    msg.f100.max_fet_temp, msg.f101.average_current, msg.f101.max_charging_current,
+                    msg.f101.bm_voltage_max, msg.f103.design_capacity, msg.f103.fcc_min, msg.f103.rc_min, msg.f103.fet_status,
+                    msg.f110.max_voltage.value, msg.f110.max_voltage.id, msg.f110.min_voltage.value, msg.f110.min_voltage.id,
+                    msg.f111.max_temp.value, msg.f111.max_temp.id, msg.f111.min_temp.value, msg.f111.min_temp.id,
+                    msg.f112.max_current.value, msg.f112.max_current.id, msg.f112.min_current.value, msg.f112.min_current.id,
+                    msg.f113.fw_ver, msg.f113.data_ver, msg.f113.connected_bm_count,
+                    msg.f113.leader_alarm1, msg.f113.leader_alarm2, msg.f113.fail_status3,
+                    msg.f120.max_cell_voltage.value, msg.f120.max_cell_voltage.id, msg.f120.min_cell_voltage.value, msg.f120.min_cell_voltage.id,
+                    msg.f130.manufacturing, msg.f130.inspection, msg.f130.serial,
+                    msg.f131.accumulated_capacity);
     }
 
 private:
     void handler_bmu(can_frame &frame) {
-        if (frame.id == 0x100) {
-            msg.mod_status1 = frame.data[0];
-            msg.bmu_status = frame.data[1];
-            msg.asoc = frame.data[2];
-            msg.rsoc = frame.data[3];
-            msg.soh = frame.data[4];
-            msg.fet_temp = (frame.data[5] << 8) | frame.data[6];
-        } else if (frame.id == 0x101) {
-            msg.pack_current = (frame.data[0] << 8) | frame.data[1];
-            msg.charging_current = (frame.data[2] << 8) | frame.data[3];
-            msg.pack_voltage = (frame.data[4] << 8) | frame.data[5];
-            msg.mod_status2 = frame.data[6];
-        } else if (frame.id == 0x103) {
-            msg.design_capacity = (frame.data[0] << 8) | frame.data[1];
-            msg.full_charge_capacity = (frame.data[2] << 8) | frame.data[3];
-            msg.remain_capacity = (frame.data[4] << 8) | frame.data[5];
-        } else if (frame.id == 0x110) {
-            msg.max_voltage.value = (frame.data[0] << 8) | frame.data[1];
-            msg.max_voltage.id = frame.data[2];
-            msg.min_voltage.value = (frame.data[4] << 8) | frame.data[5];
-            msg.min_voltage.id = frame.data[6];
-        } else if (frame.id == 0x111) {
-            msg.max_temp.value = (frame.data[0] << 8) | frame.data[1];
-            msg.max_temp.id = frame.data[2];
-            msg.min_temp.value = (frame.data[4] << 8) | frame.data[5];
-            msg.min_temp.id = frame.data[6];
-        } else if (frame.id == 0x112) {
-            msg.max_current.value = (frame.data[0] << 8) | frame.data[1];
-            msg.max_current.id = frame.data[2];
-            msg.min_current.value = (frame.data[4] << 8) | frame.data[5];
-            msg.min_current.id = frame.data[6];
-        } else if (frame.id == 0x113) {
-            msg.bmu_fw_ver = frame.data[0];
-            msg.mod_fw_ver = frame.data[1];
-            msg.serial_config = frame.data[2];
-            msg.parallel_config = frame.data[3];
-            msg.bmu_alarm1 = frame.data[4];
-            msg.bmu_alarm2 = frame.data[5];
-        } else if (frame.id == 0x120) {
-            msg.min_cell_voltage.value = (frame.data[0] << 8) | frame.data[1];
-            msg.min_cell_voltage.id = frame.data[2];
-            msg.max_cell_voltage.value = (frame.data[4] << 8) | frame.data[5];
-            msg.max_cell_voltage.id = frame.data[6];
-        } else if (frame.id == 0x130) {
-            msg.manufacturing = (frame.data[0] << 8) | frame.data[1];
-            msg.inspection = (frame.data[2] << 8) | frame.data[3];
-            msg.serial = (frame.data[4] << 8) | frame.data[5];
+        if (!bmu_lipy041::decode_frame_bmu_info(frame.id, frame.data, frame.dlc, msg)) {
+            LOG_WRN("bmu decode failed: id=0x%03x dlc=%u", frame.id, frame.dlc);
         }
-        return;
     }
 
-    msg_bmu msg{0};
+    msg_bmu msg{};
     msg_can_bmu can_msg{0};
 
     const device *dev_can_bmu{nullptr};
