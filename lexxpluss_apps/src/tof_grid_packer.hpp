@@ -63,7 +63,13 @@ struct sensor_read {
     uint8_t boards_detected;  // diagnostics only, high nibble on the wire
     uint8_t recovered_flags;  // contract byte-3 flags: recovered/chain-level only
     uint8_t last_error;       // device/driver specific, 0 = none
-    uint16_t zones_mm[kZones];      // raw ULD distances
+    /* SIGNED, because the ULD's are. A VL53L7CX zone can report a negative
+     * distance with a trusted status -- below-floor geometry, or a crosstalk
+     * correction that overshoots. Held as uint16_t it wraps to a large positive
+     * value, survives the > kMaxValidMm test as "too far", and clamps to
+     * 4094 mm: a defect that reads as CLEAR SPACE on a detector whose whole job
+     * is to notice something overhead. from_read() rejects negatives outright. */
+    int16_t zones_mm[kZones];       // raw ULD distances
     uint8_t target_status[kZones];  // raw ULD per-zone status
 };
 
@@ -74,7 +80,8 @@ public:
     // carries a representable source_id. Zone reduction to the wire
     // domain happens here: target_status 5 is trusted, 6 and 9 only when
     // accept_low_confidence, everything else becomes the invalid
-    // sentinel; valid distances clamp to 4094 mm.
+    // sentinel; a negative raw distance is the sentinel too; valid
+    // distances clamp to 4094 mm.
     static completed_verified_grid from_read(const sensor_read &read,
                                              bool accept_low_confidence);
 
