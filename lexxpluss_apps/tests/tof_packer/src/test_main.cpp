@@ -196,7 +196,7 @@ ZTEST(tof_grid_packer, test_clamp_is_not_the_sentinel)
 {
     sensor_read read{minimal_good_read()};
     read.zones_mm[0] = 4095;
-    read.zones_mm[1] = 60000;
+    read.zones_mm[1] = 32767; // the largest a raw reading can be
     read.zones_mm[2] = 4094;
     read.zones_mm[3] = 0; // zero is a valid reading, not a sentinel
     auto const grid{completed_verified_grid::from_read(read, false)};
@@ -206,6 +206,29 @@ ZTEST(tof_grid_packer, test_clamp_is_not_the_sentinel)
     zassert_equal(grid.wire_zones()[2], kMaxValidMm);
     zassert_equal(grid.wire_zones()[3], 0);
     zassert_equal(grid.valid_zones(), 64);
+}
+
+// A negative distance is what the clamp must never see. The ULD's range is
+// signed and a trusted zone can report below zero; held unsigned it wraps past
+// kMaxValidMm, clamps to 4094 and is counted as valid -- "nothing within
+// range", from a zone that reported the opposite. It is the sentinel instead,
+// and it does not count towards valid_zones.
+ZTEST(tof_grid_packer, test_a_negative_distance_is_not_a_long_reading)
+{
+    sensor_read read{minimal_good_read()};
+    read.zones_mm[0] = -1;
+    read.zones_mm[1] = -5;
+    read.zones_mm[2] = INT16_MIN;
+    read.zones_mm[3] = 1;   // the neighbour is untouched
+
+    auto const grid{completed_verified_grid::from_read(read, false)};
+
+    zassert_true(grid.admitted(), "a negative zone is a bad zone, not a bad read");
+    zassert_equal(grid.wire_zones()[0], kInvalidSentinel);
+    zassert_equal(grid.wire_zones()[1], kInvalidSentinel);
+    zassert_equal(grid.wire_zones()[2], kInvalidSentinel);
+    zassert_equal(grid.wire_zones()[3], 1);
+    zassert_equal(grid.valid_zones(), 61, "three zones refused, the rest stand");
 }
 
 // target_status policy: 5 always trusted; 6 and 9 only under the
