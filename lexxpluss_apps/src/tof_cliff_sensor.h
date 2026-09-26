@@ -113,8 +113,10 @@ const char *tof_cliff_stage_name(enum tof_cliff_stage stage);
  * interpretation - see WHERE NEGATIVE RANGES GO for what the ULD has already done to
  * them. */
 struct tof_cliff_target {
-	/* Signed, as the ULD left it. This layer adds no clamp of its own; it also cannot
-	 * undo the ULD's, so a negative here always carries a non-VALID status. */
+	/* Signed, as the ULD left it. This layer adds no clamp of its own and cannot undo
+	 * the ULD's, so in the normal output of this ULD a negative here carries a
+	 * non-VALID status. Not an invariant this layer enforces -- see WHERE NEGATIVE
+	 * RANGES GO, and the wire contract, which refuses a VALID negative outright. */
 	int16_t range_mm;
 	uint8_t range_status; /* raw ULD range status, classified one layer up */
 };
