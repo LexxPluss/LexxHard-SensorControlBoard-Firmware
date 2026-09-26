@@ -1,0 +1,36 @@
+# Copyright (c) 2026, LexxPluss Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
+description: |
+  Control lines and timing for the daisy-chained ToF enable chain
+  (distributed D flip-flop, one per carrier board, shared clock).
+
+compatible: "lexxpluss,tof-chain"
+
+include: base.yaml
+
+properties:
+  data-gpios:
+    type: phandle-array
+    required: true
+    description: Enable data line; also chain position 1's enable directly.
+
+  clock-gpios:
+    type: phandle-array
+    required: true
+    description: Shared flip-flop clock propagating the enable pattern.
+
+  data-settle-ms:
+    type: int
+    required: true
+    description: |
+      Wait after changing the data line level before the next clock edge.
+      DS20001 provisional value; the line settles over seconds at the
+      register end. Final value pending hardware documentation (Request B).
+
+  sensor-boot-ms:
+    type: int
+    required: true
+    description: |
+      Wait after a position's enable rises before probing it. DS20001
+      provisional value.
