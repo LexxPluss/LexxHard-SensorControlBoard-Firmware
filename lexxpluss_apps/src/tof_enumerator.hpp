@@ -71,6 +71,7 @@
 // classification is a known follow-up); until it can, it must report
 // transport_error, and this machine will freeze rather than guess.
 
+#include <errno.h>
 #include <stdint.h>
 #include <stddef.h>
 

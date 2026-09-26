@@ -34,7 +34,8 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer twister-out*
+	rm -rf build-mcuboot build build-bypass-safety-lidar twister-out* \
+	       build-test-tof-packer build-test-tof-enumerator build-tof-chain
 
 .PHONY: distclean
 distclean: clean
