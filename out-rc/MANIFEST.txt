@@ -1,0 +1,99 @@
+RECOVERY RC -- DEV / NO-FAT / NEVER CONFIRMS ITSELF / NOT A RELEASE
+built 2026-09-26 from experiment/AMRSW-2322-l7-hang-isolation @ ee7ad601 (pushed)
+
+WHAT IT IS
+
+The first candidate that needs no shell command to produce data. diag3 proved the firmware can
+read the real L7 and put its grid frames on CAN, and it needed `tofdiag arm` to do it. This
+removes that dependency and adds the three things that stood between it and something a fleet
+could boot: a boot-time L7 recovery, a watchdog that notices when work stops, and a record saying
+why when it does.
+
+WHAT IT IS NOT. Not a release. Still DEV, still safety-lidar bypassed, still unconfirmed, and the
+robot is still not driveable. It is also not a diagnostic image: `tofdiag status`, `tofdiag i2c`
+and the I2C forensics block exist only under TOF_DIAG_HANG, which this does not define. The
+`orphan_rxne` counter cannot be read here.
+
+ARTEFACTS
+
+  fw_rc.signed.bin     248,168 B   (ceiling 261,712, leaves 13,544)
+    d0b4d3e55cdcbc6a19bab2c11431c8aa32260ddccc739508b0f77e1598fa6289
+  fw_rc.test.bin       262,144 B   padded, image_ok 0xff -- this is the one to flash
+    132608186769581548d3f7c7a0459a294d30e06603d97793d7e613894905f7b7
+  (confirmed form, not for flashing)
+    465b03cbc2cf59f2cc593c9375178784ad78486d70bf219364de54430b096b8a
+
+  version string in the image: 3.6.0-181-gee7ad601-NOFAT-RC-UNCONFIRMED
+
+CHECKS ON THE ARTEFACT
+
+  262,144 B; image_ok byte at size-24 = 0xff; MCUboot magic tail 77c295f360d2ef7f3552500f2cb67980
+  The .test.bin is the confirmed image with EXACTLY ONE byte changed -- verified by differencing
+  the two rather than by trusting the recipe: `cmp -l` reports one line, at offset 262120
+  (0-based), 0x01 -> 0xff.
+
+  boot_write_img_confirmed: 0 symbols in the ELF. The self-confirm path is not merely skipped at
+  runtime, it is absent from the image, so any reset of any kind hands the board back to the
+  previous one. That is the single build flag -- TOF_DEV_NO_AUTO_CONFIRM -- separating this from
+  the eventual deliverable; nothing else differs.
+
+  NO-FAT enforced twice: CMake refuses any ENABLE_TOF_L7_ULD build whose Kconfig came back with
+  CONFIG_DISK_ACCESS, DISK_DRIVER_SDMMC, FILE_SYSTEM, FAT_FILESYSTEM_ELM, FILE_SYSTEM_SHELL or
+  FS_FATFS_LFN enabled, and the Makefile re-checks the .config that was produced.
+
+  Exactly one wdt_feed() call site, in tof_watchdog_feeder.cpp, enforced at configure time for
+  every image. In the binary, state_controller::static_poll_1s_callback is a single `bx lr`:
+  nothing is left in the interrupt path at all.
+
+  DTCM is 124 KB and FORENSICS is a separate 4 KB region; the tombstone at 0x2001FF00 asserts its
+  own bounds against FORENSICS rather than against DTCM.
+
+WHAT IT CARRIES
+
+  boot-time L7 recovery over I2C, before the first control-line change
+  automatic commissioning; no tofdiag arm, no diag modes, no manual grid switch
+  the backported STM32 I2C v2 ISR rework, byte-identical to what diag3 ran
+  2 KiB main stack; E3 L4 timing (400 kHz, 20 ms cycle, 15 ms budget); full blob verification
+  task-progress watchdog fed from one thread, with a 256-byte retained record
+
+EVERY OTHER CONFIGURATION AT THIS COMMIT
+
+  firmware / two_state_ksw / interlock   197,992   headroom 63,720
+  bypass_safety_lidar                    198,180   headroom 63,532
+  tof_chain                              202,452   headroom 59,260
+  tof_l7 (NOFAT)                         241,860   headroom 19,852
+  auto_commission (NOFAT)                234,080   headroom 27,632
+  tof_cliff                              253,112   headroom  8,600   <- the tightest, and it
+                                                                        still carries FAT
+
+TESTS
+
+  13 host suites green at this commit, including the four this work added: tof_progress 6/6,
+  tof_task_watchdog 22/22, tof_watchdog_tombstone 16/16, tof_watchdog_feeder 1/1 (one ordered
+  scenario), plus the three recovery suites at 28/28 and tof_acquisition 81/81.
+
+  Every load-bearing rule is mutation-checked. Named here because a passing suite says less than a
+  suite that fails when the rule is removed: dropping the alive guard, letting a probe error fall
+  through to a stop, moving the recovery after the pins, restoring the L7 baseline requirement,
+  sharing one timestamp between the two send slots, dropping the silence half, suspending
+  everything during a long operation, removing the cap from the waiting phase, inverting the send
+  slot discrimination, undoing the feed latch, admitting a never-ACKed sender to the baseline,
+  removing the phase assignment on a refused feed, never resetting the consecutive-failure count,
+  and putting the timer feed back.
+
+WHAT HAS TO HAPPEN BEFORE ANYTHING IS CONCLUDED FROM THIS IMAGE
+
+  The tombstone region must be shown readable and writable at 0x2001FF00 on real hardware. Cross
+  compiling proves the address is outside what the linker allocates from; it proves nothing about
+  the MPU, and if the MPU refuses, the record silently does not exist and every later conclusion
+  drawn from its absence is wrong.
+
+  The feeder's 1 KiB stack is chosen, not measured.
+
+  Whether stopping a ranging session clears what actually survives an SCB reset is unknown. The
+  recovery acts on the one surviving-state candidate a running SCB can act on. A pass reporting
+  both positions `absent` on a warm reset is evidence against the reasoning the ordering rests on,
+  not a quiet success.
+
+  See ../../allmemory/hanging_object/rc_recovery/onboard_checklist_draft.md for the procedure, and
+  decode_tombstone.py beside it for reading the record back through the E3 shell's devmem.
