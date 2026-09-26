@@ -315,9 +315,12 @@ int tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sam
 	entries = (out->target_count == 0U) ? 1U : out->target_count;
 
 	for (i = 0; i < entries; i++) {
-		/* Raw on both fields. RangeMilliMeter stays int16_t and keeps its sign:
-		 * a negative reading below the floor plane is real information for a
-		 * cliff, and the BSP's clamp to 0 is precisely the loss this avoids. */
+		/* Copied, not interpreted. RangeMilliMeter stays int16_t and keeps whatever
+		 * sign the ULD left on it: SetTargetData has already rewritten a VALID
+		 * negative into either a VALID 0 mm or an INVALID negative, so what this
+		 * preserves is that normalisation, not a raw below-floor reading. The BSP's
+		 * second clamp to 0 would erase the distinction; this does not add one of
+		 * its own either. See WHERE NEGATIVE RANGES GO in the header. */
 		out->entries[i].range_mm = in->RangeData[i].RangeMilliMeter;
 		out->entries[i].range_status = in->RangeData[i].RangeStatus;
 	}

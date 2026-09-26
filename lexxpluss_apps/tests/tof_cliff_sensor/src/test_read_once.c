@@ -273,19 +273,30 @@ ZTEST(tof_cliff_adapter, test_four_targets_are_all_copied_in_order)
 	zassert_equal(sample.stream_count, 7);
 }
 
-ZTEST(tof_cliff_adapter, test_negative_range_survives_unclamped)
+/* This replaces test_negative_range_survives_unclamped, which posed {-37, VALID} and
+ * {-1, VALID}. Those are combinations the real ULD cannot emit: SetTargetData rewrites a
+ * VALID negative into either a VALID 0 mm or an INVALID negative before this layer sees
+ * it, so the old fixtures proved only that the fake copied what it was handed. The two
+ * shapes below are the ones the ULD does produce -- tests/tof_uld_status pins that they
+ * are, by running the real SetTargetData -- and what is asserted here is the only thing
+ * this layer is responsible for: it copies both fields through without a second opinion. */
+ZTEST(tof_cliff_adapter, test_the_ulds_normalised_negatives_are_copied_through_unchanged)
 {
-	/* The BSP's vl53l4cx_get_result clamps this to 0. For a cliff sensor a reading
-	 * below the floor plane is the signal, not noise, and a 0 would read as a
-	 * surface right at the sensor. */
-	const int16_t mm[2] = {-37, -1};
-	const uint8_t status[2] = {0, 0};
+	/* An INVALID negative from below the tuning threshold, and a VALID 0 mm that the
+	 * ULD synthesised from a negative inside it. */
+	const int16_t mm[2] = {-31, 0};
+	const uint8_t status[2] = {VL53LX_RANGESTATUS_RANGE_INVALID,
+				   VL53LX_RANGESTATUS_RANGE_VALID};
 
 	canned_targets(2, mm, status, 2);
 
 	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
-	zassert_equal(sample.entries[0].range_mm, -37);
-	zassert_equal(sample.entries[1].range_mm, -1);
+	zassert_equal(sample.entries[0].range_mm, -31,
+		      "an INVALID negative must not be clamped away here");
+	zassert_equal(sample.entries[0].range_status, VL53LX_RANGESTATUS_RANGE_INVALID);
+	zassert_equal(sample.entries[1].range_mm, 0);
+	zassert_equal(sample.entries[1].range_status, VL53LX_RANGESTATUS_RANGE_VALID,
+		      "the ULD's synthesised zero is VALID and stays VALID");
 }
 
 ZTEST(tof_cliff_adapter, test_no_status_is_reclassified_or_reduced_here)
