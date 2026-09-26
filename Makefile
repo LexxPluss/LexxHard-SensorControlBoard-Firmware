@@ -191,6 +191,12 @@ firmware_bypass_safety_lidar:
 # the NACK-classification patch (verified first) and stacks on the Dasher
 # safety-lidar bypass like the diagnostic build. Dedicated build directory
 # for the usual cache-leak reason.
+#
+# The `tof enum` command is present but is NOT expected to complete on this
+# image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition
+# schedule, and commissioning was measured at 0/69 complete walks there. The
+# overlay comment carries the measurement and names the fix, which is not in
+# this change.
 .PHONY: firmware_tof_chain
 firmware_tof_chain:
 	./scripts/manage_zephyr_patches.sh verify
