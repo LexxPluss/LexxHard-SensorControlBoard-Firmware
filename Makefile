@@ -36,8 +36,8 @@ all: bootloader firmware
 clean:
 	rm -rf build-mcuboot build build-bypass-safety-lidar twister-out* \
 	       build-test-tof-packer build-test-tof-cliff-packer \
-	       build-test-tof-cliff-sensor build-test-tof-enumerator \
-	       build-tof-chain
+	       build-test-tof-cliff-sensor build-test-tof-uld-status \
+	       build-test-tof-enumerator build-tof-chain
 
 .PHONY: distclean
 distclean: clean
@@ -107,6 +107,14 @@ test_tof_cliff_sensor:
 # guarded readdress (exact-traffic properties the enumerator fakes cannot
 # prove, above all zero-writes-after-transport-error); the enumeration state
 # machine suite joins here.
+# The only suite that compiles a vendor translation unit, and it compiles the PATCHED
+# copy: it pins that a failed VL53LX_get_device_results() is reported as a failure and
+# does not move the device's stream-count history. Dropping the patch fails it.
+.PHONY: test_tof_uld_status
+test_tof_uld_status:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_uld_status -d build-test-tof-uld-status -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: test_tof_enumerator
 test_tof_enumerator:
 	$(RUNNER) west zephyr-export
