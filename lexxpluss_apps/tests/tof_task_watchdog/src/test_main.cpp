@@ -229,6 +229,38 @@ ZTEST(tof_task_watchdog, test_a_long_operation_that_never_ends_is_its_own_reason
                  "an unbounded declaration is not a bound");
 }
 
+/* THE ONE THING JUDGED BEFORE THE BASELINE. The declared operation that exists today -- verifying
+ * the stored L7 blob -- runs in this phase, so a phase that judged nothing at all would feed a
+ * wedged blob verification forever. That is the exact hang this subsystem exists to catch, and it
+ * was the one place it could not. */
+ZTEST(tof_task_watchdog, test_a_long_operation_that_wedges_before_the_baseline_still_stops_the_feed)
+{
+    harness h{};
+    h.healthy_pre_l7();
+    h.in.baseline_point = false;          /* commissioning has not finished; nothing periodic yet */
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+
+    zassert_true(h.run_until_stopped(60, 1000, advance{.l7 = false}));
+    zassert_equal(h.st.current, wd::phase::stopped);
+    zassert_true((h.st.why & wd::long_operation_over) != 0U);
+}
+
+/* And the ordinary heartbeats are still not judged there, because nothing periodic is expected
+ * until commissioning has installed a mapping. */
+ZTEST(tof_task_watchdog, test_ordinary_activity_is_still_unjudged_before_the_baseline)
+{
+    harness h{};
+    h.healthy_pre_l7();
+    h.in.baseline_point = false;
+    h.in.acquisition.begun = h.in.acquisition.ended + 1;   /* inside a cycle, and staying there */
+
+    for (int i{0}; i < 60; ++i)
+        zassert_true(h.tick(1000, advance{.acq = false, .l7 = false}),
+                     "a chain that has not been commissioned is not a chain that is stuck");
+    zassert_equal(h.st.current, wd::phase::waiting);
+}
+
 /* ------------------------------------------------------------- not firing ------------- */
 
 /* THE BOOT THIS MUST NOT RESET. The robot PC is not on the bus, so nothing has ever been sent and
@@ -392,4 +424,5 @@ ZTEST(tof_task_watchdog, test_every_reason_has_its_own_name)
     zassert_true(strcmp(wd::reason_name(wd::silent_l7), "silent_l7") == 0);
     zassert_true(strcmp(wd::reason_name(wd::silent_zcan), "silent_zcan") == 0);
     zassert_true(strcmp(wd::reason_name(wd::long_operation_over), "long_operation_over") == 0);
+    zassert_true(strcmp(wd::reason_name(wd::feed_api_failed), "feed_api_failed") == 0);
 }

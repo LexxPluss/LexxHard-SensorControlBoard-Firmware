@@ -74,8 +74,9 @@ void set_l7_expected(bool expected);
 void long_operation_begin();
 void long_operation_end();
 
-/* Reads the tombstone left by a previous boot and logs it. Safe to call before anything else; says
- * nothing when the region holds no valid record, which is the ordinary case. */
+/* Reads the tombstone left by a previous boot and logs it. Safe to call before anything else. When
+ * the region holds no valid record it logs one INFO line naming why -- an ordinary boot and a boot
+ * after a cleared battery both read that way, and which of the two it was is worth having. */
 void report_previous_stop();
 
 /* For the shell and for tests: what the feeder decided, and why. */

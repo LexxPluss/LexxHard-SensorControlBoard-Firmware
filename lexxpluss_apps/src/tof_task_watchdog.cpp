@@ -116,6 +116,18 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
     }
 
     if (st.current == phase::waiting) {
+        /* BEFORE THE BASELINE, ONE THING IS STILL JUDGED: a declared long operation that never
+         * ends. The ordinary heartbeats are not, because nothing periodic is expected yet -- but
+         * the operation this phase is mostly spent on, verifying the stored blob, runs here and
+         * would otherwise be unbounded. An earlier version returned true from this phase before
+         * reaching the cap, so a blob verification that wedged was fed forever, which is the exact
+         * hang the subsystem exists to catch and the one place it could not. */
+        if (in.long_operation &&
+            longer_than(in.now_ms, in.long_operation_began_ms, b.long_operation_ms)) {
+            st.why = long_operation_over;
+            st.current = phase::stopped;
+            return false;
+        }
         if (in.baseline_point && baseline_ready(in)) {
             st.current = phase::armed;
             st.armed_ms = in.now_ms;
@@ -192,6 +204,7 @@ const char *reason_name(reason r)
     case silent_l7:           return "silent_l7";
     case silent_zcan:         return "silent_zcan";
     case long_operation_over: return "long_operation_over";
+    case feed_api_failed:     return "feed_api_failed";
     }
     return "unknown";
 }

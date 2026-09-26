@@ -18,6 +18,11 @@
  * answers questions nobody asks about a machine that is working. This is 256 bytes, written exactly
  * once, on the single transition from armed to stopped, and never touched again.
  *
+ * LAST_FED_MS IS THE LAST SUCCESSFUL FEED, not the moment the watchdog was armed. An earlier
+ * version wrote the arming time, which reads as a plausible number and answers a question nobody
+ * asked: the gap between the last feed and the stop is what says whether the board went down on the
+ * first refusal or limped for a while first.
+ *
  * WHAT IT DOES NOT PROMISE. Survival across a power cut. DTCM keeps its contents across an IWDG
  * reset, a software reset and an MCUboot revert because none of those drop the rail; pulling the
  * battery clears it, and a reader who assumes otherwise will eventually read somebody else's boot.
@@ -59,7 +64,7 @@ inline constexpr size_t kSize{256};
  * be mistaken for this one. */
 inline constexpr uint32_t kMagicCommitted{0x31544457};  // "WDT1"
 inline constexpr uint32_t kMagicEnd{0x444E4557};        // "WEND"
-inline constexpr uint32_t kVersion{1};
+inline constexpr uint32_t kVersion{2};
 
 /* Fixed 32-bit word offsets. Part of the reading procedure, so APPEND ONLY: a reader in the field
  * may be older than the image that wrote the record, and the version check is what protects it. */
@@ -87,6 +92,7 @@ enum : size_t {
     kOffLongActive     = 23,
     kOffLongBeganMs    = 24,
     kOffBootSeq        = 25,  // optional; zero when the image does not track one
+    kOffFeedRc         = 26,  // the driver's rc when the reason is feed_api_failed, else 0
     kOffEndMagic       = (kSize / sizeof(uint32_t)) - 1,
 };
 
@@ -105,6 +111,8 @@ struct record {
     uint32_t long_active{0};
     uint32_t long_began_ms{0};
     uint32_t boot_seq{0};
+    /* What wdt_feed() returned, when that is what ended the boot. Zero otherwise. */
+    int32_t feed_rc{0};
 };
 
 enum class status : uint8_t {

@@ -59,6 +59,12 @@ atomic_t l7_expected_{};
 atomic_t long_operation_{};
 atomic_t long_began_ms_{};
 atomic_t feeds_{};
+atomic_t last_fed_ms_{};
+
+/* Consecutive refusals from the driver before the feeder gives up and records why. Three at the
+ * 500 ms period is 1.5 s -- long enough that a transient does not end the boot, short enough that
+ * the tombstone is committed well inside the 10 s window the refusals are burning. */
+constexpr int kFeedFailureLimit{3};
 
 /* Owned by the feeder thread and by nothing else, which is what keeps the decision single-threaded
  * while its inputs arrive from five others. */
@@ -86,14 +92,17 @@ void build_identity(uint32_t out[4])
 }
 
 /* Called once, on the transition this whole subsystem exists to produce. */
-void commit_tombstone(const wd::input &in)
+void commit_tombstone(const wd::input &in, uint32_t reason, int feed_rc)
 {
     tomb::record r{};
     build_identity(r.build_id);
     r.phase = static_cast<uint32_t>(state_.current);
-    r.reason = state_.why;
+    r.reason = reason;
     r.stopped_ms = in.now_ms;
-    r.last_fed_ms = static_cast<uint32_t>(atomic_get(&feeds_)) != 0 ? state_.armed_ms : 0;
+    /* The last SUCCESSFUL feed. The gap between it and the stop is what says whether the board went
+     * down on the first refusal or limped for a while first. */
+    r.last_fed_ms = static_cast<uint32_t>(atomic_get(&last_fed_ms_));
+    r.feed_rc = feed_rc;
     r.acq_begun = in.acquisition.begun;      r.acq_ended = in.acquisition.ended;
     r.send_acq_begun = in.send_acq.begun;    r.send_acq_ended = in.send_acq.ended;
     r.send_workq_begun = in.send_workq.begun;r.send_workq_ended = in.send_workq.ended;
@@ -113,6 +122,7 @@ void feeder(void *, void *, void *)
     k_sem_take(&released_, K_FOREVER);
 
     bool stopped{false};
+    int consecutive_failures{0};
     for (;;) {
         if (!stopped) {
             const tof_progress::snapshot p{tof_progress::read()};
@@ -138,15 +148,28 @@ void feeder(void *, void *, void *)
             if (wd::feed_allowed(state_, bounds_, in)) {
                 /* THE ONLY wdt_feed() IN THE IMAGE. */
                 if (const int rc{wdt_feed(wdt_, channel_)}; rc == 0) {
+                    atomic_set(&last_fed_ms_, static_cast<atomic_val_t>(in.now_ms));
+                    consecutive_failures = 0;
                     if (atomic_inc(&feeds_) == 0)
                         k_sem_give(&first_feed_);
                 } else {
-                    LOG_ERR("wdt_feed failed (%d)", rc);
+                    /* A REFUSED FEED ENDS IN THE SAME RESET AS A WITHHELD ONE, and used to leave
+                     * nothing behind but a log line the reset erased. After a few in a row the
+                     * cause is recorded and the feeder stops trying, so the tombstone is committed
+                     * inside the window the refusals are burning rather than after it closes. */
+                    LOG_ERR("wdt_feed refused by the driver (%d)", rc);
+                    if (++consecutive_failures >= kFeedFailureLimit) {
+                        state_.why = wd::feed_api_failed;
+                        commit_tombstone(in, wd::feed_api_failed, rc);
+                        LOG_ERR("giving up after %d refused feeds; this boot will reset",
+                                consecutive_failures);
+                        stopped = true;
+                    }
                 }
             } else {
                 /* Committed BEFORE the feed is withheld. The other order leaves a reset whose cause
                  * was still being written when the board went down. */
-                commit_tombstone(in);
+                commit_tombstone(in, state_.why, 0);
                 LOG_ERR("watchdog feed withheld: reason 0x%08x after %u feeds; this boot will reset",
                         state_.why, static_cast<unsigned>(atomic_get(&feeds_)));
                 stopped = true;
@@ -217,6 +240,8 @@ void report_previous_stop()
             static_cast<unsigned>(r.acq_ended), static_cast<unsigned>(r.send_acq_begun),
             static_cast<unsigned>(r.send_acq_ended), static_cast<unsigned>(r.send_workq_begun),
             static_cast<unsigned>(r.send_workq_ended));
+    LOG_ERR("  last fed at %u ms, feed rc %d", static_cast<unsigned>(r.last_fed_ms),
+            static_cast<int>(r.feed_rc));
     LOG_ERR("  health %u/%u  l7 %u/%u  zcan %u  long %u since %u ms",
             static_cast<unsigned>(r.health_begun), static_cast<unsigned>(r.health_ended),
             static_cast<unsigned>(r.l7_begun), static_cast<unsigned>(r.l7_ended),

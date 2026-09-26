@@ -1349,9 +1349,16 @@ public:
          * feed has succeeded, so the long operations further down cannot be what the first ten
          * seconds are spent on. The bound is a fifth of the watchdog window. */
         tof_watchdog_feeder::release(dev_wdi, wdt_channel_id);
-        if (int rc = tof_watchdog_feeder::wait_first_feed(); rc != 0)
-            LOG_ERR("no watchdog feed within the startup bound (%d): this boot is heading for a reset",
-                    rc);
+        if (int rc = tof_watchdog_feeder::wait_first_feed(); rc != 0) {
+            /* RETURN, not carry on. The IWDG is running now and nothing has fed it, so this boot
+             * has at most ten seconds left; bringing up the rest of the board inside that window
+             * would start subsystems that are about to be cut off mid-operation, and an earlier
+             * version of this line only logged and continued. Stopping here leaves the reset clean
+             * and the log line as the last thing said. */
+            LOG_ERR("no watchdog feed within the startup bound (%d): stopping init, the IWDG will "
+                    "reset this boot", rc);
+            return;
+        }
 
         // eo_option_1 is used as power source for third inductive sensor
         {

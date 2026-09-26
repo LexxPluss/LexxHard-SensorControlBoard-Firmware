@@ -34,12 +34,19 @@
  * requires every watched activity to have actually finished once on this boot. Before that the
  * answer is always feed.
  *
- * The second is the long operations that are part of ordinary bring-up: an ULD download is about
- * two seconds per sensor and commissioning is longer. They are declared rather than inferred, and
- * -- this is the part an earlier version got wrong -- a declaration suspends a FIXED, NAMED set of
- * activities and nothing else. Downloading firmware to an L7 says nothing about whether the CAN
- * heartbeat is still going out, and a declaration that bought thirty seconds of silence for every
- * unrelated task would be a hole shaped exactly like the hang it is meant to survive.
+ * The second is bring-up work that legitimately takes far longer than a cycle. Exactly ONE such
+ * operation is declared today and the comment says which rather than gesturing at a category:
+ * verifying the stored L7 blob, which hashes 86 KB on the main stack before any baseline exists.
+ * The other two candidates do not need declaring and are named here so nobody adds them by reflex.
+ * The ULD download at open() takes about two seconds per sensor and is covered by the L7 in-flight
+ * bound, which is longer than that. Commissioning runs over CAN with the host and blocks no thread,
+ * so the periodic work continues throughout it.
+ *
+ * A declaration suspends a FIXED, NAMED set of activities and nothing else -- this is the part an
+ * earlier version got wrong. Hashing a blob says nothing about whether the CAN heartbeat is still
+ * going out, and a declaration that bought thirty seconds of silence for every unrelated task would
+ * be a hole shaped exactly like the hang it is meant to survive. It is also bounded BEFORE the
+ * baseline as well as after it, because the one declared operation runs before the baseline.
  *
  * THE L7 IS WATCHED FROM ITS FIRST OPEN, not from the baseline. The baseline is taken after
  * commissioning and BEFORE any L7 has been opened, so at that moment an L7 has necessarily
@@ -84,6 +91,10 @@ enum reason : uint32_t {
     silent_l7            = 1U << 9,
     silent_zcan          = 1U << 10,
     long_operation_over  = 1U << 11,
+    /* Not produced by feed_allowed(). The feeder raises it when the driver itself refuses the feed,
+     * which ends in the same reset and would otherwise leave no record at all. It lives in this
+     * enum because the tombstone carries one reason word and a reader should not need two. */
+    feed_api_failed      = 1U << 12,
 };
 
 enum class phase : uint8_t {

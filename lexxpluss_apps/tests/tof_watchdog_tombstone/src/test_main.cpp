@@ -69,6 +69,7 @@ tomb::record sample()
     r.long_active = 1;
     r.long_began_ms = 120000;
     r.boot_seq = 4;
+    r.feed_rc = -5;
     return r;
 }
 
@@ -134,6 +135,7 @@ ZTEST(tof_watchdog_tombstone, test_a_written_record_reads_back_field_for_field)
     zassert_equal(out.long_active, in.long_active);
     zassert_equal(out.long_began_ms, in.long_began_ms);
     zassert_equal(out.boot_seq, in.boot_seq);
+    zassert_equal(out.feed_rc, in.feed_rc, "the driver's rc is why a refused feed is not a withheld one");
     zassert_equal(out.build_id[0], in.build_id[0]);
 }
 
@@ -273,6 +275,18 @@ ZTEST(tof_watchdog_tombstone, test_this_build_has_a_real_barrier)
 {
     zassert_true(tomb::kBarrierAvailable,
                  "without a barrier write_once refuses to commit, and this build must not be that");
+}
+
+/* A record written by an older image is refused rather than half-read. The layout grew a field, so
+ * this is not hypothetical: a v1 reader and a v2 record disagree about what offset 26 means. */
+ZTEST(tof_watchdog_tombstone, test_the_layout_version_is_current_and_older_records_are_refused)
+{
+    zassert_equal(tomb::kVersion, 2U);
+    clear_region();
+    tomb::write_once(region_, sample());
+    region_[tomb::kOffVersion] = 1;
+    tomb::record out{};
+    zassert_equal(tomb::read(region_, out), tomb::status::wrong_version);
 }
 
 ZTEST(tof_watchdog_tombstone, test_every_status_has_its_own_name)

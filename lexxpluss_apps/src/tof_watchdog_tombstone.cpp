@@ -88,6 +88,7 @@ void write_once(volatile uint32_t *dst, const record &r, void (*observer)(void *
     dst[kOffLongActive] = r.long_active;
     dst[kOffLongBeganMs] = r.long_began_ms;
     dst[kOffBootSeq] = r.boot_seq;
+    dst[kOffFeedRc] = static_cast<uint32_t>(r.feed_rc);
     dst[kOffEndMagic] = kMagicEnd;
 
     dst[kOffChecksum] = checksum_of(dst);
@@ -149,6 +150,7 @@ status read(const volatile uint32_t *src, record &out)
     out.long_active = src[kOffLongActive];
     out.long_began_ms = src[kOffLongBeganMs];
     out.boot_seq = src[kOffBootSeq];
+    out.feed_rc = static_cast<int32_t>(src[kOffFeedRc]);
     return status::valid;
 }
 
