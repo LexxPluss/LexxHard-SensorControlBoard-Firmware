@@ -31,7 +31,7 @@
 // electrically on DS20001 (token walk, three independent runs): position 1
 // and 2 are the hanging VL53L7CX boards, 3-6 the VL53L4CX drop-sense boards.
 //
-// Source mapping is CONTRACT-owned (docs/can, 2026-08-02f): source 0 is
+// Source mapping is CONTRACT-owned (docs/can, 2026-08-02g): source 0 is
 // hanging_front_right, source 1 hanging_front_left; the connectivity diagram
 // places PCB1 (position 1) on the right, PCB2 (position 2) on the left.
 // Position-to-side is L0-owned knowledge and still awaits the frozen J29

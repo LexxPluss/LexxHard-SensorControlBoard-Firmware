@@ -25,26 +25,32 @@
 
 #pragma once
 
-// CAN identifiers for the ToF grid transport (AMRSW-2322).
-//
-// Self-assigned integration allocation, authorized by the team (2026-08-06)
-// and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
-// version 2026-08-02g): the SCB peripheral block 0x200-0x213 is contiguously
-// occupied across both repositories and a live bus capture agrees, 0x214+
-// extends that block, and all three values rank below every existing control
-// and safety identifier in CAN arbitration. The adjacency of the data and
-// health values carries no ordering meaning -- the contract guarantees no
-// ordering between the two frame kinds.
+#include <cstdint>
+#include <zephyr/kernel.h>
 
-#include <stdint.h>
+namespace lexxhard::shutter_motor_controller {
 
-namespace lexxhard::tof_can_ids {
+// Forwarded from actuator_controller's handle_control() (CAN 0x208, Center
+// slot) -- the raw +1/-1/0 wire value, not yet mapped to open/close (see
+// shutter_controller::request_from_raw_direction()).
+struct msg_request {
+    int8_t direction;
+    uint8_t power;
+};
 
-inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
-inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
+// For actuator_controller's CAN 0x209 encoder/current report (Center slot).
+// encoder_count is always 0 -- Shutter has no physical encoder, unlike
+// Left/Right.
+struct info {
+    int32_t encoder_count;
+    int32_t current;
+    bool fail;
+};
 
-// Reserved for the four-channel drop-sense frame. Its payload contract does
-// not exist yet: no filter or handler may claim this value until it does.
-inline constexpr uint16_t TOF_DROP_SENSE_RESERVED_ID{0x216};
+void init();
+void run(void *p1, void *p2, void *p3);
+info get_info();
+extern k_thread thread;
+extern k_msgq msgq_request;
 
-}  // namespace lexxhard::tof_can_ids
+}

@@ -23,28 +23,27 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#pragma once
+#include <algorithm>
+#include "motor_driver_calc.hpp"
 
-// CAN identifiers for the ToF grid transport (AMRSW-2322).
-//
-// Self-assigned integration allocation, authorized by the team (2026-08-06)
-// and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
-// version 2026-08-02g): the SCB peripheral block 0x200-0x213 is contiguously
-// occupied across both repositories and a live bus capture agrees, 0x214+
-// extends that block, and all three values rank below every existing control
-// and safety identifier in CAN arbitration. The adjacency of the data and
-// health values carries no ordering meaning -- the contract guarantees no
-// ordering between the two frame kinds.
+namespace lexxhard::motor_driver_calc {
 
-#include <stdint.h>
+void calc_pulse_ns(int8_t direction, uint8_t duty, uint32_t period_ns, uint32_t (&pulse_ns)[2])
+{
+    pulse_ns[0] = period_ns;
+    pulse_ns[1] = period_ns;
+    if (direction != 0 && duty != 0) {
+        uint32_t const duty_rev{std::clamp(100U - duty, 0U, 100U)};
+        uint32_t const ns{duty_rev * period_ns / 100};
+        pulse_ns[direction < 0 ? 0 : 1] = ns;
+    }
+}
 
-namespace lexxhard::tof_can_ids {
+int32_t calc_current_ma(int32_t adc_voltage_mv)
+{
+    static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
+    float const current_a{adc_voltage_mv * 1e-3f / AMP_GAIN * VOLTAGE_DIVIDER / SHUNT_REGISTER};
+    return static_cast<int32_t>(current_a * 1e+3f);
+}
 
-inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
-inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
-
-// Reserved for the four-channel drop-sense frame. Its payload contract does
-// not exist yet: no filter or handler may claim this value until it does.
-inline constexpr uint16_t TOF_DROP_SENSE_RESERVED_ID{0x216};
-
-}  // namespace lexxhard::tof_can_ids
+}

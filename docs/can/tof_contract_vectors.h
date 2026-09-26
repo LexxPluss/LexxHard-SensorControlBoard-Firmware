@@ -17,8 +17,8 @@
 
 namespace tof_contract {
 
-inline constexpr const char* kContractVersion = "2026-08-02f";
-inline constexpr const char* kContractSha256 = "8a3590d30f1fa334b68a579e3f20a12620afe82bf81328cec9312b662ea1ad1f";
+inline constexpr const char* kContractVersion = "2026-08-02g";
+inline constexpr const char* kContractSha256 = "fbc9f1dd1a433cdadb04f8dd9582ffffeac65654293988e60650b13cabc765ea";
 
 inline constexpr uint32_t kInvalidSentinel = 4095;
 inline constexpr uint32_t kMaxValidMm = 4094;

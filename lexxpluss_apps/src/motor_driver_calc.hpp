@@ -25,26 +25,17 @@
 
 #pragma once
 
-// CAN identifiers for the ToF grid transport (AMRSW-2322).
-//
-// Self-assigned integration allocation, authorized by the team (2026-08-06)
-// and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
-// version 2026-08-02g): the SCB peripheral block 0x200-0x213 is contiguously
-// occupied across both repositories and a live bus capture agrees, 0x214+
-// extends that block, and all three values rank below every existing control
-// and safety identifier in CAN arbitration. The adjacency of the data and
-// health values carries no ordering meaning -- the contract guarantees no
-// ordering between the two frame kinds.
+#include <cstdint>
 
-#include <stdint.h>
+namespace lexxhard::motor_driver_calc {
 
-namespace lexxhard::tof_can_ids {
+// direction mirrors msg_control::DOWN(-1)/STOP(0)/UP(1) -- kept as a plain
+// int8_t here to stay Zephyr-independent. STOP or duty==0 -> no output on
+// either channel (both held at period_ns).
+void calc_pulse_ns(int8_t direction, uint8_t duty, uint32_t period_ns, uint32_t (&pulse_ns)[2]);
 
-inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
-inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
+// Shared calibration constants (AMP_GAIN/VOLTAGE_DIVIDER/SHUNT_REGISTER) for
+// all axes' current-sense circuits.
+int32_t calc_current_ma(int32_t adc_voltage_mv);
 
-// Reserved for the four-channel drop-sense frame. Its payload contract does
-// not exist yet: no filter or handler may claim this value until it does.
-inline constexpr uint16_t TOF_DROP_SENSE_RESERVED_ID{0x216};
-
-}  // namespace lexxhard::tof_can_ids
+}

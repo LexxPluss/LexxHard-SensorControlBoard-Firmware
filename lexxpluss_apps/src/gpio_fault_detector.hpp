@@ -25,26 +25,22 @@
 
 #pragma once
 
-// CAN identifiers for the ToF grid transport (AMRSW-2322).
-//
-// Self-assigned integration allocation, authorized by the team (2026-08-06)
-// and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
-// version 2026-08-02g): the SCB peripheral block 0x200-0x213 is contiguously
-// occupied across both repositories and a live bus capture agrees, 0x214+
-// extends that block, and all three values rank below every existing control
-// and safety identifier in CAN arbitration. The adjacency of the data and
-// health values carries no ordering meaning -- the contract guarantees no
-// ordering between the two frame kinds.
+#include <zephyr/drivers/gpio.h>
 
-#include <stdint.h>
+namespace lexxhard::motor_driver {
 
-namespace lexxhard::tof_can_ids {
+// Extracted from motor_driver::driver so the GPIO-read branching logic can
+// be ztest'd via gpio_emul without pulling in PWM devicetree nodes (see
+// TESTPLAN_shutter_controller_20260714.md section 4.2).
+class gpio_fault_detector {
+public:
+    void bind(const gpio_dt_spec &d) { dev = d; }
+    bool ready() const { return gpio_is_ready_dt(&dev); }
+    // ACTIVE_HIGH config: pin reads LOW when the fault line is asserted.
+    bool is_failed() const { return ready() ? gpio_pin_get_dt(&dev) == 0 : false; }
+    void configure_input() { gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH); }
+private:
+    gpio_dt_spec dev{};
+};
 
-inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
-inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
-
-// Reserved for the four-channel drop-sense frame. Its payload contract does
-// not exist yet: no filter or handler may claim this value until it does.
-inline constexpr uint16_t TOF_DROP_SENSE_RESERVED_ID{0x216};
-
-}  // namespace lexxhard::tof_can_ids
+}

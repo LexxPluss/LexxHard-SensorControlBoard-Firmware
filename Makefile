@@ -22,7 +22,11 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 VERSION:=$(shell git describe --tags HEAD | cut -c2-)
-WORKDIR:=$(if $(WORKDIR),$(),workdir)
+# Absolute path to extra/ (custom -DBOARD_ROOT / -DZEPHYR_EXTRA_MODULES root).
+# Defaults to /workdir, matching the "volumes: .:/workdir" mount in docker-compose.yml.
+# When IN_HOST=1 (no container), override with the worktree's absolute path, e.g.
+# make IN_HOST=1 WORKDIR=$PWD firmware
+WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
 .PHONY: all
@@ -30,7 +34,8 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer
+	rm -rf build-mcuboot build build-bypass-safety-lidar twister-out* \
+	       build-test-tof-packer build-test-tof-enumerator build-tof-chain
 
 .PHONY: distclean
 distclean: clean
@@ -54,16 +59,16 @@ update:
 	$(RUNNER) west update
 	./scripts/manage_zephyr_patches.sh apply
 
-.PHONY: bootloader
-bootloader:
-	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/${WORKDIR}/extra
-	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
-
 .PHONY: test
 test:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+	$(RUNNER) west twister -T lexxpluss_apps/tests --platform native_sim -v -A ${WORKDIR}/extra
+
+.PHONY: bootloader
+bootloader:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=${WORKDIR}/extra
+	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
 # Host-side tests for the ToF grid packer, driven by the golden vectors in
 # docs/can/ and pinning the contract SHA-256 (the firmware half of the
@@ -99,7 +104,7 @@ test_tof_enumerator:
 firmware:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr.signed.confirmed.bin
 
@@ -107,7 +112,7 @@ firmware:
 firmware_two_state_ksw:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_two_state_ksw.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_two_state_ksw.signed.confirmed.bin
 
@@ -115,7 +120,7 @@ firmware_two_state_ksw:
 firmware_interlock:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_interlock.signed.confirmed.bin
 
@@ -129,7 +134,7 @@ firmware_interlock:
 firmware_bypass_safety_lidar:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.confirmed.bin out/zephyr_bypass_safety_lidar.signed.confirmed.bin
 

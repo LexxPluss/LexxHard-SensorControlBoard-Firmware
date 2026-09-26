@@ -25,26 +25,37 @@
 
 #pragma once
 
-// CAN identifiers for the ToF grid transport (AMRSW-2322).
-//
-// Self-assigned integration allocation, authorized by the team (2026-08-06)
-// and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
-// version 2026-08-02g): the SCB peripheral block 0x200-0x213 is contiguously
-// occupied across both repositories and a live bus capture agrees, 0x214+
-// extends that block, and all three values rank below every existing control
-// and safety identifier in CAN arbitration. The adjacency of the data and
-// health values carries no ordering meaning -- the contract guarantees no
-// ordering between the two frame kinds.
+#include <cstdint>
+#include <tuple>
+#include <zephyr/device.h>
+#include "gpio_fault_detector.hpp"
 
-#include <stdint.h>
+namespace lexxhard::motor_driver {
 
-namespace lexxhard::tof_can_ids {
+enum class axis { CENTER, LEFT, RIGHT };
 
-inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
-inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
+// PWM 2-pin H-bridge drive + ADC current sense + GPIO fault pin, shared by
+// every axis (Center/Left/Right). Each axis owns its own independent
+// instance -- Major loop (Left/Right) and Minor loop (Center) never share
+// one, so no cross-loop write conflict. See motor_driver_calc.hpp for the
+// stateless conversion formulas this delegates to.
+class driver {
+public:
+    int init(axis a);
+    void set_duty(int8_t direction, uint8_t duty = 0);
+    std::tuple<int8_t, uint8_t> get_duty() const;
+    bool ready() const;
+    bool is_failed() const;
+    int32_t get_current() const;
+private:
+    uint32_t pin[2]{0, 0};
+    int8_t direction{0};
+    uint8_t duty{0};
+    const device *dev[2]{nullptr, nullptr};
+    gpio_fault_detector fail_gpio{};
+    int32_t current_adc{-1};
+    static constexpr uint32_t CONTROL_HZ{10000};
+    static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
+};
 
-// Reserved for the four-channel drop-sense frame. Its payload contract does
-// not exist yet: no filter or handler may claim this value until it does.
-inline constexpr uint16_t TOF_DROP_SENSE_RESERVED_ID{0x216};
-
-}  // namespace lexxhard::tof_can_ids
+}
