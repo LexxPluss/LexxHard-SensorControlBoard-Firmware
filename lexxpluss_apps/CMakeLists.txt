@@ -58,6 +58,39 @@ if(ENABLE_TOF_CHAIN)
                     "verification is still pending.")
 endif()
 
+# Cliff ToF: the vendored VL53L4CX ULD and its Zephyr platform layer. Off by
+# default, so the production image is byte-identical until the acquisition path
+# is real. TOF_CLIFF_BUDGET selects a build point of the flash/RAM budget series.
+if(ENABLE_TOF_CLIFF_ULD)
+    # The chain flag is a DEPENDENCY, not a neighbour. i2c2 is the tug encoder's
+    # bus until ENABLE_TOF_CHAIN replaces its init with init_disconnected_for_tof()
+    # and starts no polling thread for it (see main.cpp). The cliff ULD reaches the
+    # same bus -- and TOF_CLIFF_BUDGET >= 5 does so from a SYS_INIT at boot, before
+    # anyone could intervene -- so the combination without the chain flag gives one
+    # bus two owners, no chain overlay and no ownership handover. Refuse it at
+    # configure time rather than let it link.
+    if(NOT ENABLE_TOF_CHAIN)
+        message(FATAL_ERROR
+            "ENABLE_TOF_CLIFF_ULD requires ENABLE_TOF_CHAIN: without it the tug "
+            "encoder keeps i2c2 and its polling thread, while the cliff ULD "
+            "(and the TOF_CLIFF_BUDGET probe's SYS_INIT) drive the same bus.")
+    endif()
+    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l4cx_uld/vl53l4cx_sources.cmake)
+    target_sources(app PRIVATE ${VL53L4CX_ULD_PRODUCTION_SOURCES})
+    target_include_directories(app PRIVATE ${VL53L4CX_ULD_INCLUDE_DIRS})
+    # Third-party code, exempted narrowly rather than by deleting files or by a
+    # global -Wno-*. Only this target's compile options are affected.
+    set_source_files_properties(${VL53L4CX_ULD_PRODUCTION_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable;-Wno-missing-field-initializers")
+    # The sensor layer itself. Compiled whenever the ULD is, so the budget series
+    # measures the real production file rather than a probe-local copy of it.
+    target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_sensor.c)
+    if(TOF_CLIFF_BUDGET)
+        target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_budget_probe.c)
+        add_definitions(-DTOF_CLIFF_BUDGET=${TOF_CLIFF_BUDGET})
+    endif()
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
