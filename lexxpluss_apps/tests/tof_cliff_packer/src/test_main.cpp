@@ -66,13 +66,13 @@ ZTEST_SUITE(tof_cliff_packer, NULL, NULL, NULL, NULL, NULL);
 ZTEST(tof_cliff_packer, test_contract_sha_pin)
 {
     zassert_equal(0, strcmp(ctr::kContractSha256,
-        "fb94706a4d2488aa9acdc7c7defcd7fac92379cba01964ab31f949fa50955188"));
-    zassert_equal(0, strcmp(ctr::kContractVersion, "commissioning-2026-08-18c"));
+        "2735391f640901cf4877e523d908845545683e05d581d62a4454f22c53d67c31"));
+    zassert_equal(0, strcmp(ctr::kContractVersion, "commissioning-2026-09-19f"));
     /* The contract SHA says which contract; this says which generated artefacts. It is
      * pinned separately because the generator has twice changed what it emits while the
      * contract text -- and so its SHA -- stood still. */
     zassert_equal(0, strcmp(ctr::kArtefactSetId,
-        "3db018e9f0be3ae85a295240a8314fff97491b587ec909021b8e478745caf9aa"));
+        "79629d287664bc3917cc9557a7f7ce04868bf16685ede97bddf2b1dea08e97f0"));
     zassert_equal(0, strcmp(ctr::kProfileName, "commissioning-cliff-only-400k"));
     /* Asserted rather than merely present: this revision is not releasable, and the day
      * someone flips it must be a deliberate act that shows up in this diff. */

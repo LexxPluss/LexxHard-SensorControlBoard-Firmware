@@ -69,6 +69,11 @@ RESOLVED = {
     # is still owed and REGISTRATION IS OUTSTANDING. Usable under this commissioning revision;
     # must be closed before production.
     "TOF_CLIFF_HEALTH_ID": 0x217,
+    # Allocated by the team on 2026-09-19 with authority over the register, which is why these two
+    # carry no "registration outstanding" note: no row is owed. Direction is part of the allocation --
+    # 0x218 is written only by a host and read only by an SCB, 0x219 the other way round.
+    "TOF_CLIFF_COMMISSION_REQUEST_ID": 0x218,
+    "TOF_CLIFF_COMMISSION_STATUS_ID": 0x219,
     "PROTOCOL_VERSION": 0x1,
     "SENTINEL_INVALID": 0xFFFF,
     "SOURCE_COUNT": 4,
@@ -1013,13 +1018,6 @@ def render_json(vectors, version, sha):
 
 def _licence_and_provenance(version, sha, what):
     return [
-        # FIRST line of the file, before the licence block. It used to sit just above
-        # `#pragma once`, which is "above the include guard" as the note below says, but
-        # BELOW these comment blocks -- so the RELEASE_FORBIDDEN banner, a single long line,
-        # was outside the guard and SCBDriver's CI reformatted it. The generated file could
-        # then never be byte-identical across the two repositories, which is the one thing
-        # this guard exists to guarantee.
-        "// clang-format off",
         "/*",
         " * Copyright (c) 2026, LexxPluss Inc.",
         " * All rights reserved.",
@@ -1040,14 +1038,14 @@ def _licence_and_provenance(version, sha, what):
         " *",
         f" * {what}",
         " *",
-        " * clang-format is disabled for the whole file, from its very first line -- above",
-        " * this licence block, not merely above the include guard.",
+        " * clang-format is disabled for the whole file, starting above the include guard.",
         " * SCBDriver's CI reformats every .h in the repository with an explicitly named",
         " * style file, which overrides any directory .clang-format -- so a generated file",
         " * can only stay byte-identical across the two repositories by opting out here, in",
         " * the generator, rather than per checkout.",
         " */",
         "",
+        "// clang-format off",
         "#pragma once",
         "",
     ]
@@ -1086,6 +1084,10 @@ def render_prod_header(vectors, version, sha):
         "",
         f'inline constexpr uint16_t kMeasId{{0x{RESOLVED["TOF_CLIFF_MEAS_ID"]:03X}}};',
         f'inline constexpr uint16_t kHealthId{{0x{RESOLVED["TOF_CLIFF_HEALTH_ID"]:03X}}};',
+        f'inline constexpr uint16_t kCommissionRequestId'
+        f'{{0x{RESOLVED["TOF_CLIFF_COMMISSION_REQUEST_ID"]:03X}}};',
+        f'inline constexpr uint16_t kCommissionStatusId'
+        f'{{0x{RESOLVED["TOF_CLIFF_COMMISSION_STATUS_ID"]:03X}}};',
         f'inline constexpr uint8_t kProtocolVersion{{0x{RESOLVED["PROTOCOL_VERSION"]:X}}};',
         f'inline constexpr uint16_t kSentinelInvalid{{0x{RESOLVED["SENTINEL_INVALID"]:04X}}};',
         f'inline constexpr uint8_t kSourceCount{{{RESOLVED["SOURCE_COUNT"]}}};',
@@ -1240,8 +1242,35 @@ def contract_identity():
     return version.group(1), hashlib.sha256(text.encode()).hexdigest()
 
 
-def self_check():
+# Every 11-bit identifier either repository allocates in the SCB peripheral block, with the file
+# that owns it. The grid pair is here even though this contract does not define it: a collision check
+# that only looked at the identifiers in front of it would be checking that a list has no duplicates,
+# which it cannot have, rather than that the bus has no two claimants -- and 0x214/0x215 are exactly
+# the values somebody reaching for "the next free identifier" would take.
+ALLOCATED_IDS = [
+    (0x214, "TOF_GRID_DATA_ID (lexxpluss_apps/src/tof_can_ids.hpp, L7 grid transport)"),
+    (0x215, "TOF_GRID_HEALTH_ID (lexxpluss_apps/src/tof_can_ids.hpp, L7 grid transport)"),
+    (RESOLVED["TOF_CLIFF_MEAS_ID"], "TOF_CLIFF_MEAS_ID (this contract)"),
+    (RESOLVED["TOF_CLIFF_HEALTH_ID"], "TOF_CLIFF_HEALTH_ID (this contract)"),
+    (RESOLVED["TOF_CLIFF_COMMISSION_REQUEST_ID"], "TOF_CLIFF_COMMISSION_REQUEST_ID (this contract)"),
+    (RESOLVED["TOF_CLIFF_COMMISSION_STATUS_ID"], "TOF_CLIFF_COMMISSION_STATUS_ID (this contract)"),
+]
+
+
+def identifier_problems():
     problems = []
+    for value, owner in ALLOCATED_IDS:
+        if not 0 <= value <= 0x7FF:
+            problems.append(f"{owner}: 0x{value:X} is not an 11-bit identifier")
+    for i, (value, owner) in enumerate(ALLOCATED_IDS):
+        for other_value, other_owner in ALLOCATED_IDS[i + 1:]:
+            if value == other_value:
+                problems.append(f"identifier collision at 0x{value:X}: {owner} and {other_owner}")
+    return problems
+
+
+def self_check():
+    problems = identifier_problems()
     seen = set()
     for sc in CATALOGUE:
         sid = sc["id"]

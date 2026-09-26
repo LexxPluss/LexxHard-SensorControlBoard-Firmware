@@ -1,12 +1,30 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-08-18c**
+Contract version: **commissioning-2026-09-19f**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
 The `-18b` revision existed for one purpose: to let the commissioning end-to-end path be built against
 byte-exact, double-pinned vectors instead of against prose. It is **not** a product release and must
 never be treated as one.
+
+`-18d` likewise adds nothing to the wire and changes no byte of any vector — the regenerated artefacts
+differ only in their version and hash stamps, which is checkable by regenerating them. It exists to
+withdraw one conclusion in *Commissioning `mapping_epoch` issuance* and put a replacement argument in its
+place.
+
+The withdrawn conclusion was that a configuration proving on boot requires a **firmware-side** persistent
+epoch issuer. That named one implementation as the only remedy for a property — cross-restart uniqueness —
+that does not actually depend on which side holds the store. What it depends on is a persistent issuer
+that cannot reuse a value, and a bounded relationship to what a consumer has accepted. The host is the issuing side: release and safety have approved that route, this replacement argument,
+and the volume-restore policy that goes with it. The argument is written out in that section and is
+what an unattended profile has to satisfy. **Approval is not enablement** -- no automatic profile is
+turned on by this revision, and the downlink that would carry an epoch is not specified yet.
+
+`-18e` changes status and nothing else: it records that the host-issued route, the replacement
+uniqueness argument and the volume-restore policy are approved, where `-18d` still described them as
+awaiting sign-off. No prose about the wire changed, no vector byte changed, and nothing is enabled.
+The next revision to touch behaviour will be the one that specifies the downlink.
 
 `-18c` adds nothing to the wire and changes no byte of any vector. It exists because writing the
 mapping-proof implementation against `-18b` surfaced three defects in the prose, and each of them would
@@ -34,6 +52,13 @@ What this revision settles, and what it does not:
 
 - **Frame layouts, encodings and validation rules: settled.** Golden vectors for the *layout* are
   generated from this document and pinned by both repositories.
+- **The commissioning downlink identifiers: `0x218` and `0x219`, ALLOCATED 2026-09-19.** The team
+  allocated the pair directly, with authority over the register, so these are not self-assignments
+  pending a row: `0x218` carries the request (host or IPC to SCB) and `0x219` carries both status
+  frames (SCB to host). They are recorded here, in the contract, which is what the generated headers
+  on both sides are built from -- there is no second place naming them and no literal in any handler.
+  `0x214`/`0x215` stay reserved for the L7 grid transport and `0x216`/`0x217` remain the L4
+  measurement and health pair, so the block is contiguous and this pair extends it upwards.
 - **Health CAN identifier: `0x217`, usable here, registration outstanding.** Self-assigned 2026-08-17
   under the same team authorisation as `0x214`/`0x215`/`0x216`, after a fresh scan of both repositories
   and a live `can1` capture. But this contract's own rule is that **the team's CAN ID register is the
@@ -104,6 +129,19 @@ CAN classic, 11-bit identifiers, on **CAN2 at 1 Mbit/s** (the SCB-to-IPC bus).
 | --- | --- | --- |
 | `TOF_CLIFF_MEAS_ID` | one measurement frame per sensor per completed read | `0x216` |
 | `TOF_CLIFF_HEALTH_ID` | one health frame per acquisition cycle, and periodically regardless | **unallocated** — see *Open decisions* |
+| `TOF_CLIFF_COMMISSION_REQUEST_ID` | one commissioning request, host or IPC to SCB | `0x218` |
+| `TOF_CLIFF_COMMISSION_STATUS_ID` | session announcements and transaction statuses, SCB to host | `0x219` |
+
+The commissioning pair was **allocated by the team on 2026-09-19** with authority over the register,
+which is a different thing from the self-assignments above: no row is owed for it. Direction is part
+of the allocation and not a convention — `0x218` is only ever written by a host and only ever read by
+an SCB, and `0x219` the other way round — so a board that receives on `0x219`, or a host that
+receives on `0x218`, is misconfigured rather than merely unlucky.
+
+**One identifier carries both status kinds**, and that is deliberate. A session announcement and a
+transaction status are the same conversation and are distinguished by byte 1 of the payload, which
+the decoder checks before anything else; splitting them would spend a second identifier to save a
+comparison, and would let a host subscribe to one and believe it had the other.
 
 `0x216` was reserved for this purpose on 2026-08-06 under the same team-authorized self-assignment
 that allocated `0x214`/`0x215`. This contract is what un-reserves it: until this document is frozen,
@@ -959,11 +997,79 @@ Under `commissioning-cliff-only-400k`:
   proof supplies a fresh epoch, which is what keeps a post-restart `cycle_seq` from aliasing onto the
   sequence that came before it.
 
-**The limitation, stated plainly: cross-restart uniqueness now rests on procedure, not on firmware.** The
-firmware does not claim it and must not be described as providing it. The property holds because a
-restart cannot reach `PROVEN` without an operator, and it would stop holding the moment anything proves
-the mapping automatically. A production configuration that proves on boot therefore requires a
-firmware-side persistent epoch issuer, and that is a release blocker, not a refinement.
+**The limitation, restated for an unattended restart.** An earlier revision said that cross-restart
+uniqueness rests on procedure — specifically on a restart being unable to reach `PROVEN` without an
+operator — and concluded that any configuration proving on boot therefore requires a *firmware-side*
+persistent epoch issuer. The first half is still true of a manual profile. The conclusion is withdrawn:
+what the property actually needs is a persistent issuer that cannot reuse a value, and which side holds
+it is a deployment decision, not a property of the guarantee. Removing the operator removes the
+*procedural* argument, so a replacement argument is required — but it does not have to be firmware.
+
+**The replacement argument, for a profile that proves without an operator.** Uniqueness rests on a
+persistent **full-width ordinal** held by the issuing side, of which `mapping_epoch` is the low 8 bits:
+
+- The ordinal is **reserved before it is used**, and it is durable before it is handed out. A power cut
+  therefore skips a value; it cannot repeat one.
+- **Durability must be proven by the storage medium's own means, not by reading the value back.** An
+  earlier draft of this clause said the opposite, and it was wrong in a way that matters on a host: a
+  read after a write is served from the page cache and returns bytes the disk may not hold, so a
+  read-back establishes self-consistency and says nothing about power loss. Each medium states how it
+  earns the claim. A file-backed store does it by writing a temporary file, `fsync`-ing it, renaming it
+  over the record, and `fsync`-ing the containing directory — the rename being atomic is what leaves
+  exactly one complete record after any crash, and the directory `fsync` is what makes the rename
+  itself survive.
+- **Re-reading after an outcome that could not be established is recovery of judgement, not proof of
+  durability.** When a commit reports neither success nor failure, the next reservation re-reads the
+  store and never resumes from a remembered value — the ambiguous write may have landed, and only the
+  store can say.
+- The ordinal is **strictly increasing and never reused**, including at the top of its range, where
+  exhaustion is a refusal rather than a wrap.
+- The 8-bit wire value still wraps modulo 256, and that remains correct, because ordering is carried by
+  the ordinal. A consumer locates a wire epoch relative to the one it holds, so issuance may run at most
+  **127** ordinals ahead of what a consumer has accepted; a step of exactly 128 is the one delta with no
+  positive counterpart and is refused by consumers, not guessed at. An issuer that cannot establish how
+  far ahead it is **must refuse**, and the value it may not substitute for that knowledge is its own last
+  reservation or its own last successful proof: both run ahead of acceptance in exactly the case the
+  window exists to catch.
+
+**First provisioning is an explicit act.** A store with no record does not start counting. Blank and
+corrupt are distinguished and both refuse, because an unprovisioned machine and a damaged record call for
+different operator actions, and a machine that invented a first ordinal would be asserting an issuance
+history that never happened. The first ordinal comes from the machine's recorded commissioning history or
+from a deliberate provisioning step.
+
+**Every failure is fail-closed, and the guarantee has two halves that must not be conflated.** An earlier
+draft of this paragraph said that every failure leaves the subsystem non-`PROVEN` with no `0x216`
+transmitted. That is stronger than anything an automatic sequence can promise, and stating it here while
+the implementation said something narrower is exactly the drift these revisions exist to stop.
+
+What is true:
+
+- **Before a mapping is installed** — no epoch, an unconfirmable write, an unestablished window, or a
+  refused proof — the subsystem stays non-`PROVEN` and no measurement frame is transmitted, which is
+  where a failed manual proof already leaves it.
+- **After a mapping is installed but acquisition does not start**, the mapping is `PROVEN` and no
+  acquisition is running. That produces health without measurements, not measurements without a mapping,
+  and it is a legitimate state rather than a contradiction: `PROVEN` describes the mapping, and `0x216`
+  requires an acquisition that is running.
+
+So the narrow claim, which is the one that may be relied on: **no automatic step transmits a measurement
+except after a proof that succeeded and an acquisition start that succeeded.** An automatic sequence
+cannot claim that no `0x216` exists on the bus — acquisition already started by an operator is outside
+its knowledge and outside its control, and a claim that swept that in would be false for a reason nobody
+could see from the automatic path. Nothing in an automatic profile may fabricate a health state or
+suppress one.
+
+**The firmware's three guarantees are unchanged** — it refuses an epoch equal to any it has used since
+power-on, it advances the epoch and resets `cycle_seq` in one transaction, and it stays non-`PROVEN` if
+issuance fails for any reason. An unattended profile adds obligations on the issuing side; it removes
+none from the firmware.
+
+**What this revision deliberately does not fix.** The downlink by which an epoch reaches the firmware —
+its identifier, payload, authorisation, and its binding to a device and to a particular boot — is **not**
+specified here. Freezing a format before the semantics above are settled is how a format ends up unable
+to carry them. Until that is specified and mirrored in both repositories, no automatic profile is
+enabled, and the manual profile above remains the only one in use.
 
 ## Timing values — what the production release still has to resolve
 
