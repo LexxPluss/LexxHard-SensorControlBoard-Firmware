@@ -50,6 +50,13 @@ static struct {
 	int ready_calls;
 	int fetch_calls;
 	int rearm_calls;
+	/* Models the real device for the tests that need it: the frame stays available
+	 * until ClearInterruptAndStartMeasurement releases it, and only then does the next
+	 * measurement become the one a fetch will return. Without this the fake hands back
+	 * a brand-new frame on every call, which is the one thing a missing re-arm cannot
+	 * do on hardware -- and a test written against that fake pins the bug as correct. */
+	bool frame_advances_only_on_rearm;
+	uint8_t held_stream_count;
 	int stop_calls;
 	int stop_bus_xfers;
 	int start_calls;
@@ -95,6 +102,9 @@ VL53LX_Error VL53LX_GetMultiRangingData(VL53LX_DEV Dev, VL53LX_MultiRangingData_
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0100 + i), 0x00);
 	}
 
+	if (f.frame_advances_only_on_rearm) {
+		f.canned.StreamCount = f.held_stream_count;
+	}
 	*pData = f.canned;
 	return f.fetch_rc;
 }
@@ -108,6 +118,11 @@ VL53LX_Error VL53LX_ClearInterruptAndStartMeasurement(VL53LX_DEV Dev)
 	 * reports success - the same masking shape as the fetch and the stop. */
 	for (int i = 0; i < f.rearm_bus_xfers; i++) {
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0300 + i), 0x00);
+	}
+	if (f.frame_advances_only_on_rearm && f.rearm_rc == VL53LX_ERROR_NONE) {
+		/* The held frame is released and the device goes on to measure the next
+		 * one. A re-arm that never happens leaves the old frame in place. */
+		f.held_stream_count++;
 	}
 	return f.rearm_rc;
 }
@@ -312,6 +327,8 @@ ZTEST(tof_cliff_adapter, test_count_above_the_array_is_a_protocol_error_not_a_tr
 	zassert_false(sample.fresh);
 	zassert_equal(sample.target_count, 0, "no part of a corrupt sample may leak out");
 	zassert_equal(sample.entry_count, 0);
+	zassert_equal(f.rearm_calls, 1,
+		      "the fetch succeeded and the frame was refused, so it must be released");
 
 	/* The rule cannot be bypassed by calling the pure copy step directly either. */
 	zassert_equal(tof_cliff_copy_raw(&f.canned, &sample), -EPROTO);
@@ -391,7 +408,17 @@ ZTEST(tof_cliff_adapter, test_fetch_failure_yields_no_sample)
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
 	zassert_false(st.sample_present);
 	zassert_false(sample.fresh, "a failed fetch must not hand up a half-copied sample");
-	zassert_equal(f.rearm_calls, 0);
+
+	/* The frame the device is holding was refused, so it has to be released. Leaving it
+	 * there means the next read is served the same frame: a deterministic failure then
+	 * repeats forever, and a transient one ends with the pre-outage frame arriving after
+	 * recovery and passing the replay guard as fresh. */
+	zassert_equal(f.rearm_calls, 1, "a refused frame must still be released");
+
+	/* And the re-arm must not overwrite what explains the refusal. */
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE,
+		      "a successful re-arm must not zero the fetch diagnosis");
+	zassert_false(st.rearm_failed, "the re-arm itself succeeded");
 }
 
 ZTEST(tof_cliff_adapter, test_bus_failure_masked_by_a_successful_return_code_is_still_caught)
@@ -687,28 +714,104 @@ ZTEST(tof_cliff_adapter, test_a_failed_fetch_leaves_the_stream_history_alone)
 	zassert_true(stream.valid, "and it must not discard the history either");
 }
 
-/* Failing closed must not latch: the sensor recovers, and the frame the failure would
- * have consumed is published like any other. */
-ZTEST(tof_cliff_adapter, test_a_good_fetch_after_a_failed_one_is_published)
+/* Failing closed must not latch: the sensor recovers and publishes again. What it must
+ * NOT publish is the frame the device was holding through the failure.
+ *
+ * This test used to assert the opposite, and passed, because the old fake produced a
+ * brand-new frame on every fetch -- so "the next read after a failure" was always a fresh
+ * measurement, which is the one thing hardware cannot do while the interrupt is still
+ * asserted. Here the fake holds its frame until the re-arm releases it, which is what the
+ * device does, and the distinction becomes visible: count 6 is the frame measured before
+ * the outage, count 7 is the first frame measured after it. */
+ZTEST(tof_cliff_adapter, test_the_frame_held_through_a_failure_is_not_published_as_fresh)
 {
 	const int16_t mm[1] = {300};
 	const uint8_t status[1] = {0};
 
 	canned_targets(1, mm, status, 1);
-	f.canned.StreamCount = 5;
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	f.frame_advances_only_on_rearm = true;
+	f.held_stream_count = 5;
 
-	f.canned.StreamCount = 6;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(sample.stream_count, 5);
+	zassert_equal(f.rearm_calls, 1, "the published frame is released too");
+
+	/* The fetch fails on the frame the device measured next, count 6. */
 	f.fetch_rc = VL53LX_ERROR_RANGE_ERROR;
 	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_false(sample.fresh);
+	zassert_equal(stream.last_stream_count, 5, "a failed read is not history");
+	zassert_equal(f.rearm_calls, 2, "count 6 was refused, so it must be released");
 
+	/* Recovery. Because count 6 was released rather than left in place, what arrives is
+	 * count 7 -- measured after the outage -- and not the pre-outage frame. */
 	f.fetch_rc = VL53LX_ERROR_NONE;
-	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0,
-		      "count 6 was never recorded, so it is a fresh sample now");
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
 	zassert_true(sample.fresh);
 	zassert_false(st.stale_replay);
 	zassert_equal(sample.entries[0].range_mm, 300);
-	zassert_equal(stream.last_stream_count, 6);
+	zassert_equal(sample.stream_count, 7,
+		      "6 is the frame the device held through the failure; publishing it "
+		      "would report the floor from before the outage as the floor now");
+	zassert_equal(stream.last_stream_count, 7);
+}
+
+/* The same release is owed when the ULD returns success and only the bus says otherwise.
+ * That path is the reason the sticky errno exists, and it refuses the frame just as hard,
+ * so it must not be the one refusal that leaves the device wedged. */
+ZTEST(tof_cliff_adapter, test_a_transport_failure_hidden_behind_a_good_return_code_still_rearms)
+{
+	const int16_t mm[1] = {400};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	/* The defect shape the sticky errno exists for: the transport failed and the ULD
+	 * returned VL53LX_ERROR_NONE anyway. The injection is on the fetch's first transfer
+	 * only, so the re-arm that follows runs on a healthy bus. */
+	f.fetch_rc = VL53LX_ERROR_NONE;
+	fake_i2c_fail_on(1, -EIO);
+
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
+	zassert_equal(st.port_errno, -EIO, "the bus failure is what refused this frame");
+	zassert_false(sample.fresh);
+	zassert_equal(f.rearm_calls, 1);
+}
+
+/* When the re-arm on a refusal path fails too, the re-arm is the fact that survives: the
+ * refusal cost one frame, this costs every later one. */
+ZTEST(tof_cliff_adapter, test_a_fetch_failure_whose_rearm_also_fails_reports_the_rearm)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.fetch_rc = VL53LX_ERROR_RANGE_ERROR;
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_true(st.rearm_failed, "the next sample will not arrive either");
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_REARM);
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE);
+	zassert_false(st.sample_present);
+	zassert_false(sample.fresh);
+	zassert_equal(f.rearm_calls, 1);
+}
+
+/* A READY_CHECK failure is the one refusal that must NOT re-arm: nothing has confirmed a
+ * frame was consumed, so clearing the interrupt would discard one nobody looked at. */
+ZTEST(tof_cliff_adapter, test_a_ready_check_failure_does_not_rearm)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.ready_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_READY_CHECK);
+	zassert_equal(f.fetch_calls, 0);
+	zassert_equal(f.rearm_calls, 0, "no frame was consumed, so none may be discarded");
 }
 
 /* The replay verdict and a failing re-arm are separate facts and both must survive. */

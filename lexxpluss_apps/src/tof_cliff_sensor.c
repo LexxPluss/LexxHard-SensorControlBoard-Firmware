@@ -51,6 +51,51 @@ static void tof_cliff_status_reset(struct tof_cliff_read_status *st)
 	st->stale_replay = false;
 }
 
+/* Re-arm after refusing the frame the device is currently holding.
+ *
+ * Every path that sees ready=1 and then refuses to publish must come through here.
+ * VL53LX_ClearInterruptAndStartMeasurement is what releases the held frame: without it
+ * the interrupt stays asserted and the device keeps offering that same frame. A
+ * deterministic failure then repeats forever, and a transient one is worse - the first
+ * successful fetch after recovery hands back the frame measured *before* the outage,
+ * whose stream count was never published, so the replay guard accepts it and it goes out
+ * with fresh == true. That is the "floor from N seconds ago reported as the floor now"
+ * case this file exists to prevent, arriving through the one door the guard cannot watch.
+ *
+ * The re-arm result is collected in a scratch status and never written straight into st.
+ * A successful re-arm produces VL53LX_ERROR_NONE with no sticky errno, and letting
+ * tof_cliff_finish record that into st would zero the uld_rc and port_errno that explain
+ * the original refusal, leaving a caller with an error return and a clean diagnosis.
+ *
+ * A READY_CHECK failure deliberately does not come here: nothing has confirmed that a
+ * frame was consumed, so clearing the interrupt would discard a frame that may never
+ * have been looked at.
+ */
+static int tof_cliff_rearm_after_refusal(VL53L4CX_Object_t *obj,
+					 struct tof_cliff_read_status *st,
+					 enum tof_cliff_stage refused_stage,
+					 int refused_ret)
+{
+	struct tof_cliff_read_status rearm;
+	int ret;
+
+	tof_cliff_status_reset(&rearm);
+	vl53l4cx_port_sticky_reset();
+	ret = tof_cliff_finish(&rearm, TOF_CLIFF_STAGE_REARM,
+			       VL53LX_ClearInterruptAndStartMeasurement(obj));
+	if (ret != 0) {
+		/* The re-arm failure replaces the original diagnosis rather than hiding
+		 * behind it: the refusal cost one frame, this costs every later one. */
+		st->rearm_failed = true;
+		st->stage = TOF_CLIFF_STAGE_REARM;
+		st->uld_rc = rearm.uld_rc;
+		st->port_errno = rearm.port_errno;
+		return ret;
+	}
+	st->stage = refused_stage;
+	return refused_ret;
+}
+
 const char *tof_cliff_stage_name(enum tof_cliff_stage stage)
 {
 	switch (stage) {
@@ -320,7 +365,10 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 	ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_FETCH,
 			       VL53LX_GetMultiRangingData(obj, &scratch->data));
 	if (ret != 0) {
-		return ret;
+		/* The device is holding a frame that will not be published. Release it, or
+		 * the next read is served the same one -- and after a transient transport
+		 * failure that stale frame would pass the replay guard as fresh. */
+		return tof_cliff_rearm_after_refusal(obj, st, TOF_CLIFF_STAGE_FETCH, ret);
 	}
 
 	/* GetMultiRangingData can return success after an internal failure and leave the
@@ -343,25 +391,17 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 		st->stale_replay = true;
 		/* Re-arm even though this payload is rejected. Otherwise a recoverable replay
 		 * would leave ready asserted forever and guarantee every later read also fails. */
-		vl53l4cx_port_sticky_reset();
-		ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_REARM,
-				       VL53LX_ClearInterruptAndStartMeasurement(obj));
-		if (ret != 0) {
-			st->rearm_failed = true;
-			return ret;
-		}
-		st->stage = TOF_CLIFF_STAGE_FETCH;
-		return -EPROTO;
+		return tof_cliff_rearm_after_refusal(obj, st, TOF_CLIFF_STAGE_FETCH, -EPROTO);
 	}
 
 	ret = tof_cliff_copy_raw(&scratch->data, sample);
 	if (ret != 0) {
 		/* Impossible metadata. The fetch itself succeeded, so the stage stays
 		 * FETCH, but nothing is published: a corrupt count must not become a
-		 * fresh sample. */
-		st->stage = TOF_CLIFF_STAGE_FETCH;
+		 * fresh sample. The frame is still held by the device and is still refused,
+		 * so it is released here for the same reason the other refusals release it. */
 		memset(sample, 0, sizeof(*sample));
-		return ret;
+		return tof_cliff_rearm_after_refusal(obj, st, TOF_CLIFF_STAGE_FETCH, ret);
 	}
 	/* Recorded from the same expression the comparison above reads, not from the copied
 	 * sample: if the copy step ever transformed the value the two would drift apart and
