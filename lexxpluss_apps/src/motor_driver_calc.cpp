@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, LexxPluss Inc.
+ * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,34 +22,28 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#pragma once
 
-#include <zephyr/kernel.h>
-#include "bmu_lipy041_decode.hpp"
+#include <algorithm>
+#include "motor_driver_calc.hpp"
 
-namespace lexxhard::bmu_controller {
+namespace lexxhard::motor_driver_calc {
 
-#define BMU_CAN_DATA_LENGTH 8
-
-// Definition lives in bmu_lipy041_decode.hpp so decode_frame_bmu_info() can be
-// declared alongside the other decode functions without a circular include.
-using msg_bmu = bmu_lipy041::msg_bmu;
-
-struct msg_rawframe_bmu {
-    uint8_t frame[BMU_CAN_DATA_LENGTH];
-} __attribute__((aligned(4)));
-
-
-struct msg_can_bmu {
-    uint32_t can_id;
-    uint8_t frame[BMU_CAN_DATA_LENGTH];
-} __attribute__((aligned(4)));
-
-void init();
-void run(void *p1, void *p2, void *p3);
-uint32_t get_rsoc();
-extern k_thread thread;
-extern k_msgq msgq_parsed_bmu, msgq_can_recv_bmu, msgq_rawframe_bmu, msgq_board, msgq_control;
+void calc_pulse_ns(int8_t direction, uint8_t duty, uint32_t period_ns, uint32_t (&pulse_ns)[2])
+{
+    pulse_ns[0] = period_ns;
+    pulse_ns[1] = period_ns;
+    if (direction != 0 && duty != 0) {
+        uint32_t const duty_rev{std::clamp(100U - duty, 0U, 100U)};
+        uint32_t const ns{duty_rev * period_ns / 100};
+        pulse_ns[direction < 0 ? 0 : 1] = ns;
+    }
 }
 
-// vim: set expandtab shiftwidth=4:
+int32_t calc_current_ma(int32_t adc_voltage_mv)
+{
+    static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
+    float const current_a{adc_voltage_mv * 1e-3f / AMP_GAIN * VOLTAGE_DIVIDER / SHUNT_REGISTER};
+    return static_cast<int32_t>(current_a * 1e+3f);
+}
+
+}

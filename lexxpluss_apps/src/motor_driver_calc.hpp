@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, LexxPluss Inc.
+ * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,34 +22,20 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #pragma once
 
-#include <zephyr/kernel.h>
-#include "bmu_lipy041_decode.hpp"
+#include <cstdint>
 
-namespace lexxhard::bmu_controller {
+namespace lexxhard::motor_driver_calc {
 
-#define BMU_CAN_DATA_LENGTH 8
+// direction mirrors msg_control::DOWN(-1)/STOP(0)/UP(1) -- kept as a plain
+// int8_t here to stay Zephyr-independent. STOP or duty==0 -> no output on
+// either channel (both held at period_ns).
+void calc_pulse_ns(int8_t direction, uint8_t duty, uint32_t period_ns, uint32_t (&pulse_ns)[2]);
 
-// Definition lives in bmu_lipy041_decode.hpp so decode_frame_bmu_info() can be
-// declared alongside the other decode functions without a circular include.
-using msg_bmu = bmu_lipy041::msg_bmu;
+// Shared calibration constants (AMP_GAIN/VOLTAGE_DIVIDER/SHUNT_REGISTER) for
+// all axes' current-sense circuits.
+int32_t calc_current_ma(int32_t adc_voltage_mv);
 
-struct msg_rawframe_bmu {
-    uint8_t frame[BMU_CAN_DATA_LENGTH];
-} __attribute__((aligned(4)));
-
-
-struct msg_can_bmu {
-    uint32_t can_id;
-    uint8_t frame[BMU_CAN_DATA_LENGTH];
-} __attribute__((aligned(4)));
-
-void init();
-void run(void *p1, void *p2, void *p3);
-uint32_t get_rsoc();
-extern k_thread thread;
-extern k_msgq msgq_parsed_bmu, msgq_can_recv_bmu, msgq_rawframe_bmu, msgq_board, msgq_control;
 }
-
-// vim: set expandtab shiftwidth=4:
