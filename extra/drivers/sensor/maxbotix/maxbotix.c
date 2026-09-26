@@ -89,7 +89,7 @@ static int maxbotix_init(const struct device *dev)
     if (err != 0)
         return err;
 
-    err = gpio_pin_configure_dt(&cfg->echo_dev, GPIO_OUTPUT_HIGH | GPIO_ACTIVE_HIGH);
+    err = gpio_pin_configure_dt(&cfg->echo_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     if (err != 0)
         return err;
 
@@ -121,7 +121,8 @@ static int maxbotix_sample_fetch(const struct device *dev, enum sensor_channel c
     k_busy_wait(20);
     gpio_pin_set_dt(&cfg->trig_dev, 0);
     if (k_sem_take(&data->cb_data.semaphore, K_MSEC(200)) || data->cb_data.state != MAXBOTIX_STATE_FINISHED) {
-        LOG_DBG("No response from MAXBOTIX");
+        LOG_DBG("No response from MAXBOTIX (dev=%s, echo=%s.%d)",
+                dev->name, cfg->echo_dev.port->name, cfg->echo_dev.pin);
         gpio_remove_callback(cfg->echo_dev.port, &data->cb_data.cb);
         return -EIO;
     }
@@ -129,10 +130,14 @@ static int maxbotix_sample_fetch(const struct device *dev, enum sensor_channel c
     uint32_t count = data->cb_data.end_time - data->cb_data.start_time;
     count = k_cyc_to_us_near32(count);
     if (count < 20 || count > 5000) {
+        LOG_DBG("Out of range pulse (dev=%s, echo=%s.%d, count=%uus)",
+                dev->name, cfg->echo_dev.port->name, cfg->echo_dev.pin, count);
         data->sensor_value.val1 = 0;
         data->sensor_value.val2 = 0;
         result = -ENODATA;
     } else {
+        LOG_DBG("Valid pulse (dev=%s, echo=%s.%d, count=%uus)",
+                dev->name, cfg->echo_dev.port->name, cfg->echo_dev.pin, count);
         uint32_t micrometer = count * 1000;
         data->sensor_value.val1 = (micrometer / 1000000);
         data->sensor_value.val2 = (micrometer % 1000000);

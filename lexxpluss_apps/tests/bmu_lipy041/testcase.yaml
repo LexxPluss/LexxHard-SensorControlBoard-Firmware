@@ -1,0 +1,4 @@
+tests:
+  bmu.lipy041_decode:
+    platform_allow: native_sim
+    tags: bmu
