@@ -39,6 +39,11 @@ int feed_rc_{0};
 /* Deterministic failures: a count rather than a duration, because a test that failed "for about a
  * second" would depend on how many 500 ms periods fitted into it. */
 int fail_remaining_{0};
+/* How many refusals the driver has actually returned. Counted separately from attempts because the
+ * question that matters -- did the consecutive count reset after a success -- is answered by how
+ * many refusals it took to give up, and that number cannot race: a feed slipping in before the
+ * failures are enabled is a success, which this does not count. */
+int failures_returned_{0};
 
 int fake_feed(const struct device *, int channel)
 {
@@ -46,8 +51,11 @@ int fake_feed(const struct device *, int channel)
     ++feeds_seen_;
     if (fail_remaining_ > 0) {
         --fail_remaining_;
+        ++failures_returned_;
         return -EIO;
     }
+    if (feed_rc_ != 0)
+        ++failures_returned_;
     return feed_rc_;
 }
 
@@ -132,10 +140,16 @@ ZTEST(tof_watchdog_feeder, test_the_startup_handshake_in_the_order_the_board_use
     const uint32_t feeds_before_giving_up{feeder::current().feeds};
     zassert_true(feeds_before_giving_up > 0);
 
-    /* A REFUSAL THAT DOES NOT. From here the driver always refuses. Three in a row and the feeder
-     * records why and stops -- inside the window the refusals are burning, not after it closes. */
+    /* A REFUSAL THAT DOES NOT, and the count of refusals is the assertion.
+     *
+     * If the success above had not reset the consecutive count, the two earlier refusals would
+     * still be on it and the feeder would give up after ONE more. Asserting only that it eventually
+     * stops passes either way; asserting that it took exactly three is what pins the reset. */
+    failures_returned_ = 0;
     feed_rc_ = -EIO;
     k_msleep(2500);
+    zassert_equal(failures_returned_, 3,
+                  "three refusals, not one: the success above must have reset the count");
 
     const feeder::status gone{feeder::current()};
     zassert_true(gone.withheld, "the phase must be stopped, not merely the reason set");
@@ -151,8 +165,8 @@ ZTEST(tof_watchdog_feeder, test_the_startup_handshake_in_the_order_the_board_use
                                   lexxhard::tof_task_watchdog::feed_api_failed));
     zassert_equal(rec.feed_rc, -EIO, "the driver's own rc, not a generic code");
     zassert_true(rec.last_fed_ms > 0, "there were successful feeds before this");
-    zassert_true(rec.stopped_ms >= rec.last_fed_ms,
-                 "the gap between them is what says how long the board went unfed");
+    zassert_true(rec.stopped_ms > rec.last_fed_ms,
+                 "the stop is strictly after the last feed -- three refused periods apart");
     zassert_equal(rec.phase, static_cast<uint32_t>(lexxhard::tof_task_watchdog::phase::stopped));
 
     /* It latches. Whatever the driver does afterwards, this boot is over. */
