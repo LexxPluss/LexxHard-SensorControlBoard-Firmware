@@ -1,0 +1,46 @@
+Do not report a failed result fetch as a successful measurement.
+
+VL53LX_GetMultiRangingData() assigns SetMeasurementData()'s return value over
+VL53LX_get_device_results()'s, so a fetch that failed part-way through is handed
+back as VL53LX_ERROR_NONE. Two consequences, and the second is the dangerous one.
+
+The caller receives a status that says the measurement is good. What the output
+actually holds is whatever VL53LX_get_device_results() managed to write before it
+failed: VL53LX_f_025() writes the new result__stream_count at its entry
+(vl53lx_hist_algos_gen4.c), presults->active_results++ is not guarded by status
+(ibid.), and VL53LX_get_device_results() copies the results out unconditionally
+(vl53lx_api_core.c). So a slot counted as active but never filled by VL53LX_f_017()
+is indistinguishable from a real target, and it arrives carrying an ADVANCED stream
+count -- which defeats a consumer's replay guard, because the guard's whole basis is
+that a repeated count means a repeated frame.
+
+And SetMeasurementData() runs anyway, which updates pdev->PreviousStreamCount from
+the histogram data. The device's own stream history therefore moves on a fetch that
+failed, so the next comparison is made against a count that no successful read ever
+produced.
+
+Guarding the call fixes both: the original error survives, and the bookkeeping that
+would have hidden it does not run. Nothing else changes -- on the success path the
+sequence is byte-for-byte what it was.
+
+This is a fail-closed change. A caller that used to get a plausible distance from a
+failed fetch now gets an error and no sample, which for a cliff sensor is the only
+safe direction: reporting four-seconds-stale floor as the floor now is the failure
+this driver must not have.
+
+Reported by review on PR #98 (2026-08-24, re-stated 2026-09-17). Applied to a copy
+in the build directory, never in place, so SHA256SUMS keeps answering whether
+upstream itself was edited.
+
+--- a/modules/vl53lx_api.c
++++ b/modules/vl53lx_api.c
+@@ -1049,7 +1049,8 @@
+ 				VL53LX_DEVICERESULTSLEVEL_FULL,
+ 				presults);
+ 
+-	Status = SetMeasurementData(Dev,
++	if (Status == VL53LX_ERROR_NONE)
++		Status = SetMeasurementData(Dev,
+ 					presults,
+ 					pMultiRangingData);
+ 
