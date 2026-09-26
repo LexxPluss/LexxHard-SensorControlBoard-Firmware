@@ -62,6 +62,19 @@ endif()
 # default, so the production image is byte-identical until the acquisition path
 # is real. TOF_CLIFF_BUDGET selects a build point of the flash/RAM budget series.
 if(ENABLE_TOF_CLIFF_ULD)
+    # The chain flag is a DEPENDENCY, not a neighbour. i2c2 is the tug encoder's
+    # bus until ENABLE_TOF_CHAIN replaces its init with init_disconnected_for_tof()
+    # and starts no polling thread for it (see main.cpp). The cliff ULD reaches the
+    # same bus -- and TOF_CLIFF_BUDGET >= 5 does so from a SYS_INIT at boot, before
+    # anyone could intervene -- so the combination without the chain flag gives one
+    # bus two owners, no chain overlay and no ownership handover. Refuse it at
+    # configure time rather than let it link.
+    if(NOT ENABLE_TOF_CHAIN)
+        message(FATAL_ERROR
+            "ENABLE_TOF_CLIFF_ULD requires ENABLE_TOF_CHAIN: without it the tug "
+            "encoder keeps i2c2 and its polling thread, while the cliff ULD "
+            "(and the TOF_CLIFF_BUDGET probe's SYS_INIT) drive the same bus.")
+    endif()
     include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l4cx_uld/vl53l4cx_sources.cmake)
     target_sources(app PRIVATE ${VL53L4CX_ULD_PRODUCTION_SOURCES})
     target_include_directories(app PRIVATE ${VL53L4CX_ULD_INCLUDE_DIRS})
