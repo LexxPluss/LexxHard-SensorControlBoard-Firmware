@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -76,6 +77,26 @@ uint32_t now_ms()
     return k_uptime_get_32();
 }
 
+/* WHERE THE TOMBSTONE GOES, and why this is not simply the constant.
+ *
+ * On the board the reserved region exists and the record survives a reset. In a host suite it does
+ * not: 0x2001FF00 is an unmapped address in a Linux process and writing to it would end the test
+ * run rather than fail it. The devicetree node is the honest discriminator -- an image with no
+ * reserved region has nowhere durable to put a record, so it uses ordinary RAM and the record does
+ * not outlive the boot, which is exactly what a host test is. */
+#if DT_NODE_EXISTS(DT_NODELABEL(forensics_dtcm))
+volatile uint32_t *tombstone_region()
+{
+    return reinterpret_cast<volatile uint32_t *>(tomb::kAddress);
+}
+#else
+uint32_t host_region_[tomb::kSize / sizeof(uint32_t)]{};
+volatile uint32_t *tombstone_region()
+{
+    return host_region_;
+}
+#endif
+
 void build_identity(uint32_t out[4])
 {
 #if defined(VERSION)
@@ -113,7 +134,7 @@ void commit_tombstone(const wd::input &in, uint32_t reason, int feed_rc)
     r.long_began_ms = in.long_operation_began_ms;
     r.boot_seq = 0;
 
-    tomb::write_once(reinterpret_cast<volatile uint32_t *>(tomb::kAddress), r);
+    tomb::write_once(tombstone_region(), r);
 }
 
 void feeder(void *, void *, void *)
@@ -148,7 +169,11 @@ void feeder(void *, void *, void *)
             if (wd::feed_allowed(state_, bounds_, in)) {
                 /* THE ONLY wdt_feed() IN THE IMAGE. */
                 if (const int rc{wdt_feed(wdt_, channel_)}; rc == 0) {
-                    atomic_set(&last_fed_ms_, static_cast<atomic_val_t>(in.now_ms));
+                    /* After the call, not the sample taken before it. The inputs were read at the
+                     * top of this iteration and the feed is the last thing in it; on a loaded board
+                     * those are not the same instant, and the number this records is read later to
+                     * decide how long the board went unfed. */
+                    atomic_set(&last_fed_ms_, static_cast<atomic_val_t>(now_ms()));
                     consecutive_failures = 0;
                     if (atomic_inc(&feeds_) == 0)
                         k_sem_give(&first_feed_);
@@ -159,7 +184,12 @@ void feeder(void *, void *, void *)
                      * inside the window the refusals are burning rather than after it closes. */
                     LOG_ERR("wdt_feed refused by the driver (%d)", rc);
                     if (++consecutive_failures >= kFeedFailureLimit) {
+                        /* BOTH, and the phase is not optional: the tombstone records it and
+                         * current() reports `withheld` from it, so setting only the reason left a
+                         * record that said feed_api_failed while still claiming the feeder was
+                         * running. */
                         state_.why = wd::feed_api_failed;
+                        state_.current = wd::phase::stopped;
                         commit_tombstone(in, wd::feed_api_failed, rc);
                         LOG_ERR("giving up after %d refused feeds; this boot will reset",
                                 consecutive_failures);
@@ -224,17 +254,25 @@ void long_operation_end()
     atomic_set(&long_operation_, 0);
 }
 
+tomb::status read_record(tomb::record &out)
+{
+    return tomb::read(tombstone_region(), out);
+}
+
 void report_previous_stop()
 {
     tomb::record r{};
-    const tomb::status st{tomb::read(reinterpret_cast<const volatile uint32_t *>(tomb::kAddress), r)};
+    const tomb::status st{read_record(r)};
     if (st != tomb::status::valid) {
         /* Not a warning. A board that has never tripped the watchdog reads exactly like this, and
          * so does one whose battery was pulled, and neither is news. */
-        LOG_INF("no watchdog tombstone (%s)", tomb::status_name(st));
+        LOG_INF("no retained watchdog record (%s)", tomb::status_name(st));
         return;
     }
-    LOG_ERR("PREVIOUS BOOT ENDED IN A WATCHDOG STOP: reason 0x%08x at %u ms", r.reason,
+    /* RETAINED, not necessarily the previous boot. Nothing clears this record after reporting it,
+     * so it survives any number of clean boots until something overwrites it. Saying "previous
+     * boot" would invite reading an old fault as a new one. */
+    LOG_ERR("RETAINED WATCHDOG STOP RECORD: reason 0x%08x at %u ms", r.reason,
             static_cast<unsigned>(r.stopped_ms));
     LOG_ERR("  acq %u/%u  send_acq %u/%u  send_workq %u/%u", static_cast<unsigned>(r.acq_begun),
             static_cast<unsigned>(r.acq_ended), static_cast<unsigned>(r.send_acq_begun),

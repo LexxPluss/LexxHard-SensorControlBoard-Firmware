@@ -23,21 +23,31 @@
 #include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
 
+#include "tof_task_watchdog.hpp"
 #include "tof_watchdog_feeder.hpp"
+#include "tof_watchdog_tombstone.hpp"
 
 namespace
 {
 
 namespace feeder = lexxhard::tof_watchdog_feeder;
+namespace tomb = lexxhard::tof_watchdog_tombstone;
 
 int feeds_seen_{0};
 int last_channel_{-1};
 int feed_rc_{0};
+/* Deterministic failures: a count rather than a duration, because a test that failed "for about a
+ * second" would depend on how many 500 ms periods fitted into it. */
+int fail_remaining_{0};
 
 int fake_feed(const struct device *, int channel)
 {
     last_channel_ = channel;
     ++feeds_seen_;
+    if (fail_remaining_ > 0) {
+        --fail_remaining_;
+        return -EIO;
+    }
     return feed_rc_;
 }
 
@@ -109,4 +119,45 @@ ZTEST(tof_watchdog_feeder, test_the_startup_handshake_in_the_order_the_board_use
     zassert_true(st.feeds > 0);
     zassert_false(st.withheld, "nothing here is a reason to stop");
     zassert_equal(st.why, 0U);
+
+    /* A REFUSAL THAT PASSES. Two in a row and then a success: the count resets and the board keeps
+     * being fed, because a transient refusal is not a reason to end a boot. */
+    const int before_transient{feeds_seen_};
+    fail_remaining_ = 2;
+    k_msleep(1600);
+    zassert_true(feeds_seen_ >= before_transient + 3, "two refusals and at least one success");
+    zassert_false(feeder::current().withheld, "two refusals in a row must not latch");
+    zassert_equal(feeder::current().why, 0U);
+
+    const uint32_t feeds_before_giving_up{feeder::current().feeds};
+    zassert_true(feeds_before_giving_up > 0);
+
+    /* A REFUSAL THAT DOES NOT. From here the driver always refuses. Three in a row and the feeder
+     * records why and stops -- inside the window the refusals are burning, not after it closes. */
+    feed_rc_ = -EIO;
+    k_msleep(2500);
+
+    const feeder::status gone{feeder::current()};
+    zassert_true(gone.withheld, "the phase must be stopped, not merely the reason set");
+    zassert_equal(gone.why, static_cast<uint32_t>(
+                                lexxhard::tof_task_watchdog::feed_api_failed));
+    zassert_equal(gone.feeds, feeds_before_giving_up, "a refused feed is not a feed");
+
+    /* And what it left behind. */
+    tomb::record rec{};
+    zassert_equal(feeder::read_record(rec), tomb::status::valid,
+                  "a refused feed ends in the same reset and must leave the same record");
+    zassert_equal(rec.reason, static_cast<uint32_t>(
+                                  lexxhard::tof_task_watchdog::feed_api_failed));
+    zassert_equal(rec.feed_rc, -EIO, "the driver's own rc, not a generic code");
+    zassert_true(rec.last_fed_ms > 0, "there were successful feeds before this");
+    zassert_true(rec.stopped_ms >= rec.last_fed_ms,
+                 "the gap between them is what says how long the board went unfed");
+    zassert_equal(rec.phase, static_cast<uint32_t>(lexxhard::tof_task_watchdog::phase::stopped));
+
+    /* It latches. Whatever the driver does afterwards, this boot is over. */
+    const int after_stop{feeds_seen_};
+    feed_rc_ = 0;
+    k_msleep(1500);
+    zassert_equal(feeds_seen_, after_stop, "the reset is the point");
 }

@@ -49,6 +49,8 @@
 
 #include <stdint.h>
 
+#include "tof_watchdog_tombstone.hpp"
+
 struct device;
 
 namespace lexxhard::tof_watchdog_feeder {
@@ -78,6 +80,10 @@ void long_operation_end();
  * the region holds no valid record it logs one INFO line naming why -- an ordinary boot and a boot
  * after a cleared battery both read that way, and which of the two it was is worth having. */
 void report_previous_stop();
+
+/* The retained record itself, for the shell and for tests. Reading it changes nothing: the record
+ * is not cleared after being reported, so it survives until something overwrites it. */
+tof_watchdog_tombstone::status read_record(tof_watchdog_tombstone::record &out);
 
 /* For the shell and for tests: what the feeder decided, and why. */
 struct status {
