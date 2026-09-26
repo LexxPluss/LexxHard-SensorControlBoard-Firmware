@@ -22,9 +22,38 @@
 
 set(VL53L4CX_ULD_DIR ${CMAKE_CURRENT_LIST_DIR})
 
+# One upstream file is compiled from a PATCHED COPY in the build directory, never from
+# the snapshot. VL53LX_GetMultiRangingData() reports a failed result fetch as a
+# successful measurement, and also advances the device's stream-count history while
+# doing it, which is the one thing a replay guard cannot survive. The patch header
+# carries the full reasoning.
+#
+# Patching a copy rather than the file keeps SHA256SUMS meaningful: it still answers
+# "has anyone edited upstream?" with one command, because nobody has. It also makes
+# upstream drift loud -- a snapshot refresh that moves this function fails the patch,
+# and therefore fails configuration, instead of silently dropping the fix.
+set(VL53L4CX_PATCHED_DIR ${CMAKE_CURRENT_BINARY_DIR}/vl53l4cx_uld_patched/modules)
+
+file(MAKE_DIRECTORY ${VL53L4CX_PATCHED_DIR})
+configure_file(${VL53L4CX_ULD_DIR}/upstream/modules/vl53lx_api.c
+               ${VL53L4CX_PATCHED_DIR}/vl53lx_api.c COPYONLY)
+
+find_program(VL53L4CX_PATCH_EXECUTABLE patch REQUIRED)
+execute_process(
+  COMMAND ${VL53L4CX_PATCH_EXECUTABLE} --silent -p1
+          -i ${VL53L4CX_ULD_DIR}/zephyr/patches/0001-propagate-get-device-results-status.patch
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/vl53l4cx_uld_patched
+  RESULT_VARIABLE VL53L4CX_PATCH_RESULT
+)
+if(NOT VL53L4CX_PATCH_RESULT EQUAL 0)
+  message(FATAL_ERROR
+    "The VL53L4CX get_device_results status patch no longer applies -- the upstream "
+    "snapshot moved. Re-base the patch; do not drop it.")
+endif()
+
 set(VL53L4CX_ULD_PRODUCTION_SOURCES
   ${VL53L4CX_ULD_DIR}/upstream/vl53l4cx.c
-  ${VL53L4CX_ULD_DIR}/upstream/modules/vl53lx_api.c
+  ${VL53L4CX_PATCHED_DIR}/vl53lx_api.c
   ${VL53L4CX_ULD_DIR}/upstream/modules/vl53lx_api_calibration.c
   ${VL53L4CX_ULD_DIR}/upstream/modules/vl53lx_api_core.c
   ${VL53L4CX_ULD_DIR}/upstream/modules/vl53lx_api_preset_modes.c
