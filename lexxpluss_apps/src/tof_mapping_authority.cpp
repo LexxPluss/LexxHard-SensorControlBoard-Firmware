@@ -189,9 +189,15 @@ void masks_from(const pf::fingerprint &fp, uint8_t &enumerated, uint8_t &model_v
 
 int init(const config &cfg)
 {
+    /* The runtime spec is validated, not merely non-empty. matches_runtime() indexes it
+     * position by position on every commit, and it is the thing a proven mapping is
+     * compared against -- so an ill-formed one here would be read out of bounds and would
+     * decide commits. Same validator the enumerator and the proof use; there is no second
+     * opinion about what a legal spec is. */
     if (cfg.runtime_spec == nullptr || cfg.begin_epoch == nullptr ||
         cfg.acquisition_idle == nullptr || cfg.install_mapping == nullptr ||
-        cfg.runtime_spec->positions == 0) {
+        cfg.runtime_spec->positions == 0 ||
+        enm::validate_spec(*cfg.runtime_spec) != enm::spec_error::none) {
         /* A failed init leaves the authority unusable rather than quietly running on whatever
          * was configured before. That direction costs a proven mapping -- but the alternative
          * is a commit compared against a configuration nobody meant to be current, and of the

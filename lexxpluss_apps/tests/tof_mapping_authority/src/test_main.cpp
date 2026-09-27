@@ -213,6 +213,45 @@ ZTEST(tof_mapping_authority, test_init_refuses_an_incomplete_configuration)
     zassert_equal(au::init(no_install_hook), -EINVAL);
 }
 
+/* The runtime spec is what every commit is compared against, and matches_runtime() walks
+ * it position by position -- so an ill-formed one would be indexed out of bounds and would
+ * still decide commits. Checked with the enumerator's own validator, not a second opinion
+ * about what a legal spec is. */
+ZTEST(tof_mapping_authority, test_init_refuses_a_runtime_spec_the_enumerator_would_reject)
+{
+    enm::chain_spec bad{product_spec()};
+
+    {
+        /* A position count past the array. */
+        bad = product_spec();
+        bad.positions = 200;
+        au::config cfg{};
+        cfg.runtime_spec = &bad;
+        cfg.begin_epoch = fake_begin_epoch;
+        cfg.acquisition_idle = fake_is_idle;
+        cfg.install_mapping = fake_install;
+        zassert_equal(au::init(cfg), -EINVAL, "positions past kMaxPositions");
+        zassert_equal(au::current().state, acq::mapping_state::not_ready);
+    }
+    {
+        /* Two positions sharing a target address. */
+        bad = product_spec();
+        bad.at[5].target_addr = bad.at[4].target_addr;
+        zassert_equal(enm::validate_spec(bad), enm::spec_error::target_duplicate);
+        au::config cfg{};
+        cfg.runtime_spec = &bad;
+        cfg.begin_epoch = fake_begin_epoch;
+        cfg.acquisition_idle = fake_is_idle;
+        cfg.install_mapping = fake_install;
+        zassert_equal(au::init(cfg), -EINVAL, "duplicate target addresses");
+    }
+
+    /* And the spec every other test uses is still accepted, so this is a filter rather
+     * than a refusal of everything. */
+    zassert_equal(enm::validate_spec(product_spec()), enm::spec_error::none);
+    fresh_authority();
+}
+
 ZTEST(tof_mapping_authority, test_a_committed_proof_publishes_proven_with_its_epoch)
 {
     fresh_authority();

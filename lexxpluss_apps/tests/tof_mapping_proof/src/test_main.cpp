@@ -365,17 +365,157 @@ ZTEST(tof_mapping_proof, test_the_live_chain_must_answer_on_its_assigned_address
     zassert_equal(refused(t), pf::refusal::address_mismatch);
 }
 
-ZTEST(tof_mapping_proof, test_two_positions_on_one_address_are_refused)
+/* This used to assert address_not_distinct, and the change of answer is the point.
+ *
+ * Duplicate target addresses are a spec defect, and the spec is now validated on the way
+ * in with the enumerator's own validator, so the fabrication is caught at its source
+ * rather than two hundred lines later as a consequence. Both walks still claim
+ * spec_error::none -- that claim is exactly what this module no longer takes on trust.
+ *
+ * The address_not_distinct loop is deliberately KEPT even though a validated spec makes
+ * it unreachable: distinct targets plus "every position answered on its own target"
+ * already implies distinct observed addresses. It costs nothing, it stays correct if the
+ * ordering here ever changes, and removing a belt-and-braces check because something
+ * upstream currently subsumes it is how the next reordering becomes a hole. Its own
+ * comment in tof_mapping_proof.cpp records that. */
+ZTEST(tof_mapping_proof, test_duplicate_target_addresses_are_refused_as_an_invalid_spec)
 {
-    /* The spec's targets are distinct, so this needs a spec the enumerator would have
-     * rejected AND walks that claim it accepted -- a fabrication on both counts. It is
-     * checked because a proof module that trusts its inputs is not a proof module. */
     transaction t;
     t.spec.at[5].target_addr = t.spec.at[4].target_addr;
     t.walk1 = clean_walk(t.spec, false);
     t.walk2 = clean_walk(t.spec, true);
     t.isolation = clean_isolation(t.spec);
-    zassert_equal(refused(t), pf::refusal::address_not_distinct);
+    zassert_equal(t.walk1.spec, enm::spec_error::none, "the fabrication claims acceptance");
+    zassert_equal(t.walk2.spec, enm::spec_error::none);
+    zassert_equal(refused(t), pf::refusal::spec_invalid);
+    zassert_equal(bench_refused(t), pf::refusal::spec_invalid);
+}
+
+/* The bounds check, which is the one rule that must precede every other: at[] holds
+ * kMaxPositions and `positions` is a caller-supplied size_t, so every loop below it used
+ * to run off the end. evaluate_bench() is the reachable door -- it is public, it takes
+ * arbitrary evidence, and it does not apply the commissioning topology check that would
+ * otherwise have bounded the count at six. */
+ZTEST(tof_mapping_proof, test_a_position_count_past_the_array_is_refused_before_anything_is_read)
+{
+    static const size_t counts[] = {enm::chain_spec::kMaxPositions + 1, 9, 200, 4000};
+
+    for (size_t i = 0; i < ARRAY_SIZE(counts); i++) {
+        transaction t;
+        /* The walks agree with the spec's claim, so walk_position_count cannot be what
+         * refuses this, and both claim the enumerator accepted it. */
+        t.spec.positions = counts[i];
+        t.walk1.positions = counts[i];
+        t.walk2.positions = counts[i];
+        t.walk1.spec = enm::spec_error::none;
+        t.walk2.spec = enm::spec_error::none;
+        zassert_equal(bench_refused(t), pf::refusal::spec_invalid,
+                      "positions=%u was not refused", (unsigned)counts[i]);
+        /* Both doors give the same answer, because the bounds check precedes even the
+         * topology check: nothing may be read from at[] before the count is known sane. */
+        zassert_equal(refused(t), pf::refusal::spec_invalid,
+                      "positions=%u", (unsigned)counts[i]);
+    }
+}
+
+/* The other side of the bound, and the reason it is `>` rather than `>=`: a spec that
+ * fills at[] exactly must go through, not be refused for being full. Cheap to state and
+ * the only thing that pins the comparison. It does not have to be provable -- it just has
+ * to get past the bound and be answered by a later, specific rule. */
+ZTEST(tof_mapping_proof, test_a_spec_that_fills_the_array_exactly_is_not_refused_by_the_bound)
+{
+    transaction t;
+    t.spec.positions = enm::chain_spec::kMaxPositions;
+    /* Two more cliff positions on free addresses. Their mounting roles are left unknown,
+     * which is a proof-level refusal rather than a spec error -- exactly the kind of
+     * specific answer this test wants to see instead of spec_invalid. */
+    t.spec.at[6] = {enm::model::l4cx, 0x3A, -1, enm::l4_role::unknown};
+    t.spec.at[7] = {enm::model::l4cx, 0x3B, -1, enm::l4_role::unknown};
+    t.walk1 = clean_walk(t.spec, false);
+    t.walk2 = clean_walk(t.spec, true);
+    t.isolation = clean_isolation(t.spec);
+
+    zassert_equal(enm::validate_spec(t.spec), enm::spec_error::none,
+                  "a full array is a legal spec");
+    zassert_not_equal(bench_refused(t), pf::refusal::spec_invalid,
+                      "positions == kMaxPositions must get past the bound");
+    zassert_equal(refused(t), pf::refusal::spec_not_commissioning_profile,
+                  "and the product door answers on the topology, not on the bound");
+}
+
+/* The structural rules the proof does not have its own copy of. Each of these is a spec
+ * the enumerator would reject, presented with walks that claim it accepted -- and each
+ * must be refused on the spec rather than inherited from the walk's own flag. */
+ZTEST(tof_mapping_proof, test_specs_the_enumerator_would_reject_are_refused_despite_clean_walks)
+{
+    {
+        /* A hanging source on a drop-sense board. Source 1 has to be taken off its L7
+         * first: with kMaxSources == 2 both ids are already placed, so leaving it there
+         * would trip source_id_duplicate before this rule is reached. */
+        transaction t;
+        t.spec.at[1].source_id = -1;
+        t.spec.at[5].source_id = 1;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::source_on_non_l7);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "source on a non-L7");
+    }
+    {
+        /* A mounting role on an L7, which has no mounting role to have. */
+        transaction t;
+        t.spec.at[0].role = enm::l4_role::front_left;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::role_on_non_l4);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "role on an L7");
+    }
+    {
+        /* A target that is the factory default: the address every part starts on. */
+        transaction t;
+        t.spec.at[3].target_addr = enm::kDefaultAddr;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::target_is_default);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "target is the default");
+    }
+    {
+        /* Two positions claiming one hanging source. */
+        transaction t;
+        t.spec.at[1].source_id = t.spec.at[0].source_id;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::source_id_duplicate);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "duplicate source id");
+    }
+}
+
+/* The specific bench diagnoses must survive the new validation, which is why the full
+ * validate_spec() call sits AFTER the proof's own spec rules rather than before them.
+ * Answering "no tail L4" with a flat spec_invalid would lose the one thing the bench
+ * report exists to say. */
+ZTEST(tof_mapping_proof, test_bench_diagnoses_are_not_swallowed_by_spec_validation)
+{
+    {
+        transaction t;
+        t.spec.positions = 3;
+        t.spec.at[0] = {enm::model::l4cx, 0x2C, -1, enm::l4_role::front_left};
+        t.spec.at[1] = {enm::model::l4cx, 0x2D, -1, enm::l4_role::rear_left};
+        t.spec.at[2] = {enm::model::l7cx, 0x2A, 0, enm::l4_role::unknown};
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, false);
+        zassert_not_equal(enm::validate_spec(t.spec), enm::spec_error::none,
+                          "this spec IS invalid; the point is that it still says why");
+        zassert_equal(bench_refused(t), pf::refusal::spec_no_tail_l4);
+    }
+    {
+        transaction t;
+        t.spec.positions = 1;
+        t.spec.at[0] = {enm::model::l4cx, 0x2C, -1, enm::l4_role::front_left};
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, false);
+        zassert_not_equal(enm::validate_spec(t.spec), enm::spec_error::none);
+        zassert_equal(bench_refused(t), pf::refusal::spec_too_few_positions);
+    }
 }
 
 ZTEST(tof_mapping_proof, test_the_live_chain_identity_must_match_the_model)

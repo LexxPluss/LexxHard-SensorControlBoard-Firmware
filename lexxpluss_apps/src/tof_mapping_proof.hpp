@@ -86,6 +86,7 @@ enum class refusal : uint8_t {
     challenge_invalid,       // the default-constructed challenge, which authorises nothing
     challenge_stale,         // not the challenge this gate most recently issued
     challenge_consumed,      // that challenge has already been evaluated, pass or fail
+    spec_invalid,            // the spec itself breaks the enumerator's structural rules
     spec_not_commissioning_profile,  // not L7,L7,L4,L4,L4,L4 with each cliff role once
     spec_no_tail_l4,         // the tail position is not an L4: isolation is undefined
     spec_no_cliff,           // the spec carries no L4 at all

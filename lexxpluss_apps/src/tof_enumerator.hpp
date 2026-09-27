@@ -389,6 +389,21 @@ struct chain_result {
 // L4s back at the default) and mixed states fall out of the same table --
 // including the misattribution counterexample above, which the census
 // catches as unexpected_address at position 1.
+// Validates a spec against every structural rule enumerate() applies, without touching
+// hardware or any state. Pure, and safe on a spec that has never been enumerated.
+//
+// Exposed because a second caller needs the SAME answer rather than its own copy of the
+// rules. The mapping proof is handed a chain_spec by its caller, and its policy is: BOUND
+// before indexing at[], FULLY VALIDATE before trusting the evidence. The bound is a
+// separate, earlier check -- positions <= kMaxPositions -- because nothing may be read
+// from at[] until the count is sane; this function is the second half, and it runs after
+// the proof's own spec diagnoses so that a bench chain still gets a specific answer.
+//
+// It cannot be replaced by chain_result::spec -- that field is filled in by whoever
+// constructed the result, so a fabricated result can claim spec_error::none over a spec
+// these rules would reject.
+spec_error validate_spec(const chain_spec &spec);
+
 chain_result enumerate(chain_ops &ops, const chain_spec &spec);
 
 }  // namespace lexxhard::tof_enum
