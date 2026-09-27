@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Tests for the acquisition skeleton. Every one of these pins a boundary that is easy to
  * lose later: the neutrality of the facts, the publication gate, the independence of the

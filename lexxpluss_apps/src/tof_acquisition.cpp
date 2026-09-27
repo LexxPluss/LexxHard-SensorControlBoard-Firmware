@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
