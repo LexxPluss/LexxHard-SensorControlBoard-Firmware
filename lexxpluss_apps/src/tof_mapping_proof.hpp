@@ -84,8 +84,10 @@ enum class refusal : uint8_t {
     none = 0,
     missing_evidence,        // a null spec or walk pointer, or an empty spec
     challenge_invalid,       // the default-constructed challenge, which authorises nothing
+    challenge_foreign,       // issued by a different gate: nonces alone are not identities
     challenge_stale,         // not the challenge this gate most recently issued
     challenge_consumed,      // that challenge has already been evaluated, pass or fail
+    spec_invalid,            // the spec itself breaks the enumerator's structural rules
     spec_not_commissioning_profile,  // not L7,L7,L4,L4,L4,L4 with each cliff role once
     spec_no_tail_l4,         // the tail position is not an L4: isolation is undefined
     spec_no_cliff,           // the spec carries no L4 at all
@@ -180,18 +182,27 @@ struct evidence {
     isolation_observation isolation{};
 };
 
+class gate;
+
 // A one-shot challenge. The default-constructed value is deliberately valid C++ and
 // deliberately worthless: nonce 0 authorises nothing, so a caller that fabricates a
 // challenge gets a refusal rather than a proof.
+//
+// It also records WHICH gate issued it. The nonce alone cannot: every gate starts its
+// counter at 1, so two gates' first challenges are indistinguishable by number, and a
+// caller holding its own gate could hand this one's evaluate() a challenge it minted
+// itself. The issuer is the gate's address, which is why gate is non-copyable and
+// non-movable -- an identity has to stay put.
 class challenge {
 public:
     challenge() = default;
     uint32_t nonce() const { return nonce_; }
-    bool valid() const { return nonce_ != 0; }
+    bool valid() const { return nonce_ != 0 && issuer_ != nullptr; }
 
 private:
-    explicit challenge(uint32_t n) : nonce_{n} {}
+    challenge(uint32_t n, const gate *issuer) : nonce_{n}, issuer_{issuer} {}
     uint32_t nonce_{0};
+    const gate *issuer_{nullptr};
     friend class gate;
 };
 
@@ -214,22 +225,27 @@ public:
     proof_token &operator=(const proof_token &) = delete;
 
     proof_token(proof_token &&other) noexcept
-        : nonce_{other.nonce_}, proven_{other.proven_}
+        : nonce_{other.nonce_}, issuer_{other.issuer_}, proven_{other.proven_}
     {
         other.nonce_ = 0;
+        other.issuer_ = nullptr;
     }
 
     proof_token &operator=(proof_token &&other) noexcept
     {
         if (this != &other) {
             nonce_ = other.nonce_;
+            issuer_ = other.issuer_;
             proven_ = other.proven_;
             other.nonce_ = 0;
+            /* BOTH fields, or a moved-from token keeps an issuer it can no longer prove
+             * anything with -- and gate::owns() would answer yes about an empty token. */
+            other.issuer_ = nullptr;
         }
         return *this;
     }
 
-    bool valid() const { return nonce_ != 0; }
+    bool valid() const { return nonce_ != 0 && issuer_ != nullptr; }
     uint32_t nonce() const { return nonce_; }
 
     // The chain this token proves. The authority needs it to fill the masks the wire
@@ -238,8 +254,13 @@ public:
     const fingerprint &proven() const { return proven_; }
 
 private:
-    proof_token(uint32_t nonce, const fingerprint &fp) : nonce_{nonce}, proven_{fp} {}
+    proof_token(uint32_t nonce, const gate *issuer, const fingerprint &fp)
+        : nonce_{nonce}, issuer_{issuer}, proven_{fp} {}
     uint32_t nonce_{0};
+    /* Deliberately not exposed. A caller that could read the issuer could compare gates,
+     * and comparing is not the question -- "did YOU issue this" is, and only a gate can
+     * answer it. See gate::owns(). */
+    const gate *issuer_{nullptr};
     fingerprint proven_{};
     friend class gate;
 };
@@ -306,8 +327,31 @@ public:
     // about its wiring.
     bench_report evaluate_bench(const evidence &ev);
 
+    // Kills the outstanding challenge without issuing a new one, so a token can no longer
+    // be minted from it. The counter is deliberately NOT reset: nonces must keep climbing
+    // across revocations, or a later attempt could reuse a number an old token still
+    // carries and that token would come back to life.
+    void revoke();
+
     // For diagnostics and for the authority's own assertions. Not an authorisation path.
     uint32_t outstanding_nonce() const { return consumed_ ? 0 : current_; }
+
+    // "Did I issue this?" -- the only question worth asking about a token's provenance,
+    // and only a gate can answer it. The issuer is not readable from the token on purpose:
+    // exposing it would let a caller compare gates, which invites deciding provenance
+    // somewhere other than here.
+    bool owns(const proof_token &t) const { return t.valid() && t.issuer_ == this; }
+
+    /* The gate's ADDRESS is the identity a challenge and a token carry, so it must not
+     * move and must not be duplicated. A copy would mint a second gate answering to the
+     * same counter but a different address; a move would strand every outstanding
+     * challenge on an address nothing lives at any more. Neither is needed -- the
+     * authority owns exactly one, for its lifetime. */
+    gate() = default;
+    gate(const gate &) = delete;
+    gate &operator=(const gate &) = delete;
+    gate(gate &&) = delete;
+    gate &operator=(gate &&) = delete;
 
 private:
     uint32_t next_{1};

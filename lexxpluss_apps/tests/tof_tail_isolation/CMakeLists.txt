@@ -33,8 +33,16 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 # exact control sequence, because "which lines were driven, in which order" IS the property here --
 # an isolation that reaches the right end state through an all-off has destroyed the evidence it
 # was sent to collect.
+#
+# The evaluator is linked too, so one test can carry an observation the FAKE produced all
+# the way to the refusal a caller would see. Asserting the observation alone would leave
+# the coupling untested -- and the coupling is the defect: a transport error that reaches
+# the evaluator disguised as an ack is reported as a silent merge. tof_mapping_proof.cpp
+# and tof_enumerator.cpp are both pure logic with no bus or driver dependency.
 target_sources(app PRIVATE
     src/test_main.cpp
     ${APP_SRC_DIR}/tof_tail_isolation.cpp
+    ${APP_SRC_DIR}/tof_mapping_proof.cpp
+    ${APP_SRC_DIR}/tof_enumerator.cpp
 )
 target_include_directories(app PRIVATE ${APP_SRC_DIR})

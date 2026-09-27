@@ -29,13 +29,17 @@ project(tof_mapping_proof_test)
 
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 
-# The proof module is pure decision logic: no bus, no driver, no ULD, and no enumerator
-# object file. It needs the enumerator's HEADER for the result types and the identity
-# check; enumerate() itself is deliberately not linked, because these tests never run an
-# enumeration -- they hand the evaluator chain_result values built by hand, which is the
-# only way to present evidence a healthy machine cannot produce.
+# The proof module is pure decision logic: no bus, no driver, no ULD. It needs the
+# enumerator's HEADER for the result types and the identity check, and it links the
+# enumerator TRANSLATION UNIT only to reuse its pure validator, validate_spec(). No
+# enumeration and no hardware op is invoked from these tests -- they hand the evaluator
+# chain_result values built by hand, which is the only way to present evidence a healthy
+# machine cannot produce.
 target_sources(app PRIVATE
     src/test_main.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp
+    # Linked for tof_enum::validate_spec alone. tof_enumerator.cpp depends on errno.h
+    # and its own header only, so this pulls in no bus, driver or Zephyr dependency.
+    ${APP_SRC_DIR}/tof_enumerator.cpp
 )
 target_include_directories(app PRIVATE ${APP_SRC_DIR})

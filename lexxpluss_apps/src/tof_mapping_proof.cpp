@@ -156,7 +156,16 @@ challenge gate::issue()
         next_ = 1;
     current_ = next_++;
     consumed_ = false;
-    return challenge{current_};
+    return challenge{current_, this};
+}
+
+void gate::revoke()
+{
+    /* current_ is left alone on purpose. consumed_ is what evaluate() tests, and clearing
+     * the number as well would make outstanding_nonce() and the stale check disagree about
+     * which challenge died. next_ is untouched, so the next issue() climbs past every nonce
+     * any live token carries. */
+    consumed_ = true;
 }
 
 namespace {
@@ -221,6 +230,21 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
         v.reason = refusal::challenge_invalid;
         return v;
     }
+    /* Provenance BEFORE staleness, and deliberately without spending anything.
+     *
+     * Before, because a challenge from another gate is not a stale one -- every gate's
+     * counter starts at 1, so a foreign first challenge carries the same nonce as this
+     * gate's first and would be reported as current, which is the confusion this check
+     * exists to end.
+     *
+     * Without spending, because the alternative is a denial of service: anyone able to
+     * call evaluate() with a gate of their own could burn this gate's outstanding
+     * challenge and force commissioning to start its two walks again. A foreign challenge
+     * must cost the holder of this gate nothing. */
+    if (c.issuer_ != this) {
+        v.reason = refusal::challenge_foreign;
+        return v;
+    }
     if (c.nonce() != current_) {
         v.reason = refusal::challenge_stale;
         return v;
@@ -239,7 +263,7 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
     }
 
     v.reason = refusal::none;
-    v.token = proof_token{c.nonce(), proven};
+    v.token = proof_token{c.nonce(), this, proven};
     return v;
 }
 
@@ -271,6 +295,17 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
         return refusal::missing_evidence;
 
     const enm::chain_spec &spec{*ev.spec};
+
+    /* BOUNDS FIRST, before any at[] access anywhere below.
+     *
+     * at[] is kMaxPositions long and `positions` is a caller-supplied size_t. Every loop
+     * below runs to `positions`, and evaluate_bench() reaches them with require_profile
+     * false, so nothing else here bounds it -- a spec claiming 200 positions used to read
+     * off the end of the array. This is the only check that must precede the others; the
+     * rest of the structural rules come after, so that a bench chain still gets the
+     * specific diagnosis it came for rather than a flat "invalid spec". */
+    if (spec.positions > enm::chain_spec::kMaxPositions)
+        return refusal::spec_invalid;
 
     /* The product's topology, and only for a proof that could open PROVEN. A three-board
      * bench chain can be checked against every other rule here and still must not be
@@ -309,10 +344,31 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
     if (spec.at[tail].expected != enm::model::l4cx)
         return refusal::spec_no_tail_l4;
 
-    /* Both walks must have been run against a spec the enumerator itself accepted. Cheap,
-     * and it closes the one hole this module cannot close on its own: it does not validate
-     * the spec (the validator is internal to enumerate()), so without this a caller could
-     * present a spec the enumerator would have rejected outright. */
+    /* The spec itself, against the enumerator's own rules -- duplicate targets, a source on
+     * a drop-sense board, a role on an L7, an unusable address, and the rest.
+     *
+     * This used to be inferred from `walk->spec == spec_error::none`, which is circular:
+     * chain_result is filled in by whoever built it, so a fabricated pair of walks can
+     * claim the spec was accepted over a spec these rules reject. validate_spec() is the
+     * enumerator's own validator, made public for exactly this call so there is one
+     * implementation of the rules rather than two that drift apart.
+     *
+     * After the proof's own spec rules, deliberately. Those produce the specific refusals a
+     * bench chain came for -- no tail L4, no cliff, too few to isolate -- and answering
+     * them with a flat spec_invalid would lose the diagnosis. A bench spec that legitimately
+     * carries fewer than both hanging sources sets require_all_sources itself; that is the
+     * enumerator's own escape hatch, not something to reproduce here.
+     *
+     * Its own refusal, and not walk_spec_rejected: an illegal input spec is not a walk that
+     * misbehaved, and reporting it as one sends a reader to look at a walk that did exactly
+     * what it was told. */
+    if (enm::validate_spec(spec) != enm::spec_error::none)
+        return refusal::spec_invalid;
+
+    /* And the walks must each claim they ran against an accepted spec. Kept after the check
+     * above rather than in place of it: this says what the WALK was told, which is still
+     * worth refusing on, but it no longer carries the weight of establishing that the spec
+     * is well formed. */
     if (ev.walk1->spec != enm::spec_error::none || ev.walk2->spec != enm::spec_error::none)
         return refusal::walk_spec_rejected;
 
