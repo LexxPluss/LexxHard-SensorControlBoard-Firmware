@@ -359,6 +359,41 @@ ZTEST(tof_acquisition, test_missing_hooks_and_bad_source_tables_are_refused)
     four_cliff_two_grid[1].stream = &streams[1];
 }
 
+/* init() used to check `open` and `read_cliff_sample` and let the other three through.
+ * bring_up() calls configure() and start() unconditionally and stop_locked() calls stop(),
+ * so a table accepted with any of them null does not fail at init -- it dereferences null
+ * inside the acquisition thread, which is a crash rather than an answer to the caller who
+ * built the table. Every entry the lifecycle calls has to be refused here. */
+ZTEST(tof_acquisition, test_init_refuses_a_table_missing_any_operation_the_lifecycle_calls)
+{
+    static const struct {
+        const char *name;
+        size_t offset;
+    } entries[] = {
+        {"open", offsetof(acq::source_ops, open)},
+        {"configure", offsetof(acq::source_ops, configure)},
+        {"start", offsetof(acq::source_ops, start)},
+        {"read_cliff_sample", offsetof(acq::source_ops, read_cliff_sample)},
+        {"stop", offsetof(acq::source_ops, stop)},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(entries); i++) {
+        acq::source_ops holed{kFakeOps};
+        *reinterpret_cast<void **>(reinterpret_cast<char *>(&holed) + entries[i].offset) =
+            nullptr;
+
+        acq::config c{make_config(4)};
+        four_cliff_two_grid[2].ops = &holed;
+        zassert_equal(acq::init(c), -EINVAL, "a null %s was accepted", entries[i].name);
+        four_cliff_two_grid[2].ops = &kFakeOps;
+    }
+
+    /* And the intact table is still accepted, so this is a filter rather than a refusal
+     * of everything. */
+    acq::config c{make_config(4)};
+    zassert_equal(acq::init(c), 0);
+}
+
 ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
 {
     // Structural stand-in for "there is no enable operation". An interface that cannot

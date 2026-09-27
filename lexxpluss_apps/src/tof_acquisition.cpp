@@ -469,7 +469,14 @@ int init(const config &cfg)
     for (int i{0}; i < cfg.source_count; ++i) {
         const source_desc &d{cfg.sources[i]};
 
-        if (d.ops == nullptr || d.ops->open == nullptr || d.ops->read_cliff_sample == nullptr)
+        /* ALL FIVE, not the two this function used to name. bring_up() calls configure()
+         * and start() unconditionally and stop_locked() calls stop(), so a table accepted
+         * here with any of them null does not fail at init -- it dereferences null on the
+         * first lifecycle operation, which is a crash in the acquisition thread rather
+         * than an -EINVAL to the caller who built the table. */
+        if (d.ops == nullptr || d.ops->open == nullptr || d.ops->configure == nullptr ||
+            d.ops->start == nullptr || d.ops->read_cliff_sample == nullptr ||
+            d.ops->stop == nullptr)
             return -EINVAL;
         // The cliff path needs both a device object and a scratch; the stubbed grid
         // path is allowed to have neither yet.

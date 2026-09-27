@@ -17,10 +17,12 @@
 //     does not suit an 8x8 grid. When the real L7 path lands, the ops table and the sinks
 //     both change shape; the grid stub refusing a cliff-shaped read is the visible marker
 //     of that debt, not a design.
-//   - The packer, the publisher and the CAN glue all exist and are wired, and
-//     tof_cliff_runtime::bootstrap() is a production caller: a shipping image runs the heartbeat
-//     from power-on. Cycles need a proven mapping first, so today they happen only behind
-//     commissioning.
+//   - There is no production caller at this tip. The packer, the publisher, the CAN glue
+//     and tof_cliff_runtime::bootstrap() are the layer above and are not in this PR; what
+//     is here is a standalone lifecycle driven by tests. The header used to describe the
+//     wired-up arrangement as though it already existed, which claimed a reachable
+//     production path a reader would then go looking for. Update this when the downstream
+//     runtime lands.
 //   - PROVEN is unreachable by construction, see effective_mapping_state().
 //   - Stack watermark and boot time are unmeasured; both need a run on the board, and the
 //     acquisition thread's stack size is a devicetree value chosen without one.
