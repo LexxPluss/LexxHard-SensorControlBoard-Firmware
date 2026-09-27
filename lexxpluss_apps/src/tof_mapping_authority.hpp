@@ -117,6 +117,11 @@ enum class begin_refusal : uint8_t {
     none = 0,
     not_initialised,
     acquisition_not_idle, // a proof moves enable lines; cycles must have stopped first
+    /* The gate can no longer produce a nonce it has not already used. Permanent for the rest
+     * of the boot: a reused nonce is a nonce an old token may still carry, and the whole
+     * commit check rests on numbers not coming round again. Checked BEFORE anything is
+     * revoked, so an exhausted gate costs a robot nothing it already had. */
+    nonce_exhausted,
 };
 
 // What begin_proof() returns. The challenge is worthless unless `reason` is none, and pairing
@@ -264,6 +269,9 @@ uint32_t epochs_used();
 // back. Tests need each case to start empty, and the honest way to give them that is an
 // explicit test-only door rather than weakening what init() means in production.
 void reset_epoch_history_for_test();
+// Moves the authority's own gate counter to the boundary. The product has no path to 2^32
+// attempts, and a boundary nothing can reach is a boundary nothing pins.
+void set_gate_next_for_test(uint32_t n);
 #endif
 
 } // namespace lexxhard::tof_authority

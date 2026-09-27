@@ -135,6 +135,10 @@ int fake_install(const pf::fingerprint &fp, uint8_t epoch)
 
 void fresh_authority()
 {
+    /* The gate is a module static and its counter runs for the whole suite, so a test that
+     * walks it to the boundary would strand every test after it. Reset here rather than in the
+     * test's own cleanup: a test that fails part-way never reaches its cleanup. */
+    au::set_gate_next_for_test(1);
     begin_epoch_rc = 0;
     begin_epoch_calls = 0;
     acquisition_is_idle = true;
@@ -421,6 +425,128 @@ ZTEST(tof_mapping_authority, test_a_new_attempt_always_gets_a_larger_nonce)
     zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 9),
                   au::commit_refusal::wrong_attempt);
     zassert_not_equal(au::current().state, acq::mapping_state::proven);
+}
+
+/* An exhausted gate must refuse BEFORE it revokes anything.
+ *
+ * Everything after the exhaustion check in begin_proof() is destructive -- it publishes LOST
+ * over a proven mapping and clears installed_, on the understanding that an attempt is about
+ * to open. A refusal discovered after that would leave a robot with no PROVEN mapping and no
+ * attempt either: worse off than if it had never asked. */
+ZTEST(tof_mapping_authority, test_an_exhausted_gate_refuses_without_costing_the_proven_mapping)
+{
+    fresh_authority();
+    const transaction t;
+
+    /* Open the LAST attempt the gate can ever issue, and prove through it. begin_proof()
+     * revokes whatever was proven, by design, so the mapping this test protects has to be
+     * established by that final attempt rather than before it. */
+    au::set_gate_next_for_test(UINT32_MAX);
+    const au::attempt last{au::begin_proof()};
+    zassert_true(last.opened(), "the last nonce must still open an attempt");
+    zassert_equal(au::attempt_nonce(), UINT32_MAX);
+
+    pf::verdict v{au::evaluate(t.evidence(), last.challenge)};
+    zassert_true(v.granted());
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 9),
+                  au::commit_refusal::none);
+    zassert_equal(au::current().state, acq::mapping_state::proven);
+    zassert_true(au::installed_mapping().positions > 0);
+
+    /* From here the gate is spent. Every further request refuses, and refuses for the right
+     * reason, and takes nothing. */
+    for (int i = 0; i < 3; i++) {
+        const au::attempt a{au::begin_proof()};
+        zassert_false(a.opened(), "attempt %d opened on an exhausted gate", i);
+        zassert_equal(a.reason, au::begin_refusal::nonce_exhausted);
+        zassert_equal(au::attempt_nonce(), 0u);
+
+        zassert_equal(au::current().state, acq::mapping_state::proven,
+                      "the refusal published LOST over a mapping it never replaced");
+        zassert_equal(au::current().epoch, 9);
+        zassert_true(au::installed_mapping().positions > 0,
+                     "the refusal cleared the installed mapping");
+    }
+
+    /* The spent challenge cannot mint anything either -- the commit above consumed it. */
+    zassert_equal(au::evaluate(t.evidence(), last.challenge).reason,
+                  pf::refusal::challenge_consumed);
+}
+
+/* A failed init and a successful one both leave the counter where it was. Refilling it on
+ * re-init would be the same defect as wrapping, reached through configuration instead. */
+ZTEST(tof_mapping_authority, test_reinitialising_does_not_refill_an_exhausted_gate)
+{
+    fresh_authority();
+    au::set_gate_next_for_test(UINT32_MAX);
+    zassert_true(au::begin_proof().opened());
+
+    enm::chain_spec bad{product_spec()};
+    bad.at[5].target_addr = bad.at[4].target_addr;
+    au::config cfg{};
+    cfg.runtime_spec = &bad;
+    cfg.begin_epoch = fake_begin_epoch;
+    cfg.acquisition_idle = fake_is_idle;
+    cfg.install_mapping = fake_install;
+    zassert_equal(au::init(cfg), -EINVAL);
+    zassert_equal(au::begin_proof().reason, au::begin_refusal::not_initialised);
+
+    runtime_spec_storage = product_spec();
+    au::config good{};
+    good.runtime_spec = &runtime_spec_storage;
+    good.begin_epoch = fake_begin_epoch;
+    good.acquisition_idle = fake_is_idle;
+    good.install_mapping = fake_install;
+    zassert_equal(au::init(good), 0);
+    zassert_equal(au::begin_proof().reason, au::begin_refusal::nonce_exhausted,
+                  "a successful re-init refilled the nonce space");
+}
+
+/* abort_proof() was the third door, and it was left unlocked when the issuer was introduced.
+ *
+ * evaluate() and commit_proof() both refuse a foreign gate's work. This path authenticated by
+ * nonce alone, and every gate counts from 1 -- so a caller holding its own pf::gate could issue
+ * until one matched and CANCEL a commissioning session it was never part of. */
+ZTEST(tof_mapping_authority, test_a_foreign_challenge_cannot_abort_this_authoritys_attempt)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    const uint32_t nonce{au::attempt_nonce()};
+
+    pf::gate foreign;
+    const pf::challenge fc{foreign_challenge_matching(foreign, nonce)};
+    zassert_equal(fc.nonce(), nonce, "the numbers match, which is the whole point");
+
+    zassert_false(au::abort_proof(fc), "a foreign challenge aborted a live attempt");
+    zassert_equal(au::attempt_nonce(), nonce, "and it must not close what it could not name");
+
+    /* The legitimate holder can still abort, and can still prove -- the failed attempt cost
+     * this session nothing. */
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted(), "the challenge survived the foreign abort");
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 5),
+                  au::commit_refusal::none);
+}
+
+ZTEST(tof_mapping_authority, test_this_authoritys_own_challenge_still_aborts)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+
+    pf::gate foreign;
+    const pf::challenge fc{foreign_challenge_matching(foreign, au::attempt_nonce())};
+    zassert_false(au::abort_proof(fc));
+
+    zassert_true(au::abort_proof(a.challenge), "the real challenge must still work");
+    zassert_equal(au::attempt_nonce(), 0u);
+    zassert_equal(au::evaluate(t.evidence(), a.challenge).reason,
+                  pf::refusal::challenge_consumed);
 }
 
 /* abort_proof() ends an attempt the same way everything else does, challenge included. */

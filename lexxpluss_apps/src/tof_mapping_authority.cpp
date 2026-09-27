@@ -263,6 +263,18 @@ attempt begin_proof()
         return a;
     }
 
+    /* Exhaustion is checked HERE, before a single thing is revoked.
+     *
+     * Everything below this line is destructive: it publishes LOST over a proven mapping and
+     * clears installed_, on the understanding that an attempt is about to open and the chain is
+     * about to be re-enumerated. If the challenge could not be issued after that, the authority
+     * would have thrown away a PROVEN mapping and opened nothing -- a half-failure that leaves a
+     * robot worse off than refusing did. A refusal here changes no state at all. */
+    if (gate_.exhausted()) {
+        a.reason = begin_refusal::nonce_exhausted;
+        return a;
+    }
+
     /* Revoke BEFORE anything else, and before the caller touches an enable line. The
      * contract's order is normative: measurements stop first, then health reports the loss.
      * Here that is one atomic publish, and the publisher's own per-cycle re-check is what
@@ -288,7 +300,8 @@ attempt begin_proof()
     installed_ = kNoMapping;
 
     /* A fresh challenge invalidates the previous one, so a token minted before this
-     * revocation can no longer be committed. */
+     * revocation can no longer be committed. The exhaustion check above is what makes this
+     * issue() safe to treat as infallible; if it ever stops being, the check has moved. */
     const pf::challenge c{gate_.issue()};
     attempt_ = c.nonce();
     a.challenge = c;
@@ -427,8 +440,26 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
 
 bool abort_proof(const pf::challenge &c)
 {
-    if (!initialised_ || !c.valid() || c.nonce() != attempt_ || attempt_ == 0)
+    if (!initialised_ || !c.valid() || attempt_ == 0)
         return false;
+
+    /* Provenance before the number, the same order evaluate() and commit_proof() use, and for
+     * the same reason: every gate counts nonces from 1, so a caller holding its own pf::gate can
+     * issue until one matches this authority's current attempt. On the other two paths that
+     * would forge a proof; here it would CANCEL one -- a commissioning session in progress,
+     * ended by somebody who was never part of it.
+     *
+     * This path was missed when the issuer was introduced, which is why the check reads as a
+     * separate statement rather than another clause: the two questions are "is this mine" and
+     * "is this current", and collapsing them is how one of them got forgotten.
+     *
+     * A foreign challenge returns false and changes nothing. It must not close the attempt it
+     * failed to authenticate. */
+    if (!gate_.owns(c))
+        return false;
+    if (c.nonce() != attempt_)
+        return false;
+
     invalidate_attempt();
     return true;
 }
@@ -532,6 +563,11 @@ uint32_t attempt_nonce()
 }
 
 #ifdef CONFIG_ZTEST
+void set_gate_next_for_test(uint32_t n)
+{
+    gate_.set_next_for_test(n);
+}
+
 void reset_epoch_history_for_test()
 {
     memset(used_epochs_, 0, sizeof used_epochs_);

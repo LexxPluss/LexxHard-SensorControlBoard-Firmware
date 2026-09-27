@@ -150,11 +150,30 @@ bool fingerprint_of(const enm::chain_spec &spec, const enm::chain_result &walk,
 
 challenge gate::issue()
 {
-    /* Never zero, on wrap or otherwise: zero is the value a fabricated challenge has, and
-     * it must stay unusable. */
-    if (next_ == 0)
-        next_ = 1;
-    current_ = next_++;
+    /* EXHAUSTION IS PERMANENT, and the alternative was worse than it looks.
+     *
+     * This used to wrap: `if (next_ == 0) next_ = 1`. That made the counter reset, which is
+     * exactly what revoke() is careful not to do -- a nonce that comes round again is a nonce an
+     * old token may still carry, and after the wrap a retained token from the first attempt has
+     * the same issuer pointer AND the same number as the current one, so commit_proof() would
+     * accept evidence from 2^32 attempts ago. Refusing to reuse a number is the whole basis of
+     * that check; wrapping quietly withdrew it.
+     *
+     * 2^32 attempts in one power cycle is not reachable in practice. That is a reason to make
+     * the boundary cheap, not a reason to leave it wrong: the code had an explicit rule for the
+     * wrap, so it was a stated policy rather than an oversight, and the stated policy was the
+     * unsafe one.
+     *
+     * UINT32_MAX is issued normally; every call after it returns an empty challenge, for this
+     * gate, for the rest of the boot. A power cycle is the only reset, which is the same
+     * lifetime the epoch space already has. */
+    if (exhausted_)
+        return challenge{};
+    current_ = next_;
+    if (next_ == UINT32_MAX)
+        exhausted_ = true;
+    else
+        ++next_;
     consumed_ = false;
     return challenge{current_, this};
 }
