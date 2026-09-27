@@ -17,8 +17,8 @@
 
 namespace tof_contract {
 
-inline constexpr const char* kContractVersion = "2026-08-02g";
-inline constexpr const char* kContractSha256 = "fbc9f1dd1a433cdadb04f8dd9582ffffeac65654293988e60650b13cabc765ea";
+inline constexpr const char* kContractVersion = "2026-08-02h";
+inline constexpr const char* kContractSha256 = "8c0f06ea130c76ce4dbc490471c072c823ab950a851669c5289b21b396408b20";
 
 inline constexpr uint32_t kInvalidSentinel = 4095;
 inline constexpr uint32_t kMaxValidMm = 4094;
@@ -638,8 +638,8 @@ inline constexpr Frame kScenarioFrames18[18] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents19[2] = {
-  {"INCOMPLETE_BY_TIMEOUT", 1},
-  {"MALFORMED_HEADER", 1},
+  {"HEALTH_COUNT_MISMATCH", 1},
+  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
 };
 inline constexpr Frame kScenarioFrames19[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -658,14 +658,14 @@ inline constexpr Frame kScenarioFrames19[18] = {
   {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
   {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
   {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0xC8,0x00,0x60,0x00,0x00,0x00}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x28,0x04,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents20[2] = {
-  {"DUPLICATE_HEALTH_IDENTICAL", 1},
-  {"GRID_PUBLISHED", 1},
+  {"INCOMPLETE_BY_TIMEOUT", 1},
+  {"MALFORMED_HEADER", 1},
 };
-inline constexpr Frame kScenarioFrames20[19] = {
+inline constexpr Frame kScenarioFrames20[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -681,9 +681,8 @@ inline constexpr Frame kScenarioFrames20[19] = {
   {FrameKind::kData, {0x03,0x0C,0x96,0x09,0x92,0x9C,0x49,0xF6}, 0},
   {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
   {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0xC8,0x00,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents21[2] = {
@@ -707,13 +706,13 @@ inline constexpr Frame kScenarioFrames21[19] = {
   {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
   {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
   {FrameKind::kHealth, {0x03,0x00,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0x40,0xF0,0x60,0x00,0xAB,0xCD}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents22[2] = {
-  {"CONFLICTING_HEALTH", 1},
-  {"FRAME_FOR_RETIRED_GENERATION", 1},
+  {"DUPLICATE_HEALTH_IDENTICAL", 1},
+  {"GRID_PUBLISHED", 1},
 };
 inline constexpr Frame kScenarioFrames22[19] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -732,14 +731,15 @@ inline constexpr Frame kScenarioFrames22[19] = {
   {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
   {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
   {FrameKind::kHealth, {0x03,0x00,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0x40,0x01,0x60,0x00,0x00,0x00}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0xF0,0x60,0x00,0xAB,0xCD}, 0},
   {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
-inline constexpr ExpectedEvent kScenarioEvents23[1] = {
-  {"GRID_PUBLISHED", 1},
+inline constexpr ExpectedEvent kScenarioEvents23[2] = {
+  {"CONFLICTING_HEALTH", 1},
+  {"FRAME_FOR_RETIRED_GENERATION", 1},
 };
-inline constexpr Frame kScenarioFrames23[18] = {
+inline constexpr Frame kScenarioFrames23[19] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -755,8 +755,9 @@ inline constexpr Frame kScenarioFrames23[18] = {
   {FrameKind::kData, {0x03,0x0C,0x96,0x09,0x92,0x9C,0x49,0xF6}, 0},
   {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
   {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x01,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0x40,0x05,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents24[1] = {
@@ -779,13 +780,128 @@ inline constexpr Frame kScenarioFrames24[18] = {
   {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
   {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
   {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0x40,0x08,0x50,0x00,0x00,0x00}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x03,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents25[1] = {
-  {"GRID_PUBLISHED", 1},
+  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
 };
 inline constexpr Frame kScenarioFrames25[18] = {
+  {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
+  {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
+  {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
+  {FrameKind::kData, {0x03,0x03,0x25,0x82,0x8A,0x2B,0xC2,0xEE}, 0},
+  {FrameKind::kData, {0x03,0x04,0x32,0x03,0x52,0x38,0x43,0xB6}, 0},
+  {FrameKind::kData, {0x03,0x05,0x3E,0x84,0x1A,0x44,0xC4,0x7E}, 0},
+  {FrameKind::kData, {0x03,0x06,0x4B,0x04,0xE2,0x51,0x45,0x46}, 0},
+  {FrameKind::kData, {0x03,0x07,0x57,0x85,0xAA,0x5D,0xC6,0x0E}, 0},
+  {FrameKind::kData, {0x03,0x08,0x64,0x06,0x72,0x6A,0x46,0xD6}, 0},
+  {FrameKind::kData, {0x03,0x09,0x70,0x87,0x3A,0x76,0xC7,0x9E}, 0},
+  {FrameKind::kData, {0x03,0x0A,0x7D,0x08,0x02,0x83,0x48,0x66}, 0},
+  {FrameKind::kData, {0x03,0x0B,0x89,0x88,0xCA,0x8F,0xC9,0x2E}, 0},
+  {FrameKind::kData, {0x03,0x0C,0x96,0x09,0x92,0x9C,0x49,0xF6}, 0},
+  {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
+  {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
+  {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x04,0x60,0x00,0x00,0x00}, 0},
+  {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
+};
+inline constexpr ExpectedEvent kScenarioEvents26[1] = {
+  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
+};
+inline constexpr Frame kScenarioFrames26[18] = {
+  {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
+  {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
+  {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
+  {FrameKind::kData, {0x03,0x03,0x25,0x82,0x8A,0x2B,0xC2,0xEE}, 0},
+  {FrameKind::kData, {0x03,0x04,0x32,0x03,0x52,0x38,0x43,0xB6}, 0},
+  {FrameKind::kData, {0x03,0x05,0x3E,0x84,0x1A,0x44,0xC4,0x7E}, 0},
+  {FrameKind::kData, {0x03,0x06,0x4B,0x04,0xE2,0x51,0x45,0x46}, 0},
+  {FrameKind::kData, {0x03,0x07,0x57,0x85,0xAA,0x5D,0xC6,0x0E}, 0},
+  {FrameKind::kData, {0x03,0x08,0x64,0x06,0x72,0x6A,0x46,0xD6}, 0},
+  {FrameKind::kData, {0x03,0x09,0x70,0x87,0x3A,0x76,0xC7,0x9E}, 0},
+  {FrameKind::kData, {0x03,0x0A,0x7D,0x08,0x02,0x83,0x48,0x66}, 0},
+  {FrameKind::kData, {0x03,0x0B,0x89,0x88,0xCA,0x8F,0xC9,0x2E}, 0},
+  {FrameKind::kData, {0x03,0x0C,0x96,0x09,0x92,0x9C,0x49,0xF6}, 0},
+  {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
+  {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
+  {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x07,0x60,0x00,0x00,0x00}, 0},
+  {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
+};
+inline constexpr ExpectedEvent kScenarioEvents27[1] = {
+  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
+};
+inline constexpr Frame kScenarioFrames27[18] = {
+  {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
+  {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
+  {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
+  {FrameKind::kData, {0x03,0x03,0x25,0x82,0x8A,0x2B,0xC2,0xEE}, 0},
+  {FrameKind::kData, {0x03,0x04,0x32,0x03,0x52,0x38,0x43,0xB6}, 0},
+  {FrameKind::kData, {0x03,0x05,0x3E,0x84,0x1A,0x44,0xC4,0x7E}, 0},
+  {FrameKind::kData, {0x03,0x06,0x4B,0x04,0xE2,0x51,0x45,0x46}, 0},
+  {FrameKind::kData, {0x03,0x07,0x57,0x85,0xAA,0x5D,0xC6,0x0E}, 0},
+  {FrameKind::kData, {0x03,0x08,0x64,0x06,0x72,0x6A,0x46,0xD6}, 0},
+  {FrameKind::kData, {0x03,0x09,0x70,0x87,0x3A,0x76,0xC7,0x9E}, 0},
+  {FrameKind::kData, {0x03,0x0A,0x7D,0x08,0x02,0x83,0x48,0x66}, 0},
+  {FrameKind::kData, {0x03,0x0B,0x89,0x88,0xCA,0x8F,0xC9,0x2E}, 0},
+  {FrameKind::kData, {0x03,0x0C,0x96,0x09,0x92,0x9C,0x49,0xF6}, 0},
+  {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
+  {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
+  {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x0C,0x50,0x00,0x00,0x00}, 0},
+  {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
+};
+inline constexpr ExpectedEvent kScenarioEvents28[1] = {
+  {"GRID_PUBLISHED", 1},
+};
+inline constexpr Frame kScenarioFrames28[18] = {
+  {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
+  {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
+  {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
+  {FrameKind::kData, {0x03,0x03,0x25,0x82,0x8A,0x2B,0xC2,0xEE}, 0},
+  {FrameKind::kData, {0x03,0x04,0x32,0x03,0x52,0x38,0x43,0xB6}, 0},
+  {FrameKind::kData, {0x03,0x05,0x3E,0x84,0x1A,0x44,0xC4,0x7E}, 0},
+  {FrameKind::kData, {0x03,0x06,0x4B,0x04,0xE2,0x51,0x45,0x46}, 0},
+  {FrameKind::kData, {0x03,0x07,0x57,0x85,0xAA,0x5D,0xC6,0x0E}, 0},
+  {FrameKind::kData, {0x03,0x08,0x64,0x06,0x72,0x6A,0x46,0xD6}, 0},
+  {FrameKind::kData, {0x03,0x09,0x70,0x87,0x3A,0x76,0xC7,0x9E}, 0},
+  {FrameKind::kData, {0x03,0x0A,0x7D,0x08,0x02,0x83,0x48,0x66}, 0},
+  {FrameKind::kData, {0x03,0x0B,0x89,0x88,0xCA,0x8F,0xC9,0x2E}, 0},
+  {FrameKind::kData, {0x03,0x0C,0x96,0x09,0x92,0x9C,0x49,0xF6}, 0},
+  {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
+  {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
+  {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x00,0x60,0x2B,0x00,0x00}, 0},
+  {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
+};
+inline constexpr ExpectedEvent kScenarioEvents29[1] = {
+  {"GRID_PUBLISHED", 1},
+};
+inline constexpr Frame kScenarioFrames29[18] = {
+  {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
+  {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
+  {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
+  {FrameKind::kData, {0x03,0x03,0x25,0x82,0x8A,0x2B,0xC2,0xEE}, 0},
+  {FrameKind::kData, {0x03,0x04,0x32,0x03,0x52,0x38,0x43,0xB6}, 0},
+  {FrameKind::kData, {0x03,0x05,0x3E,0x84,0x1A,0x44,0xC4,0x7E}, 0},
+  {FrameKind::kData, {0x03,0x06,0x4B,0x04,0xE2,0x51,0x45,0x46}, 0},
+  {FrameKind::kData, {0x03,0x07,0x57,0x85,0xAA,0x5D,0xC6,0x0E}, 0},
+  {FrameKind::kData, {0x03,0x08,0x64,0x06,0x72,0x6A,0x46,0xD6}, 0},
+  {FrameKind::kData, {0x03,0x09,0x70,0x87,0x3A,0x76,0xC7,0x9E}, 0},
+  {FrameKind::kData, {0x03,0x0A,0x7D,0x08,0x02,0x83,0x48,0x66}, 0},
+  {FrameKind::kData, {0x03,0x0B,0x89,0x88,0xCA,0x8F,0xC9,0x2E}, 0},
+  {FrameKind::kData, {0x03,0x0C,0x96,0x09,0x92,0x9C,0x49,0xF6}, 0},
+  {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
+  {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
+  {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x08,0x50,0x00,0x00,0x00}, 0},
+  {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
+};
+inline constexpr ExpectedEvent kScenarioEvents30[1] = {
+  {"GRID_PUBLISHED", 1},
+};
+inline constexpr Frame kScenarioFrames30[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x03,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -805,24 +921,24 @@ inline constexpr Frame kScenarioFrames25[18] = {
   {FrameKind::kHealth, {0x03,0x00,0x40,0xF0,0x60,0x00,0xAB,0xCD}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
-inline constexpr Frame kScenarioFrames26[2] = {
+inline constexpr Frame kScenarioFrames31[2] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 100},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 401},
 };
-inline constexpr ExpectedEvent kScenarioEvents27[1] = {
+inline constexpr ExpectedEvent kScenarioEvents32[1] = {
   {"SOURCE_NEVER_SEEN", 2},
 };
-inline constexpr Frame kScenarioFrames27[3] = {
+inline constexpr Frame kScenarioFrames32[3] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 100},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 3500},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 3801},
 };
-inline constexpr ExpectedEvent kScenarioEvents28[3] = {
+inline constexpr ExpectedEvent kScenarioEvents33[3] = {
   {"GRID_PUBLISHED", 1},
   {"SOURCE_NEVER_SEEN", 2},
   {"SOURCE_RECOVERED", 1},
 };
-inline constexpr Frame kScenarioFrames28[19] = {
+inline constexpr Frame kScenarioFrames33[19] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 3500},
   {FrameKind::kData, {0x3C,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 3600},
   {FrameKind::kData, {0x3C,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 3600},
@@ -843,12 +959,12 @@ inline constexpr Frame kScenarioFrames28[19] = {
   {FrameKind::kHealth, {0x3C,0x00,0x40,0x00,0x60,0x00,0x00,0x00}, 3600},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 3901},
 };
-inline constexpr ExpectedEvent kScenarioEvents29[3] = {
+inline constexpr ExpectedEvent kScenarioEvents34[3] = {
   {"GRID_PUBLISHED", 2},
   {"SOURCE_RECOVERED", 1},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames29[38] = {
+inline constexpr Frame kScenarioFrames34[38] = {
   {FrameKind::kData, {0x14,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x14,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x14,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -888,12 +1004,12 @@ inline constexpr Frame kScenarioFrames29[38] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 1650},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 1951},
 };
-inline constexpr ExpectedEvent kScenarioEvents30[3] = {
+inline constexpr ExpectedEvent kScenarioEvents35[3] = {
   {"INCOMPLETE_BY_TIMEOUT", 3},
   {"SOURCE_NEVER_SEEN", 1},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames30[21] = {
+inline constexpr Frame kScenarioFrames35[21] = {
   {FrameKind::kData, {0x1E,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x1E,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x1E,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -916,23 +1032,23 @@ inline constexpr Frame kScenarioFrames30[21] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4100},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4401},
 };
-inline constexpr ExpectedEvent kScenarioEvents31[3] = {
+inline constexpr ExpectedEvent kScenarioEvents36[3] = {
   {"MALFORMED_HEADER", 3},
   {"SOURCE_NEVER_SEEN", 1},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames31[5] = {
+inline constexpr Frame kScenarioFrames36[5] = {
   {FrameKind::kHealth, {0x01,0x05,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kHealth, {0x02,0x05,0x40,0x00,0x60,0x00,0x00,0x00}, 2000},
   {FrameKind::kHealth, {0x03,0x05,0x40,0x00,0x60,0x00,0x00,0x00}, 4000},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4100},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4401},
 };
-inline constexpr ExpectedEvent kScenarioEvents32[2] = {
+inline constexpr ExpectedEvent kScenarioEvents37[2] = {
   {"GRID_PUBLISHED", 3},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames32[53] = {
+inline constexpr Frame kScenarioFrames37[53] = {
   {FrameKind::kData, {0x28,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x28,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x28,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -988,7 +1104,7 @@ inline constexpr Frame kScenarioFrames32[53] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 1801},
 };
 
-inline constexpr Scenario kScenarios[33] = {
+inline constexpr Scenario kScenarios[38] = {
   {"in_order",
    "All sixteen chunks in order, then health. Baseline.",
    kScenarioFrames0, 18, true, kGridZones0, 1, kScenarioEvents0, 1, nullptr, nullptr},
@@ -1046,52 +1162,67 @@ inline constexpr Scenario kScenarios[33] = {
   {"health_count_mismatch_rejects",
    "Health claims 40 valid zones but 64 decode as valid. The packer contradicts its own summary, so one of the two is wrong and there is no way to tell which; the zone data cannot be trusted either. Reject, count, and raise an operator-visible diagnostic.",
    kScenarioFrames18, 18, false, nullptr, 0, kScenarioEvents18, 1, nullptr, nullptr},
+  {"count_mismatch_and_chain_mismatch_raise_both",
+   "One health frame that is both self-contradictory and reporting a chain-length mismatch. Two independent faults pointing at different places -- the packer's summary, and the chain the source_id was derived from -- so both diagnostics are raised and the grid is refused once. Collapsing them into whichever check runs first would hide a real fault behind another real fault.",
+   kScenarioFrames19, 18, false, nullptr, 0, kScenarioEvents19, 2, nullptr, nullptr},
   {"health_count_out_of_range",
    "valid_zone_count of 200 exceeds 64. Structurally invalid, not merely mismatched. 0xFF is reserved for a future status-only frame and is not defined yet.",
-   kScenarioFrames19, 18, false, nullptr, 0, kScenarioEvents19, 2, nullptr, nullptr},
+   kScenarioFrames20, 18, false, nullptr, 0, kScenarioEvents20, 2, nullptr, nullptr},
   {"duplicate_health_identical",
    "Health arrives twice with identical bytes while the grid is still incomplete. Same rule as a duplicate chunk: benign, counted, ignored.",
-   kScenarioFrames20, 19, true, kGridZones0, 1, kScenarioEvents20, 2, nullptr, nullptr},
+   kScenarioFrames21, 19, true, kGridZones0, 1, kScenarioEvents21, 2, nullptr, nullptr},
   {"duplicate_health_differing_only_in_reserved_fields",
    "Health arrives twice. The second sets reserved status bits 4-7 and reserved bytes 6-7, which a future firmware is allowed to do. The normalised values are equal, so this is a benign retransmission. Comparing raw bytes here would retire a good grid the day the firmware starts using those fields — forward compatibility turning into data loss.",
-   kScenarioFrames21, 19, true, kGridZones0, 1, kScenarioEvents21, 2, nullptr, nullptr},
+   kScenarioFrames22, 19, true, kGridZones0, 1, kScenarioEvents22, 2, nullptr, nullptr},
   {"conflicting_health_rejects",
    "Two health frames for one generation disagree. As with a conflicting chunk there is no basis for choosing either summary, so the generation is retired.",
-   kScenarioFrames22, 19, false, nullptr, 0, kScenarioEvents22, 2, nullptr, nullptr},
+   kScenarioFrames23, 19, false, nullptr, 0, kScenarioEvents23, 2, nullptr, nullptr},
   {"recovered_flags_do_not_gate",
-   "Health reports a recovered I2C error and a chain-length mismatch. Under the firmware transmit obligation, a grid only exists after a complete successful model-verified read, so these describe the past or the chain, never this grid. It publishes.",
-   kScenarioFrames23, 18, true, kGridZones0, 1, kScenarioEvents23, 1, nullptr, nullptr},
+   "Health reports a recovered I2C error and a recovered data-ready timeout. Under the firmware transmit obligation a grid only exists after a complete successful model-verified read, so both describe the past, never this grid. It publishes, and both reach diagnostics.",
+   kScenarioFrames24, 18, true, kGridZones0, 1, kScenarioEvents24, 1, nullptr, nullptr},
+  {"chain_length_mismatch_refuses",
+   "Health reports that the chain length differs from the configured expectation. The zones are perfect and the frame is structurally valid, and the decoder publishes nothing: bit 2 says the chain is not the chain that was configured, and source_id comes from the packer's chain descriptor table, so this grid may belong to the other side of the robot. Published on the wrong topic it would read as 'that side is clear'. The decoder fails closed and raises its own event.",
+   kScenarioFrames25, 18, false, nullptr, 0, kScenarioEvents25, 1, nullptr, nullptr},
+  {"chain_length_mismatch_refuses_with_recovered_flags",
+   "The same chain-length mismatch, this time alongside two recovered flags that would each publish on their own. The refusal is not weakened by good news arriving with it.",
+   kScenarioFrames26, 18, false, nullptr, 0, kScenarioEvents26, 1, nullptr, nullptr},
+  {"chain_length_mismatch_refuses_with_peer_enumeration_failure",
+   "Chain-length mismatch together with the peer-enumeration flag. Bit 3 alone publishes; combined with bit 2 the grid is still refused, because the two answer different questions and only bit 2 is about whether this grid is this sensor's.",
+   kScenarioFrames27, 18, false, nullptr, 0, kScenarioEvents27, 1, nullptr, nullptr},
+  {"last_error_does_not_gate",
+   "Health carries a non-zero last error code. It names the stage of the most recent failure since the previous health frame, it is advisory, and it rides out with the next successful grid before being cleared -- so like the recovered flags it describes history. Refusing it would discard the first good grid after every recovery. It publishes, and the code itself reaches diagnostics.",
+   kScenarioFrames28, 18, true, kGridZones0, 1, kScenarioEvents28, 1, nullptr, nullptr},
   {"peer_enumeration_failure_reported",
    "The right source publishes normally while reporting that the OTHER sensor failed enumeration. This is how a sensor that emits nothing at all becomes visible: the surviving one says so. Publishes, and the flag must reach diagnostics.",
-   kScenarioFrames24, 18, true, kGridZones0, 1, kScenarioEvents24, 1, nullptr, nullptr},
+   kScenarioFrames29, 18, true, kGridZones0, 1, kScenarioEvents29, 1, nullptr, nullptr},
   {"reserved_bytes_set_are_ignored",
    "A future firmware populates health bytes 6-7 and reserved flag bits 4-7. An older decoder must ignore them rather than reject the frame.",
-   kScenarioFrames25, 18, true, kGridZones0, 1, kScenarioEvents25, 1, nullptr, nullptr},
+   kScenarioFrames30, 18, true, kGridZones0, 1, kScenarioEvents30, 1, nullptr, nullptr},
   {"watchdog_never_seen_within_grace",
    "No traffic at all, polled 100 ms after startup. Both sources are NEVER_SEEN, but that is the ordinary state of a system still starting up and must not alarm.",
-   kScenarioFrames26, 2, false, nullptr, 0, nullptr, 0, "NEVER_SEEN", "NEVER_SEEN"},
+   kScenarioFrames31, 2, false, nullptr, 0, nullptr, 0, "NEVER_SEEN", "NEVER_SEEN"},
   {"watchdog_never_seen_after_grace",
    "Still no traffic at 3500 ms, past the 3000 ms startup grace. Both sources remain NEVER_SEEN and this now alarms, once each. Nothing else in the protocol can detect this: with no frames, every frame-level check is vacuous.",
-   kScenarioFrames27, 3, false, nullptr, 0, kScenarioEvents27, 1, "NEVER_SEEN", "NEVER_SEEN"},
+   kScenarioFrames32, 3, false, nullptr, 0, kScenarioEvents32, 1, "NEVER_SEEN", "NEVER_SEEN"},
   {"watchdog_never_seen_then_first_grid_recovers",
    "Regression test. A source alarmed as NEVER_SEEN and then delivers its first grid. The alarm must be cleared with SOURCE_RECOVERED; an alarm that can be raised but never lowered is worse than none.",
-   kScenarioFrames28, 19, true, nullptr, 1, kScenarioEvents28, 3, "HEALTHY", "NEVER_SEEN"},
+   kScenarioFrames33, 19, true, nullptr, 1, kScenarioEvents33, 3, "HEALTHY", "NEVER_SEEN"},
   {"watchdog_stale_then_recovers",
    "The right source publishes at t=0, is HEALTHY at 500 ms, has gone STALE_NO_FRAMES by 1500 ms, then publishes again at 1600 ms and is HEALTHY at 1650 ms. Recovery is reported too, so an operator sees the clear as well as the onset. Both alarms are edge triggered: three polls produce at most one event each.",
-   kScenarioFrames29, 38, true, nullptr, 2, kScenarioEvents29, 3, "HEALTHY", "NEVER_SEEN"},
+   kScenarioFrames34, 38, true, nullptr, 2, kScenarioEvents34, 3, "HEALTHY", "NEVER_SEEN"},
   {"watchdog_frames_without_completion",
    "Frames keep arriving for the right source but no grid ever completes. Past the startup grace plus the stale threshold the source is STALE_NOT_COMPLETING, not STALE_NO_FRAMES. The distinction matters — this is chunk loss or corruption, whereas no frames at all would point at the chain, power, enumeration or the CAN filter. The left source, silent throughout, alarms as NEVER_SEEN in the same poll.",
-   kScenarioFrames30, 21, false, nullptr, 0, kScenarioEvents30, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN"},
+   kScenarioFrames35, 21, false, nullptr, 0, kScenarioEvents35, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN"},
   {"watchdog_malformed_frames_are_still_frames",
    "A source sends only malformed frames. They name a real source, so they are evidence the transport is alive and must count towards liveness: the source is STALE_NOT_COMPLETING, not STALE_NO_FRAMES. Reporting no frames here would send an investigation towards the chain or the CAN filter when the fault is corruption.",
-   kScenarioFrames31, 5, false, nullptr, 0, kScenarioEvents31, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN"},
+   kScenarioFrames36, 5, false, nullptr, 0, kScenarioEvents36, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN"},
   {"watchdog_staleness_is_per_source",
    "The left source keeps publishing while the right one stops after a single grid. At 1500 ms the right is stale and the left is healthy. Staleness must never be a single global flag.",
-   kScenarioFrames32, 53, true, nullptr, 3, kScenarioEvents32, 2, "STALE_NO_FRAMES", "HEALTHY"},
+   kScenarioFrames37, 53, true, nullptr, 3, kScenarioEvents37, 2, "STALE_NO_FRAMES", "HEALTHY"},
 };
 
 inline constexpr size_t kGridVectorCount = 4;
-inline constexpr size_t kScenarioCount = 33;
+inline constexpr size_t kScenarioCount = 38;
 
 }  // namespace tof_contract
 // clang-format on

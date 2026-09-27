@@ -1,7 +1,7 @@
 {
   "contract": "tof_can_wire_contract.md",
-  "contract_version": "2026-08-02g",
-  "contract_sha256": "fbc9f1dd1a433cdadb04f8dd9582ffffeac65654293988e60650b13cabc765ea",
+  "contract_version": "2026-08-02h",
+  "contract_sha256": "8c0f06ea130c76ce4dbc490471c072c823ab950a851669c5289b21b396408b20",
   "note": "CAN identifiers are deliberately absent from the vectors: they are assigned in the contract (data 0x214, health 0x215) and injected by each implementation, so nothing here depends on the numbers. Frames are hex, byte 0 leftmost. DLC is 8 for every frame.",
   "constants": {
     "invalid_sentinel": 4095,
@@ -2868,6 +2868,107 @@
       }
     },
     {
+      "name": "count_mismatch_and_chain_mismatch_raise_both",
+      "description": "One health frame that is both self-contradictory and reporting a chain-length mismatch. Two independent faults pointing at different places -- the packer's summary, and the chain the source_id was derived from -- so both diagnostics are raised and the grid is refused once. Collapsing them into whichever check runs first would hide a real fault behind another real fault.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300280460000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "HEALTH_COUNT_MISMATCH": 1,
+        "HEALTH_GATE_CHAIN_MISMATCH": 1
+      }
+    },
+    {
       "name": "health_count_out_of_range",
       "description": "valid_zone_count of 200 exceeds 64. Structurally invalid, not merely mismatched. 0xFF is reserved for a future status-only frame and is not defined yet.",
       "frames": [
@@ -3420,7 +3521,7 @@
     },
     {
       "name": "recovered_flags_do_not_gate",
-      "description": "Health reports a recovered I2C error and a chain-length mismatch. Under the firmware transmit obligation, a grid only exists after a complete successful model-verified read, so these describe the past or the chain, never this grid. It publishes.",
+      "description": "Health reports a recovered I2C error and a recovered data-ready timeout. Under the firmware transmit obligation a grid only exists after a complete successful model-verified read, so both describe the past, never this grid. It publishes, and both reach diagnostics.",
       "frames": [
         {
           "kind": "data",
@@ -3504,7 +3605,7 @@
         },
         {
           "kind": "health",
-          "hex": "0300400560000000",
+          "hex": "0300400360000000",
           "t_ms": 0
         },
         {
@@ -3583,7 +3684,474 @@
         3100,
         3150
       ],
-      "expected_flags": 5
+      "expected_flags": 3
+    },
+    {
+      "name": "chain_length_mismatch_refuses",
+      "description": "Health reports that the chain length differs from the configured expectation. The zones are perfect and the frame is structurally valid, and the decoder publishes nothing: bit 2 says the chain is not the chain that was configured, and source_id comes from the packer's chain descriptor table, so this grid may belong to the other side of the robot. Published on the wrong topic it would read as 'that side is clear'. The decoder fails closed and raises its own event.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400460000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "HEALTH_GATE_CHAIN_MISMATCH": 1
+      }
+    },
+    {
+      "name": "chain_length_mismatch_refuses_with_recovered_flags",
+      "description": "The same chain-length mismatch, this time alongside two recovered flags that would each publish on their own. The refusal is not weakened by good news arriving with it.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400760000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "HEALTH_GATE_CHAIN_MISMATCH": 1
+      }
+    },
+    {
+      "name": "chain_length_mismatch_refuses_with_peer_enumeration_failure",
+      "description": "Chain-length mismatch together with the peer-enumeration flag. Bit 3 alone publishes; combined with bit 2 the grid is still refused, because the two answer different questions and only bit 2 is about whether this grid is this sensor's.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "0300400C50000000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": false,
+      "expected_events": {
+        "HEALTH_GATE_CHAIN_MISMATCH": 1
+      }
+    },
+    {
+      "name": "last_error_does_not_gate",
+      "description": "Health carries a non-zero last error code. It names the stage of the most recent failure since the previous health frame, it is advisory, and it rides out with the next successful grid before being cleared -- so like the recovered flags it describes history. Refusing it would discard the first good grid after every recovery. It publishes, and the code itself reaches diagnostics.",
+      "frames": [
+        {
+          "kind": "data",
+          "hex": "0300000032064096",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03010C80FA12C15E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03021901C21F4226",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030325828A2BC2EE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03043203523843B6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03053E841A44C47E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03064B04E2514546",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03075785AA5DC60E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "03086406726A46D6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030970873A76C79E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030A7D0802834866",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030B8988CA8FC92E",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030C9609929C49F6",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030DA28A5AA8CABE",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030EAF0B22B54B86",
+          "t_ms": 0
+        },
+        {
+          "kind": "data",
+          "hex": "030FBB8BEAC1CC4E",
+          "t_ms": 0
+        },
+        {
+          "kind": "health",
+          "hex": "03004000602B0000",
+          "t_ms": 0
+        },
+        {
+          "kind": "poll",
+          "hex": "",
+          "t_ms": 301
+        }
+      ],
+      "publishes": true,
+      "expected_events": {
+        "GRID_PUBLISHED": 1
+      },
+      "expected_zones_mm": [
+        0,
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        950,
+        1000,
+        1050,
+        1100,
+        1150,
+        1200,
+        1250,
+        1300,
+        1350,
+        1400,
+        1450,
+        1500,
+        1550,
+        1600,
+        1650,
+        1700,
+        1750,
+        1800,
+        1850,
+        1900,
+        1950,
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+        2450,
+        2500,
+        2550,
+        2600,
+        2650,
+        2700,
+        2750,
+        2800,
+        2850,
+        2900,
+        2950,
+        3000,
+        3050,
+        3100,
+        3150
+      ],
+      "expected_last_error": 43
     },
     {
       "name": "peer_enumeration_failure_reported",

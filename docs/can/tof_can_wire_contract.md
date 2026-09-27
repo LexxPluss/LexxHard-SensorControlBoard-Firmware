@@ -1,6 +1,6 @@
 # ToF grid CAN wire contract (AMRSW-2322)
 
-Contract version: **2026-08-02g**
+Contract version: **2026-08-02h**
 Status: **frozen** for implementation. Everything below is normative. The numeric CAN IDs are
 assigned (see the identifier section) and are still injected as constants/configuration rather
 than parsed out of this prose.
@@ -160,7 +160,7 @@ byte 7 : reserved, MUST be 0 on transmit
 ```
 
 Status flag bits in byte 3. All of these are **recovered or chain-level** by construction of the
-transmit obligation above, so none of them gates publication:
+transmit obligation above, so none of them describes a failure of the read the grid came from:
 
 | Bit | Meaning |
 | --- | --- |
@@ -169,6 +169,44 @@ transmit obligation above, so none of them gates publication:
 | 2 | chain length differs from the configured expectation |
 | 3 | **another** sensor on the chain failed enumeration |
 | 4-7 | reserved, MUST be 0 on transmit |
+
+### Who gates on what — normative, and the two sides differ
+
+*Changed in 2026-08-02h. The previous wording said flatly that none of these gates publication,
+which conflated the packer's obligation with the decoder's. They are not the same decision, and
+writing them as one left the decoder with no defined behaviour for a fault about identity.*
+
+**The packer.** The firmware transmits a grid whenever the transmit obligation is met, regardless
+of any status flag. A flag never suppresses transmission, because the flags describe history or
+the chain, never this read. This is unchanged.
+
+**The decoder.** A decoder MUST fail closed on **bit 2** and publish nothing for that grid, and
+MUST raise a distinct, severe diagnostic saying so. Bit 2 is not about the read: it says the chain
+is not the chain that was configured, and the packer derives `source_id` from its own chain
+descriptor table. The zones may be perfect and still belong to the other side of the robot, and a
+grid published on the wrong topic reads downstream as "that side is clear" — a wrong answer in the
+unsafe direction, which no consumer can detect.
+
+A decoder MUST NOT gate on bits 0, 1 or 3, or on a non-zero `last error code`:
+
+- Bits 0 and 1 describe an error that has already been recovered from. Refusing them discards a
+  grid that is good by construction.
+- Bit 3 describes the failure of **another** sensor. Refusing the reporter's grid would convert one
+  dead sensor into correlated blindness on both sides, which is the opposite of what the flag is
+  for: it exists precisely so a sensor that still works can report the one that does not.
+- `last error code` is the stage of the most recent failure since the previous health frame. It is
+  advisory, it is emitted with the next **successful** grid and cleared afterwards, so like bits 0
+  and 1 it describes recovered history. Gating on it would throw away the first good grid after
+  every recovery.
+
+Each of these MUST still reach diagnostics, and a non-zero `last error code` MUST be reported with
+its value rather than as a bare flag.
+
+**A known limit this rule does not address.** `valid_zone_count == 0` is a legal, structurally
+perfect frame and MUST be published: it is what genuinely open space looks like. It is also what a
+dirty lens and a blinded sensor look like, and nothing in this frame distinguishes the three. That
+is a data-quality and readiness problem, it is not solved by any flag defined here, and no decoder
+may claim to have covered it by implementing this section.
 
 There is deliberately **no flag for a model ID mismatch or address assignment failure at this
 position**. Such a sensor cannot produce a grid, so the flag could never appear on a health frame,
@@ -324,6 +362,7 @@ The decoder publishes a grid if and only if **all** of the following hold:
 - the slot is not invalidated
 - a **structurally valid** health frame with the same `source_id` and `generation` has been received
 - the health frame's `valid_zone_count` **equals** the number of non-sentinel zones actually decoded
+- the health frame's **status flag bit 2 is clear**, per *Who gates on what* above
 
 Structurally valid means: DLC 8, `source_id` in the table above, byte 1 low nibble zero, and
 `valid_zone_count <= 64`.
@@ -334,10 +373,19 @@ cannot be trusted either. It is counted and raised as an operator-visible diagno
 alternative — publishing with a warning — would leave the field with no contract value at all, in
 which case it should not be on the wire.
 
-The status flags, `chain_position`, `boards_detected` and the last error code are **diagnostic and
-do not gate**. Given the firmware transmit obligation, every flag that can legally appear on a
-grid-closing health frame describes an already-recovered or chain-level condition, so gating on
-them would discard a grid that is by construction good.
+`chain_position`, `boards_detected`, the last error code and status flag bits **0, 1 and 3** are
+**diagnostic and do not gate**. Given the firmware transmit obligation, each describes an
+already-recovered condition or the failure of a different sensor, so gating on them would discard a
+grid that is by construction good.
+
+**Status flag bit 2 is the exception and it does gate**, for the reason given in *Who gates on what*:
+it is not about the read, it is about whether this grid belongs to this `source_id` at all. A decoder
+that refused bit 2 publishes nothing for that grid and raises its own diagnostic, distinct from the
+`valid_zone_count` rejection.
+
+When a health frame is both self-contradictory and reporting a chain-length mismatch, **both**
+diagnostics are raised and the grid is refused once. Collapsing them into whichever check runs first
+would hide one real fault behind another, and the two send an investigation to different places.
 
 Publishing nothing rather than a partial grid is the deliberate choice: a missing chunk left at the
 sentinel decodes downstream as "no obstacle", which fails in the unsafe direction.
@@ -350,8 +398,11 @@ frame-level check is vacuous.
 
 From `consume()`: `GRID_PUBLISHED`, `INCOMPLETE_BY_TIMEOUT`, `INCOMPLETE_BY_GENERATION_CHANGE`,
 `DUPLICATE_CHUNK_IDENTICAL`, `CONFLICTING_CHUNK`, `DUPLICATE_HEALTH_IDENTICAL`,
-`CONFLICTING_HEALTH`, `MALFORMED_HEADER`, `HEALTH_COUNT_MISMATCH`, `ORPHAN_HEALTH_TIMEOUT`,
-`FRAME_FOR_RETIRED_GENERATION`.
+`CONFLICTING_HEALTH`, `MALFORMED_HEADER`, `HEALTH_COUNT_MISMATCH`, `HEALTH_GATE_CHAIN_MISMATCH`,
+`ORPHAN_HEALTH_TIMEOUT`, `FRAME_FOR_RETIRED_GENERATION`.
+
+`HEALTH_GATE_CHAIN_MISMATCH` and `HEALTH_COUNT_MISMATCH` are independent. A health frame that
+triggers both raises both, and the grid is refused once.
 
 From `poll()`: `SOURCE_NEVER_SEEN` (once past the startup grace), `SOURCE_STALE`,
 `SOURCE_RECOVERED`. These are **edge triggered**: a ROS layer polling at 10 Hz must not receive one
@@ -359,6 +410,12 @@ event per tick for a condition that has not changed. An alarm is raised once and
 `SOURCE_RECOVERED` fires wherever recovery happens, including on the first grid ever received from
 a source that had already been alarmed as `NEVER_SEEN`. An alarm that can be raised but never
 lowered is worse than no alarm.
+
+**Only a published grid clears an alarm.** Frames arriving is not recovery: a source that has never
+published anything may be inside the startup grace and therefore not yet reportable, but that is an
+alarm not yet raised, never an alarm cleared. A decoder that let a single chunk -- or a malformed
+frame, which also counts for liveness -- lower a raised alarm would announce a recovery that never
+happened, which is worse than the original fault because it stops anyone looking.
 
 Draining the event queue **removes** the events. Callers process each one exactly once; leaving
 them in place would replay the entire history on every spin.

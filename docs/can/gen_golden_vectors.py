@@ -76,6 +76,7 @@ EV_ORPHAN_HEALTH = "ORPHAN_HEALTH_TIMEOUT"
 EV_NEVER_SEEN = "SOURCE_NEVER_SEEN"
 EV_STALE = "SOURCE_STALE"
 EV_RECOVERED = "SOURCE_RECOVERED"
+EV_HEALTH_GATE_CHAIN = "HEALTH_GATE_CHAIN_MISMATCH"
 
 
 def pack_chunk(generation, source_id, chunk_index, z):
@@ -420,6 +421,17 @@ def build(contract_sha, version):
       + [health(pack_health(3, SRC_RIGHT, ramp, valid_count_override=40))],
       False, {EV_COUNT_MISMATCH: 1})
 
+    s("count_mismatch_and_chain_mismatch_raise_both",
+      "One health frame that is both self-contradictory and reporting a chain-length mismatch. "
+      "Two independent faults pointing at different places -- the packer's summary, and the chain "
+      "the source_id was derived from -- so both diagnostics are raised and the grid is refused "
+      "once. Collapsing them into whichever check runs first would hide a real fault behind "
+      "another real fault.",
+      [data(f) for f in ramp_frames]
+      + [health(pack_health(3, SRC_RIGHT, ramp, flags=FLAG_CHAIN_LENGTH,
+                            valid_count_override=40))],
+      False, {EV_COUNT_MISMATCH: 1, EV_HEALTH_GATE_CHAIN: 1})
+
     s("health_count_out_of_range",
       "valid_zone_count of 200 exceeds 64. Structurally invalid, not merely mismatched. "
       "0xFF is reserved for a future status-only frame and is not defined yet.",
@@ -458,15 +470,57 @@ def build(contract_sha, version):
       False, {EV_CONFLICT_HEALTH: 1, EV_RETIRED: 1})
 
     s("recovered_flags_do_not_gate",
-      "Health reports a recovered I2C error and a chain-length mismatch. Under the firmware "
-      "transmit obligation, a grid only exists after a complete successful model-verified "
-      "read, so these describe the past or the chain, never this grid. It publishes.",
+      "Health reports a recovered I2C error and a recovered data-ready timeout. Under the "
+      "firmware transmit obligation a grid only exists after a complete successful "
+      "model-verified read, so both describe the past, never this grid. It publishes, and both "
+      "reach diagnostics.",
       [data(f) for f in ramp_frames]
       + [health(pack_health(3, SRC_RIGHT, ramp,
-                            flags=FLAG_I2C_RECOVERED | FLAG_CHAIN_LENGTH))],
+                            flags=FLAG_I2C_RECOVERED | FLAG_TIMEOUT_RECOVERED))],
       True, {EV_PUBLISHED: 1},
       {"expected_zones_mm": ramp,
-       "expected_flags": FLAG_I2C_RECOVERED | FLAG_CHAIN_LENGTH})
+       "expected_flags": FLAG_I2C_RECOVERED | FLAG_TIMEOUT_RECOVERED})
+
+    s("chain_length_mismatch_refuses",
+      "Health reports that the chain length differs from the configured expectation. The zones "
+      "are perfect and the frame is structurally valid, and the decoder publishes nothing: bit 2 "
+      "says the chain is not the chain that was configured, and source_id comes from the "
+      "packer's chain descriptor table, so this grid may belong to the other side of the robot. "
+      "Published on the wrong topic it would read as 'that side is clear'. The decoder fails "
+      "closed and raises its own event.",
+      [data(f) for f in ramp_frames]
+      + [health(pack_health(3, SRC_RIGHT, ramp, flags=FLAG_CHAIN_LENGTH))],
+      False, {EV_HEALTH_GATE_CHAIN: 1})
+
+    s("chain_length_mismatch_refuses_with_recovered_flags",
+      "The same chain-length mismatch, this time alongside two recovered flags that would each "
+      "publish on their own. The refusal is not weakened by good news arriving with it.",
+      [data(f) for f in ramp_frames]
+      + [health(pack_health(3, SRC_RIGHT, ramp,
+                            flags=FLAG_I2C_RECOVERED | FLAG_TIMEOUT_RECOVERED
+                            | FLAG_CHAIN_LENGTH))],
+      False, {EV_HEALTH_GATE_CHAIN: 1})
+
+    s("chain_length_mismatch_refuses_with_peer_enumeration_failure",
+      "Chain-length mismatch together with the peer-enumeration flag. Bit 3 alone publishes; "
+      "combined with bit 2 the grid is still refused, because the two answer different "
+      "questions and only bit 2 is about whether this grid is this sensor's.",
+      [data(f) for f in ramp_frames]
+      + [health(pack_health(3, SRC_RIGHT, ramp,
+                            flags=FLAG_CHAIN_LENGTH | FLAG_PEER_ENUM_FAILED,
+                            boards_detected=5))],
+      False, {EV_HEALTH_GATE_CHAIN: 1})
+
+    s("last_error_does_not_gate",
+      "Health carries a non-zero last error code. It names the stage of the most recent failure "
+      "since the previous health frame, it is advisory, and it rides out with the next "
+      "successful grid before being cleared -- so like the recovered flags it describes history. "
+      "Refusing it would discard the first good grid after every recovery. It publishes, and the "
+      "code itself reaches diagnostics.",
+      [data(f) for f in ramp_frames]
+      + [health(pack_health(3, SRC_RIGHT, ramp, last_error=0x2B))],
+      True, {EV_PUBLISHED: 1},
+      {"expected_zones_mm": ramp, "expected_last_error": 0x2B})
 
     s("peer_enumeration_failure_reported",
       "The right source publishes normally while reporting that the OTHER sensor failed "
