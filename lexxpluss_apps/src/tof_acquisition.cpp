@@ -81,6 +81,11 @@ atomic_t stop_requested_{ATOMIC_INIT(0)};
  * waiting one cadence and waiting for a timeout it then reports as a refusal. */
 K_SEM_DEFINE(stop_sem_, 0, 1);
 atomic_t foreign_calls_{ATOMIC_INIT(0)};
+/* The acquisition thread stops the devices on its way out, and the only caller that cares is
+ * commissioning -- which does not see the thread, only join(). Without this the thread's stop
+ * failure was a log line and nothing else, and try_stop() reported quiescence over a device
+ * that was still ranging. */
+atomic_t thread_stop_rc_{ATOMIC_INIT(0)};
 
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
@@ -301,10 +306,24 @@ void clear_cycle_outcomes(source_facts &f)
  * Callers publish the snapshot after releasing, not here: publishing under the chain lock would
  * put a lock between the health path and the acquisition path, and the heartbeat is required to
  * keep running while the chain is busy for seconds at a time. */
-void stop_locked()
+// Defined below; stop_locked() needs it to record a stop that failed.
+void record(source_facts &f, int rc, const op_status &st);
+
+/* Returns 0 when every started source is stopped, otherwise the first failure.
+ *
+ * A device that would not stop stays started in the facts, and that is the whole point.
+ * Recording it as stopped was a lie with teeth: try_stop() reported success, commissioning
+ * took that as permission to drop enable lines while the device was still ranging, and the
+ * later cleanup skipped it because the flag said there was nothing to stop. Quiescence is a
+ * claim about hardware, so it cannot be established by clearing a bool.
+ *
+ * Every source is attempted even after one fails. Stopping three of four is strictly better
+ * than stopping one and giving up, and the return value reports that it was not complete. */
+int stop_locked()
 {
     running_ = false;
 
+    int first_error{0};
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
         source_facts &f{facts_.sources[i]};
@@ -312,11 +331,24 @@ void stop_locked()
 
         if (!f.started)
             continue;
-        (void)d.ops->stop(d.dev, &st);
+        const int rc{d.ops->stop(d.dev, &st)};
+        if (rc != 0) {
+            record(f, rc, st);
+            /* Sticky, for the same reason a failed re-arm is: a device that will not stop
+             * will not produce a trustworthy sample either, and only a complete
+             * re-bring-up may clear it. */
+            f.rearm_failed = true;
+            LOG_ERR("source %d stop failed at %s rc %d errno %d -- still ranging", i,
+                    tof_cliff_stage_name(st.stage), rc, st.port_errno);
+            if (first_error == 0)
+                first_error = rc;
+            continue;   // f.started stays true: it is still ranging
+        }
         f.started = false;
     }
 
     in_cycle_ = false;
+    return first_error;
 }
 
 void record(source_facts &f, int rc, const op_status &st)
@@ -628,7 +660,26 @@ int bring_up()
         op_status st{};
         int rc;
 
-        f.started = false;
+        /* A source that is already started is stopped FIRST, and its started flag is only
+         * cleared when that stop succeeds.
+         *
+         * This used to clear the flag unconditionally before the retry. If the retry then
+         * failed, the old device could still be ranging while the facts said it was stopped
+         * -- so stop_locked() skipped it for the rest of the subsystem's life and the next
+         * commissioning session re-addressed a live sensor. A re-bring-up that cannot
+         * quiesce the previous device is not a re-bring-up; it is two drivers on one part. */
+        if (f.started) {
+            op_status stop_st{};
+            const int stop_rc{d.ops->stop(d.dev, &stop_st)};
+            if (stop_rc != 0) {
+                record(f, stop_rc, stop_st);
+                f.rearm_failed = true;
+                LOG_ERR("source %d could not be stopped before re-bring-up at %s rc %d", i,
+                        tof_cliff_stage_name(stop_st.stage), stop_rc);
+                continue;   // f.started stays true: the device was never quiesced
+            }
+            f.started = false;
+        }
         clear_cycle_outcomes(f);
 
         rc = d.ops->open(d.dev, d.addr_7bit, &st);
@@ -787,19 +838,19 @@ void teardown()
     configured_ = false;
 }
 
-void stop()
+int stop()
 {
     if (!configured_)
-        return;
+        return 0;
 
     // Quiesce, then release. Commissioning may only enumerate once this returns: the
     // enumeration drops enable lines, which re-addresses parts underneath a reader.
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
     if (!may_touch_devices_locked()) {
         k_mutex_unlock(&tof_chain_controller::chain_lock());
-        return;
+        return -EPERM;
     }
-    stop_locked();
+    const int rc{stop_locked()};
     /* The health timer is deliberately NOT stopped here.
      *
      * stop() means "stop reading sensors", and the contract requires health to keep flowing
@@ -813,6 +864,7 @@ void stop()
      * is a separate, deliberate act. */
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     publish_snapshot();
+    return rc;
 }
 
 static void thread_entry(void *, void *, void *)
@@ -846,7 +898,7 @@ static void thread_entry(void *, void *, void *)
     /* At a cycle boundary, from the thread that owns the devices. This is the reason try_stop() no
      * longer stops devices itself: a foreign thread doing it while this one is mid-cycle interleaves
      * two callers inside the ULD, whose port keeps ONE transport record. */
-    stop();
+    atomic_set(&thread_stop_rc_, stop());
     /* Ownership is released under the same lock that every ownership decision is made under, so a
      * caller cannot observe the release half-applied. Released AFTER stop() returns, never before:
      * the devices this thread owns must be quiesced while it still owns them. */
@@ -977,15 +1029,23 @@ int try_stop()
      * -EBUSY. Nothing is killed: see join(). */
     if (thread_running()) {
         request_stop();
-        return join(tcfg_.join_timeout_ms);
+        atomic_set(&thread_stop_rc_, 0);
+        if (int const rc{join(tcfg_.join_timeout_ms)}; rc != 0)
+            return rc;
+        /* Joined, so the thread has run its stop and recorded the outcome. A thread that
+         * exited cleanly but could not stop a device has NOT quiesced the chain, and saying
+         * 0 here is what let commissioning drop enable lines on a live sensor. */
+        return static_cast<int>(atomic_get(&thread_stop_rc_));
     }
 
     if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_NO_WAIT) != 0)
         return -EBUSY;   // somebody else owns the chain; nothing touched, so refusing is safe
 
-    stop_locked();
+    const int rc{stop_locked()};
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     publish_snapshot();
+    if (rc != 0)
+        return rc;
 
     /* Idle by construction rather than by a second query: the state was set under the lock we
      * just held, and re-reading it through is_idle() would take the chain again with K_FOREVER --

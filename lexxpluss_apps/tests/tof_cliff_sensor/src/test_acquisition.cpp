@@ -67,6 +67,9 @@ struct fake_dev {
     int start_calls{0};
     int read_calls{0};
     int stop_calls{0};
+    /* A device that will not stop. The interesting case, because the facts must keep saying
+     * it is started rather than quietly recording a quiescence that never happened. */
+    int stop_rc{0};
     bool lock_held_in_open{false};
     bool lock_held_in_read{false};
 };
@@ -173,8 +176,13 @@ int fake_stop(void *dev, acq::op_status *st)
 {
     memset(st, 0, sizeof(*st));
     record_caller();
-    ++static_cast<fake_dev *>(dev)->stop_calls;
-    return 0;
+    fake_dev *const d{static_cast<fake_dev *>(dev)};
+    ++d->stop_calls;
+    if (d->stop_rc != 0) {
+        st->stage = TOF_CLIFF_STAGE_STOP;
+        st->port_errno = d->stop_rc;
+    }
+    return d->stop_rc;
 }
 
 const acq::source_ops kFakeOps{fake_open, fake_configure, fake_start, fake_read, fake_stop};
@@ -1586,6 +1594,84 @@ static void timed_holder_entry(void *, void *, void *)
  *
  * Timed rather than asserted structurally because there is no way to ask the code where its check
  * sits. The margin is deliberately wide: the claim is "it waited at all", not a latency figure. */
+/* ------------------------------------------------- stopping, and failing to ------ */
+
+/* A device that will not stop is still ranging, and every layer above has to be told.
+ *
+ * try_stop() used to report success here, because stop_locked() discarded the return value
+ * and cleared `started` regardless. Commissioning takes that success as permission to drop
+ * enable lines -- onto a live sensor -- and the later cleanup then skipped the source
+ * entirely, because the flag said there was nothing left to stop. */
+ZTEST(tof_acquisition, test_a_source_that_will_not_stop_is_not_reported_as_quiesced)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[1].stop_rc = -EIO;
+    const int rc{acq::try_stop()};
+    zassert_not_equal(rc, 0, "try_stop() reported quiescence over a device still ranging");
+    zassert_equal(rc, -EIO, "and it reports what actually failed");
+
+    /* The other three are stopped even though one failed: stopping three of four beats
+     * stopping one and giving up, and the return value is what says it was incomplete. */
+    zassert_equal(devs[0].stop_calls, 1);
+    zassert_equal(devs[1].stop_calls, 1);
+    zassert_equal(devs[2].stop_calls, 1);
+    zassert_equal(devs[3].stop_calls, 1);
+
+    /* And the source is still recorded as started, which is what stops a later cleanup
+     * from skipping it. A second try must actually try it again. */
+    devs[1].stop_rc = 0;
+    zassert_equal(acq::try_stop(), 0);
+    zassert_equal(devs[1].stop_calls, 2, "the still-ranging source was skipped");
+    zassert_equal(devs[0].stop_calls, 1, "and an already-stopped source is not re-stopped");
+}
+
+/* The same fact has to cross the thread boundary. Commissioning never sees the acquisition
+ * thread; it sees join(), and the thread's stop failure used to be a log line and nothing
+ * more. */
+ZTEST(tof_acquisition, test_a_thread_stop_failure_reaches_commissioning_through_try_stop)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+    zassert_true(acq::thread_running());
+
+    devs[2].stop_rc = -EIO;
+    const int rc{acq::try_stop()};
+    zassert_false(acq::thread_running(), "the thread still exited cleanly");
+    zassert_equal(rc, -EIO,
+                  "a thread that exited but could not stop a device has not quiesced");
+
+    devs[2].stop_rc = 0;
+}
+
+/* A re-bring-up must quiesce the previous device before replacing it. Clearing `started`
+ * first and then failing the retry leaves two claims on one part: the driver thinks it is
+ * stopped, the device is still ranging, and the next commissioning session re-addresses it
+ * live. */
+ZTEST(tof_acquisition, test_a_bring_up_that_cannot_stop_the_old_device_does_not_replace_it)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    const int stubborn_opens_before{devs[1].open_calls};
+    const int healthy_opens_before{devs[0].open_calls};
+
+    devs[1].stop_rc = -EIO;
+    zassert_equal(acq::bring_up(), 0, "one stubborn source must not fail the whole bring-up");
+
+    zassert_equal(devs[1].open_calls, stubborn_opens_before,
+                  "the old device was replaced without ever being stopped");
+    zassert_equal(devs[0].open_calls, healthy_opens_before + 1,
+                  "a source that stopped cleanly is brought up again as usual");
+
+    /* It is still started, so a stop still reaches it -- and once it succeeds, a later
+     * bring-up may replace it. */
+    devs[1].stop_rc = 0;
+    zassert_equal(acq::try_stop(), 0);
+    zassert_equal(devs[1].stop_calls >= 2, true);
+}
+
 ZTEST(tof_acquisition, test_a_foreign_call_takes_the_chain_lock_before_deciding)
 {
     zassert_equal(acq::init(make_config(4)), 0);

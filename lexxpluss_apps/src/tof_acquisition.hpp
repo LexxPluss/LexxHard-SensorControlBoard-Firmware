@@ -345,7 +345,11 @@ k_tid_t thread_id_for_test();
 //
 // BLOCKS on the chain lock. Fine for a shutdown path that has nothing better to do; wrong for
 // commissioning, which must fail fast rather than queue up behind whoever holds the chain.
-void stop();
+// Returns 0 when every started source stopped, the first failing rc otherwise, and -EPERM
+// when the caller does not own the chain. A non-zero return means at least one device is
+// STILL RANGING and its source_facts still say `started`, which is what stops a later
+// cleanup from skipping it.
+int stop();
 
 // The commissioning quiesce: the same thing stop() does, except that it never waits for the
 // chain.
