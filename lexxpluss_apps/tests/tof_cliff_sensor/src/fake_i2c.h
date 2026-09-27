@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * A recording I2C target behind Zephyr's emulated controller. The point of going
  * through i2c_emul rather than replacing the port's calls is that the production code

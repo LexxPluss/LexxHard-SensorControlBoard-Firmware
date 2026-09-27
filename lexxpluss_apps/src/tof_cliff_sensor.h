@@ -2,7 +2,7 @@
  * Copyright (c) 2024-2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * One VL53L4CX cliff sensor, as thin a layer over the vendored ULD as the ULD's own
  * defects allow. Everything here exists because a defect made the obvious call unsafe.
