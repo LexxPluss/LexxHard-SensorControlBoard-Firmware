@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Host-side tests for the cliff measurement packer.
  *
@@ -66,13 +66,13 @@ ZTEST_SUITE(tof_cliff_packer, NULL, NULL, NULL, NULL, NULL);
 ZTEST(tof_cliff_packer, test_contract_sha_pin)
 {
     zassert_equal(0, strcmp(ctr::kContractSha256,
-        "2735391f640901cf4877e523d908845545683e05d581d62a4454f22c53d67c31"));
-    zassert_equal(0, strcmp(ctr::kContractVersion, "commissioning-2026-09-19f"));
+        "7b5863db361ac49e2fe5facb2e0d6adffc8e7dffdfa61259b70c7468a9fca9b3"));
+    zassert_equal(0, strcmp(ctr::kContractVersion, "commissioning-2026-09-26a"));
     /* The contract SHA says which contract; this says which generated artefacts. It is
      * pinned separately because the generator has twice changed what it emits while the
      * contract text -- and so its SHA -- stood still. */
     zassert_equal(0, strcmp(ctr::kArtefactSetId,
-        "79629d287664bc3917cc9557a7f7ce04868bf16685ede97bddf2b1dea08e97f0"));
+        "eca174e125943ab861eda9c6316ec233b27c1886ee647a61217c9aa4301a82d5"));
     zassert_equal(0, strcmp(ctr::kProfileName, "commissioning-cliff-only-400k"));
     /* Asserted rather than merely present: this revision is not releasable, and the day
      * someone flips it must be a deliberate act that shows up in this diff. */
@@ -256,6 +256,103 @@ ZTEST(tof_cliff_packer, test_a_negative_range_under_a_valid_status_refuses)
     zassert_equal(r.error, -EPROTO);
     zassert_equal(static_cast<int>(r.why),
                   static_cast<int>(pk::reason::valid_range_negative));
+}
+
+/* The negative check used to look only at the target the farthest-wins rule selected,
+ * so a contradiction on any OTHER valid target rode along invisibly. The direction is
+ * the dangerous one: the frame is emitted as an ordinary distance from a sensor that
+ * has just contradicted itself, and on this path a distance is what decides whether
+ * the floor is where it should be. */
+ZTEST(tof_cliff_packer, test_a_negative_on_a_losing_valid_target_refuses_the_whole_frame)
+{
+    /* Minimal shape: the negative loses the selection. */
+    {
+        const target_in in[2]{{-5, 0}, {300, 0}};
+        const auto s{make_sample(2, 2, in, 2)};
+        const auto r{pk::reduce(s)};
+
+        zassert_equal(r.error, -EPROTO, "a contradiction anywhere in the frame refuses it");
+        zassert_equal(static_cast<int>(r.why),
+                      static_cast<int>(pk::reason::valid_range_negative));
+        zassert_not_equal(static_cast<int>(r.outcome),
+                          static_cast<int>(pk::result::frame_ready));
+    }
+
+    /* And the shape that pins the SCAN rather than a lucky index: the negative is
+     * neither the first target nor the winner, so neither "check the selected one" nor
+     * "check entries[0]" finds it. */
+    {
+        const target_in in[3]{{300, 0}, {-5, 0}, {900, 0}};
+        const auto s{make_sample(3, 3, in, 3)};
+        const auto r{pk::reduce(s)};
+
+        zassert_equal(r.error, -EPROTO, "a negative in the middle is still a contradiction");
+        zassert_equal(static_cast<int>(r.why),
+                      static_cast<int>(pk::reason::valid_range_negative));
+        zassert_equal(r.observed_status, 0, "the refusal carries the offending target's status");
+    }
+}
+
+/* The counter-example, and the reason the scan uses the class of each target rather
+ * than sweeping the array for a negative number. A target that is not VALID_RANGE may
+ * carry anything in its range field -- it is a placeholder, not a measurement -- so it
+ * must not be read as a valid-range contradiction. Here the surviving class is
+ * NO_TARGET, and the frame is the ordinary sentinel frame rather than a refusal.
+ *
+ * Note on reachability: with targets present the reducer requires entry_count ==
+ * target_count, and the VALID_RANGE branch is entered only when no higher-priority
+ * class is present, so "a non-valid target alongside a valid one" can only be observed
+ * through the surviving class, as here. */
+ZTEST(tof_cliff_packer, test_a_negative_under_a_non_valid_status_is_not_a_valid_range_refusal)
+{
+    const target_in in[2]{{-5, 11}, {300, 0}};  // 11 is NO_TARGET, which outranks VALID_RANGE
+    const auto s{make_sample(2, 2, in, 2)};
+    const auto r{pk::reduce(s)};
+
+    zassert_equal(r.error, 0, "a placeholder range on a non-valid target is not a defect");
+    zassert_equal(static_cast<int>(r.why), static_cast<int>(pk::reason::none));
+    zassert_equal(static_cast<int>(r.outcome), static_cast<int>(pk::result::frame_ready));
+    zassert_equal(static_cast<int>(r.cls), static_cast<int>(ctr::status_class::no_target));
+    zassert_equal(r.range_mm, ctr::kSentinelInvalid);
+}
+
+/* encode_measurement() judged only `outcome`. reduce() can never pair frame_ready with
+ * a refusal reason or a non-zero error -- refuse() sets outcome to unencodable -- but
+ * the struct is public and assembled by hand here and in diagnostics, so the encoder
+ * must refuse a result that contradicts itself rather than trust one field of it. */
+ZTEST(tof_cliff_packer, test_a_frame_ready_carrying_a_refusal_is_not_encoded)
+{
+    pk::reduction base{};
+    base.outcome = pk::result::frame_ready;
+    base.cls = ctr::status_class::valid_range;
+    base.raw_status = 0;
+    base.range_mm = 900;
+    base.target_count = 1;
+    base.observed_status = 0;
+
+    uint8_t out[8];
+    pk::reason why{pk::reason::none};
+
+    /* The control: this one is consistent and must still encode. */
+    memset(out, 0x42, sizeof out);
+    zassert_true(pk::encode_measurement(base, 0, 1, 0, out, &why),
+                 "a consistent frame_ready must still be encodable");
+
+    /* frame_ready carrying a non-zero error. */
+    pk::reduction with_error{base};
+    with_error.error = -EPROTO;
+    memset(out, 0x42, sizeof out);
+    zassert_false(pk::encode_measurement(with_error, 0, 1, 0, out, &why));
+    zassert_equal(static_cast<int>(why), static_cast<int>(pk::reason::reduction_inconsistent));
+    zassert_equal(out[0], 0x42, "still no partial payload");
+
+    /* frame_ready carrying a refusal reason. */
+    pk::reduction with_why{base};
+    with_why.why = pk::reason::valid_range_negative;
+    memset(out, 0x42, sizeof out);
+    zassert_false(pk::encode_measurement(with_why, 0, 1, 0, out, &why));
+    zassert_equal(static_cast<int>(why), static_cast<int>(pk::reason::reduction_inconsistent));
+    zassert_equal(out[0], 0x42, "still no partial payload");
 }
 
 ZTEST(tof_cliff_packer, test_target_count_above_the_array_refuses)

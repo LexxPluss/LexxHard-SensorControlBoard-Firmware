@@ -2,7 +2,7 @@
  * Copyright (c) 2024-2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Build-point probe for the cliff ULD budget series. Not production code: it exists
  * so that consecutive build points differ by one build flag and nothing else.
