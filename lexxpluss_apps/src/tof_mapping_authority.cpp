@@ -187,6 +187,22 @@ void masks_from(const pf::fingerprint &fp, uint8_t &enumerated, uint8_t &model_v
 
 } // namespace
 
+/* Ends the current attempt, wherever it is ended from.
+ *
+ * Both halves matter and neither is sufficient alone. Clearing attempt_ stops commit_proof()
+ * accepting a token; revoking the gate's challenge stops a caller who still holds that
+ * challenge from MINTING one afterwards. Leaving the second out is the subtler hole: the
+ * evidence was gathered before the loss, the challenge is still outstanding, and
+ * evaluate() would happily grant a token for a chain that has since gone away.
+ *
+ * The gate's counter is not reset, so a later attempt always gets a larger nonce and no
+ * old token can be resurrected by number. */
+void invalidate_attempt()
+{
+    attempt_ = 0;
+    gate_.revoke();
+}
+
 int init(const config &cfg)
 {
     /* The runtime spec is validated, not merely non-empty. matches_runtime() indexes it
@@ -203,12 +219,19 @@ int init(const config &cfg)
          * is a commit compared against a configuration nobody meant to be current, and of the
          * two, losing PROVEN is the one that fails safe. */
         initialised_ = false;
+        /* A failed init must leave nothing behind that still looks authoritative.
+         * installed_mapping() has no initialised_ guard of its own, so without this it
+         * would keep handing out the previous PROVEN mapping while the published state
+         * says not_ready -- two answers to the same question, and the stale one is the
+         * one a consumer reads without checking. */
+        invalidate_attempt();
+        installed_ = kNoMapping;
         publish(kUnknown);
         return -EINVAL;
     }
 
     cfg_ = cfg;
-    attempt_ = 0;
+    invalidate_attempt();
     installed_ = kNoMapping;
     /* used_epochs_ is deliberately NOT cleared here -- see its definition. A re-init means a
      * new configuration, not a new power cycle. */
@@ -333,7 +356,7 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
      * caller could re-present the same evidence until a later check happened to pass, and each
      * retry would be judged against a chain that is one attempt older. */
     struct spend_attempt {
-        ~spend_attempt() { attempt_ = 0; }
+        ~spend_attempt() { invalidate_attempt(); }
     } const spend{};
 
     /* Re-checked here rather than trusted. The evaluator refuses anything but the profile
@@ -406,7 +429,7 @@ bool abort_proof(const pf::challenge &c)
 {
     if (!initialised_ || !c.valid() || c.nonce() != attempt_ || attempt_ == 0)
         return false;
-    attempt_ = 0;
+    invalidate_attempt();
     return true;
 }
 
@@ -414,6 +437,15 @@ void note_mapping_lost()
 {
     if (!initialised_)
         return;
+
+    /* BEFORE the state check, not after it.
+     *
+     * Whether anything is published depends on what was proven; whether an in-flight proof
+     * may still commit does not. The chain was reported lost, so the walks behind any open
+     * attempt describe a machine that no longer exists -- and an early return on "we were
+     * not PROVEN anyway" would leave that attempt live and let it publish PROVEN moments
+     * later from evidence the loss already contradicted. */
+    invalidate_attempt();
 
     const snapshot now{current()};
     /* Only a proven mapping can be lost. Reporting LOST from UNKNOWN would tell a consumer
@@ -431,6 +463,11 @@ bool note_chain_fault(uint8_t chain_flags, uint8_t failing_position)
 {
     if (!initialised_)
         return false;
+
+    /* First, and before any argument validation can change the return value. A chain fault
+     * says the chain is not what a proof in flight measured; that is true whatever this
+     * function decides to publish, and whatever it thinks of its arguments. */
+    invalidate_attempt();
 
     /* Validated HERE, at the publishing boundary, rather than stated in the header as a comment.
      * A snapshot the wire encoder refuses does not become a logged error downstream -- it becomes

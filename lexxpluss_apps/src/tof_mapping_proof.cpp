@@ -159,6 +159,15 @@ challenge gate::issue()
     return challenge{current_, this};
 }
 
+void gate::revoke()
+{
+    /* current_ is left alone on purpose. consumed_ is what evaluate() tests, and clearing
+     * the number as well would make outstanding_nonce() and the stale check disagree about
+     * which challenge died. next_ is untouched, so the next issue() climbs past every nonce
+     * any live token carries. */
+    consumed_ = true;
+}
+
 namespace {
 
 /* The commissioning profile is checked in two halves, and the split is about diagnostics

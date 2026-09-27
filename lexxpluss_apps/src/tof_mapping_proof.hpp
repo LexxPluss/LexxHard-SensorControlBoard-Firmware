@@ -327,6 +327,12 @@ public:
     // about its wiring.
     bench_report evaluate_bench(const evidence &ev);
 
+    // Kills the outstanding challenge without issuing a new one, so a token can no longer
+    // be minted from it. The counter is deliberately NOT reset: nonces must keep climbing
+    // across revocations, or a later attempt could reuse a number an old token still
+    // carries and that token would come back to life.
+    void revoke();
+
     // For diagnostics and for the authority's own assertions. Not an authorisation path.
     uint32_t outstanding_nonce() const { return consumed_ ? 0 : current_; }
 

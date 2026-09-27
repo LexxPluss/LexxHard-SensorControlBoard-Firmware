@@ -272,6 +272,173 @@ ZTEST(tof_mapping_authority, test_init_refuses_a_runtime_spec_the_enumerator_wou
     fresh_authority();
 }
 
+/* ------------------------------------------------- invalidating an attempt ----- */
+
+/* Ending an attempt has two halves and the second is the one that used to be missing.
+ * Clearing attempt_ stops a token committing; revoking the challenge stops one being
+ * MINTED afterwards from evidence gathered before the chain changed. */
+ZTEST(tof_mapping_authority, test_a_runtime_loss_invalidates_an_attempt_in_flight)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 7), au::commit_refusal::none);
+
+    /* A second proof is under way when the chain is reported lost. */
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+
+    au::note_mapping_lost();
+    zassert_equal(au::current().state, acq::mapping_state::lost);
+    zassert_equal(au::attempt_nonce(), 0u, "the attempt is over");
+    zassert_equal(au::installed_mapping().positions, 0u);
+
+    /* The challenge is dead too: evidence from before the loss cannot become a token. */
+    const pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_equal(v.reason, pf::refusal::challenge_consumed);
+    zassert_false(v.token.valid());
+    zassert_equal(au::current().state, acq::mapping_state::lost, "and LOST still stands");
+}
+
+/* A token that WAS granted before the loss must not be able to publish PROVEN over it. */
+ZTEST(tof_mapping_authority, test_a_token_granted_before_a_loss_cannot_overwrite_it)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 7), au::commit_refusal::none);
+
+    const au::attempt a{au::begin_proof()};
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted(), "evaluated, not yet committed");
+
+    au::note_mapping_lost();
+
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 8),
+                  au::commit_refusal::no_attempt);
+    zassert_equal(au::current().state, acq::mapping_state::lost,
+                  "a runtime loss must not be overwritten by evidence older than it");
+}
+
+ZTEST(tof_mapping_authority, test_a_chain_fault_invalidates_an_attempt_in_flight)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 7), au::commit_refusal::none);
+
+    const au::attempt a{au::begin_proof()};
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted());
+
+    zassert_true(au::note_chain_fault(0x01, 2));
+    zassert_equal(au::current().state, acq::mapping_state::fault);
+    zassert_equal(au::attempt_nonce(), 0u);
+
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 8),
+                  au::commit_refusal::no_attempt);
+    zassert_equal(au::current().state, acq::mapping_state::fault);
+}
+
+/* The early-return trap: LOST and FAULT decide whether to PUBLISH from the current state,
+ * but whether an in-flight proof may still commit does not depend on that. An attempt
+ * opened while the authority was merely not_ready must die just the same. */
+ZTEST(tof_mapping_authority, test_a_loss_reported_from_not_ready_still_invalidates_the_attempt)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(au::current().state, acq::mapping_state::not_ready);
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+
+    au::note_mapping_lost();
+    zassert_equal(au::current().state, acq::mapping_state::not_ready,
+                  "nothing was proven, so nothing is published as lost");
+    zassert_equal(au::attempt_nonce(), 0u, "but the attempt is still over");
+    zassert_equal(au::evaluate(t.evidence(), a.challenge).reason,
+                  pf::refusal::challenge_consumed);
+}
+
+/* A failed re-init leaves nothing behind that still looks authoritative. */
+ZTEST(tof_mapping_authority, test_a_failed_reinit_from_proven_clears_everything)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 7), au::commit_refusal::none);
+    zassert_equal(au::current().state, acq::mapping_state::proven);
+    zassert_equal(au::installed_mapping().positions, 6u);
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted());
+
+    /* An ill-formed runtime spec: rejected, and the rejection must not be half applied. */
+    enm::chain_spec bad{product_spec()};
+    bad.at[5].target_addr = bad.at[4].target_addr;
+    au::config cfg{};
+    cfg.runtime_spec = &bad;
+    cfg.begin_epoch = fake_begin_epoch;
+    cfg.acquisition_idle = fake_is_idle;
+    cfg.install_mapping = fake_install;
+    zassert_equal(au::init(cfg), -EINVAL);
+
+    zassert_equal(au::current().state, acq::mapping_state::not_ready);
+    zassert_equal(au::attempt_nonce(), 0u);
+    zassert_equal(au::installed_mapping().positions, 0u,
+                  "the previous mapping must not survive a failed init");
+    /* And neither the held challenge nor the granted token is usable afterwards. */
+    /* The authority's evaluate() proxy answers missing_evidence while uninitialised. That
+     * is a misleading name for "this authority is not configured" -- the evidence is fine
+     * -- but it is existing behaviour and not this commit's to change. What matters here
+     * is that no token comes out. */
+    const pf::verdict after{au::evaluate(t.evidence(), a.challenge)};
+    zassert_not_equal(after.reason, pf::refusal::none);
+    zassert_false(after.token.valid(), "no token may be minted after a failed init");
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 8),
+                  au::commit_refusal::not_initialised);
+}
+
+/* Nonces climb across revocations. If revoke() reset the counter, a later attempt could
+ * reuse a number an old token still carries and bring it back to life. */
+ZTEST(tof_mapping_authority, test_a_new_attempt_always_gets_a_larger_nonce)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt first{au::begin_proof()};
+    const uint32_t n1{au::attempt_nonce()};
+    pf::verdict v{au::evaluate(t.evidence(), first.challenge)};
+    zassert_true(v.granted());
+
+    au::note_mapping_lost();
+    zassert_equal(au::attempt_nonce(), 0u);
+
+    const au::attempt second{au::begin_proof()};
+    zassert_true(second.opened());
+    const uint32_t n2{au::attempt_nonce()};
+    zassert_true(n2 > n1, "%u must be past %u", n2, n1);
+
+    /* The old token cannot be revived by the new attempt. */
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 9),
+                  au::commit_refusal::wrong_attempt);
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+}
+
+/* abort_proof() ends an attempt the same way everything else does, challenge included. */
+ZTEST(tof_mapping_authority, test_aborting_a_proof_also_revokes_its_challenge)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    zassert_true(au::abort_proof(a.challenge));
+    zassert_equal(au::attempt_nonce(), 0u);
+
+    zassert_equal(au::evaluate(t.evidence(), a.challenge).reason,
+                  pf::refusal::challenge_consumed,
+                  "an aborted proof must not still be able to mint a token");
+}
+
 /* ------------------------------------------------- the token's issuer ---------- */
 
 /* The attack the challenge was always supposed to prevent, and did not.
