@@ -427,8 +427,26 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
 
 bool abort_proof(const pf::challenge &c)
 {
-    if (!initialised_ || !c.valid() || c.nonce() != attempt_ || attempt_ == 0)
+    if (!initialised_ || !c.valid() || attempt_ == 0)
         return false;
+
+    /* Provenance before the number, the same order evaluate() and commit_proof() use, and for
+     * the same reason: every gate counts nonces from 1, so a caller holding its own pf::gate can
+     * issue until one matches this authority's current attempt. On the other two paths that
+     * would forge a proof; here it would CANCEL one -- a commissioning session in progress,
+     * ended by somebody who was never part of it.
+     *
+     * This path was missed when the issuer was introduced, which is why the check reads as a
+     * separate statement rather than another clause: the two questions are "is this mine" and
+     * "is this current", and collapsing them is how one of them got forgotten.
+     *
+     * A foreign challenge returns false and changes nothing. It must not close the attempt it
+     * failed to authenticate. */
+    if (!gate_.owns(c))
+        return false;
+    if (c.nonce() != attempt_)
+        return false;
+
     invalidate_attempt();
     return true;
 }

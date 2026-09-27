@@ -423,6 +423,53 @@ ZTEST(tof_mapping_authority, test_a_new_attempt_always_gets_a_larger_nonce)
     zassert_not_equal(au::current().state, acq::mapping_state::proven);
 }
 
+/* abort_proof() was the third door, and it was left unlocked when the issuer was introduced.
+ *
+ * evaluate() and commit_proof() both refuse a foreign gate's work. This path authenticated by
+ * nonce alone, and every gate counts from 1 -- so a caller holding its own pf::gate could issue
+ * until one matched and CANCEL a commissioning session it was never part of. */
+ZTEST(tof_mapping_authority, test_a_foreign_challenge_cannot_abort_this_authoritys_attempt)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    const uint32_t nonce{au::attempt_nonce()};
+
+    pf::gate foreign;
+    const pf::challenge fc{foreign_challenge_matching(foreign, nonce)};
+    zassert_equal(fc.nonce(), nonce, "the numbers match, which is the whole point");
+
+    zassert_false(au::abort_proof(fc), "a foreign challenge aborted a live attempt");
+    zassert_equal(au::attempt_nonce(), nonce, "and it must not close what it could not name");
+
+    /* The legitimate holder can still abort, and can still prove -- the failed attempt cost
+     * this session nothing. */
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted(), "the challenge survived the foreign abort");
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 5),
+                  au::commit_refusal::none);
+}
+
+ZTEST(tof_mapping_authority, test_this_authoritys_own_challenge_still_aborts)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+
+    pf::gate foreign;
+    const pf::challenge fc{foreign_challenge_matching(foreign, au::attempt_nonce())};
+    zassert_false(au::abort_proof(fc));
+
+    zassert_true(au::abort_proof(a.challenge), "the real challenge must still work");
+    zassert_equal(au::attempt_nonce(), 0u);
+    zassert_equal(au::evaluate(t.evidence(), a.challenge).reason,
+                  pf::refusal::challenge_consumed);
+}
+
 /* abort_proof() ends an attempt the same way everything else does, challenge included. */
 ZTEST(tof_mapping_authority, test_aborting_a_proof_also_revokes_its_challenge)
 {

@@ -342,6 +342,11 @@ public:
     // somewhere other than here.
     bool owns(const proof_token &t) const { return t.valid() && t.issuer_ == this; }
 
+    // The same question about a challenge. Every path that acts on one a caller hands back --
+    // evaluating it, and aborting the attempt it represents -- has to ask this, or the nonce
+    // is doing the work of an identity again.
+    bool owns(const challenge &c) const { return c.valid() && c.issuer_ == this; }
+
     /* The gate's ADDRESS is the identity a challenge and a token carry, so it must not
      * move and must not be duplicated. A copy would mint a second gate answering to the
      * same counter but a different address; a move would strand every outstanding
