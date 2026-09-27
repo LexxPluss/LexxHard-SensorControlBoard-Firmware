@@ -78,11 +78,14 @@ set(VL53L4CX_ULD_PRODUCTION_SOURCES
 
 # Not compiled today. Enabling one is a deliberate edit plus a fresh budget run.
 #
-# vl53lx_api_calibration.c is NOT here, and that is a link-report finding rather than
-# a judgement: VL53LX_PerformRefSpadManagement lives in vl53lx_api.c, is reachable
-# from the BSP init path, and calls VL53LX_run_ref_spad_char in the calibration unit.
-# Excluding it by its name would have failed to link. This is why the split is
-# decided by the linker and not by the file list.
+# vl53lx_api_calibration.c is deliberately absent from THIS list -- it is in the
+# production list above -- and that placement is a link-report finding rather than a
+# judgement: VL53LX_PerformRefSpadManagement lives in vl53lx_api.c, is reachable from
+# the BSP init path, and calls VL53LX_run_ref_spad_char in the calibration unit.
+# Excluding it by its name would have failed to link. This is why the split is decided
+# by the linker and not by the file list.
+#
+# (Reworded after review read "NOT here" as "not compiled". It is compiled.)
 set(VL53L4CX_ULD_OPTIONAL_SOURCES
   ${VL53L4CX_ULD_DIR}/upstream/modules/vl53lx_api_debug.c
   ${VL53L4CX_ULD_DIR}/upstream/modules/vl53lx_nvm_debug.c
