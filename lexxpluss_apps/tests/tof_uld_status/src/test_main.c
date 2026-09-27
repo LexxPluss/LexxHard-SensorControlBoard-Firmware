@@ -214,3 +214,48 @@ ZTEST(tof_uld_status, test_a_good_fetch_after_a_failed_one_still_publishes)
 	zassert_equal(out.RangeData[0].RangeMilliMeter, GOOD_RANGE_MM);
 	zassert_equal(lldata()->PreviousStreamCount, ADVANCED_STREAM_COUNT + 1);
 }
+
+/* The ULD's own normalisation of negative ranges, pinned against the real SetTargetData
+ * rather than against a comment.
+ *
+ * This exists because tof_cliff_sensor.h used to claim that a VALID negative range
+ * reaches the adapter and that only the BSP would clamp it. It does not: SetTargetData,
+ * which VL53LX_GetMultiRangingData reaches through SetMeasurementData, rewrites a VALID
+ * negative before any caller sees it. The adapter's own test posed {-37, VALID} and
+ * {-1, VALID} and passed, because its fake fed those bytes straight through -- shapes the
+ * real ULD cannot emit. These two cases run the real code, so what the adapter tests
+ * assume is checked rather than asserted.
+ *
+ * BDTable[VL53LX_TUNING_PROXY_MIN] is the threshold, a file-static defaulting to -30
+ * (TUNING_PROXY_MIN, vl53lx_preset_setup.h). It is a tuning parameter, so these tests pin
+ * the behaviour at the default rather than treating -30 as a constant of the part. */
+ZTEST(tof_uld_status, test_a_valid_negative_inside_the_proxy_threshold_becomes_a_valid_zero)
+{
+	VL53LX_MultiRangingData_t out;
+
+	g.rc = VL53LX_ERROR_NONE;
+	g.active_results = 1;
+	g.median_range_mm = -1;
+
+	zassert_equal(VL53LX_GetMultiRangingData(dev, &out), VL53LX_ERROR_NONE);
+	zassert_equal(out.RangeData[0].RangeMilliMeter, 0,
+		      "the ULD synthesises a zero here; the adapter never sees the -1");
+	zassert_equal(out.RangeData[0].RangeStatus, VL53LX_RANGESTATUS_RANGE_VALID,
+		      "and it stays VALID, which is what makes the zero indistinguishable "
+		      "from a surface at the sensor without this being written down");
+}
+
+ZTEST(tof_uld_status, test_a_valid_negative_below_the_proxy_threshold_becomes_invalid)
+{
+	VL53LX_MultiRangingData_t out;
+
+	g.rc = VL53LX_ERROR_NONE;
+	g.active_results = 1;
+	g.median_range_mm = -31;
+
+	zassert_equal(VL53LX_GetMultiRangingData(dev, &out), VL53LX_ERROR_NONE);
+	zassert_equal(out.RangeData[0].RangeMilliMeter, -31,
+		      "the value is kept; it is the status that is rewritten");
+	zassert_equal(out.RangeData[0].RangeStatus, VL53LX_RANGESTATUS_RANGE_INVALID,
+		      "so a VALID negative cannot reach a consumer of this ULD");
+}

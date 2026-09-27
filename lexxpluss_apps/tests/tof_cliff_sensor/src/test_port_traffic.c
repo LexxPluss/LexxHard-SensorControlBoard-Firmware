@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Port-level tests: the wire shape and the errno path of zephyr/vl53lx_platform.c.
  *

@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #ifndef LEXXPLUSS_TOF_CLIFF_SAMPLE_H_
@@ -29,8 +29,24 @@
  * tof_cliff_sensor.h where both are visible. */
 #define TOF_CLIFF_MAX_TARGETS 4
 
+/* One target as the ULD reported it. Both fields are copied without further
+ * interpretation.
+ *
+ * WHERE NEGATIVE RANGES GO. The ULD normalises them before any of this is reached, and
+ * an earlier version of this comment got it wrong. SetTargetData, which
+ * VL53LX_GetMultiRangingData reaches through SetMeasurementData, rewrites a VALID range
+ * at or above BDTable[VL53LX_TUNING_PROXY_MIN] to 0 mm and leaves it VALID, and rewrites
+ * the status of one below that threshold to RANGE_INVALID while keeping its value.
+ * TUNING_PROXY_MIN defaults to -30 and is a tuning parameter, not a property of the part,
+ * so nothing may hard-code it. tof_cliff_sensor.h carries the full account and
+ * tests/tof_uld_status pins the boundary against the real SetTargetData. */
 struct tof_cliff_target {
-	int16_t range_mm;     /* signed and unclamped; negative is a real reading */
+	/* Signed, as the ULD left it. The read path adds no clamp of its own and cannot
+	 * undo the ULD's, so in the normal output of this ULD a negative here carries a
+	 * non-VALID status. That describes what this ULD emits; it is not an invariant any
+	 * layer enforces, which is why the wire contract refuses a VALID negative outright
+	 * rather than assuming one cannot arrive. */
+	int16_t range_mm;
 	uint8_t range_status; /* raw ULD range status, classified one layer up */
 };
 

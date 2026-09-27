@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-09-19f**
+Contract version: **commissioning-2026-09-26a**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
@@ -25,6 +25,28 @@ turned on by this revision, and the downlink that would carry an epoch is not sp
 uniqueness argument and the volume-restore policy are approved, where `-18d` still described them as
 awaiting sign-off. No prose about the wire changed, no vector byte changed, and nothing is enabled.
 The next revision to touch behaviour will be the one that specifies the downlink.
+
+`-26a` adds nothing to the wire and changes no byte of any vector; the regenerated artefacts differ
+only in their version, contract SHA and artefact-set stamps. It exists because three statements in
+this document had been overtaken by the work done against it and each one, left standing, pointed a
+reader at a conclusion the tree contradicts:
+
+- **The transport table still called `TOF_CLIFF_HEALTH_ID` "unallocated".** The identifier is `0x217`
+  and has been usable since `-18c`; what is outstanding is its *registration*, which is what the
+  *Open decisions* entry is actually about. A reader working from the table would have concluded the
+  health frame had no identifier to send on.
+- **`0x216`'s reservation paragraph pointed at the wrong antecedent.** It sat immediately after the
+  commissioning-pair discussion and said `0x216` "was reserved for this purpose", which reads as the
+  commissioning status identifier. `0x216` is the measurement identifier, reserved on 2026-08-06; the
+  commissioning pair was allocated separately on 2026-09-19.
+- **The *Golden vectors* section described a generator that emits nothing.** The frame-layout
+  artefacts are generated, committed and pinned by both repositories; it is the decoder
+  state-machine vectors that are still refused, and for a reason that applies only to them. The
+  generator's own docstring carried the same stale claim and is corrected with it.
+
+The version is advanced rather than the text quietly corrected because the artefact-set id hashes the
+generator's source as well as this document, so the correction moves all three pinned values whether
+or not it is announced. Advancing the identity makes that movement the deliberate act it should be.
 
 `-18c` adds nothing to the wire and changes no byte of any vector. It exists because writing the
 mapping-proof implementation against `-18b` surfaced three defects in the prose, and each of them would
@@ -128,7 +150,7 @@ CAN classic, 11-bit identifiers, on **CAN2 at 1 Mbit/s** (the SCB-to-IPC bus).
 | Constant | Meaning | Value |
 | --- | --- | --- |
 | `TOF_CLIFF_MEAS_ID` | one measurement frame per sensor per completed read | `0x216` |
-| `TOF_CLIFF_HEALTH_ID` | one health frame per acquisition cycle, and periodically regardless | **unallocated** — see *Open decisions* |
+| `TOF_CLIFF_HEALTH_ID` | one health frame per acquisition cycle, and periodically regardless | `0x217` — **registration outstanding**, see *Open decisions* |
 | `TOF_CLIFF_COMMISSION_REQUEST_ID` | one commissioning request, host or IPC to SCB | `0x218` |
 | `TOF_CLIFF_COMMISSION_STATUS_ID` | session announcements and transaction statuses, SCB to host | `0x219` |
 
@@ -143,9 +165,10 @@ transaction status are the same conversation and are distinguished by byte 1 of 
 the decoder checks before anything else; splitting them would spend a second identifier to save a
 comparison, and would let a host subscribe to one and believe it had the other.
 
-`0x216` was reserved for this purpose on 2026-08-06 under the same team-authorized self-assignment
-that allocated `0x214`/`0x215`. This contract is what un-reserves it: until this document is frozen,
-no filter or handler may claim `0x216` either.
+`0x216`, the **measurement** identifier, was reserved on 2026-08-06 under the same team-authorized
+self-assignment that allocated `0x214`/`0x215` — not for the commissioning pair discussed just above,
+which the team allocated separately on 2026-09-19. This contract is what un-reserves `0x216`: until
+this document is frozen, no filter or handler may claim it either.
 
 `0x217` is health, **self-assigned for commissioning on 2026-08-17 and not yet recorded in the team's
 CAN ID register.** Evidence gathered: a fresh source scan of both repositories that day found the
@@ -1137,12 +1160,17 @@ instead of the whole history replaying on every spin.
 
 ## Golden vectors
 
-Vectors do **not** exist yet; generating them is the step after the first freeze. They will come from
+**Frame-layout vectors exist and are committed**; the decoder state-machine vectors are the step after
+the first freeze. Both come from
 `gen_cliff_golden_vectors.py`, emitting a JSON file and a dependency-free C++ header, both carrying the
 SHA-256 of **this** file, pinned independently by the firmware packer test and the driver decoder test.
 The grid contract's generator, vectors and SHA are untouched.
 
-**The scenario catalogue is already written, and the generator refuses to emit.** `--list` renders every
+**The layout artefacts are emitted and checked; the decoder state-machine vectors are not.** `--emit`
+writes `tof_cliff_layout_vectors.json`, `tof_cliff_contract.h` and `tof_cliff_contract_vectors.h`, each
+carrying this file's version, its SHA-256 and the artefact-set id, and `--check` regenerates them into a
+temporary directory and compares byte-for-byte with the committed copies. For the decoder vectors the
+catalogue is written and the generator refuses to emit: `--list` renders every
 scenario with its input sequence, its complete expected event multiset, its publication outcome, the
 parameters it depends on and whether it is blocked on hardware; `--check` verifies the catalogue's
 self-consistency; and plain invocation fails while the contract version carries a `draft-` marker or any
