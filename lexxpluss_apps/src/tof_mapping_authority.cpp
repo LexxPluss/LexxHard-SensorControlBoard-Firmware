@@ -263,6 +263,18 @@ attempt begin_proof()
         return a;
     }
 
+    /* Exhaustion is checked HERE, before a single thing is revoked.
+     *
+     * Everything below this line is destructive: it publishes LOST over a proven mapping and
+     * clears installed_, on the understanding that an attempt is about to open and the chain is
+     * about to be re-enumerated. If the challenge could not be issued after that, the authority
+     * would have thrown away a PROVEN mapping and opened nothing -- a half-failure that leaves a
+     * robot worse off than refusing did. A refusal here changes no state at all. */
+    if (gate_.exhausted()) {
+        a.reason = begin_refusal::nonce_exhausted;
+        return a;
+    }
+
     /* Revoke BEFORE anything else, and before the caller touches an enable line. The
      * contract's order is normative: measurements stop first, then health reports the loss.
      * Here that is one atomic publish, and the publisher's own per-cycle re-check is what
@@ -288,7 +300,8 @@ attempt begin_proof()
     installed_ = kNoMapping;
 
     /* A fresh challenge invalidates the previous one, so a token minted before this
-     * revocation can no longer be committed. */
+     * revocation can no longer be committed. The exhaustion check above is what makes this
+     * issue() safe to treat as infallible; if it ever stops being, the check has moved. */
     const pf::challenge c{gate_.issue()};
     attempt_ = c.nonce();
     a.challenge = c;
@@ -550,6 +563,11 @@ uint32_t attempt_nonce()
 }
 
 #ifdef CONFIG_ZTEST
+void set_gate_next_for_test(uint32_t n)
+{
+    gate_.set_next_for_test(n);
+}
+
 void reset_epoch_history_for_test()
 {
     memset(used_epochs_, 0, sizeof used_epochs_);

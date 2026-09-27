@@ -241,6 +241,55 @@ ZTEST(tof_mapping_proof, test_a_moved_token_carries_its_issuer_and_the_source_is
     zassert_false(a.owns(moved));
 }
 
+/* The counter fails closed at the top instead of coming round again.
+ *
+ * It used to wrap -- `if (next_ == 0) next_ = 1` -- which reset the very thing revoke() is
+ * careful to preserve. After a wrap a retained token from the first attempt carries the same
+ * issuer AND the same nonce as the current one, so commit_proof() would accept evidence from
+ * 2^32 attempts ago. 2^32 is unreachable in practice, but the code had an explicit rule for
+ * the wrap, and the rule was the unsafe one. */
+ZTEST(tof_mapping_proof, test_the_last_nonce_is_usable_and_nothing_comes_after_it)
+{
+    const transaction t;
+    pf::gate g;
+
+    g.set_next_for_test(UINT32_MAX);
+    zassert_false(g.exhausted());
+
+    const pf::challenge last{g.issue()};
+    zassert_true(last.valid(), "the last number must still be usable");
+    zassert_equal(last.nonce(), UINT32_MAX);
+    zassert_true(g.exhausted(), "and it is the last one");
+
+    /* It still works, so exhaustion costs the attempt already open nothing. */
+    const pf::verdict v{g.evaluate(t.evidence(), last)};
+    zassert_equal(v.reason, pf::refusal::none);
+    zassert_true(g.owns(v.token));
+
+    /* Every call after it, for the rest of this gate's life. Not a wrap to 1. */
+    for (int i = 0; i < 4; i++) {
+        const pf::challenge after{g.issue()};
+        zassert_false(after.valid(), "call %d produced a challenge after exhaustion", i);
+        zassert_not_equal(after.nonce(), 1u, "the counter must not come round again");
+        zassert_true(g.exhausted());
+    }
+    zassert_equal(g.evaluate(t.evidence(), pf::challenge{}).reason,
+                  pf::refusal::challenge_invalid);
+}
+
+/* revoke() must not undo exhaustion either: it deliberately leaves the counter alone, and the
+ * exhausted flag is part of that counter's state. */
+ZTEST(tof_mapping_proof, test_revoking_does_not_refill_an_exhausted_gate)
+{
+    pf::gate g;
+    g.set_next_for_test(UINT32_MAX);
+    (void)g.issue();
+    zassert_true(g.exhausted());
+    g.revoke();
+    zassert_true(g.exhausted(), "revoke() refilled the counter");
+    zassert_false(g.issue().valid());
+}
+
 /* A fabricated challenge has no issuer at all, and that is the earlier refusal: it is not
  * foreign, it is empty. */
 ZTEST(tof_mapping_proof, test_a_default_constructed_challenge_is_invalid_not_foreign)

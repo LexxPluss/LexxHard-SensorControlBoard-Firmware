@@ -333,6 +333,12 @@ public:
     // carries and that token would come back to life.
     void revoke();
 
+    // True once the counter has issued UINT32_MAX and can no longer produce a number it has
+    // not used. issue() then returns an empty challenge for the rest of the boot -- see its
+    // definition. Callers check this BEFORE they revoke anything, so an exhausted gate does
+    // not cost a caller the state it already had.
+    bool exhausted() const { return exhausted_; }
+
     // For diagnostics and for the authority's own assertions. Not an authorisation path.
     uint32_t outstanding_nonce() const { return consumed_ ? 0 : current_; }
 
@@ -362,6 +368,14 @@ private:
     uint32_t next_{1};
     uint32_t current_{0};
     bool consumed_{true};
+    bool exhausted_{false};
+
+#ifdef CONFIG_ZTEST
+public:
+    // Puts the counter where a test can reach the boundary. There is no product path to
+    // 2^32 issues, and a test that cannot reach the boundary cannot pin what happens at it.
+    void set_next_for_test(uint32_t n) { next_ = n; exhausted_ = false; }
+#endif
 };
 
 // Exposed for the authority and for tests: builds the semantic fingerprint of one walk,
