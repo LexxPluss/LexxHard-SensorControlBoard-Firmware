@@ -49,18 +49,30 @@ bool in_cycle_{false};
 
 /* The acquisition thread, and the fact of its existence.
  *
- * thread_active_ and owner_ are written only by start() and by the thread's own exit path, both
- * before/after the thread can be contended, and read by the ownership guard. owner_ is what makes
- * the guard possible at all: "is this call coming from the thread that owns the ULD" cannot be
- * answered by a flag. */
+ * ATOMIC, and the decision they feed is made under the chain lock. Two separate defects needed
+ * both halves.
+ *
+ * They are written by start() and by the thread's own exit path and read by any caller, so as
+ * plain objects they were a data race in the C++ sense -- undefined, not merely stale, whatever
+ * the observed values happened to be. Atomics settle that.
+ *
+ * Atomics alone would not settle the other half. The guard used to run BEFORE the caller took the
+ * chain lock, so a caller could pass while no thread owned the chain, block on the mutex, and drive
+ * the ULD after start() had installed an owner. Every guarded path now takes the lock first and
+ * asks second, which is why the function is named for its precondition.
+ *
+ * owner_ is what makes the guard possible at all: "is this call coming from the thread that owns
+ * the ULD" cannot be answered by a flag. */
 k_thread thread_;
-k_tid_t owner_{nullptr};
+atomic_ptr_t owner_{ATOMIC_PTR_INIT(nullptr)};
 /* Two flags, because they answer different questions. thread_active_ is "is a thread driving the
  * ULD right now", which is what the ownership guard and try_stop() need. thread_created_ is "does
  * the kernel thread object still belong to a thread nobody has joined", which is what makes
  * restarting safe: k_thread_create() on an object whose previous thread has not been joined reuses a
  * live kernel structure. The thread itself clears the first; only join() clears the second. */
-bool thread_active_{false};
+atomic_t thread_active_{ATOMIC_INIT(0)};
+/* Not atomic and deliberately so: it is read and written only by start() and join(), both of which
+ * are lifecycle calls from the commissioning side, never from the acquisition thread. */
 bool thread_created_{false};
 thread_config tcfg_{};
 atomic_t stop_requested_{ATOMIC_INIT(0)};
@@ -72,10 +84,14 @@ atomic_t foreign_calls_{ATOMIC_INIT(0)};
 
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
- * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed. */
-bool may_touch_devices()
+ * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed.
+ *
+ * PRECONDITION, in the name: the chain lock is already held. Deciding ownership and then acquiring
+ * the lock is the time-of-check-to-time-of-use this replaced. */
+bool may_touch_devices_locked()
 {
-    if (!thread_active_ || owner_ == k_current_get())
+    if (atomic_get(&thread_active_) == 0 ||
+        atomic_ptr_get(&owner_) == static_cast<void *>(k_current_get()))
         return true;
     atomic_inc(&foreign_calls_);
     return false;
@@ -563,10 +579,12 @@ int bring_up()
 {
     if (!configured_)
         return -EINVAL;
-    if (!may_touch_devices())
-        return -EPERM;
 
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    if (!may_touch_devices_locked()) {
+        k_mutex_unlock(&tof_chain_controller::chain_lock());
+        return -EPERM;
+    }
     in_cycle_ = true;
 
     /* Deliberately NOT resetting next_cycle_seq_ here. Restarting the cycle count without
@@ -671,10 +689,12 @@ void run_cycle()
      * Returning here leaves the cycle NOT BEGUN: no on_cycle_begin, no on_cycle, and
      * next_cycle_seq_ untouched. That is the correct account of what happened -- the cycle did not
      * happen, so it owes no health frame and must not consume a cycle number. */
-    if (!may_touch_devices())
-        return;
-
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+
+    if (!may_touch_devices_locked()) {
+        k_mutex_unlock(&tof_chain_controller::chain_lock());
+        return;
+    }
 
     if (!running_) {
         k_mutex_unlock(&tof_chain_controller::chain_lock());
@@ -771,12 +791,14 @@ void stop()
 {
     if (!configured_)
         return;
-    if (!may_touch_devices())
-        return;
 
     // Quiesce, then release. Commissioning may only enumerate once this returns: the
     // enumeration drops enable lines, which re-addresses parts underneath a reader.
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    if (!may_touch_devices_locked()) {
+        k_mutex_unlock(&tof_chain_controller::chain_lock());
+        return;
+    }
     stop_locked();
     /* The health timer is deliberately NOT stopped here.
      *
@@ -825,8 +847,13 @@ static void thread_entry(void *, void *, void *)
      * longer stops devices itself: a foreign thread doing it while this one is mid-cycle interleaves
      * two callers inside the ULD, whose port keeps ONE transport record. */
     stop();
-    thread_active_ = false;
-    owner_ = nullptr;
+    /* Ownership is released under the same lock that every ownership decision is made under, so a
+     * caller cannot observe the release half-applied. Released AFTER stop() returns, never before:
+     * the devices this thread owns must be quiesced while it still owns them. */
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    atomic_set(&thread_active_, 0);
+    atomic_ptr_set(&owner_, nullptr);
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
 }
 
 int start(const thread_config &tcfg)
@@ -837,7 +864,7 @@ int start(const thread_config &tcfg)
      * still owns the kernel object, and creating over it is undefined. A caller that requested a
      * stop and never joined gets -EALREADY, which is the honest answer -- it has not finished
      * stopping. */
-    if (thread_active_ || thread_created_)
+    if (atomic_get(&thread_active_) != 0 || thread_created_)
         return -EALREADY;
     /* No defaults, the same rule the periods follow. A join timeout invented here would decide how
      * long commissioning waits before refusing, which is a deployment decision. */
@@ -852,7 +879,12 @@ int start(const thread_config &tcfg)
      * numbers cycles from 0 per mapping_epoch, begin_epoch() does that as one step of the
      * authority's commit, and a reset here would either renumber a sequence a consumer is part-way
      * through or reissue a (source_id, epoch, cycle_seq) triple that has already been used. */
-    thread_active_ = true;
+    /* Installed under the chain lock, so an owner cannot appear between another caller's
+     * ownership decision and its use of the devices -- that caller is holding this lock while it
+     * decides, so it cannot be mid-decision here. The new thread's first act is bring_up(), which
+     * takes the same lock, so it waits for this to finish rather than racing it. */
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    atomic_set(&thread_active_, 1);
     thread_created_ = true;
 
     /* K_FOREVER, then an explicit start, because the ownership record has to be COMPLETE before
@@ -860,7 +892,7 @@ int start(const thread_config &tcfg)
      *
      * With K_NO_WAIT the thread becomes runnable inside k_thread_create(), so a priority higher
      * than the caller's preempts right there -- before the return value has been assigned to
-     * owner_. The new thread then calls may_touch_devices(), finds thread_active_ already true and
+     * owner_. The new thread then calls may_touch_devices_locked(), finds thread_active_ already true
      * owner_ still null, and concludes that IT is the foreign thread. bring_up() returns -EPERM at
      * the guard, running_ is never set, and every later run_cycle() takes the !running_ path
      * forever: a live thread that owns the chain, reports itself running, and never touches a
@@ -876,9 +908,11 @@ int start(const thread_config &tcfg)
      * also why owner_ is not simply assigned &thread_ beforehand: that would work, but only because
      * k_thread_create happens to return that pointer, which is a convention this file would then
      * depend on silently. */
-    owner_ = k_thread_create(&thread_, tcfg_.stack, tcfg_.stack_size, thread_entry, nullptr, nullptr,
-                             nullptr, tcfg_.priority, 0, K_FOREVER);
-    k_thread_start(owner_);
+    k_tid_t const tid{k_thread_create(&thread_, tcfg_.stack, tcfg_.stack_size, thread_entry, nullptr,
+                                      nullptr, nullptr, tcfg_.priority, 0, K_FOREVER)};
+    atomic_ptr_set(&owner_, tid);
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    k_thread_start(tid);
     return 0;
 }
 
@@ -907,7 +941,11 @@ int join(uint32_t timeout_ms)
 
 bool thread_running()
 {
-    return thread_active_;
+    /* Lock-free on purpose. try_stop() asks this before deciding whether it may touch the chain at
+     * all, and taking the chain lock to answer would block a shell thread behind a cycle in
+     * progress -- the exact wait try_stop() exists to avoid. The atomic read is sound on its own:
+     * this reports a fact, it does not authorise touching a device. */
+    return atomic_get(&thread_active_) != 0;
 }
 
 uint32_t foreign_lifecycle_calls()
@@ -918,7 +956,7 @@ uint32_t foreign_lifecycle_calls()
 #ifdef CONFIG_ZTEST
 k_tid_t thread_id_for_test()
 {
-    return owner_;
+    return static_cast<k_tid_t>(atomic_ptr_get(&owner_));
 }
 #endif
 
@@ -937,7 +975,7 @@ int try_stop()
      *
      * A timeout leaves everything exactly as it was -- thread running, devices ranging -- and says
      * -EBUSY. Nothing is killed: see join(). */
-    if (thread_active_) {
+    if (thread_running()) {
         request_stop();
         return join(tcfg_.join_timeout_ms);
     }

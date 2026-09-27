@@ -1561,6 +1561,62 @@ ZTEST(tof_acquisition, test_a_stop_request_ends_the_cycles_and_the_thread_stops_
     zassert_equal(rec.cycle_begins, begins_at_stop, "a cycle BEGAN after the stop request");
 }
 
+/* A holder that takes the chain and lets go on its own, so a caller blocked behind it can be
+ * timed without needing a third thread to release it. */
+K_THREAD_STACK_DEFINE(timed_holder_stack, 1024);
+static k_thread timed_holder;
+K_SEM_DEFINE(timed_holder_took_it, 0, 1);
+static constexpr int kHoldMs{120};
+
+static void timed_holder_entry(void *, void *, void *)
+{
+    k_mutex_lock(&lexxhard::tof_chain_controller::chain_lock(), K_FOREVER);
+    k_sem_give(&timed_holder_took_it);
+    k_msleep(kHoldMs);
+    k_mutex_unlock(&lexxhard::tof_chain_controller::chain_lock());
+}
+
+/* The ownership decision happens UNDER the chain lock, and the refused path is what shows it.
+ *
+ * The guard used to run before the lock, so a foreign call was rejected without ever touching the
+ * mutex -- it returned immediately. That is the time-of-check-to-time-of-use: a caller could pass
+ * the check while nobody owned the chain, block on the mutex, and drive the ULD after start() had
+ * installed an owner. Taking the lock first closes it, and the observable consequence is that even
+ * a call that will be refused now waits for the lock.
+ *
+ * Timed rather than asserted structurally because there is no way to ask the code where its check
+ * sits. The margin is deliberately wide: the claim is "it waited at all", not a latency figure. */
+ZTEST(tof_acquisition, test_a_foreign_call_takes_the_chain_lock_before_deciding)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+    zassert_true(acq::thread_running());
+    zassert_not_equal(acq::thread_id_for_test(), k_current_get(),
+                      "this test thread must be the foreign one");
+
+    k_sem_reset(&timed_holder_took_it);
+    k_thread_create(&timed_holder, timed_holder_stack, K_THREAD_STACK_SIZEOF(timed_holder_stack),
+                    timed_holder_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&timed_holder_took_it, K_MSEC(1000)), 0, "the holder never took it");
+
+    const uint32_t foreign_before{acq::foreign_lifecycle_calls()};
+    const int stops_before{devs[0].stop_calls};
+    const int64_t t0{k_uptime_get()};
+    acq::stop();                       // foreign: it will be refused, but only after the lock
+    const int64_t waited{k_uptime_get() - t0};
+
+    zassert_true(waited >= kHoldMs / 2,
+                 "a foreign call decided without taking the chain lock: waited %lld ms",
+                 static_cast<long long>(waited));
+    zassert_equal(acq::foreign_lifecycle_calls() - foreign_before, 1u,
+                  "and it must still be refused and counted");
+    zassert_equal(devs[0].stop_calls, stops_before, "a foreign stop() stopped a device");
+    zassert_true(acq::thread_running(), "a foreign stop() ended the thread");
+
+    zassert_equal(acq::try_stop(), 0);
+}
+
 ZTEST(tof_acquisition, test_every_uld_call_comes_from_the_acquisition_thread)
 {
     /* The second acceptance boundary. Recorded per call rather than argued from the lock: serialised
