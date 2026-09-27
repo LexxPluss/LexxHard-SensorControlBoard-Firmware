@@ -312,6 +312,19 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
         return commit_refusal::no_attempt;
     if (!held.valid())
         return commit_refusal::invalid_token;
+    /* Provenance before the attempt number, and before anything is spent.
+     *
+     * The nonce alone was never an identity: every gate counts from 1, so a caller holding
+     * its own pf::gate could evaluate evidence it built itself, get a token numbered 1, and
+     * present it here while this authority's first attempt was open. The profile and
+     * runtime checks below would still have to pass -- but they are not what the challenge
+     * was for. The challenge exists so that the evidence behind a PROVEN was evaluated by
+     * THIS authority's gate, and only the gate can say whether it was.
+     *
+     * The attempt is deliberately left open: a token from somebody else's gate must not be
+     * able to cancel a commissioning session that is legitimately in progress. */
+    if (!gate_.owns(held))
+        return commit_refusal::wrong_issuer;
     if (held.nonce() != attempt_)
         return commit_refusal::wrong_attempt;
 

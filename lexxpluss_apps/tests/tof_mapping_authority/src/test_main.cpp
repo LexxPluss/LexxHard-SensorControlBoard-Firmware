@@ -156,6 +156,26 @@ void fresh_authority()
     au::reset_epoch_history_for_test();
 }
 
+/* Issues from `g` until its challenge carries `want`, so a foreign gate can be lined up
+ * with the authority's open attempt.
+ *
+ * Needed because the authority's gate is a module static whose counter keeps running for
+ * the whole suite, while a fresh gate starts at 1 -- so "two gates both issue nonce 1" is
+ * only true of two FRESH gates. The collision being tested is a real one either way: an
+ * attacker picks when to issue, and every gate walks the same 1, 2, 3 sequence, so landing
+ * on the open attempt's number costs nothing. */
+pf::challenge foreign_challenge_matching(pf::gate &g, uint32_t want)
+{
+    pf::challenge c{};
+    for (uint32_t i{0}; i < want + 2; ++i) {
+        c = g.issue();
+        if (c.nonce() == want)
+            return c;
+    }
+    zassert_unreachable("could not line the foreign gate up with nonce %u", want);
+    return c;
+}
+
 /* The whole happy path, since almost every test needs it up to some point. */
 au::commit_refusal prove(const transaction &t, uint8_t epoch)
 {
@@ -250,6 +270,86 @@ ZTEST(tof_mapping_authority, test_init_refuses_a_runtime_spec_the_enumerator_wou
      * than a refusal of everything. */
     zassert_equal(enm::validate_spec(product_spec()), enm::spec_error::none);
     fresh_authority();
+}
+
+/* ------------------------------------------------- the token's issuer ---------- */
+
+/* The attack the challenge was always supposed to prevent, and did not.
+ *
+ * A caller holding its own pf::gate evaluates the SAME evidence the authority would have
+ * accepted. Its gate counts from 1 just as the authority's does, so on a fresh authority
+ * the token it gets carries exactly the nonce the open attempt is waiting for. Everything
+ * downstream -- the commissioning profile, the runtime match, the epoch -- is legitimate,
+ * because the evidence is legitimate. The only thing wrong with it is that this
+ * authority's challenge never evaluated it, and until the token carried its issuer that
+ * was the one thing nothing checked. */
+ZTEST(tof_mapping_authority, test_a_token_from_another_gate_cannot_commit)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+
+    pf::gate foreign;
+    const pf::challenge fc{foreign_challenge_matching(foreign, au::attempt_nonce())};
+    zassert_equal(fc.nonce(), au::attempt_nonce(),
+                  "the numbers match, which is the whole point");
+    pf::verdict fv{foreign.evaluate(t.evidence(), fc)};
+    zassert_true(fv.granted(), "the evidence itself is sound; only the issuer is wrong");
+
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(fv.token), 3),
+                  au::commit_refusal::wrong_issuer);
+    zassert_equal(au::current().state, acq::mapping_state::not_ready,
+                  "nothing may be published from a token this gate did not issue");
+    zassert_equal(begin_epoch_calls, 0);
+    zassert_equal(install_calls, 0);
+}
+
+/* And the refusal must not be usable as a weapon. A foreign token that closed the attempt
+ * would let anyone cancel a commissioning session in progress; the session must survive
+ * and still be committable by its own evidence. */
+ZTEST(tof_mapping_authority, test_a_foreign_token_does_not_close_the_open_attempt)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt a{au::begin_proof()};
+    zassert_true(a.opened());
+    const uint32_t nonce{au::attempt_nonce()};
+
+    pf::gate foreign;
+    const pf::challenge fc{foreign_challenge_matching(foreign, nonce)};
+    pf::verdict fv{foreign.evaluate(t.evidence(), fc)};
+    zassert_true(fv.granted());
+    zassert_equal(fv.token.nonce(), nonce, "same number, different issuer");
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(fv.token), 3),
+                  au::commit_refusal::wrong_issuer);
+
+    zassert_equal(au::attempt_nonce(), nonce, "the legitimate attempt is still open");
+
+    pf::verdict v{au::evaluate(t.evidence(), a.challenge)};
+    zassert_true(v.granted());
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 3),
+                  au::commit_refusal::none, "and it still commits");
+    zassert_equal(au::current().state, acq::mapping_state::proven);
+}
+
+/* wrong_issuer and wrong_attempt are not the same fact and must not be folded together:
+ * one is a timing mistake by a legitimate caller, the other is somebody else's evidence. */
+ZTEST(tof_mapping_authority, test_a_stale_token_from_this_gate_is_still_wrong_attempt)
+{
+    fresh_authority();
+    const transaction t;
+
+    const au::attempt first{au::begin_proof()};
+    pf::verdict v{au::evaluate(t.evidence(), first.challenge)};
+    zassert_true(v.granted());
+    (void)au::begin_proof(); // supersedes it
+
+    zassert_equal(au::commit_proof(static_cast<pf::proof_token &&>(v.token), 4),
+                  au::commit_refusal::wrong_attempt,
+                  "this gate DID issue it; it is simply out of date");
 }
 
 ZTEST(tof_mapping_authority, test_a_committed_proof_publishes_proven_with_its_epoch)

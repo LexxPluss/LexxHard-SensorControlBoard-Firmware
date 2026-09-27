@@ -141,6 +141,118 @@ pf::refusal bench_refused(const transaction &t)
 
 ZTEST_SUITE(tof_mapping_proof, NULL, NULL, NULL, NULL, NULL);
 
+/* ------------------------------------------------- the challenge's issuer ------- */
+
+/* Every gate counts its nonces from 1, so two gates' FIRST challenges are identical as
+ * numbers. That is the whole problem: a nonce says which attempt, never whose. */
+ZTEST(tof_mapping_proof, test_two_gates_issue_the_same_first_nonce)
+{
+    pf::gate a;
+    pf::gate b;
+    const pf::challenge ca{a.issue()};
+    const pf::challenge cb{b.issue()};
+    zassert_equal(ca.nonce(), 1u);
+    zassert_equal(cb.nonce(), 1u);
+    zassert_equal(ca.nonce(), cb.nonce(), "identical numbers, different issuers");
+}
+
+ZTEST(tof_mapping_proof, test_a_gate_refuses_a_challenge_another_gate_issued)
+{
+    const transaction t;
+    pf::gate a;
+    pf::gate b;
+    (void)a.issue();
+    const pf::challenge cb{b.issue()};
+
+    const pf::verdict v{a.evaluate(t.evidence(), cb)};
+    zassert_equal(v.reason, pf::refusal::challenge_foreign,
+                  "a matching nonce from another gate is not this gate's challenge");
+    zassert_false(v.token.valid(), "and it mints nothing");
+}
+
+/* The denial-of-service side of the same check. If a foreign challenge spent this gate's
+ * outstanding one, anyone able to call evaluate() could force commissioning to redo two
+ * full walks by presenting a challenge from a gate of their own. */
+ZTEST(tof_mapping_proof, test_a_foreign_challenge_does_not_spend_this_gates_own)
+{
+    const transaction t;
+    pf::gate a;
+    pf::gate b;
+    const pf::challenge ca{a.issue()};
+    const pf::challenge cb{b.issue()};
+
+    zassert_equal(a.evaluate(t.evidence(), cb).reason, pf::refusal::challenge_foreign);
+    zassert_equal(a.outstanding_nonce(), ca.nonce(), "the real challenge is still open");
+
+    const pf::verdict v{a.evaluate(t.evidence(), ca)};
+    zassert_equal(v.reason, pf::refusal::none, "and it still proves");
+    zassert_true(v.token.valid());
+    zassert_true(a.owns(v.token));
+}
+
+/* Provenance is asked of the gate, never read off the token: owns() is the only question
+ * that can be answered correctly, and a second gate must not answer yes about this one's
+ * work. */
+ZTEST(tof_mapping_proof, test_only_the_issuing_gate_owns_its_token)
+{
+    const transaction t;
+    pf::gate a;
+    pf::gate b;
+    const pf::challenge ca{a.issue()};
+    (void)b.issue();
+
+    pf::verdict v{a.evaluate(t.evidence(), ca)};
+    zassert_true(v.granted());
+    zassert_true(a.owns(v.token));
+    zassert_false(b.owns(v.token), "another gate must not claim this token");
+}
+
+/* The move carries the issuer to the destination and empties the source.
+ *
+ * On the SOURCE side, be precise about what this pins and what it does not. owns() is
+ * valid() && issuer == this, and valid() already requires a non-zero nonce, so clearing
+ * the nonce alone is enough to make owns() answer no. The move also clears issuer_, and
+ * that clearing is NOT observable through the public API -- a mutation that leaves it
+ * behind passes this test. It is kept as hygiene rather than as a checked invariant: a
+ * moved-from token that still points at a gate is a dangling claim waiting for the next
+ * person who adds a field or relaxes valid(). Saying so here is better than an assertion
+ * that looks like it covers it.
+ *
+ * What IS pinned: the destination carries the issuer, so owns() follows the token. */
+ZTEST(tof_mapping_proof, test_a_moved_token_carries_its_issuer_and_the_source_is_spent)
+{
+    const transaction t;
+    pf::gate a;
+    const pf::challenge ca{a.issue()};
+
+    pf::verdict v{a.evaluate(t.evidence(), ca)};
+    zassert_true(v.granted());
+
+    pf::proof_token moved{static_cast<pf::proof_token &&>(v.token)};
+    zassert_true(moved.valid());
+    zassert_true(a.owns(moved), "the destination carries the issuer");
+    zassert_false(v.token.valid(), "the source is spent");
+    zassert_false(a.owns(v.token), "so owns() answers no -- via the nonce, see above");
+
+    pf::proof_token assigned{};
+    assigned = static_cast<pf::proof_token &&>(moved);
+    zassert_true(a.owns(assigned), "move-assignment carries the issuer too");
+    zassert_false(moved.valid());
+    zassert_false(a.owns(moved));
+}
+
+/* A fabricated challenge has no issuer at all, and that is the earlier refusal: it is not
+ * foreign, it is empty. */
+ZTEST(tof_mapping_proof, test_a_default_constructed_challenge_is_invalid_not_foreign)
+{
+    const transaction t;
+    pf::gate a;
+    (void)a.issue();
+    zassert_equal(a.evaluate(t.evidence(), pf::challenge{}).reason,
+                  pf::refusal::challenge_invalid);
+    zassert_not_equal(a.outstanding_nonce(), 0u, "and it spends nothing either");
+}
+
 ZTEST(tof_mapping_proof, test_a_clean_transaction_is_proven)
 {
     const transaction t;

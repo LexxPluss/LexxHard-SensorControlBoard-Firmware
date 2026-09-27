@@ -156,7 +156,7 @@ challenge gate::issue()
         next_ = 1;
     current_ = next_++;
     consumed_ = false;
-    return challenge{current_};
+    return challenge{current_, this};
 }
 
 namespace {
@@ -221,6 +221,21 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
         v.reason = refusal::challenge_invalid;
         return v;
     }
+    /* Provenance BEFORE staleness, and deliberately without spending anything.
+     *
+     * Before, because a challenge from another gate is not a stale one -- every gate's
+     * counter starts at 1, so a foreign first challenge carries the same nonce as this
+     * gate's first and would be reported as current, which is the confusion this check
+     * exists to end.
+     *
+     * Without spending, because the alternative is a denial of service: anyone able to
+     * call evaluate() with a gate of their own could burn this gate's outstanding
+     * challenge and force commissioning to start its two walks again. A foreign challenge
+     * must cost the holder of this gate nothing. */
+    if (c.issuer_ != this) {
+        v.reason = refusal::challenge_foreign;
+        return v;
+    }
     if (c.nonce() != current_) {
         v.reason = refusal::challenge_stale;
         return v;
@@ -239,7 +254,7 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
     }
 
     v.reason = refusal::none;
-    v.token = proof_token{c.nonce(), proven};
+    v.token = proof_token{c.nonce(), this, proven};
     return v;
 }
 

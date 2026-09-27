@@ -67,6 +67,12 @@ enum class commit_refusal : uint8_t {
     no_attempt,                // commit without a begin_proof(), or after one was superseded
     invalid_token,             // the fabricated token: nonce 0, authorises nothing
     wrong_attempt,             // a token from an attempt that is no longer the current one
+    /* A token this authority's gate did not issue. Separate from wrong_attempt, and not
+     * folded into it, because the two say different things to whoever reads the refusal:
+     * wrong_attempt is a timing mistake by a legitimate caller, this is evidence that was
+     * authorised by somebody else's challenge. It also does NOT close the current attempt
+     * -- a foreign token must not be able to cancel a commissioning session in progress. */
+    wrong_issuer,
     // Re-checked here rather than trusted from the token. DELIBERATELY UNREACHABLE today and
     // therefore untested: the evaluator refuses anything but the commissioning profile, so
     // every valid token already describes one, and a token cannot be fabricated. It stays
