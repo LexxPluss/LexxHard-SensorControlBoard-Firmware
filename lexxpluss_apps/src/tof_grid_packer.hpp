@@ -51,6 +51,11 @@ inline constexpr size_t kZonesPerFrame{4};
 inline constexpr uint16_t kInvalidSentinel{0xFFF};
 inline constexpr uint16_t kMaxValidMm{4094};
 
+// Byte-3 status flag bits, per the wire contract. Only bit 2 is named here:
+// the others are advisory and travel through the packer untouched, whereas
+// this one decides whether a grid may be transmitted at all.
+inline constexpr uint8_t kFlagBindingUntrusted{1U << 2};
+
 // One raw acquisition attempt, as the acquisition thread hands it over.
 // Flags are asserted by the caller; from_read() only judges them.
 struct sensor_read {
@@ -61,7 +66,7 @@ struct sensor_read {
     uint8_t generation;
     uint8_t chain_position;   // diagnostics only, low nibble on the wire
     uint8_t boards_detected;  // diagnostics only, high nibble on the wire
-    uint8_t recovered_flags;  // contract byte-3 flags: recovered/chain-level only
+    uint8_t recovered_flags;  // contract byte-3 flags: recovered/chain-level only, never kFlagBindingUntrusted
     uint8_t last_error;       // device/driver specific, 0 = none
     /* SIGNED, because the ULD's are. A VL53L7CX zone can report a negative
      * distance with a trusted status -- below-floor geometry, or a crosstalk

@@ -41,8 +41,8 @@ using namespace lexxhard::tof_grid;
 ZTEST(tof_grid_packer, test_contract_sha_pin)
 {
     zassert_equal(0, strcmp(tof_contract::kContractSha256,
-        "8c0f06ea130c76ce4dbc490471c072c823ab950a851669c5289b21b396408b20"));
-    zassert_equal(0, strcmp(tof_contract::kContractVersion, "2026-08-02h"));
+        "9703c9227fa2be930057ca15d5fe88132b4191d22a4e3c723062b8972332c5f1"));
+    zassert_equal(0, strcmp(tof_contract::kContractVersion, "2026-08-02i"));
     // The packer's own constants must agree with the contract's.
     zassert_equal(kInvalidSentinel, tof_contract::kInvalidSentinel);
     zassert_equal(kMaxValidMm, tof_contract::kMaxValidMm);
@@ -248,7 +248,11 @@ ZTEST(tof_grid_packer, test_low_confidence_policy)
 ZTEST(tof_grid_packer, test_health_reserved_fields_and_flag_mask)
 {
     sensor_read read{minimal_good_read()};
-    read.recovered_flags = 0xFF;
+    // Every byte-3 bit set EXCEPT the untrusted-binding bit, which is not an
+    // advisory and is covered by test_untrusted_binding_is_never_transmitted:
+    // setting it here would refuse the grid and this test would prove nothing
+    // about masking.
+    read.recovered_flags = static_cast<uint8_t>(0xFF & ~kFlagBindingUntrusted);
     read.chain_position = 0xF2;  // only the low nibble may survive
     read.boards_detected = 0xF6;
     auto const grid{completed_verified_grid::from_read(read, false)};
@@ -256,8 +260,45 @@ ZTEST(tof_grid_packer, test_health_reserved_fields_and_flag_mask)
     can_frame_out health;
     zassert_true(packer::pack(grid, data, health));
     zassert_equal(health.bytes[1] & 0x0F, 0);
-    zassert_equal(health.bytes[3], 0x0F);
+    zassert_equal(health.bytes[3], 0x0B);
     zassert_equal(health.bytes[4], 0x62);
     zassert_equal(health.bytes[6], 0);
     zassert_equal(health.bytes[7], 0);
+}
+
+// Bit 2 is a producer obligation, not a flag this firmware may emit. The
+// contract states that a conforming producer never sets it, which is only
+// true if the producer withholds the grid rather than transmitting it with
+// the bit on -- otherwise the guarantee rests on every decoder failing
+// closed. The refusal happens in the obligation, so nothing reaches the bus
+// and the surrounding advisory flags do not soften it.
+ZTEST(tof_grid_packer, test_untrusted_binding_is_never_transmitted)
+{
+    uint8_t const companions[]{0x00, 0x01, 0x02, 0x08, 0x0B};
+    for (uint8_t extra : companions) {
+        sensor_read read{minimal_good_read()};
+        read.recovered_flags = static_cast<uint8_t>(kFlagBindingUntrusted | extra);
+        auto const grid{completed_verified_grid::from_read(read, false)};
+        zassert_false(grid.admitted(), "flags 0x%02x admitted", read.recovered_flags);
+
+        can_frame_out data[kDataFrames];
+        can_frame_out health;
+        memset(data, 0xA5, sizeof data);
+        memset(&health, 0xA5, sizeof health);
+        zassert_false(packer::pack(grid, data, health),
+                      "flags 0x%02x packed", read.recovered_flags);
+        zassert_equal(data[0].bytes[0], 0xA5);
+        zassert_equal(health.bytes[0], 0xA5);
+    }
+
+    // The same advisories without bit 2 still publish: the refusal is the
+    // binding, never the company it keeps.
+    sensor_read read{minimal_good_read()};
+    read.recovered_flags = 0x0B;
+    auto const grid{completed_verified_grid::from_read(read, false)};
+    zassert_true(grid.admitted());
+    can_frame_out data[kDataFrames];
+    can_frame_out health;
+    zassert_true(packer::pack(grid, data, health));
+    zassert_equal(health.bytes[3], 0x0B);
 }

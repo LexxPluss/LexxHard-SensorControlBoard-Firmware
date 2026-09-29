@@ -17,8 +17,8 @@
 
 namespace tof_contract {
 
-inline constexpr const char* kContractVersion = "2026-08-02h";
-inline constexpr const char* kContractSha256 = "8c0f06ea130c76ce4dbc490471c072c823ab950a851669c5289b21b396408b20";
+inline constexpr const char* kContractVersion = "2026-08-02i";
+inline constexpr const char* kContractSha256 = "9703c9227fa2be930057ca15d5fe88132b4191d22a4e3c723062b8972332c5f1";
 
 inline constexpr uint32_t kInvalidSentinel = 4095;
 inline constexpr uint32_t kMaxValidMm = 4094;
@@ -55,6 +55,20 @@ struct ExpectedEvent {
   uint32_t count;
 };
 
+// One diagnostic that rides out WITH a published grid. The notes are the
+// acceptance table's advisories; the context fields are what makes them
+// actionable, so they are pinned too -- a decoder that keeps the note and drops
+// boards_detected turns "the peer failed enumeration" back into an unattributable
+// warning.
+struct ExpectedHealthReport {
+  uint8_t source;
+  const char* const* notes;   // sorted by name
+  size_t note_count;
+  uint8_t chain_position;
+  uint8_t boards_detected;
+  uint8_t last_error;
+};
+
 struct Scenario {
   const char* name;
   const char* description;
@@ -70,6 +84,11 @@ struct Scenario {
   size_t expected_event_count;
   const char* expected_state_src0;    // nullptr when not checked
   const char* expected_state_src1;
+  // The COMPLETE list of health diagnostics, in order. Complete the same way the
+  // event multiset is: a scenario with none must produce none, so a decoder cannot
+  // pass by reporting a note on every clean grid.
+  const ExpectedHealthReport* expected_health_reports;
+  size_t expected_health_report_count;
 };
 
 inline constexpr uint16_t kGridZones0[64] = {0,50,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1350,1400,1450,1500,1550,1600,1650,1700,1750,1800,1850,1900,1950,2000,2050,2100,2150,2200,2250,2300,2350,2400,2450,2500,2550,2600,2650,2700,2750,2800,2850,2900,2950,3000,3050,3100,3150};
@@ -639,7 +658,7 @@ inline constexpr Frame kScenarioFrames18[18] = {
 };
 inline constexpr ExpectedEvent kScenarioEvents19[2] = {
   {"HEALTH_COUNT_MISMATCH", 1},
-  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
+  {"HEALTH_GATE_BINDING_UNTRUSTED", 1},
 };
 inline constexpr Frame kScenarioFrames19[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -763,6 +782,10 @@ inline constexpr Frame kScenarioFrames23[19] = {
 inline constexpr ExpectedEvent kScenarioEvents24[1] = {
   {"GRID_PUBLISHED", 1},
 };
+inline constexpr const char* kScenarioNotes24_0[2] = {"DATA_READY_TIMEOUT_RECOVERED","I2C_ERROR_RECOVERED"};
+inline constexpr ExpectedHealthReport kScenarioHealth24[1] = {
+  {0, kScenarioNotes24_0, 2, 0, 6, 0},
+};
 inline constexpr Frame kScenarioFrames24[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x03,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
@@ -784,7 +807,7 @@ inline constexpr Frame kScenarioFrames24[18] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents25[1] = {
-  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
+  {"HEALTH_GATE_BINDING_UNTRUSTED", 1},
 };
 inline constexpr Frame kScenarioFrames25[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -807,7 +830,7 @@ inline constexpr Frame kScenarioFrames25[18] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents26[1] = {
-  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
+  {"HEALTH_GATE_BINDING_UNTRUSTED", 1},
 };
 inline constexpr Frame kScenarioFrames26[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -830,7 +853,7 @@ inline constexpr Frame kScenarioFrames26[18] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents27[1] = {
-  {"HEALTH_GATE_CHAIN_MISMATCH", 1},
+  {"HEALTH_GATE_BINDING_UNTRUSTED", 1},
 };
 inline constexpr Frame kScenarioFrames27[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -849,11 +872,15 @@ inline constexpr Frame kScenarioFrames27[18] = {
   {FrameKind::kData, {0x03,0x0D,0xA2,0x8A,0x5A,0xA8,0xCA,0xBE}, 0},
   {FrameKind::kData, {0x03,0x0E,0xAF,0x0B,0x22,0xB5,0x4B,0x86}, 0},
   {FrameKind::kData, {0x03,0x0F,0xBB,0x8B,0xEA,0xC1,0xCC,0x4E}, 0},
-  {FrameKind::kHealth, {0x03,0x00,0x40,0x0C,0x50,0x00,0x00,0x00}, 0},
+  {FrameKind::kHealth, {0x03,0x00,0x40,0x0C,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 301},
 };
 inline constexpr ExpectedEvent kScenarioEvents28[1] = {
   {"GRID_PUBLISHED", 1},
+};
+inline constexpr const char* kScenarioNotes28_0[1] = {"LAST_ERROR_NONZERO"};
+inline constexpr ExpectedHealthReport kScenarioHealth28[1] = {
+  {0, kScenarioNotes28_0, 1, 0, 6, 43},
 };
 inline constexpr Frame kScenarioFrames28[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -877,6 +904,10 @@ inline constexpr Frame kScenarioFrames28[18] = {
 };
 inline constexpr ExpectedEvent kScenarioEvents29[1] = {
   {"GRID_PUBLISHED", 1},
+};
+inline constexpr const char* kScenarioNotes29_0[1] = {"PEER_ENUMERATION_FAILED"};
+inline constexpr ExpectedHealthReport kScenarioHealth29[1] = {
+  {0, kScenarioNotes29_0, 1, 0, 5, 0},
 };
 inline constexpr Frame kScenarioFrames29[18] = {
   {FrameKind::kData, {0x03,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
@@ -960,11 +991,23 @@ inline constexpr Frame kScenarioFrames33[19] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 3901},
 };
 inline constexpr ExpectedEvent kScenarioEvents34[3] = {
+  {"INCOMPLETE_BY_TIMEOUT", 1},
+  {"MALFORMED_HEADER", 1},
+  {"SOURCE_NEVER_SEEN", 2},
+};
+inline constexpr Frame kScenarioFrames34[5] = {
+  {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 3500},
+  {FrameKind::kHealth, {0x32,0x05,0x40,0x00,0x60,0x00,0x00,0x00}, 4200},
+  {FrameKind::kData, {0x33,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 4200},
+  {FrameKind::kData, {0x33,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 4200},
+  {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4501},
+};
+inline constexpr ExpectedEvent kScenarioEvents35[3] = {
   {"GRID_PUBLISHED", 2},
   {"SOURCE_RECOVERED", 1},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames34[38] = {
+inline constexpr Frame kScenarioFrames35[38] = {
   {FrameKind::kData, {0x14,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x14,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x14,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -1004,12 +1047,12 @@ inline constexpr Frame kScenarioFrames34[38] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 1650},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 1951},
 };
-inline constexpr ExpectedEvent kScenarioEvents35[3] = {
+inline constexpr ExpectedEvent kScenarioEvents36[3] = {
   {"INCOMPLETE_BY_TIMEOUT", 3},
   {"SOURCE_NEVER_SEEN", 1},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames35[21] = {
+inline constexpr Frame kScenarioFrames36[21] = {
   {FrameKind::kData, {0x1E,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x1E,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x1E,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -1032,23 +1075,23 @@ inline constexpr Frame kScenarioFrames35[21] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4100},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4401},
 };
-inline constexpr ExpectedEvent kScenarioEvents36[3] = {
+inline constexpr ExpectedEvent kScenarioEvents37[3] = {
   {"MALFORMED_HEADER", 3},
   {"SOURCE_NEVER_SEEN", 1},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames36[5] = {
+inline constexpr Frame kScenarioFrames37[5] = {
   {FrameKind::kHealth, {0x01,0x05,0x40,0x00,0x60,0x00,0x00,0x00}, 0},
   {FrameKind::kHealth, {0x02,0x05,0x40,0x00,0x60,0x00,0x00,0x00}, 2000},
   {FrameKind::kHealth, {0x03,0x05,0x40,0x00,0x60,0x00,0x00,0x00}, 4000},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4100},
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 4401},
 };
-inline constexpr ExpectedEvent kScenarioEvents37[2] = {
+inline constexpr ExpectedEvent kScenarioEvents38[2] = {
   {"GRID_PUBLISHED", 3},
   {"SOURCE_STALE", 1},
 };
-inline constexpr Frame kScenarioFrames37[53] = {
+inline constexpr Frame kScenarioFrames38[53] = {
   {FrameKind::kData, {0x28,0x00,0x00,0x00,0x32,0x06,0x40,0x96}, 0},
   {FrameKind::kData, {0x28,0x01,0x0C,0x80,0xFA,0x12,0xC1,0x5E}, 0},
   {FrameKind::kData, {0x28,0x02,0x19,0x01,0xC2,0x1F,0x42,0x26}, 0},
@@ -1104,125 +1147,128 @@ inline constexpr Frame kScenarioFrames37[53] = {
   {FrameKind::kPoll, {0,0,0,0,0,0,0,0}, 1801},
 };
 
-inline constexpr Scenario kScenarios[38] = {
+inline constexpr Scenario kScenarios[39] = {
   {"in_order",
    "All sixteen chunks in order, then health. Baseline.",
-   kScenarioFrames0, 18, true, kGridZones0, 1, kScenarioEvents0, 1, nullptr, nullptr},
+   kScenarioFrames0, 18, true, kGridZones0, 1, kScenarioEvents0, 1, nullptr, nullptr, nullptr, 0},
   {"reverse_order",
    "Chunks arrive in descending index order. Bitmap keying must not care.",
-   kScenarioFrames1, 18, true, kGridZones0, 1, kScenarioEvents1, 1, nullptr, nullptr},
+   kScenarioFrames1, 18, true, kGridZones0, 1, kScenarioEvents1, 1, nullptr, nullptr, nullptr, 0},
   {"health_first",
    "Health wins arbitration and arrives before any data frame. The two IDs have no mutual ordering guarantee, so this is normal traffic, not an error.",
-   kScenarioFrames2, 18, true, kGridZones0, 1, kScenarioEvents2, 1, nullptr, nullptr},
+   kScenarioFrames2, 18, true, kGridZones0, 1, kScenarioEvents2, 1, nullptr, nullptr, nullptr, 0},
   {"health_interleaved",
    "Health arrives in the middle of the grid.",
-   kScenarioFrames3, 18, true, kGridZones0, 1, kScenarioEvents3, 1, nullptr, nullptr},
+   kScenarioFrames3, 18, true, kGridZones0, 1, kScenarioEvents3, 1, nullptr, nullptr, nullptr, 0},
   {"lost_chunk",
    "Chunk 5 never arrives. Bitmap stays 0xFFDF, so nothing is published even though health is valid, and the assembly times out.",
-   kScenarioFrames4, 17, false, nullptr, 0, kScenarioEvents4, 1, nullptr, nullptr},
+   kScenarioFrames4, 17, false, nullptr, 0, kScenarioEvents4, 1, nullptr, nullptr, nullptr, 0},
   {"missing_health",
    "All sixteen chunks arrive, health never does. The publish gate needs both.",
-   kScenarioFrames5, 17, false, nullptr, 0, kScenarioEvents5, 1, nullptr, nullptr},
+   kScenarioFrames5, 17, false, nullptr, 0, kScenarioEvents5, 1, nullptr, nullptr, nullptr, 0},
   {"duplicate_chunk_identical",
    "Chunk 2 arrives twice with an identical payload: a benign retransmission. Counted, discarded, the grid still completes.",
-   kScenarioFrames6, 19, true, kGridZones0, 1, kScenarioEvents6, 2, nullptr, nullptr},
+   kScenarioFrames6, 19, true, kGridZones0, 1, kScenarioEvents6, 2, nullptr, nullptr, nullptr, 0},
   {"conflicting_chunk_rejects",
    "Chunk 2 arrives twice with DIFFERENT payloads. Two values for one (source, generation, chunk) means a firmware fault or two streams mixing, and there is no basis for picking one. The generation is retired, so the health frame that follows finds nothing to close.",
-   kScenarioFrames7, 19, false, nullptr, 0, kScenarioEvents7, 2, nullptr, nullptr},
+   kScenarioFrames7, 19, false, nullptr, 0, kScenarioEvents7, 2, nullptr, nullptr, nullptr, 0},
   {"conflicting_chunk_not_resurrected",
    "A conflict arrives early, then the rest of the generation arrives normally. Every later frame of the retired generation is rejected; nothing can revive it.",
-   kScenarioFrames8, 19, false, nullptr, 0, kScenarioEvents8, 2, nullptr, nullptr},
+   kScenarioFrames8, 19, false, nullptr, 0, kScenarioEvents8, 2, nullptr, nullptr, nullptr, 0},
   {"cross_grid_splice_attempt",
    "Chunks 0-7 of generation 3, then chunks 8-15 of generation 4. A decoder keyed only on chunk index would splice these into one bogus grid. Generation equality discards the generation-3 partial and retires it, so the trailing generation-3 health frame is rejected and the generation-4 remnant times out. Neither grid completes.",
-   kScenarioFrames9, 18, false, nullptr, 0, kScenarioEvents9, 3, nullptr, nullptr},
+   kScenarioFrames9, 18, false, nullptr, 0, kScenarioEvents9, 3, nullptr, nullptr, nullptr, 0},
   {"generation_wrap",
    "Generation 255 completes, then generation 0 completes. Equality keying makes the wrap an ordinary new grid, not a regression.",
-   kScenarioFrames10, 35, true, nullptr, 2, kScenarioEvents10, 1, nullptr, nullptr},
+   kScenarioFrames10, 35, true, nullptr, 2, kScenarioEvents10, 1, nullptr, nullptr, nullptr, 0},
   {"both_sources_interleaved",
    "The two sources' grids are interleaved frame by frame on one CAN ID. Separate assembly slots per source_id must keep them apart.",
-   kScenarioFrames11, 35, true, nullptr, 2, kScenarioEvents11, 1, nullptr, nullptr},
+   kScenarioFrames11, 35, true, nullptr, 2, kScenarioEvents11, 1, nullptr, nullptr, nullptr, 0},
   {"timeout",
    "Fifteen chunks arrive, the sixteenth arrives 350 ms after the first. The slot has already expired at 300 ms and its generation is retired, so the late chunk and the late health are both rejected rather than starting a fresh assembly.",
-   kScenarioFrames12, 18, false, nullptr, 0, kScenarioEvents12, 2, nullptr, nullptr},
+   kScenarioFrames12, 18, false, nullptr, 0, kScenarioEvents12, 2, nullptr, nullptr, nullptr, 0},
   {"just_inside_timeout",
    "The same traffic 10 ms earlier, at 290 ms, still completes. Pins the boundary.",
-   kScenarioFrames13, 18, true, kGridZones0, 1, kScenarioEvents13, 1, nullptr, nullptr},
+   kScenarioFrames13, 18, true, kGridZones0, 1, kScenarioEvents13, 1, nullptr, nullptr, nullptr, 0},
   {"retired_generation_not_revived_after_timeout",
    "Regression test. A generation times out, and then the complete grid arrives, same generation. If the timeout merely cleared the slot, this would reassemble and publish data that had already been judged untrustworthy. Every frame must be rejected instead.",
-   kScenarioFrames14, 34, false, nullptr, 0, kScenarioEvents14, 2, nullptr, nullptr},
+   kScenarioFrames14, 34, false, nullptr, 0, kScenarioEvents14, 2, nullptr, nullptr, nullptr, 0},
   {"bad_source_id",
    "source_id 9 does not exist. The frame cannot be attributed to any source, so it is counted as malformed and dropped without touching a tracker.",
-   kScenarioFrames15, 2, false, nullptr, 0, kScenarioEvents15, 1, nullptr, nullptr},
+   kScenarioFrames15, 2, false, nullptr, 0, kScenarioEvents15, 1, nullptr, nullptr, nullptr, 0},
   {"health_reserved_nibble_set",
    "Health byte 1 low nibble is non-zero, which the contract forbids. The health frame is not structurally valid, so the gate stays shut and the grid times out.",
-   kScenarioFrames16, 18, false, nullptr, 0, kScenarioEvents16, 2, nullptr, nullptr},
+   kScenarioFrames16, 18, false, nullptr, 0, kScenarioEvents16, 2, nullptr, nullptr, nullptr, 0},
   {"health_generation_mismatch",
    "A complete generation-3 grid, but the health frame carries generation 4. The health frame does not close the grid — it replaces the slot. The generation-3 grid is discarded and the lone health frame then times out as an orphan.",
-   kScenarioFrames17, 18, false, nullptr, 0, kScenarioEvents17, 2, nullptr, nullptr},
+   kScenarioFrames17, 18, false, nullptr, 0, kScenarioEvents17, 2, nullptr, nullptr, nullptr, 0},
   {"health_count_mismatch_rejects",
    "Health claims 40 valid zones but 64 decode as valid. The packer contradicts its own summary, so one of the two is wrong and there is no way to tell which; the zone data cannot be trusted either. Reject, count, and raise an operator-visible diagnostic.",
-   kScenarioFrames18, 18, false, nullptr, 0, kScenarioEvents18, 1, nullptr, nullptr},
-  {"count_mismatch_and_chain_mismatch_raise_both",
-   "One health frame that is both self-contradictory and reporting a chain-length mismatch. Two independent faults pointing at different places -- the packer's summary, and the chain the source_id was derived from -- so both diagnostics are raised and the grid is refused once. Collapsing them into whichever check runs first would hide a real fault behind another real fault.",
-   kScenarioFrames19, 18, false, nullptr, 0, kScenarioEvents19, 2, nullptr, nullptr},
+   kScenarioFrames18, 18, false, nullptr, 0, kScenarioEvents18, 1, nullptr, nullptr, nullptr, 0},
+  {"count_mismatch_and_untrusted_binding_raise_both",
+   "One health frame that is both self-contradictory and reporting an untrusted binding. Two independent faults pointing at different places -- the packer's summary of its own zones, and whether this grid is this sensor's at all -- so both diagnostics are raised and the grid is refused once. Collapsing them into whichever check runs first would hide a real fault behind another real fault.",
+   kScenarioFrames19, 18, false, nullptr, 0, kScenarioEvents19, 2, nullptr, nullptr, nullptr, 0},
   {"health_count_out_of_range",
    "valid_zone_count of 200 exceeds 64. Structurally invalid, not merely mismatched. 0xFF is reserved for a future status-only frame and is not defined yet.",
-   kScenarioFrames20, 18, false, nullptr, 0, kScenarioEvents20, 2, nullptr, nullptr},
+   kScenarioFrames20, 18, false, nullptr, 0, kScenarioEvents20, 2, nullptr, nullptr, nullptr, 0},
   {"duplicate_health_identical",
    "Health arrives twice with identical bytes while the grid is still incomplete. Same rule as a duplicate chunk: benign, counted, ignored.",
-   kScenarioFrames21, 19, true, kGridZones0, 1, kScenarioEvents21, 2, nullptr, nullptr},
+   kScenarioFrames21, 19, true, kGridZones0, 1, kScenarioEvents21, 2, nullptr, nullptr, nullptr, 0},
   {"duplicate_health_differing_only_in_reserved_fields",
    "Health arrives twice. The second sets reserved status bits 4-7 and reserved bytes 6-7, which a future firmware is allowed to do. The normalised values are equal, so this is a benign retransmission. Comparing raw bytes here would retire a good grid the day the firmware starts using those fields — forward compatibility turning into data loss.",
-   kScenarioFrames22, 19, true, kGridZones0, 1, kScenarioEvents22, 2, nullptr, nullptr},
+   kScenarioFrames22, 19, true, kGridZones0, 1, kScenarioEvents22, 2, nullptr, nullptr, nullptr, 0},
   {"conflicting_health_rejects",
    "Two health frames for one generation disagree. As with a conflicting chunk there is no basis for choosing either summary, so the generation is retired.",
-   kScenarioFrames23, 19, false, nullptr, 0, kScenarioEvents23, 2, nullptr, nullptr},
+   kScenarioFrames23, 19, false, nullptr, 0, kScenarioEvents23, 2, nullptr, nullptr, nullptr, 0},
   {"recovered_flags_do_not_gate",
    "Health reports a recovered I2C error and a recovered data-ready timeout. Under the firmware transmit obligation a grid only exists after a complete successful model-verified read, so both describe the past, never this grid. It publishes, and both reach diagnostics.",
-   kScenarioFrames24, 18, true, kGridZones0, 1, kScenarioEvents24, 1, nullptr, nullptr},
-  {"chain_length_mismatch_refuses",
-   "Health reports that the chain length differs from the configured expectation. The zones are perfect and the frame is structurally valid, and the decoder publishes nothing: bit 2 says the chain is not the chain that was configured, and source_id comes from the packer's chain descriptor table, so this grid may belong to the other side of the robot. Published on the wrong topic it would read as 'that side is clear'. The decoder fails closed and raises its own event.",
-   kScenarioFrames25, 18, false, nullptr, 0, kScenarioEvents25, 1, nullptr, nullptr},
-  {"chain_length_mismatch_refuses_with_recovered_flags",
-   "The same chain-length mismatch, this time alongside two recovered flags that would each publish on their own. The refusal is not weakened by good news arriving with it.",
-   kScenarioFrames26, 18, false, nullptr, 0, kScenarioEvents26, 1, nullptr, nullptr},
-  {"chain_length_mismatch_refuses_with_peer_enumeration_failure",
-   "Chain-length mismatch together with the peer-enumeration flag. Bit 3 alone publishes; combined with bit 2 the grid is still refused, because the two answer different questions and only bit 2 is about whether this grid is this sensor's.",
-   kScenarioFrames27, 18, false, nullptr, 0, kScenarioEvents27, 1, nullptr, nullptr},
+   kScenarioFrames24, 18, true, kGridZones0, 1, kScenarioEvents24, 1, nullptr, nullptr, kScenarioHealth24, 1},
+  {"untrusted_binding_refuses",
+   "Health reports that the chain_position -> source_id binding cannot be trusted. The zones are perfect and the frame is structurally valid, and the decoder publishes nothing: this grid may belong to the other side of the robot, and published on the wrong topic it would read as 'that side is clear'. The decoder fails closed and raises its own event. A conforming producer never sends this; it is a poison bit for a non-conforming one.",
+   kScenarioFrames25, 18, false, nullptr, 0, kScenarioEvents25, 1, nullptr, nullptr, nullptr, 0},
+  {"untrusted_binding_refuses_with_recovered_flags",
+   "The same untrusted binding, this time alongside two recovered flags that would each publish on their own. The refusal is not weakened by good news arriving with it.",
+   kScenarioFrames26, 18, false, nullptr, 0, kScenarioEvents26, 1, nullptr, nullptr, nullptr, 0},
+  {"untrusted_binding_refuses_with_peer_enumeration_failure",
+   "An untrusted binding together with the peer-enumeration flag. Bit 3 alone publishes; combined with bit 2 the grid is still refused, because the two answer different questions and bit 3 must never excuse bit 2 -- that would fail open exactly when two real faults happen at once. boards_detected is deliberately left at a full chain so this vector cannot be read as pinning chain length as the cause.",
+   kScenarioFrames27, 18, false, nullptr, 0, kScenarioEvents27, 1, nullptr, nullptr, nullptr, 0},
   {"last_error_does_not_gate",
    "Health carries a non-zero last error code. It names the stage of the most recent failure since the previous health frame, it is advisory, and it rides out with the next successful grid before being cleared -- so like the recovered flags it describes history. Refusing it would discard the first good grid after every recovery. It publishes, and the code itself reaches diagnostics.",
-   kScenarioFrames28, 18, true, kGridZones0, 1, kScenarioEvents28, 1, nullptr, nullptr},
+   kScenarioFrames28, 18, true, kGridZones0, 1, kScenarioEvents28, 1, nullptr, nullptr, kScenarioHealth28, 1},
   {"peer_enumeration_failure_reported",
-   "The right source publishes normally while reporting that the OTHER sensor failed enumeration. This is how a sensor that emits nothing at all becomes visible: the surviving one says so. Publishes, and the flag must reach diagnostics.",
-   kScenarioFrames29, 18, true, kGridZones0, 1, kScenarioEvents29, 1, nullptr, nullptr},
+   "The right source publishes normally while reporting that the OTHER sensor failed enumeration. This is how a sensor that emits nothing at all becomes visible: the surviving one says so. It is also the case the revision before 2026-08-02i got wrong: a peer enumeration failure always shortens the chain, because the enumerator stops at the failing position, so this vector carries boards_detected=5 and still publishes. A short chain is not an untrusted binding, and refusing here would turn one dead sensor into blindness on both sides. Publishes, and the note must reach diagnostics with the board count that makes it actionable.",
+   kScenarioFrames29, 18, true, kGridZones0, 1, kScenarioEvents29, 1, nullptr, nullptr, kScenarioHealth29, 1},
   {"reserved_bytes_set_are_ignored",
    "A future firmware populates health bytes 6-7 and reserved flag bits 4-7. An older decoder must ignore them rather than reject the frame.",
-   kScenarioFrames30, 18, true, kGridZones0, 1, kScenarioEvents30, 1, nullptr, nullptr},
+   kScenarioFrames30, 18, true, kGridZones0, 1, kScenarioEvents30, 1, nullptr, nullptr, nullptr, 0},
   {"watchdog_never_seen_within_grace",
    "No traffic at all, polled 100 ms after startup. Both sources are NEVER_SEEN, but that is the ordinary state of a system still starting up and must not alarm.",
-   kScenarioFrames31, 2, false, nullptr, 0, nullptr, 0, "NEVER_SEEN", "NEVER_SEEN"},
+   kScenarioFrames31, 2, false, nullptr, 0, nullptr, 0, "NEVER_SEEN", "NEVER_SEEN", nullptr, 0},
   {"watchdog_never_seen_after_grace",
    "Still no traffic at 3500 ms, past the 3000 ms startup grace. Both sources remain NEVER_SEEN and this now alarms, once each. Nothing else in the protocol can detect this: with no frames, every frame-level check is vacuous.",
-   kScenarioFrames32, 3, false, nullptr, 0, kScenarioEvents32, 1, "NEVER_SEEN", "NEVER_SEEN"},
+   kScenarioFrames32, 3, false, nullptr, 0, kScenarioEvents32, 1, "NEVER_SEEN", "NEVER_SEEN", nullptr, 0},
   {"watchdog_never_seen_then_first_grid_recovers",
    "Regression test. A source alarmed as NEVER_SEEN and then delivers its first grid. The alarm must be cleared with SOURCE_RECOVERED; an alarm that can be raised but never lowered is worse than none.",
-   kScenarioFrames33, 19, true, nullptr, 1, kScenarioEvents33, 3, "HEALTHY", "NEVER_SEEN"},
+   kScenarioFrames33, 19, true, nullptr, 1, kScenarioEvents33, 3, "HEALTHY", "NEVER_SEEN", nullptr, 0},
+  {"watchdog_alarm_survives_non_publishing_traffic",
+   "The other half of the recovery regression, and the one the guard was actually written for. A source alarms as NEVER_SEEN, then sends traffic that can never become a grid: a malformed frame and two chunks of a generation that is never completed. Both count towards liveness by design, and neither is recovery. The alarm must stay raised and SOURCE_RECOVERED must not be emitted -- an alarm cleared by frames rather than by a grid tells an operator a blind sensor is fine. The state ends at STALE_NOT_COMPLETING, which is the honest description: the transport is alive and the data is not.\n\nThe traffic sits at 4200 ms deliberately. A source that has never published is measured against the startup grace plus the stale threshold, so anything before 4000 ms is still legitimately HEALTHY and the vector would be pinning the grace period rather than the guard. The closing poll at 4501 ms is past that budget and within one stale threshold of the last frame, which is exactly where STALE_NOT_COMPLETING lives.",
+   kScenarioFrames34, 5, false, nullptr, 0, kScenarioEvents34, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN", nullptr, 0},
   {"watchdog_stale_then_recovers",
    "The right source publishes at t=0, is HEALTHY at 500 ms, has gone STALE_NO_FRAMES by 1500 ms, then publishes again at 1600 ms and is HEALTHY at 1650 ms. Recovery is reported too, so an operator sees the clear as well as the onset. Both alarms are edge triggered: three polls produce at most one event each.",
-   kScenarioFrames34, 38, true, nullptr, 2, kScenarioEvents34, 3, "HEALTHY", "NEVER_SEEN"},
+   kScenarioFrames35, 38, true, nullptr, 2, kScenarioEvents35, 3, "HEALTHY", "NEVER_SEEN", nullptr, 0},
   {"watchdog_frames_without_completion",
    "Frames keep arriving for the right source but no grid ever completes. Past the startup grace plus the stale threshold the source is STALE_NOT_COMPLETING, not STALE_NO_FRAMES. The distinction matters — this is chunk loss or corruption, whereas no frames at all would point at the chain, power, enumeration or the CAN filter. The left source, silent throughout, alarms as NEVER_SEEN in the same poll.",
-   kScenarioFrames35, 21, false, nullptr, 0, kScenarioEvents35, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN"},
+   kScenarioFrames36, 21, false, nullptr, 0, kScenarioEvents36, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN", nullptr, 0},
   {"watchdog_malformed_frames_are_still_frames",
    "A source sends only malformed frames. They name a real source, so they are evidence the transport is alive and must count towards liveness: the source is STALE_NOT_COMPLETING, not STALE_NO_FRAMES. Reporting no frames here would send an investigation towards the chain or the CAN filter when the fault is corruption.",
-   kScenarioFrames36, 5, false, nullptr, 0, kScenarioEvents36, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN"},
+   kScenarioFrames37, 5, false, nullptr, 0, kScenarioEvents37, 3, "STALE_NOT_COMPLETING", "NEVER_SEEN", nullptr, 0},
   {"watchdog_staleness_is_per_source",
    "The left source keeps publishing while the right one stops after a single grid. At 1500 ms the right is stale and the left is healthy. Staleness must never be a single global flag.",
-   kScenarioFrames37, 53, true, nullptr, 3, kScenarioEvents37, 2, "STALE_NO_FRAMES", "HEALTHY"},
+   kScenarioFrames38, 53, true, nullptr, 3, kScenarioEvents38, 2, "STALE_NO_FRAMES", "HEALTHY", nullptr, 0},
 };
 
 inline constexpr size_t kGridVectorCount = 4;
-inline constexpr size_t kScenarioCount = 38;
+inline constexpr size_t kScenarioCount = 39;
 
 }  // namespace tof_contract
 // clang-format on

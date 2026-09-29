@@ -49,7 +49,17 @@ completed_verified_grid completed_verified_grid::from_read(const sensor_read &re
     // The transmit obligation. A read that fails any leg produces a
     // non-admitted grid, which the packer refuses: partial or unverified
     // data cannot reach the bus through this path.
-    if (!read.complete || !read.io_success || !read.model_verified || read.source_id > 1)
+    //
+    // kFlagBindingUntrusted is part of the obligation, not of the flags. Per
+    // the wire contract, byte-3 bit 2 says the chain_position -> source_id
+    // binding cannot be trusted, so the grid may belong to the other side of
+    // the robot and a decoder must refuse it. A producer that transmitted it
+    // anyway would be relying on every decoder to fail closed. Refusing here
+    // means the frame never reaches the bus, which is why the contract can
+    // state that bit 2 is unreachable from a conforming producer: it is
+    // withheld by the obligation, never suppressed by the flag.
+    if (!read.complete || !read.io_success || !read.model_verified || read.source_id > 1 ||
+        (read.recovered_flags & kFlagBindingUntrusted))
         return grid;
 
     grid.source_id = read.source_id;

@@ -1,6 +1,6 @@
 # ToF grid CAN wire contract (AMRSW-2322)
 
-Contract version: **2026-08-02h**
+Contract version: **2026-08-02i**
 Status: **frozen** for implementation. Everything below is normative. The numeric CAN IDs are
 assigned (see the identifier section) and are still injected as constants/configuration rather
 than parsed out of this prose.
@@ -159,14 +159,16 @@ byte 6 : reserved, MUST be 0 on transmit
 byte 7 : reserved, MUST be 0 on transmit
 ```
 
-Status flag bits in byte 3. All of these are **recovered or chain-level** by construction of the
-transmit obligation above, so none of them describes a failure of the read the grid came from:
+Status flag bits in byte 3. None of them describes a failure of the read the grid came from: bits
+0, 1 and 3 are **recovered or chain-level** by construction of the transmit obligation above, and
+bit 2 is about **identity** rather than about the read — which is why it is the only one a decoder
+gates on:
 
 | Bit | Meaning |
 | --- | --- |
 | 0 | an I2C transfer error occurred and recovered since the previous health frame |
 | 1 | a data-ready timeout occurred and recovered since the previous health frame |
-| 2 | chain length differs from the configured expectation |
+| 2 | the `chain_position -> source_id` binding cannot be trusted — see below; a conforming producer never sets it |
 | 3 | **another** sensor on the chain failed enumeration |
 | 4-7 | reserved, MUST be 0 on transmit |
 
@@ -176,16 +178,55 @@ transmit obligation above, so none of them describes a failure of the read the g
 which conflated the packer's obligation with the decoder's. They are not the same decision, and
 writing them as one left the decoder with no defined behaviour for a fault about identity.*
 
+*Changed again in 2026-08-02i. Bit 2 had only one definition — "chain length differs from the
+configured expectation" — whose obvious implementation is `boards_detected != 6`. A peer
+enumeration failure always shortens the chain, because the enumerator freezes and stops at the
+failing position, so the surviving sensor would have raised bit 2 and bit 3 together and a decoder
+obeying the rule below would have refused the surviving side's perfectly good grid. That is exactly
+the correlated blindness the bit 3 rule exists to prevent. Bit 2 is redefined here so it cannot be
+derived from chain length at all.*
+
+**Bit 2 means the `chain_position -> source_id` binding cannot be trusted** — for example a
+descriptor or part-type mismatch at a position that did enumerate. It does **not** mean the chain
+is short. **A chain shortened only by a peer enumeration failure sets bit 3 alone.**
+
 **The packer.** The firmware transmits a grid whenever the transmit obligation is met, regardless
 of any status flag. A flag never suppresses transmission, because the flags describe history or
-the chain, never this read. This is unchanged.
+the chain, never this read. That remains true under this revision: where the binding is untrusted
+the producer withholds the grid by **revoking `source_allowed`**, so the transmit obligation is not
+met in the first place — the suppression comes from the obligation, never from the flag.
+
+**A conforming producer MUST NOT set bit 2**, because the same condition that would set it also
+revokes `source_allowed` and there is no grid to close. Bit 2 is therefore **unreachable in normal
+operation, by construction**. It is kept anyway, as a defensive poison bit: **a decoder that
+receives it MUST refuse publication.**
+
+That is deliberately the opposite of the reasoning two paragraphs below, which rejects a flag for a
+model ID mismatch on the grounds that a flag which can never be set is worse than no flag. The
+difference is who the flag is aimed at. That one would have described a case *the protocol forbids
+a producer from reaching*, so a decoder handling it would be handling nothing. This one describes a
+case a **non-conforming** producer can still put on the wire, and the decoder's refusal is the only
+thing standing between that frame and a grid published on the wrong side of the robot. A flag no
+conforming producer sets is not the same as a flag no frame can carry.
 
 **The decoder.** A decoder MUST fail closed on **bit 2** and publish nothing for that grid, and
-MUST raise a distinct, severe diagnostic saying so. Bit 2 is not about the read: it says the chain
-is not the chain that was configured, and the packer derives `source_id` from its own chain
-descriptor table. The zones may be perfect and still belong to the other side of the robot, and a
-grid published on the wrong topic reads downstream as "that side is clear" — a wrong answer in the
-unsafe direction, which no consumer can detect.
+MUST raise a distinct, severe diagnostic saying so. The zones may be perfect and still belong to
+the other side of the robot, and a grid published on the wrong topic reads downstream as "that side
+is clear" — a wrong answer in the unsafe direction, which no consumer can detect.
+
+**Bit 3 never excuses bit 2.** Bit 3 answers "is another sensor dead"; bit 2 answers "is this grid
+this sensor's". A frame carrying both is still refused: treating bit 3 as a reason to overlook bit 2
+would fail open exactly when two real faults happen at once.
+
+**Rollout, and what actually changes.** Neither half of this is a behaviour change on the wire for
+the current implementations, and the revision should not be read as one. The SCB enumerator already
+grants `source_allowed` only for a position it verified by model ID at that position, and no code in
+the firmware has ever set bit 2, so a `2026-08-02g` producer was already conforming — by accident of
+its structure rather than by rule. What `i` adds is that the rule now matches: the packer refuses to
+admit a read carrying bit 2, so "a conforming producer never sets it" is enforced in the producer
+instead of resting on every decoder failing closed. The decoder's refusal remains the backstop for a
+producer that is not this one — a future firmware, a bench rig, or a fault that puts the bit on the
+bus — which is why the flag is kept rather than deleted.
 
 A decoder MUST NOT gate on bits 0, 1 or 3, or on a non-zero `last error code`:
 
@@ -201,6 +242,28 @@ A decoder MUST NOT gate on bits 0, 1 or 3, or on a non-zero `last error code`:
 
 Each of these MUST still reach diagnostics, and a non-zero `last error code` MUST be reported with
 its value rather than as a bare flag.
+
+*Added in 2026-08-02i.* "MUST still reach diagnostics" was previously an obligation with nothing
+behind it: the golden vectors asserted only that these grids publish, so a decoder that dropped
+every advisory passed them. The advisories are therefore named here, and the vectors now pin the
+complete set each scenario must produce — including the empty set, so a decoder cannot pass by
+reporting a note on every clean grid either.
+
+| Note | Raised by |
+| --- | --- |
+| `I2C_ERROR_RECOVERED` | status flag bit 0 |
+| `DATA_READY_TIMEOUT_RECOVERED` | status flag bit 1 |
+| `PEER_ENUMERATION_FAILED` | status flag bit 3 |
+| `LAST_ERROR_NONZERO` | `last error code` non-zero, reported with its value |
+
+There is deliberately no note for bit 2: notes ride out with a published grid and bit 2 has none.
+It raises the distinct severe diagnostic above instead.
+
+A diagnostic MUST carry `chain_position` and `boards_detected` alongside its notes. Both come from
+the same producer as the notes, so neither proves anything about installation and a decoder MUST
+NOT branch on them — they are context. `PEER_ENUMERATION_FAILED` without the number of boards the
+reporter actually saw is an unattributable warning, which is why the vectors pin the context as
+well as the note.
 
 **A known limit this rule does not address.** `valid_zone_count == 0` is a legal, structurally
 perfect frame and MUST be published: it is what genuinely open space looks like. It is also what a
@@ -383,7 +446,7 @@ it is not about the read, it is about whether this grid belongs to this `source_
 that refused bit 2 publishes nothing for that grid and raises its own diagnostic, distinct from the
 `valid_zone_count` rejection.
 
-When a health frame is both self-contradictory and reporting a chain-length mismatch, **both**
+When a health frame is both self-contradictory and reporting an untrusted binding, **both**
 diagnostics are raised and the grid is refused once. Collapsing them into whichever check runs first
 would hide one real fault behind another, and the two send an investigation to different places.
 
@@ -398,10 +461,13 @@ frame-level check is vacuous.
 
 From `consume()`: `GRID_PUBLISHED`, `INCOMPLETE_BY_TIMEOUT`, `INCOMPLETE_BY_GENERATION_CHANGE`,
 `DUPLICATE_CHUNK_IDENTICAL`, `CONFLICTING_CHUNK`, `DUPLICATE_HEALTH_IDENTICAL`,
-`CONFLICTING_HEALTH`, `MALFORMED_HEADER`, `HEALTH_COUNT_MISMATCH`, `HEALTH_GATE_CHAIN_MISMATCH`,
+`CONFLICTING_HEALTH`, `MALFORMED_HEADER`, `HEALTH_COUNT_MISMATCH`, `HEALTH_GATE_BINDING_UNTRUSTED`,
 `ORPHAN_HEALTH_TIMEOUT`, `FRAME_FOR_RETIRED_GENERATION`.
 
-`HEALTH_GATE_CHAIN_MISMATCH` and `HEALTH_COUNT_MISMATCH` are independent. A health frame that
+The health diagnostics named in the acceptance table above are drained separately from these
+events; they annotate a grid that WAS published, whereas every event here is about the frames.
+
+`HEALTH_GATE_BINDING_UNTRUSTED` and `HEALTH_COUNT_MISMATCH` are independent. A health frame that
 triggers both raises both, and the grid is refused once.
 
 From `poll()`: `SOURCE_NEVER_SEEN` (once past the startup grace), `SOURCE_STALE`,

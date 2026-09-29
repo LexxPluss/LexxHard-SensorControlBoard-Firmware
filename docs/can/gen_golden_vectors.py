@@ -56,10 +56,11 @@ ST_STALE_NO_FRAMES = "STALE_NO_FRAMES"
 SRC_RIGHT = 0  # hanging_front_right -> low_object_right
 SRC_LEFT = 1   # hanging_front_left  -> low_object_left
 
-# status flag bits, all recovered or chain-level by construction
+# status flag bits. Bits 0, 1 and 3 are recovered or chain-level by construction;
+# bit 2 is about identity and is the only one a decoder gates on.
 FLAG_I2C_RECOVERED = 1 << 0
 FLAG_TIMEOUT_RECOVERED = 1 << 1
-FLAG_CHAIN_LENGTH = 1 << 2
+FLAG_BINDING_UNTRUSTED = 1 << 2
 FLAG_PEER_ENUM_FAILED = 1 << 3
 
 EV_PUBLISHED = "GRID_PUBLISHED"
@@ -76,7 +77,28 @@ EV_ORPHAN_HEALTH = "ORPHAN_HEALTH_TIMEOUT"
 EV_NEVER_SEEN = "SOURCE_NEVER_SEEN"
 EV_STALE = "SOURCE_STALE"
 EV_RECOVERED = "SOURCE_RECOVERED"
-EV_HEALTH_GATE_CHAIN = "HEALTH_GATE_CHAIN_MISMATCH"
+EV_HEALTH_GATE_BINDING = "HEALTH_GATE_BINDING_UNTRUSTED"
+
+# The diagnostic notes that ride out WITH a published grid, one per advisory in the
+# acceptance table. Named here rather than left to each decoder so a vector can pin
+# them: an advisory that no test asserts is an advisory a decoder can silently drop.
+# There is deliberately no note for bit 2 -- it refuses the grid and raises
+# EV_HEALTH_GATE_BINDING instead, and a note that can never be set is a dead signal.
+NOTE_I2C_RECOVERED = "I2C_ERROR_RECOVERED"
+NOTE_TIMEOUT_RECOVERED = "DATA_READY_TIMEOUT_RECOVERED"
+NOTE_PEER_ENUM_FAILED = "PEER_ENUMERATION_FAILED"
+NOTE_LAST_ERROR_NONZERO = "LAST_ERROR_NONZERO"
+
+
+def report(source_id, notes, chain_position=None, boards_detected=6, last_error=0):
+    """One expected health diagnostic. The CONTEXT travels with the notes: a peer
+    enumeration failure is far more actionable with the board count beside it."""
+    if chain_position is None:
+        chain_position = 0 if source_id == SRC_RIGHT else 1
+    assert notes, "a report with no notes must not be emitted at all"
+    return {"source": source_id, "notes": sorted(notes),
+            "chain_position": chain_position, "boards_detected": boards_detected,
+            "last_error": last_error}
 
 
 def pack_chunk(generation, source_id, chunk_index, z):
@@ -421,16 +443,16 @@ def build(contract_sha, version):
       + [health(pack_health(3, SRC_RIGHT, ramp, valid_count_override=40))],
       False, {EV_COUNT_MISMATCH: 1})
 
-    s("count_mismatch_and_chain_mismatch_raise_both",
-      "One health frame that is both self-contradictory and reporting a chain-length mismatch. "
-      "Two independent faults pointing at different places -- the packer's summary, and the chain "
-      "the source_id was derived from -- so both diagnostics are raised and the grid is refused "
-      "once. Collapsing them into whichever check runs first would hide a real fault behind "
-      "another real fault.",
+    s("count_mismatch_and_untrusted_binding_raise_both",
+      "One health frame that is both self-contradictory and reporting an untrusted binding. Two "
+      "independent faults pointing at different places -- the packer's summary of its own zones, "
+      "and whether this grid is this sensor's at all -- so both diagnostics are raised and the "
+      "grid is refused once. Collapsing them into whichever check runs first would hide a real "
+      "fault behind another real fault.",
       [data(f) for f in ramp_frames]
-      + [health(pack_health(3, SRC_RIGHT, ramp, flags=FLAG_CHAIN_LENGTH,
+      + [health(pack_health(3, SRC_RIGHT, ramp, flags=FLAG_BINDING_UNTRUSTED,
                             valid_count_override=40))],
-      False, {EV_COUNT_MISMATCH: 1, EV_HEALTH_GATE_CHAIN: 1})
+      False, {EV_COUNT_MISMATCH: 1, EV_HEALTH_GATE_BINDING: 1})
 
     s("health_count_out_of_range",
       "valid_zone_count of 200 exceeds 64. Structurally invalid, not merely mismatched. "
@@ -479,37 +501,38 @@ def build(contract_sha, version):
                             flags=FLAG_I2C_RECOVERED | FLAG_TIMEOUT_RECOVERED))],
       True, {EV_PUBLISHED: 1},
       {"expected_zones_mm": ramp,
-       "expected_flags": FLAG_I2C_RECOVERED | FLAG_TIMEOUT_RECOVERED})
+       "expected_health_reports": [report(SRC_RIGHT, [NOTE_I2C_RECOVERED,
+                                                      NOTE_TIMEOUT_RECOVERED])]})
 
-    s("chain_length_mismatch_refuses",
-      "Health reports that the chain length differs from the configured expectation. The zones "
-      "are perfect and the frame is structurally valid, and the decoder publishes nothing: bit 2 "
-      "says the chain is not the chain that was configured, and source_id comes from the "
-      "packer's chain descriptor table, so this grid may belong to the other side of the robot. "
-      "Published on the wrong topic it would read as 'that side is clear'. The decoder fails "
-      "closed and raises its own event.",
+    s("untrusted_binding_refuses",
+      "Health reports that the chain_position -> source_id binding cannot be trusted. The zones "
+      "are perfect and the frame is structurally valid, and the decoder publishes nothing: this "
+      "grid may belong to the other side of the robot, and published on the wrong topic it would "
+      "read as 'that side is clear'. The decoder fails closed and raises its own event. A "
+      "conforming producer never sends this; it is a poison bit for a non-conforming one.",
       [data(f) for f in ramp_frames]
-      + [health(pack_health(3, SRC_RIGHT, ramp, flags=FLAG_CHAIN_LENGTH))],
-      False, {EV_HEALTH_GATE_CHAIN: 1})
+      + [health(pack_health(3, SRC_RIGHT, ramp, flags=FLAG_BINDING_UNTRUSTED))],
+      False, {EV_HEALTH_GATE_BINDING: 1})
 
-    s("chain_length_mismatch_refuses_with_recovered_flags",
-      "The same chain-length mismatch, this time alongside two recovered flags that would each "
+    s("untrusted_binding_refuses_with_recovered_flags",
+      "The same untrusted binding, this time alongside two recovered flags that would each "
       "publish on their own. The refusal is not weakened by good news arriving with it.",
       [data(f) for f in ramp_frames]
       + [health(pack_health(3, SRC_RIGHT, ramp,
                             flags=FLAG_I2C_RECOVERED | FLAG_TIMEOUT_RECOVERED
-                            | FLAG_CHAIN_LENGTH))],
-      False, {EV_HEALTH_GATE_CHAIN: 1})
+                            | FLAG_BINDING_UNTRUSTED))],
+      False, {EV_HEALTH_GATE_BINDING: 1})
 
-    s("chain_length_mismatch_refuses_with_peer_enumeration_failure",
-      "Chain-length mismatch together with the peer-enumeration flag. Bit 3 alone publishes; "
-      "combined with bit 2 the grid is still refused, because the two answer different "
-      "questions and only bit 2 is about whether this grid is this sensor's.",
+    s("untrusted_binding_refuses_with_peer_enumeration_failure",
+      "An untrusted binding together with the peer-enumeration flag. Bit 3 alone publishes; "
+      "combined with bit 2 the grid is still refused, because the two answer different questions "
+      "and bit 3 must never excuse bit 2 -- that would fail open exactly when two real faults "
+      "happen at once. boards_detected is deliberately left at a full chain so this vector "
+      "cannot be read as pinning chain length as the cause.",
       [data(f) for f in ramp_frames]
       + [health(pack_health(3, SRC_RIGHT, ramp,
-                            flags=FLAG_CHAIN_LENGTH | FLAG_PEER_ENUM_FAILED,
-                            boards_detected=5))],
-      False, {EV_HEALTH_GATE_CHAIN: 1})
+                            flags=FLAG_BINDING_UNTRUSTED | FLAG_PEER_ENUM_FAILED))],
+      False, {EV_HEALTH_GATE_BINDING: 1})
 
     s("last_error_does_not_gate",
       "Health carries a non-zero last error code. It names the stage of the most recent failure "
@@ -520,17 +543,26 @@ def build(contract_sha, version):
       [data(f) for f in ramp_frames]
       + [health(pack_health(3, SRC_RIGHT, ramp, last_error=0x2B))],
       True, {EV_PUBLISHED: 1},
-      {"expected_zones_mm": ramp, "expected_last_error": 0x2B})
+      {"expected_zones_mm": ramp,
+       "expected_health_reports": [report(SRC_RIGHT, [NOTE_LAST_ERROR_NONZERO],
+                                          last_error=0x2B)]})
 
     s("peer_enumeration_failure_reported",
       "The right source publishes normally while reporting that the OTHER sensor failed "
       "enumeration. This is how a sensor that emits nothing at all becomes visible: the "
-      "surviving one says so. Publishes, and the flag must reach diagnostics.",
+      "surviving one says so. It is also the case the revision before 2026-08-02i got wrong: "
+      "a peer enumeration failure always shortens the chain, because the enumerator stops at "
+      "the failing position, so this vector carries boards_detected=5 and still publishes. A "
+      "short chain is not an untrusted binding, and refusing here would turn one dead sensor "
+      "into blindness on both sides. Publishes, and the note must reach diagnostics with the "
+      "board count that makes it actionable.",
       [data(f) for f in ramp_frames]
       + [health(pack_health(3, SRC_RIGHT, ramp, flags=FLAG_PEER_ENUM_FAILED,
                             boards_detected=5))],
       True, {EV_PUBLISHED: 1},
-      {"expected_zones_mm": ramp, "expected_flags": FLAG_PEER_ENUM_FAILED})
+      {"expected_zones_mm": ramp,
+       "expected_health_reports": [report(SRC_RIGHT, [NOTE_PEER_ENUM_FAILED],
+                                          boards_detected=5)]})
 
     s("reserved_bytes_set_are_ignored",
       "A future firmware populates health bytes 6-7 and reserved flag bits 4-7. An older "
@@ -569,6 +601,27 @@ def build(contract_sha, version):
       + [health(pack_health(60, SRC_RIGHT, ramp), t=3600)],
       True, {EV_NEVER_SEEN: 2, EV_RECOVERED: 1, EV_PUBLISHED: 1},
       {"expected_state_src0": ST_HEALTHY, "expected_state_src1": ST_NEVER_SEEN})
+
+    s("watchdog_alarm_survives_non_publishing_traffic",
+      "The other half of the recovery regression, and the one the guard was actually written "
+      "for. A source alarms as NEVER_SEEN, then sends traffic that can never become a grid: a "
+      "malformed frame and two chunks of a generation that is never completed. Both count "
+      "towards liveness by design, and neither is recovery. The alarm must stay raised and "
+      "SOURCE_RECOVERED must not be emitted -- an alarm cleared by frames rather than by a "
+      "grid tells an operator a blind sensor is fine. The state ends at STALE_NOT_COMPLETING, "
+      "which is the honest description: the transport is alive and the data is not.\n"
+      "\n"
+      "The traffic sits at 4200 ms deliberately. A source that has never published is measured "
+      "against the startup grace plus the stale threshold, so anything before 4000 ms is still "
+      "legitimately HEALTHY and the vector would be pinning the grace period rather than the "
+      "guard. The closing poll at 4501 ms is past that budget and within one stale threshold of "
+      "the last frame, which is exactly where STALE_NOT_COMPLETING lives.",
+      [poll(3500)]
+      + [health(bytes([50, (SRC_RIGHT << 4) | 0x5]) + ramp_health[2:], t=4200)]
+      + [data(f, t=4200) for f in pack_grid(51, SRC_RIGHT, ramp)[:2]],
+      False, {EV_NEVER_SEEN: 2, EV_MALFORMED: 1, EV_TIMEOUT: 1},
+      {"expected_state_src0": ST_STALE_NOT_COMPLETING,
+       "expected_state_src1": ST_NEVER_SEEN})
 
     stale_frames = pack_grid(20, SRC_RIGHT, ramp)
     stale_health = pack_health(20, SRC_RIGHT, ramp)
@@ -635,6 +688,16 @@ def build(contract_sha, version):
 
 # ---------------------------------------------------------------- C++ emit
 
+def cpp_str(text):
+    """A scenario description as a C++ string literal body. Descriptions are prose and
+    a multi-line one is the natural way to write a paragraph plus a note, so newlines
+    are escaped rather than forbidden -- emitting one raw produced an unterminated
+    literal and a build failure several hundred lines from the cause."""
+    return (text.replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\n", "\\n"))
+
+
 def cpp_bytes(hexstr):
     return "{" + ",".join("0x%s" % hexstr[i:i + 2] for i in range(0, len(hexstr), 2)) + "}"
 
@@ -692,6 +755,20 @@ def emit_header(v):
     a("  uint32_t count;")
     a("};")
     a("")
+    a("// One diagnostic that rides out WITH a published grid. The notes are the")
+    a("// acceptance table's advisories; the context fields are what makes them")
+    a("// actionable, so they are pinned too -- a decoder that keeps the note and drops")
+    a("// boards_detected turns \"the peer failed enumeration\" back into an unattributable")
+    a("// warning.")
+    a("struct ExpectedHealthReport {")
+    a("  uint8_t source;")
+    a("  const char* const* notes;   // sorted by name")
+    a("  size_t note_count;")
+    a("  uint8_t chain_position;")
+    a("  uint8_t boards_detected;")
+    a("  uint8_t last_error;")
+    a("};")
+    a("")
     a("struct Scenario {")
     a("  const char* name;")
     a("  const char* description;")
@@ -707,6 +784,11 @@ def emit_header(v):
     a("  size_t expected_event_count;")
     a("  const char* expected_state_src0;    // nullptr when not checked")
     a("  const char* expected_state_src1;")
+    a("  // The COMPLETE list of health diagnostics, in order. Complete the same way the")
+    a("  // event multiset is: a scenario with none must produce none, so a decoder cannot")
+    a("  // pass by reporting a note on every clean grid.")
+    a("  const ExpectedHealthReport* expected_health_reports;")
+    a("  size_t expected_health_report_count;")
     a("};")
     a("")
 
@@ -747,6 +829,19 @@ def emit_header(v):
             for name, cnt in sorted(ev.items()):
                 a('  {"%s", %d},' % (name, cnt))
             a("};")
+        hrs = sc.get("expected_health_reports", [])
+        for j, hr in enumerate(hrs):
+            a("inline constexpr const char* kScenarioNotes%d_%d[%d] = {%s};"
+              % (i, j, len(hr["notes"]),
+                 ",".join('"%s"' % n for n in hr["notes"])))
+        if hrs:
+            a("inline constexpr ExpectedHealthReport kScenarioHealth%d[%d] = {"
+              % (i, len(hrs)))
+            for j, hr in enumerate(hrs):
+                a("  {%d, kScenarioNotes%d_%d, %d, %d, %d, %d},"
+                  % (hr["source"], i, j, len(hr["notes"]), hr["chain_position"],
+                     hr["boards_detected"], hr["last_error"]))
+            a("};")
         a("inline constexpr Frame kScenarioFrames%d[%d] = {" % (i, len(sc["frames"])))
         for f in sc["frames"]:
             kind = {"data": "kData", "health": "kHealth", "poll": "kPoll"}[f["kind"]]
@@ -763,15 +858,18 @@ def emit_header(v):
             return '"%s"' % v if v else "nullptr"
         ev = sc.get("expected_events", {})
         eref = "kScenarioEvents%d" % i if ev else "nullptr"
-        a('  {"%s",\n   "%s",\n   kScenarioFrames%d, %d, %s, %s, %d, %s, %d, %s, %s},'
+        hrs = sc.get("expected_health_reports", [])
+        href = "kScenarioHealth%d" % i if hrs else "nullptr"
+        a('  {"%s",\n   "%s",\n   kScenarioFrames%d, %d, %s, %s, %d, %s, %d, %s, %s, %s, %d},'
           % (sc["name"],
-             sc["description"].replace('"', '\\"'),
+             cpp_str(sc["description"]),
              i, len(sc["frames"]),
              "true" if sc["publishes"] else "false",
              zref,
              sc.get("expected_publish_count", 1 if sc["publishes"] else 0),
              eref, len(ev),
-             q("expected_state_src0"), q("expected_state_src1")))
+             q("expected_state_src0"), q("expected_state_src1"),
+             href, len(hrs)))
     a("};")
     a("")
     a("inline constexpr size_t kGridVectorCount = %d;" % len(v["grids"]))
