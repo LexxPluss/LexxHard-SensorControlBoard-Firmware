@@ -46,20 +46,32 @@ completed_verified_grid completed_verified_grid::from_read(const sensor_read &re
                                                            bool accept_low_confidence)
 {
     completed_verified_grid grid;
-    // The transmit obligation. A read that fails any leg produces a
+    // THE TRANSMIT OBLIGATION. A read that fails any leg produces a
     // non-admitted grid, which the packer refuses: partial or unverified
     // data cannot reach the bus through this path.
     //
-    // kFlagBindingUntrusted is part of the obligation, not of the flags. Per
-    // the wire contract, byte-3 bit 2 says the chain_position -> source_id
-    // binding cannot be trusted, so the grid may belong to the other side of
-    // the robot and a decoder must refuse it. A producer that transmitted it
-    // anyway would be relying on every decoder to fail closed. Refusing here
-    // means the frame never reaches the bus, which is why the contract can
-    // state that bit 2 is unreachable from a conforming producer: it is
-    // withheld by the obligation, never suppressed by the flag.
-    if (!read.complete || !read.io_success || !read.model_verified || read.source_id > 1 ||
-        (read.recovered_flags & kFlagBindingUntrusted))
+    // source_allowed is the leg that covers an untrusted chain_position ->
+    // source_id binding. It is the enumerator's verdict, not a status flag,
+    // and that distinction is the whole point: the wire contract says a flag
+    // never suppresses transmission, so the grid has to be withheld because
+    // the obligation was never met -- not because a bit was set. That is also
+    // what makes "a conforming producer never sets bit 2" mean something. A
+    // firmware that gated on the flag instead would look compliant while its
+    // acquisition path never consulted the enumerator at all.
+    if (!read.complete || !read.io_success || !read.model_verified || !read.source_allowed ||
+        read.source_id > 1)
+        return grid;
+
+    // DEFENCE IN DEPTH, against an input the contract forbids from existing.
+    // Byte-3 bit 2 says the binding cannot be trusted; a caller that both
+    // asserts source_allowed and sets that bit is contradicting itself, and the
+    // safe reading of a contradiction is the unsafe-direction one. This is not
+    // the flag suppressing a transmission the obligation had allowed -- no
+    // conforming caller can reach it -- it is refusing to guess which half of a
+    // self-contradictory read to believe. Deleting it must never be the only
+    // thing standing between a wrong-side grid and the bus; that is
+    // source_allowed's job, above.
+    if (read.recovered_flags & kFlagBindingUntrusted)
         return grid;
 
     grid.source_id = read.source_id;

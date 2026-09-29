@@ -58,10 +58,28 @@ inline constexpr uint8_t kFlagBindingUntrusted{1U << 2};
 
 // One raw acquisition attempt, as the acquisition thread hands it over.
 // Flags are asserted by the caller; from_read() only judges them.
+//
+// Default-initialised to all-false on purpose: a caller that forgets a leg gets
+// a refused grid, never an admitted one.
 struct sensor_read {
     bool complete;          // all 64 zones present in this read
     bool io_success;        // no I2C error anywhere in the transaction set
     bool model_verified;    // device id verified at this chain position
+    /* The enumerator's per-source permission (chain_result::source_allowed for
+     * this source_id), and the ONLY thing that withholds a grid on an untrusted
+     * chain_position -> source_id binding. It is a separate input from the
+     * status flags on purpose: the wire contract says a flag never suppresses
+     * transmission, so the suppression has to come from the obligation. Reading
+     * byte-3 bit 2 instead would have been the same decision taken through the
+     * wrong door, and would leave a firmware whose acquisition path never
+     * consulted the enumerator at all looking compliant.
+     *
+     * NOT YET WIRED. No production code constructs a sensor_read on this
+     * branch -- the L7 grid_ops are still -ENOSYS stubs -- so this field exists
+     * to make the obligation impossible to supply implicitly once they are
+     * implemented. Until then the enumerator computes source_allowed and only
+     * the shell reads it. */
+    bool source_allowed;
     uint8_t source_id;      // 0 or 1, per the contract mapping
     uint8_t generation;
     uint8_t chain_position;   // diagnostics only, low nibble on the wire
@@ -81,8 +99,8 @@ struct sensor_read {
 class completed_verified_grid {
 public:
     // The gate. Returns a non-admitted grid unless the read satisfies the
-    // transmit obligation (complete && io_success && model_verified) and
-    // carries a representable source_id. Zone reduction to the wire
+    // transmit obligation (complete && io_success && model_verified &&
+    // source_allowed) and carries a representable source_id. Zone reduction to the wire
     // domain happens here: target_status 5 is trusted, 6 and 9 only when
     // accept_low_confidence, everything else becomes the invalid
     // sentinel; a negative raw distance is the sentinel too; valid

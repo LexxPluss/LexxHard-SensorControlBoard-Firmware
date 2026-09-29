@@ -196,6 +196,14 @@ the chain, never this read. That remains true under this revision: where the bin
 the producer withholds the grid by **revoking `source_allowed`**, so the transmit obligation is not
 met in the first place — the suppression comes from the obligation, never from the flag.
 
+`source_allowed` must therefore be a **real input to the obligation**, separate from the status
+flags. A producer that withheld the grid by inspecting byte-3 bit 2 instead would be taking the
+same decision through the wrong door, and worse, it would look compliant while never consulting its
+enumerator at all — the flag would be doing work that only a verified binding can honestly do. A
+producer MAY additionally refuse a read that asserts the permission *and* sets bit 2, since that
+input is self-contradictory and the contract forbids it from existing; that is defence in depth
+against its own caller, not the rule.
+
 **A conforming producer MUST NOT set bit 2**, because the same condition that would set it also
 revokes `source_allowed` and there is no grid to close. Bit 2 is therefore **unreachable in normal
 operation, by construction**. It is kept anyway, as a defensive poison bit: **a decoder that
@@ -218,15 +226,25 @@ is clear" — a wrong answer in the unsafe direction, which no consumer can dete
 this sensor's". A frame carrying both is still refused: treating bit 3 as a reason to overlook bit 2
 would fail open exactly when two real faults happen at once.
 
-**Rollout, and what actually changes.** Neither half of this is a behaviour change on the wire for
-the current implementations, and the revision should not be read as one. The SCB enumerator already
-grants `source_allowed` only for a position it verified by model ID at that position, and no code in
-the firmware has ever set bit 2, so a `2026-08-02g` producer was already conforming — by accident of
-its structure rather than by rule. What `i` adds is that the rule now matches: the packer refuses to
-admit a read carrying bit 2, so "a conforming producer never sets it" is enforced in the producer
-instead of resting on every decoder failing closed. The decoder's refusal remains the backstop for a
-producer that is not this one — a future firmware, a bench rig, or a fault that puts the bit on the
-bus — which is why the flag is kept rather than deleted.
+**Rollout, and what is and is not yet true of the firmware.** Two separate things have to hold for
+the packer rule above, and only one of them holds today.
+
+The enumerator does compute the permission correctly: `source_allowed` is granted only for a
+position verified by model ID at that position, and every failure path freezes the sweep without
+granting. Nothing in the firmware has ever set bit 2.
+
+But **nothing on the transmit path consumes that permission yet.** No production code constructs a
+`sensor_read` on this branch — the L7 grid acquisition operations are still `-ENOSYS` stubs — so the
+enumerator's verdict currently reaches only the shell. It would be wrong to read this revision as
+saying a `2026-08-02g` producer was already compliant: it never transmitted a wrong-side grid, but
+only because it never transmitted a grid at all. What `i` does is make the permission an explicit
+input to the transmit obligation (`sensor_read::source_allowed`), so the acquisition path cannot be
+completed without supplying it, and a host test fails if that leg is removed. The wiring itself
+lands with the grid acquisition work, not here.
+
+The decoder's refusal remains the backstop for a producer that is not this one — a future firmware,
+a bench rig, or a fault that puts the bit on the bus — which is why the flag is kept rather than
+deleted.
 
 A decoder MUST NOT gate on bits 0, 1 or 3, or on a non-zero `last error code`:
 
