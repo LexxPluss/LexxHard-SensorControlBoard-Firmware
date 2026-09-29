@@ -270,6 +270,58 @@ ZTEST(tof_grid_packer, test_health_reserved_fields_and_flag_mask)
     zassert_equal(health.bytes[7], 0);
 }
 
+// FAIL-CLOSED BY DEFAULT, proven at compile time and then at run time. The
+// struct's safety claim is that a caller which forgets a leg gets a refused
+// grid, and that only holds if every member has a default member initialiser:
+// `sensor_read r{}` zeroes the gates either way, so a test written that way
+// cannot tell the two cases apart and would have passed against the version
+// this fixes.
+//
+// DEFAULT-initialisation is the case that mattered and the one that was broken.
+// `constexpr` is what pins it: a constexpr object must be fully initialised, so
+// this declaration is ill-formed the moment any member loses its initialiser.
+// Deleting one does not produce a failing assertion, it produces a failing
+// BUILD, which is the strongest form this check can take.
+constexpr sensor_read kDefaultConstructed;
+
+static_assert(!kDefaultConstructed.complete, "complete must default to refusing");
+static_assert(!kDefaultConstructed.io_success, "io_success must default to refusing");
+static_assert(!kDefaultConstructed.model_verified, "model_verified must default to refusing");
+static_assert(!kDefaultConstructed.source_allowed, "source_allowed must default to refusing");
+// Not a gate, but 0 is a representable source: an uninitialised source_id would
+// pass the range check and attribute the grid to whichever side memory named.
+static_assert(kDefaultConstructed.source_id == 0, "source_id must default to a known side");
+
+ZTEST(tof_grid_packer, test_default_constructed_read_is_refused)
+{
+    sensor_read read;  // DEFAULT-initialised, deliberately not `read{}`
+    auto const grid{completed_verified_grid::from_read(read, false)};
+    zassert_false(grid.admitted(), "a read nobody filled in must never be admitted");
+
+    can_frame_out data[kDataFrames];
+    can_frame_out health;
+    memset(data, 0xA5, sizeof data);
+    memset(&health, 0xA5, sizeof health);
+    zassert_false(packer::pack(grid, data, health));
+    zassert_equal(data[0].bytes[0], 0xA5, "wrote data for an unfilled read");
+    zassert_equal(health.bytes[0], 0xA5, "wrote health for an unfilled read");
+
+    // And it is the permission that is missing, not merely everything: granting
+    // every other leg still refuses until source_allowed is set.
+    read.complete = true;
+    read.io_success = true;
+    read.model_verified = true;
+    for (size_t i{0}; i < kZones; ++i) {
+        read.target_status[i] = 5;
+        read.zones_mm[i] = 100;
+    }
+    zassert_false(completed_verified_grid::from_read(read, false).admitted(),
+                  "every leg but the permission must still refuse");
+    read.source_allowed = true;
+    zassert_true(completed_verified_grid::from_read(read, false).admitted(),
+                 "granting the permission must be what admits it");
+}
+
 // THE REASON THE FLAG IS NOT THE GATE. An untrusted binding withholds the grid
 // through the obligation -- source_allowed, the enumerator's own verdict -- with
 // no status flag involved anywhere. Deleting the source_allowed leg from

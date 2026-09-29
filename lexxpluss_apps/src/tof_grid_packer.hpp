@@ -59,12 +59,16 @@ inline constexpr uint8_t kFlagBindingUntrusted{1U << 2};
 // One raw acquisition attempt, as the acquisition thread hands it over.
 // Flags are asserted by the caller; from_read() only judges them.
 //
-// Default-initialised to all-false on purpose: a caller that forgets a leg gets
-// a refused grid, never an admitted one.
+// EVERY member carries a default member initialiser, and the safe value is the
+// refusing one. Without them only `sensor_read r{}` zeroed the gates and a plain
+// `sensor_read r;` left them indeterminate -- so a caller that forgot a leg could
+// admit a grid on whatever happened to be on the stack, which is the
+// unsafe-direction failure this struct exists to prevent. See
+// test_default_constructed_read_is_refused.
 struct sensor_read {
-    bool complete;          // all 64 zones present in this read
-    bool io_success;        // no I2C error anywhere in the transaction set
-    bool model_verified;    // device id verified at this chain position
+    bool complete{false};        // all 64 zones present in this read
+    bool io_success{false};      // no I2C error anywhere in the transaction set
+    bool model_verified{false};  // device id verified at this chain position
     /* The enumerator's per-source permission (chain_result::source_allowed for
      * this source_id), and the ONLY thing that withholds a grid on an untrusted
      * chain_position -> source_id binding. It is a separate input from the
@@ -79,21 +83,24 @@ struct sensor_read {
      * to make the obligation impossible to supply implicitly once they are
      * implemented. Until then the enumerator computes source_allowed and only
      * the shell reads it. */
-    bool source_allowed;
-    uint8_t source_id;      // 0 or 1, per the contract mapping
-    uint8_t generation;
-    uint8_t chain_position;   // diagnostics only, low nibble on the wire
-    uint8_t boards_detected;  // diagnostics only, high nibble on the wire
-    uint8_t recovered_flags;  // contract byte-3 flags: recovered/chain-level only, never kFlagBindingUntrusted
-    uint8_t last_error;       // device/driver specific, 0 = none
+    bool source_allowed{false};
+    /* Not a gate but still initialised: 0 is a representable source, so an
+     * indeterminate source_id would pass the range check and attribute a grid
+     * to whichever side the stack happened to name. */
+    uint8_t source_id{0};     // 0 or 1, per the contract mapping
+    uint8_t generation{0};
+    uint8_t chain_position{0};   // diagnostics only, low nibble on the wire
+    uint8_t boards_detected{0};  // diagnostics only, high nibble on the wire
+    uint8_t recovered_flags{0};  // contract byte-3 flags: recovered/chain-level only, never kFlagBindingUntrusted
+    uint8_t last_error{0};       // device/driver specific, 0 = none
     /* SIGNED, because the ULD's are. A VL53L7CX zone can report a negative
      * distance with a trusted status -- below-floor geometry, or a crosstalk
      * correction that overshoots. Held as uint16_t it wraps to a large positive
      * value, survives the > kMaxValidMm test as "too far", and clamps to
      * 4094 mm: a defect that reads as CLEAR SPACE on a detector whose whole job
      * is to notice something overhead. from_read() rejects negatives outright. */
-    int16_t zones_mm[kZones];       // raw ULD distances
-    uint8_t target_status[kZones];  // raw ULD per-zone status
+    int16_t zones_mm[kZones]{};       // raw ULD distances
+    uint8_t target_status[kZones]{};  // raw ULD per-zone status
 };
 
 class completed_verified_grid {
