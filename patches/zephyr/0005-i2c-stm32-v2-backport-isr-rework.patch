@@ -74,6 +74,26 @@ KEPT FROM THIS INTEGRATION, deliberately diverging from upstream:
     call covers a whole message, and 500 ms covers the largest this
     integration issues with room to spare.
 
+DIVERGING FROM UPSTREAM ON PURPOSE, beyond the classification above:
+
+  - an orphan RXNE or TXIS is guarded, not merely asserted. Upstream
+    asserts that current.len is non-zero at both points. The product
+    builds with assertions off, where that compiles to nothing and the
+    handler would dereference the caller's exhausted buffer and underflow
+    len to UINT_MAX. This is not hypothetical here: RXNE with len 0 is
+    exactly what was observed on DS20001, routinely. Both branches now
+    end the transfer with is_err instead. The receive side consumes the
+    byte first, to clear RXNE; the transmit side sends nothing, because
+    feeding the shift register a byte the caller never supplied would put
+    invented data on the bus.
+  - every exit from a controller transfer goes through one teardown.
+    stm32_i2c_master_mode_end() is split into a cleanup half and the
+    semaphore give, so the error returns and the timeout -- which must
+    not post a token -- perform the same teardown as success. Without
+    this, a NACK left master_active set, which keeps target dispatch off
+    for good once a target is attached, and disabled the peripheral even
+    when one was.
+
 NOT ADDRESSED HERE, and still required before this can be called done: an
 I2C bus recovery at boot before commissioning. A watchdog reset does not
 restore the sensors -- they keep half-finished transaction state across it,
@@ -81,9 +101,52 @@ which is why E3 could not re-commission after either hang. No ISR fix
 reaches that.
 
 ---
+--- a/drivers/i2c/i2c_ll_stm32.h
++++ b/drivers/i2c/i2c_ll_stm32.h
+@@ -68,6 +68,10 @@ struct i2c_stm32_data {
+ 		unsigned int is_arlo;
+ 		unsigned int is_nack;
+ 		unsigned int is_err;
++		/* Another message follows in the same direction, so the handler keeps reload
++		 * mode on at the end of this one instead of ending it in TC.
++		 */
++		bool continue_in_next;
+ 		struct i2c_msg *msg;
+ 		unsigned int len;
+ 		uint8_t *buf;
 --- a/drivers/i2c/i2c_ll_stm32_v2.c
 +++ b/drivers/i2c/i2c_ll_stm32_v2.c
-@@ -374,6 +374,7 @@
+@@ -99,7 +99,13 @@ static void stm32_i2c_enable_transfer_interrupts(const struct device *dev)
+ 	LL_I2C_EnableIT_ERR(i2c);
+ }
+ 
+-static void stm32_i2c_master_mode_end(const struct device *dev)
++/* Everything that hands the peripheral back, WITHOUT signalling completion. Split out so that
++ * every exit from a controller transfer -- success, error return, and the timeout, which must not
++ * post a token at all -- performs the same teardown. Leaving the error paths to disable the
++ * peripheral by hand was how master_active stayed set after a NACK, which keeps target dispatch
++ * off for good once a target is attached.
++ */
++static void stm32_i2c_master_mode_cleanup(const struct device *dev)
+ {
+ 	const struct i2c_stm32_config *cfg = dev->config;
+ 	struct i2c_stm32_data *data = dev->data;
+@@ -121,6 +127,14 @@ static void stm32_i2c_master_mode_end(const struct device *dev)
+ 		LL_I2C_Disable(i2c);
+ 	}
+ #endif
++}
++
++/* The handler's own exit: clean up, then release whoever is waiting. */
++static void stm32_i2c_master_mode_end(const struct device *dev)
++{
++	struct i2c_stm32_data *data = dev->data;
++
++	stm32_i2c_master_mode_cleanup(dev);
+ 	k_sem_give(&data->device_sync_sem);
+ }
+ 
+@@ -362,6 +376,7 @@ static void stm32_i2c_event(const struct device *dev)
  	const struct i2c_stm32_config *cfg = dev->config;
  	struct i2c_stm32_data *data = dev->data;
  	I2C_TypeDef *i2c = cfg->i2c;
@@ -91,7 +154,7 @@ reaches that.
  
  #if defined(CONFIG_I2C_TARGET)
  	if (data->slave_attached && !data->master_active) {
-@@ -381,55 +387,97 @@
+@@ -369,55 +384,125 @@ static void stm32_i2c_event(const struct device *dev)
  		return;
  	}
  #endif
@@ -126,7 +189,23 @@ reaches that.
 +		goto irq_xfer_completed;
 +
 +	} else if ((isr & I2C_ISR_RXNE) != 0U) {
++		/* RXNE with the buffer already exhausted is the state that wedged i2c2 on
++		 * DS20001: it was seen routinely, about once per read before the reload defect
++		 * was addressed and three times in ten minutes after. The assertion says it is
++		 * illegal and the assert build stops on it, but the product builds with
++		 * assertions off, where dereferencing here would write past the caller's buffer
++		 * and underflow len to UINT_MAX -- an interrupt storm turned into memory
++		 * corruption. So the product path guards instead of trusting: consume the byte
++		 * to clear RXNE, leave the buffer and the length untouched, and fail the
++		 * transfer. The byte is discarded because there is nowhere it belongs.
++		 */
 +		__ASSERT_NO_MSG(data->current.len != 0U);
++		if (data->current.len == 0U) {
++			(void)LL_I2C_ReceiveData8(i2c);
++			data->current.is_err = 1U;
++			stm32_i2c_master_mode_end(dev);
++			return;
++		}
 +		*data->current.buf = LL_I2C_ReceiveData8(i2c);
  		data->current.len--;
 -	}
@@ -147,13 +226,7 @@ reaches that.
 -		return;
 -	}
 +		uint32_t cr2 = LL_I2C_ReadReg(i2c, CR2);
- 
--	/* STOP received */
--	if (LL_I2C_IsActiveFlag_STOP(i2c)) {
--		LL_I2C_ClearFlag_STOP(i2c);
--		LL_I2C_DisableReloadMode(i2c);
--		goto end;
--	}
++
 +		if (data->current.len == 0U) {
 +			/* Everything in this message has moved. Reload is left on because the
 +			 * next message continues in the same direction; the thread takes over.
@@ -177,9 +250,27 @@ reaches that.
 +			}
 +			LL_I2C_WriteReg(i2c, CR2, cr2);
 +		}
-+
+ 
+-	/* STOP received */
+-	if (LL_I2C_IsActiveFlag_STOP(i2c)) {
+-		LL_I2C_ClearFlag_STOP(i2c);
+-		LL_I2C_DisableReloadMode(i2c);
+-		goto end;
+-	}
 +	} else if ((isr & I2C_ISR_TXIS) != 0U) {
++		/* The same hazard on the transmit side, guarded the same way. TXIS with nothing
++		 * left to send would read past the caller's buffer rather than write past it,
++		 * and underflow len identically. Nothing is transmitted: feeding the shift
++		 * register a byte the caller never supplied would put invented data on the bus.
++		 * TXIS is left asserted and the transfer ends here, which is what the error exit
++		 * is for -- it disables the transfer interrupts on the way out.
++		 */
 +		__ASSERT_NO_MSG(data->current.len != 0U);
++		if (data->current.len == 0U) {
++			data->current.is_err = 1U;
++			stm32_i2c_master_mode_end(dev);
++			return;
++		}
 +		LL_I2C_TransmitData8(i2c, *data->current.buf);
 +		data->current.len--;
 +		data->current.buf++;
@@ -225,7 +316,7 @@ reaches that.
  }
  
  static int stm32_i2c_error(const struct device *dev)
-@@ -505,8 +554,8 @@
+@@ -488,8 +573,8 @@ void stm32_i2c_error_isr(void *arg)
  }
  #endif
  
@@ -236,7 +327,7 @@ reaches that.
  {
  	const struct i2c_stm32_config *cfg = dev->config;
  	struct i2c_stm32_data *data = dev->data;
-@@ -515,111 +564,178 @@
+@@ -498,111 +583,168 @@ static int stm32_i2c_msg_write(const struct device *dev, struct i2c_msg *msg,
  
  	data->current.len = msg->len;
  	data->current.buf = msg->buf;
@@ -319,14 +410,6 @@ reaches that.
  
 -	return -EIO;
 -}
--
--static int stm32_i2c_msg_read(const struct device *dev, struct i2c_msg *msg,
--		       uint8_t *next_msg_flags, uint16_t slave)
--{
--	const struct i2c_stm32_config *cfg = dev->config;
--	struct i2c_stm32_data *data = dev->data;
--	I2C_TypeDef *i2c = cfg->i2c;
--	bool is_timeout = false;
 +	/* Anything over what the controller can count in one go is segmented by the HANDLER now,
 +	 * not by the calling thread. That is the point of this backport: the thread no longer
 +	 * takes a message apart and re-enters with the peripheral half configured.
@@ -337,13 +420,13 @@ reaches that.
 +		cr2 |= msg->len << I2C_CR2_NBYTES_Pos;
 +	}
  
--	data->current.len = msg->len;
--	data->current.buf = msg->buf;
--	data->current.is_write = 0U;
--	data->current.is_arlo = 0U;
--	data->current.is_err = 0U;
--	data->current.is_nack = 0U;
--	data->current.msg = msg;
+-static int stm32_i2c_msg_read(const struct device *dev, struct i2c_msg *msg,
+-		       uint8_t *next_msg_flags, uint16_t slave)
+-{
+-	const struct i2c_stm32_config *cfg = dev->config;
+-	struct i2c_stm32_data *data = dev->data;
+-	I2C_TypeDef *i2c = cfg->i2c;
+-	bool is_timeout = false;
 +	/* With a reload transfer already pending there is nothing to (re)start: writing the new
 +	 * length below continues it.
 +	 */
@@ -367,10 +450,18 @@ reaches that.
 +		cr2 |= I2C_CR2_START;
 +	}
  
--	msg_init(dev, msg, next_msg_flags, slave, LL_I2C_REQUEST_READ);
+-	data->current.len = msg->len;
+-	data->current.buf = msg->buf;
+-	data->current.is_write = 0U;
+-	data->current.is_arlo = 0U;
+-	data->current.is_err = 0U;
+-	data->current.is_nack = 0U;
+-	data->current.msg = msg;
 +	uint32_t cr1 = I2C_CR1_ERRIE | I2C_CR1_STOPIE | I2C_CR1_TCIE | I2C_CR1_NACKIE |
 +		       I2C_CR1_TXIE | I2C_CR1_RXIE;
  
+-	msg_init(dev, msg, next_msg_flags, slave, LL_I2C_REQUEST_READ);
+-
 -	stm32_i2c_enable_transfer_interrupts(dev);
 -	LL_I2C_EnableIT_RX(i2c);
 +	/* Commit and start */
@@ -397,8 +488,7 @@ reaches that.
 +		 */
 +		unsigned int key = irq_lock();
 +
-+		stm32_i2c_disable_transfer_interrupts(dev);
-+		LL_I2C_Disable(i2c);
++		stm32_i2c_master_mode_cleanup(dev);
 +		irq_unlock(key);
 +		k_sem_reset(&data->device_sync_sem);
  		goto error;
@@ -411,7 +501,7 @@ reaches that.
 -				    data->current.is_arlo);
 -		data->current.is_arlo = 0U;
 +	if (data->current.is_nack || data->current.is_arlo || data->current.is_err) {
-+		LL_I2C_Disable(i2c);
++		stm32_i2c_master_mode_cleanup(dev);
 +		goto error;
  	}
  
@@ -419,16 +509,7 @@ reaches that.
 -		LOG_DBG("%s: NACK", __func__);
 -		data->current.is_nack = 0U;
 +	if ((msg->flags & I2C_MSG_STOP) != 0U) {
-+#if defined(CONFIG_I2C_TARGET)
-+		data->master_active = false;
-+		if (!data->slave_attached && !data->smbalert_active) {
-+			LL_I2C_Disable(i2c);
-+		}
-+#else
-+		if (!data->smbalert_active) {
-+			LL_I2C_Disable(i2c);
-+		}
-+#endif
++		stm32_i2c_master_mode_cleanup(dev);
  	}
  
 -	if (data->current.is_err) {
@@ -488,7 +569,7 @@ reaches that.
  }
  
  #else /* !CONFIG_I2C_STM32_INTERRUPT */
-@@ -835,6 +951,12 @@
+@@ -818,6 +960,12 @@ int stm32_i2c_transaction(const struct device *dev,
  	 * which will make the combination of all chunks to look like one big
  	 * transaction on the wire.
  	 */
@@ -501,22 +582,9 @@ reaches that.
  	const uint32_t i2c_stm32_maxchunk = 255U;
  	const uint8_t saved_flags = msg.flags;
  	uint8_t combine_flags =
-@@ -866,4 +988,5 @@
+@@ -849,4 +997,5 @@ int stm32_i2c_transaction(const struct device *dev,
  	} while (rest > 0U);
  
  	return ret;
 +#endif /* CONFIG_I2C_STM32_INTERRUPT */
  }
---- a/drivers/i2c/i2c_ll_stm32.h
-+++ b/drivers/i2c/i2c_ll_stm32.h
-@@ -68,6 +68,10 @@
- 		unsigned int is_arlo;
- 		unsigned int is_nack;
- 		unsigned int is_err;
-+		/* Another message follows in the same direction, so the handler keeps reload
-+		 * mode on at the end of this one instead of ending it in TC.
-+		 */
-+		bool continue_in_next;
- 		struct i2c_msg *msg;
- 		unsigned int len;
- 		uint8_t *buf;

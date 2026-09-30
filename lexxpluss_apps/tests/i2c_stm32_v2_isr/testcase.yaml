@@ -8,3 +8,6 @@ tests:
   # The same production driver source, built with assertions on.
   lexxpluss.i2c_stm32_v2_isr.assert:
     extra_args: CONF_FILE="prj_assert.conf"
+  # With the target role compiled in, so the teardown's target-aware half is built and exercised.
+  lexxpluss.i2c_stm32_v2_isr.target:
+    extra_args: CONF_FILE="prj_target.conf"

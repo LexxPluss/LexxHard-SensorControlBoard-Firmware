@@ -643,6 +643,206 @@ ZTEST(i2c_stm32_v2_isr, test_next_transfer_waits_for_its_own_completion)
 	zassert_equal(xfer_wait(K_MSEC(200)), 0, "the transfer did not complete on its own IRQ");
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * The zero-length probe. This is the message the chain enumeration actually issues --
+ * tof_chain_controller::raw_probe() sends exactly this -- and it is not the shape the
+ * classification tests above use. Zero length takes its own path here: NBYTES is 0 and nothing is
+ * preloaded into TXDR, so a suite that only ever proves the two-byte case can pass while the probe
+ * the product depends on does not complete.
+ */
+
+ZTEST(i2c_stm32_v2_isr, test_zero_length_probe_nack_is_enxio)
+{
+	uint8_t dummy = 0;
+	/* raw_probe() writes I2C_MSG_WRITE | I2C_MSG_STOP and nothing else. RESTART is added here
+	 * because the shared STM32 entry point adds it -- i2c_ll_stm32.c sets it on the first
+	 * message before dispatching to this layer -- and this suite compiles only the v2 file, so
+	 * it has to supply what that layer would. Without it the message is one production never
+	 * produces, and the assert build says so. */
+	struct i2c_msg msg = { .buf = &dummy, .len = 0,
+			       .flags = I2C_MSG_WRITE | I2C_MSG_RESTART | I2C_MSG_STOP };
+
+	start_xfer(msg, NULL);
+	zassert_equal(nbytes(), 0U, "a zero-length probe must program NBYTES=0");
+
+	/* Nobody at this address. */
+	zassert_true(raise(I2C_ISR_NACKF | I2C_ISR_BUSY), "NACKF did not reach the handler");
+	zassert_equal(drv_data.current.is_nack, 1U, "the NACK was not recorded");
+	regs.ISR &= ~I2C_ISR_BUSY;
+	zassert_true(raise(I2C_ISR_STOPF), "STOPF did not reach the handler");
+
+	zassert_equal(xfer_wait(K_MSEC(200)), -ENXIO,
+		      "the probe the enumeration actually issues must classify as -ENXIO");
+}
+
+ZTEST(i2c_stm32_v2_isr, test_zero_length_probe_ack_completes)
+{
+	uint8_t dummy = 0;
+	/* raw_probe() writes I2C_MSG_WRITE | I2C_MSG_STOP and nothing else. RESTART is added here
+	 * because the shared STM32 entry point adds it -- i2c_ll_stm32.c sets it on the first
+	 * message before dispatching to this layer -- and this suite compiles only the v2 file, so
+	 * it has to supply what that layer would. Without it the message is one production never
+	 * produces, and the assert build says so. */
+	struct i2c_msg msg = { .buf = &dummy, .len = 0,
+			       .flags = I2C_MSG_WRITE | I2C_MSG_RESTART | I2C_MSG_STOP };
+
+	start_xfer(msg, NULL);
+	zassert_equal(nbytes(), 0U, "a zero-length probe must program NBYTES=0");
+
+	/* A device answered: nothing to transfer, so the controller goes straight to TC. */
+	zassert_true(raise(I2C_ISR_TC | I2C_ISR_BUSY), "TC did not reach the handler");
+	zassert_true(xfer_still_waiting(), "the probe ended before its STOP");
+	regs.ISR &= ~(I2C_ISR_TC | I2C_ISR_BUSY);
+	zassert_true(raise(I2C_ISR_STOPF), "STOPF did not reach the handler");
+
+	zassert_equal(xfer_wait(K_MSEC(200)), 0, "an answered zero-length probe must succeed");
+	zassert_equal(drv_data.current.is_nack, 0U, "nothing NACKed");
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * An orphan data event: RXNE or TXIS arriving with the buffer already exhausted. This is the state
+ * that wedged i2c2 on DS20001, and it was seen routinely, so it is not a hypothetical. Upstream
+ * only asserts against it, and the product builds with assertions off, where dereferencing would
+ * write past the caller's buffer and underflow len to UINT_MAX.
+ */
+
+static void drain_to_empty(void)
+{
+	/* Move the transfer's last byte so that current.len reaches 0 while the driver is still
+	 * inside the transfer, waiting for TC. */
+	regs.RXDR = 0x5A;
+	(void)raise(I2C_ISR_RXNE | I2C_ISR_BUSY);
+	zassert_equal(drv_data.current.len, 0U, "the fixture did not empty the buffer");
+}
+
+ZTEST(i2c_stm32_v2_isr, test_orphan_rxne_does_not_touch_an_exhausted_buffer)
+{
+	static uint8_t buf[1];
+	struct i2c_msg msg = { .buf = buf, .len = sizeof buf,
+			       .flags = I2C_MSG_READ | I2C_MSG_RESTART | I2C_MSG_STOP };
+
+	start_xfer(msg, NULL);
+	drain_to_empty();
+
+#ifdef CONFIG_ASSERT
+	/* With assertions on this is declared illegal and the build stops on it. */
+	regs.RXDR = 0xA5;
+	ztest_set_assert_valid(true);
+	(void)raise(I2C_ISR_RXNE | I2C_ISR_BUSY);
+	ztest_set_assert_valid(false);
+#else
+	/* The product path must guard rather than trust. Declared here, not above the #ifdef:
+	 * the assert build never reads them. */
+	const uint8_t *buf_before = drv_data.current.buf;
+
+	regs.RXDR = 0xA5;
+	zassert_true(raise(I2C_ISR_RXNE | I2C_ISR_BUSY), "the orphan RXNE did not reach the handler");
+
+	zassert_equal(drv_data.current.len, 0U, "len underflowed instead of being guarded");
+	zassert_equal(drv_data.current.buf, buf_before, "the exhausted buffer was advanced");
+	zassert_equal(buf[0], 0x5A, "the orphan byte was written into the caller's buffer");
+	zassert_equal(regs.ISR & I2C_ISR_RXNE, 0U, "RXNE was left asserted, so it re-enters");
+	zassert_equal(xfer_wait(K_MSEC(200)), -EIO, "an orphan RXNE must fail the transfer");
+#endif
+}
+
+ZTEST(i2c_stm32_v2_isr, test_orphan_txis_does_not_read_past_an_exhausted_buffer)
+{
+	/* Two bytes, because the write path PRELOADS the first one into TXDR before starting --
+	 * see the CR2 commit in stm32_i2c_msg_write() -- so a one-byte write reaches the handler
+	 * with current.len already 0 and its very first TXIS would be the orphan. Two bytes leaves
+	 * exactly one genuine TXIS to drain, and the next one is the state under test. */
+	static uint8_t buf[2] = { 0x11, 0x22 };
+	struct i2c_msg msg = { .buf = buf, .len = sizeof buf,
+			       .flags = I2C_MSG_WRITE | I2C_MSG_RESTART | I2C_MSG_STOP };
+
+	start_xfer(msg, NULL);
+	zassert_equal(drv_data.current.len, 1U, "the preload should have taken exactly one byte");
+	zassert_true(raise(I2C_ISR_TXIS | I2C_ISR_BUSY), "the genuine TXIS did not reach the handler");
+	zassert_equal(drv_data.current.len, 0U, "the genuine TXIS did not empty the buffer");
+
+#ifdef CONFIG_ASSERT
+	ztest_set_assert_valid(true);
+	(void)raise(I2C_ISR_TXIS | I2C_ISR_BUSY);
+	ztest_set_assert_valid(false);
+#else
+	const uint8_t *buf_before = drv_data.current.buf;
+	const uint8_t txdr_before = regs.TXDR;
+
+	zassert_true(raise(I2C_ISR_TXIS | I2C_ISR_BUSY), "the orphan TXIS did not reach the handler");
+
+	zassert_equal(drv_data.current.len, 0U, "len underflowed instead of being guarded");
+	zassert_equal(drv_data.current.buf, buf_before, "the exhausted buffer was advanced");
+	zassert_equal(regs.TXDR, txdr_before,
+		      "a byte the caller never supplied was put on the bus");
+	zassert_equal(xfer_wait(K_MSEC(200)), -EIO, "an orphan TXIS must fail the transfer");
+#endif
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * The teardown's target-aware half. Only built when CONFIG_I2C_TARGET is selected, which the board
+ * does not do -- but the rework routes every controller exit through one cleanup precisely so that
+ * a failed transfer cannot leave master_active set, and a fix that is never compiled is a fix
+ * nobody has checked. A stale master_active keeps target dispatch off for good: the two entry
+ * guards in the handler both read `slave_attached && !master_active`.
+ */
+#ifdef CONFIG_I2C_TARGET
+
+static struct i2c_target_config attached_target;
+
+static void attach_target(void)
+{
+	drv_data.slave_attached = true;
+	drv_data.slave_cfg = &attached_target;
+}
+
+ZTEST(i2c_stm32_v2_isr, test_nack_releases_the_bus_to_an_attached_target)
+{
+	static uint8_t buf[2] = { 0, 0 };
+	struct i2c_msg msg = { .buf = buf, .len = sizeof buf,
+			       .flags = I2C_MSG_WRITE | I2C_MSG_RESTART | I2C_MSG_STOP };
+
+	attach_target();
+	start_xfer(msg, NULL);
+	zassert_true(drv_data.master_active, "a controller transfer must claim the bus");
+
+	zassert_true(raise(I2C_ISR_NACKF | I2C_ISR_BUSY), "NACKF did not reach the handler");
+	regs.ISR &= ~I2C_ISR_BUSY;
+	zassert_true(raise(I2C_ISR_STOPF), "STOPF did not reach the handler");
+
+	zassert_equal(xfer_wait(K_MSEC(200)), -ENXIO, "the NACK must still classify as -ENXIO");
+	zassert_false(drv_data.master_active,
+		      "a NACK left the bus claimed, so target dispatch stays off for good");
+	zassert_true((regs.CR1 & I2C_CR1_PE) != 0U,
+		     "the peripheral was disabled while a target was attached");
+	zassert_equal(regs.CR1 & (I2C_CR1_TXIE | I2C_CR1_RXIE | I2C_CR1_TCIE), 0U,
+		      "the controller transfer interrupts were left on");
+}
+
+ZTEST(i2c_stm32_v2_isr, test_timeout_releases_the_bus_to_an_attached_target)
+{
+	static uint8_t buf[2];
+	struct i2c_msg msg = { .buf = buf, .len = sizeof buf,
+			       .flags = I2C_MSG_READ | I2C_MSG_RESTART | I2C_MSG_STOP };
+
+	attach_target();
+	start_xfer(msg, NULL);
+	zassert_true(drv_data.master_active, "a controller transfer must claim the bus");
+
+	/* Say nothing at all and let the driver's own timeout expire. */
+	/* Generously past the driver's own timeout, as the other silence tests do -- the constant
+	 * itself is private to the driver source. */
+	zassert_equal(xfer_wait(K_MSEC(2000)), -ETIMEDOUT,
+		      "silence must still classify as -ETIMEDOUT");
+	zassert_false(drv_data.master_active, "a timeout left the bus claimed");
+	zassert_true((regs.CR1 & I2C_CR1_PE) != 0U,
+		     "the peripheral was disabled while a target was attached");
+	zassert_equal(regs.CR1 & (I2C_CR1_TXIE | I2C_CR1_RXIE | I2C_CR1_TCIE), 0U,
+		      "the controller transfer interrupts were left on");
+}
+
+#endif /* CONFIG_I2C_TARGET */
+
 /* The shim owns __LL_I2C_CONVERT_TIMINGS, and the driver calls it with five positional values. A
  * wrong order there changes no decision the handler makes -- the word only ever reaches TIMINGR --
  * so not one test above would redden. Pin the packing instead, with an input whose five fields are
