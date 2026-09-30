@@ -466,15 +466,42 @@ ZTEST(i2c_stm32_v2_isr, test_handler_reads_the_status_back_before_returning)
 		      "the handler read the status register %u times, expected 2",
 		      lexx_test_isr_reads);
 
-	/* The completion path hands over to the thread instead of returning, and upstream does not
-	 * synchronise there -- record that, so a change to it is noticed. */
+	/* STOPF synchronises too, and deliberately so. It tears the transfer down in the handler
+	 * rather than leaving it to the thread it wakes, then falls through to the same read as
+	 * every other path. That matters most here: STOPF is a flag this handler has just cleared
+	 * on a level-triggered line, so it is the entry most likely to be re-taken on a stale view.
+	 *
+	 * This assertion was a tripwire on the older behaviour, where the completion path returned
+	 * without synchronising. It is re-aimed rather than removed, because the number is still
+	 * worth pinning -- the point was never the value 1, it was that a change here gets noticed.
+	 */
 	lexx_test_isr_reads = 0;
 	regs.ISR &= ~I2C_ISR_BUSY;
 	zassert_true(raise(I2C_ISR_STOPF), "STOPF did not reach the handler");
-	zassert_equal(lexx_test_isr_reads, 1U,
-		      "the completion path read the status %u times, expected 1",
-		      lexx_test_isr_reads);
+	zassert_equal(lexx_test_isr_reads, 2U,
+		      "the STOPF path read the status %u times, expected 2 (entry and the "
+		      "synchronising read)", lexx_test_isr_reads);
 	zassert_equal(xfer_wait(K_MSEC(200)), 0, "the transfer did not complete");
+}
+
+/* The other completion path is unchanged and must stay that way: TC with a further message to come
+ * hands over to the thread through the lightweight label, without synchronising, because the
+ * transaction is still live and the bus still claimed. Pinned separately so that the two halves
+ * cannot drift into each other. */
+ZTEST(i2c_stm32_v2_isr, test_a_continuation_hands_over_without_synchronising)
+{
+	static uint8_t buf[1] = { 0x11 };
+	uint8_t next_flags = I2C_MSG_WRITE | I2C_MSG_RESTART | I2C_MSG_STOP;
+	struct i2c_msg msg = { .buf = buf, .len = sizeof buf,
+			       .flags = I2C_MSG_WRITE | I2C_MSG_RESTART };
+
+	start_xfer(msg, &next_flags);
+
+	lexx_test_isr_reads = 0;
+	zassert_true(raise(I2C_ISR_TC | I2C_ISR_BUSY), "TC did not reach the handler");
+	zassert_equal(lexx_test_isr_reads, 1U,
+		      "a continuation read the status %u times, expected 1 -- it hands over to "
+		      "the thread with the transaction still live", lexx_test_isr_reads);
 }
 
 /* An interrupt whose flags are already gone by the time the handler reads the status. The NVIC
@@ -839,6 +866,70 @@ ZTEST(i2c_stm32_v2_isr, test_timeout_releases_the_bus_to_an_attached_target)
 		     "the peripheral was disabled while a target was attached");
 	zassert_equal(regs.CR1 & (I2C_CR1_TXIE | I2C_CR1_RXIE | I2C_CR1_TCIE), 0U,
 		      "the controller transfer interrupts were left on");
+}
+
+/* STOPF is the moment bus ownership ends, and the teardown has to happen in the handler rather
+ * than being left to the thread it wakes. These tests hold the scheduler across the injection so
+ * the waiting thread CANNOT run before the assertions: without that, an implementation that defers
+ * the teardown passes anyway, because the thread gets scheduled and cleans up before anything is
+ * checked. The lock is what makes this a test of the handler rather than of the scheduler.
+ */
+ZTEST(i2c_stm32_v2_isr, test_stopf_releases_the_bus_inside_the_handler)
+{
+	static uint8_t buf[2] = { 0, 0 };
+	struct i2c_msg msg = { .buf = buf, .len = sizeof buf,
+			       .flags = I2C_MSG_WRITE | I2C_MSG_RESTART | I2C_MSG_STOP };
+	bool active_after;
+	bool pe_after;
+	uint32_t ctrl_irqs_after;
+
+	attach_target();
+	start_xfer(msg, NULL);
+
+	k_sched_lock();
+	zassert_true(raise(I2C_ISR_TXIS | I2C_ISR_BUSY), "the genuine TXIS did not reach the handler");
+	zassert_true(raise(I2C_ISR_TC | I2C_ISR_BUSY), "TC did not reach the handler");
+	regs.ISR &= ~(I2C_ISR_TC | I2C_ISR_BUSY);
+	zassert_true(raise(I2C_ISR_STOPF), "STOPF did not reach the handler");
+
+	/* Captured while the waiting thread is still barred from running. */
+	active_after = drv_data.master_active;
+	pe_after = (regs.CR1 & I2C_CR1_PE) != 0U;
+	ctrl_irqs_after = regs.CR1 & (I2C_CR1_TXIE | I2C_CR1_RXIE | I2C_CR1_TCIE);
+	k_sched_unlock();
+
+	zassert_false(active_after,
+		      "STOPF left master_active set until the thread ran; an ADDR arriving in "
+		      "that gap is refused without being cleared and the IRQ outranks the thread");
+	zassert_true(pe_after, "the peripheral was disabled while a target was attached");
+	zassert_equal(ctrl_irqs_after, 0U, "the controller transfer interrupts were left on");
+
+	zassert_equal(xfer_wait(K_MSEC(200)), 0, "the transfer must still complete normally");
+}
+
+/* The other half of the same rule: TC and TCR continue the SAME controller transaction, so they
+ * must not release the bus. Checked under the same lock, for the same reason.
+ */
+ZTEST(i2c_stm32_v2_isr, test_a_continuation_keeps_the_bus_claimed)
+{
+	static uint8_t buf[2] = { 0, 0 };
+	uint8_t next_flags = I2C_MSG_WRITE | I2C_MSG_RESTART | I2C_MSG_STOP;
+	struct i2c_msg msg = { .buf = buf, .len = sizeof buf,
+			       .flags = I2C_MSG_WRITE | I2C_MSG_RESTART };
+	bool active_after;
+
+	attach_target();
+	start_xfer(msg, &next_flags);
+
+	k_sched_lock();
+	zassert_true(raise(I2C_ISR_TXIS | I2C_ISR_BUSY), "the genuine TXIS did not reach the handler");
+	zassert_true(raise(I2C_ISR_TC | I2C_ISR_BUSY), "TC did not reach the handler");
+	active_after = drv_data.master_active;
+	k_sched_unlock();
+
+	zassert_true(active_after,
+		     "a continuation released the bus; the next message of the same transaction "
+		     "would run with the target dispatch able to take it");
 }
 
 #endif /* CONFIG_I2C_TARGET */
