@@ -174,6 +174,18 @@ struct tof_cliff_read_status {
 	 * as the same -EPROTO at the same stage and nothing downstream can name either.
 	 * Stays set when the re-arm that follows a replay also fails. */
 	bool stale_replay;
+
+	/* The device may still be ranging even though the operation reported failure, so a
+	 * caller that treats it as stopped is wrong. Set by tof_cliff_sensor_start() when
+	 * the first arming call succeeded, the second failed, AND the best-effort
+	 * StopMeasurement that follows also failed -- at that point nothing has confirmed
+	 * the device is quiet. Reported separately for the same reason as rearm_failed: a
+	 * caller that records "not started" and never stops it leaves a sensor ranging on a
+	 * shared bus with nobody reading it, and the return value alone cannot say so.
+	 *
+	 * Recovery is tof_cliff_sensor_stop(), not a retry of start: the half-armed device
+	 * must be brought down before it can be brought up again. */
+	bool ranging_unknown;
 };
 
 /*
