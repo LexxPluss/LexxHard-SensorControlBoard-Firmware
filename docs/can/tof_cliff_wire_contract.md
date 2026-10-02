@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-09-26a**
+Contract version: **commissioning-2026-10-02a**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
@@ -762,6 +762,68 @@ corruption. It MUST NOT refresh measurement or health freshness, and MUST NOT co
 Protocol FAULT **latches**. It clears only after one complete, contradiction-free cycle at a supported
 version, correlated with its health frame, and the transition is reported so an operator sees recovery
 rather than only onset.
+
+### Decoder verdicts and precedence
+
+Every frame this contract defines is reduced by a conforming decoder to exactly one **verdict**.
+`ACCEPT` means no rule was violated; every other value names the first rule that was. The names are
+normative: they appear in the generated artefacts and consumers switch on them, so a decoder that
+invents its own vocabulary cannot be checked against the conformance vectors.
+
+**The order below is normative.** A frame may violate more than one rule, and a conforming decoder
+reports the **first** rule in this table that the frame violates, evaluated per frame kind in the
+order given. This is not a stylistic preference: the conformance vectors assert one expected verdict
+per case, which is only well defined if the order is fixed. The *outcome* of a rejection does not
+depend on the order — any non-`ACCEPT` verdict rejects the frame and raises protocol FAULT, as
+*Validation, and protocol fault* requires — but the *reported reason* does, and that reason reaches
+operators and logs.
+
+The rules themselves are stated in *Validation, and protocol fault* and in the frame sections. This
+table does not restate them; it binds each rule to the name a decoder must report.
+
+#### Measurement frame verdicts, in evaluation order
+
+| Verdict | Condition |
+| --- | --- |
+| `DLC_NOT_8` | DLC is not 8 |
+| `FRAME_TYPE_MISMATCH` | byte 0 high nibble is not `0x1` |
+| `SOURCE_ID_OUT_OF_RANGE` | `source_id` outside 0-3 |
+| `RESERVED_FIELD_NONZERO` | byte 7 is non-zero |
+| `TARGET_COUNT_MALFORMED` | `target_count` above `kMaxTargets` |
+| `STATUS_UNDEFINED` | `range_status` is not a code in the status classification table |
+| `STATUS_NOT_TRANSMISSIBLE` | `range_status` classifies as `NO_SAMPLE`; those statuses produce no frame at all, so a frame carrying one is a producer defect rather than an unusable sample |
+| `RANGE_CONTRADICTS_STATUS` | class `VALID_RANGE` with `range_mm == 0xFFFF`, or class `NO_TARGET` / `SENSOR_FAULT` with `range_mm != 0xFFFF` |
+| `NO_TARGET_ENCODING_INCONSISTENT` | the biconditional `target_count == 0` <-> (`range_status == 255` and `range_mm == 0xFFFF`) is violated in either direction |
+| `ACCEPT` | none of the above |
+
+#### Health frame verdicts, in evaluation order
+
+| Verdict | Condition |
+| --- | --- |
+| `DLC_NOT_8` | DLC is not 8 |
+| `FRAME_TYPE_MISMATCH` | byte 0 high nibble is not `0x2` |
+| `PROTOCOL_VERSION_ZERO` | `protocol_version` is 0 |
+| `PROTOCOL_VERSION_UNSUPPORTED` | a non-zero `protocol_version` that is not equal to `PROTOCOL_VERSION`, the only version supported by this contract revision |
+| `MAPPING_STATE_MALFORMED` | `mapping_state` above `0x3` |
+| `CHAIN_POSITION_MALFORMED` | `failing_chain_position` is neither `0xFF` nor 1-6 |
+| `CYCLE_FIELDS_INCONSISTENT` | `cycle_valid` clear while `cycle_seq`, `sample_produced_mask` or `sensor_fault_mask` is non-zero |
+| `MASK_FAULT_WITHOUT_SAMPLE` | a `sensor_fault_mask` bit set without the corresponding `sample_produced_mask` bit |
+| `CHAIN_POSITION_WITHOUT_FAULT` | `failing_chain_position != 0xFF` with no chain-fault flag and both `enumerated_mask` and `model_verified_mask` complete |
+| `ACCEPT` | none of the above |
+
+`DLC_NOT_8`, `FRAME_TYPE_MISMATCH` and `ACCEPT` apply to both frame kinds; every other verdict
+belongs to exactly one of them. The commissioning identifiers `0x218` and `0x219` have no payload
+layout in this contract and therefore no verdicts; see *Transport*.
+
+#### The vocabulary and its order are pinned
+
+The generator's `--check` compares the **ordered sequence** in each table above against the order the
+generator actually evaluates, read from its own syntax tree rather than from a second hand-written
+list beside it. Set equality alone would accept two rows swapped, which changes nothing about whether
+a frame is rejected and everything about which reason is reported. A name added here without an
+implementation, emitted without being defined here, or placed out of order, fails the check. Without
+it this section would be a third description of rules that already exist in two places, free to
+drift from both.
 
 ### Readiness
 

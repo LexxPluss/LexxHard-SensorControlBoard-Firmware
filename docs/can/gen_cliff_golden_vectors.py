@@ -35,6 +35,7 @@ Nothing here reads or writes the grid contract's artefacts.
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -1280,6 +1281,115 @@ def identifier_problems():
     return problems
 
 
+# --------------------------------------------------------------------------- verdict parity
+
+# Statements a verdict function may contain and still have a readable evaluation order. Anything
+# else -- a loop, a try, a nested definition -- means the textual order of the returns is not
+# necessarily the order they are reached, so the check refuses to guess.
+_LINEARISABLE = (ast.If, ast.Return, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Pass)
+
+
+def _verdict_returns(body):
+    """Verdict strings returned by this statement list, in source order. None if not linearisable."""
+    out = []
+    for stmt in body:
+        if not isinstance(stmt, _LINEARISABLE):
+            return None
+        if isinstance(stmt, ast.Return):
+            # A return of anything but a string literal -- a variable, a call, a conditional
+            # expression -- is a verdict this check cannot read. Skipping it would leave the
+            # vocabulary and the order looking complete while an unanalysable path existed
+            # beside them, which is the opposite of what refusing to guess means.
+            if not (isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)):
+                return None
+            out.append(stmt.value.value)
+            continue
+        if isinstance(stmt, ast.If):
+            for half in (stmt.body, stmt.orelse):
+                inner = _verdict_returns(half)
+                if inner is None:
+                    return None
+                out.extend(inner)
+    return out
+
+
+def _implemented_verdict_order(func_name):
+    """The order this generator actually evaluates in, read from its own syntax tree.
+
+    Read from the implementation rather than from a second hand-written list beside it: such a
+    list is one more thing that can drift from the function, which is the problem this check
+    exists to remove. Only the named function's own body is read -- a nested definition makes the
+    order unreadable and is refused rather than guessed at.
+    """
+    tree = ast.parse(Path(__file__).resolve().read_text())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            seq = _verdict_returns(node.body)
+            if seq is None:
+                return None, (f"{func_name} contains a statement or a return this check cannot "
+                              "linearise: the order is refused rather than guessed at")
+            folded = [v for i, v in enumerate(seq) if i == 0 or v != seq[i - 1]]
+            if len(folded) != len(set(folded)):
+                dup = sorted({v for v in folded if folded.count(v) > 1})
+                return None, (f"{func_name} returns {', '.join(dup)} from separated places; "
+                              "consecutive repeats fold, separated ones may change precedence "
+                              "and are not merged silently")
+            return folded, None
+    return None, f"{func_name} not found"
+
+
+def _declared_verdict_order(body, heading):
+    sub = re.search(r"^#### " + re.escape(heading) + r"$(.*?)(?=^#### |\Z)", body, re.M | re.S)
+    if sub is None:
+        return None
+    return re.findall(r"^\| `([A-Z][A-Z0-9_]*)` \|", sub.group(1), re.M)
+
+
+def verdict_parity():
+    """The contract's verdict tables must match this generator exactly, and in order.
+
+    Set equality alone would accept two rows swapped, which changes nothing about whether a frame
+    is rejected and everything about which reason is reported -- and that reason reaches operators
+    and logs. The contract declares the precedence normative, so the comparison is ordered.
+    """
+    text = CONTRACT.read_text()
+    sec = re.search(r"^### Decoder verdicts and precedence$(.*?)(?=^### |^## |\Z)", text, re.M | re.S)
+    if sec is None:
+        return ["contract has no '### Decoder verdicts and precedence' section"]
+    body = sec.group(1)
+
+    problems = []
+    for kind, heading, func in (
+            ("measurement", "Measurement frame verdicts, in evaluation order", "meas_verdict"),
+            ("health", "Health frame verdicts, in evaluation order", "health_verdict")):
+        declared = _declared_verdict_order(body, heading)
+        if declared is None:
+            problems.append(f"{kind} verdict table missing from the contract")
+            continue
+        implemented, why = _implemented_verdict_order(func)
+        if implemented is None:
+            problems.append(f"{kind} verdict order unreadable: {why}")
+            continue
+        if set(declared) != set(implemented):
+            problems.append(
+                f"{kind} verdict vocabulary mismatch: contract-only "
+                f"{sorted(set(declared) - set(implemented))}, generator-only "
+                f"{sorted(set(implemented) - set(declared))}")
+        elif declared != implemented:
+            problems.append(
+                f"{kind} verdict order mismatch: contract {declared}, generator {implemented}")
+
+    declared_all = set(re.findall(r"^\| `([A-Z][A-Z0-9_]*)` \|", body, re.M))
+    missing = sorted(set(REJECT_REASONS) - declared_all)
+    extra = sorted(declared_all - set(REJECT_REASONS))
+    if missing:
+        problems.append(f"verdicts emitted but not defined in the contract: {missing}")
+    if extra:
+        problems.append(f"verdicts defined in the contract but never emitted: {extra}")
+    return problems
+
+
 def self_check():
     problems = identifier_problems()
     seen = set()
@@ -1304,6 +1414,9 @@ def self_check():
     for sym in UNRESOLVED:
         if sym not in referenced:
             problems.append(f"symbol {sym} is declared unresolved but no scenario depends on it")
+    # Folded into the ordinary self-check rather than put behind a flag: an optional consistency
+    # check between the contract and this generator is one nobody runs.
+    problems.extend(verdict_parity())
     return problems
 
 
