@@ -973,6 +973,58 @@ ZTEST(tof_acquisition, test_the_gap_between_cycles_is_not_an_idle_chain)
     zassert_true(acq::is_idle());
 }
 
+/* A DEVICE WHOSE STOP FAILED IS NOT CONFIRMED STOPPED, AND THE CHAIN IS NOT IDLE.
+ *
+ * stop_locked() clears running_ and in_cycle_ whatever happened, and deliberately leaves
+ * `started` set on the source whose stop failed -- that flag is the only record that the
+ * device's state is unknown. An idle predicate built from the first two flags alone answers
+ * about the scheduler, not about the devices, and said "idle" here.
+ *
+ * What that would have cost: is_idle() is the predicate commissioning asks before it drops
+ * enable lines. A true answer here lets a proof re-address a sensor it cannot confirm has
+ * stopped. */
+ZTEST(tof_acquisition, test_a_source_that_would_not_stop_leaves_the_chain_busy)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    devs[1].stop_rc = -EIO;
+    zassert_not_equal(acq::stop(), 0, "the fixture must make the stop fail");
+
+    zassert_false(acq::is_idle(), "a source still ranging is not an idle chain");
+}
+
+/* And the renumbering gate must refuse for the same reason: resetting the sequence while a
+ * device is not confirmed stopped risks reissuing (source_id, mapping_epoch, cycle_seq)
+ * triples. Nothing here establishes that such a frame was ever emitted -- the gate exists so
+ * that it cannot depend on that. */
+ZTEST(tof_acquisition, test_begin_epoch_refuses_while_a_source_is_still_ranging)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    devs[1].stop_rc = -EIO;
+    zassert_not_equal(acq::stop(), 0);
+
+    zassert_equal(acq::begin_epoch(), -EBUSY, "the numbering must not restart under a live device");
+}
+
+/* The control group, so the two tests above are known to be refusing the right thing rather
+ * than refusing after any stop at all: a clean stop still leaves the chain idle and still
+ * lets the epoch begin. */
+ZTEST(tof_acquisition, test_a_clean_stop_still_leaves_the_chain_idle_and_the_epoch_startable)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    zassert_equal(acq::stop(), 0);
+    zassert_true(acq::is_idle(), "a clean stop must still read as idle");
+    zassert_equal(acq::begin_epoch(), 0, "and must still allow the numbering to restart");
+}
+
 ZTEST(tof_acquisition, test_stop_quiesces_and_leaves_the_chain_free_for_commissioning)
 {
     zassert_equal(acq::init(make_config(3)), 0);

@@ -319,6 +319,24 @@ void record(source_facts &f, int rc, const op_status &st);
  *
  * Every source is attempted even after one fails. Stopping three of four is strictly better
  * than stopping one and giving up, and the return value reports that it was not complete. */
+/* Is any source NOT CONFIRMED STOPPED, as far as this module knows?
+ *
+ * stop_locked() deliberately leaves `started` set on a device whose stop failed. The device may
+ * or may not still be ranging -- a failed stop means the result is unknown, not that ranging is
+ * known to continue -- and `started` is the only record that the question is open. It is the one
+ * flag that survives a failed stop, so an idle predicate ignoring it answers about the scheduler
+ * rather than about the devices.
+ *
+ * Caller holds the chain lock. */
+bool any_source_started_locked()
+{
+    for (int i{0}; i < facts_.source_count; ++i) {
+        if (facts_.sources[i].started)
+            return true;
+    }
+    return false;
+}
+
 int stop_locked()
 {
     running_ = false;
@@ -481,7 +499,13 @@ bool is_idle()
     //
     // Never call this from the health path: it can wait for a whole cycle.
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-    const bool idle{!running_ && !in_cycle_};
+    /* The third term is about the devices, not the scheduler. stop_locked() clears running_
+     * and in_cycle_ even when a device refused to stop, keeping that source's `started` set
+     * because its state is then unknown. Without this term the predicate reported the chain
+     * free while a sensor might still have been driving the bus, and commissioning -- which
+     * asks exactly this question before dropping enable lines -- would have proceeded to
+     * re-address a device it could not confirm was stopped. */
+    const bool idle{!running_ && !in_cycle_ && !any_source_started_locked()};
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     return idle;
 }
@@ -599,7 +623,13 @@ int begin_epoch()
      * guarantee is over (source_id, mapping_epoch, cycle_seq), the triple rather than the
      * cycle alone, so a renumber under a live epoch reissues triples already used. */
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-    const bool idle{!running_ && !in_cycle_};
+    /* Same three terms as is_idle(), and for the same reason: a source left `started` by a
+     * failed stop is not confirmed stopped, and renumbering the sequence while that is open
+     * risks reissuing (source_id, mapping_epoch, cycle_seq) triples -- the contract's
+     * uniqueness guarantee is over the triple, not the cycle. Whether such a frame has ever
+     * been emitted is not established here; the point is that the gate must not depend on it
+     * not happening. */
+    const bool idle{!running_ && !in_cycle_ && !any_source_started_locked()};
     if (idle)
         next_cycle_seq_ = 0;
     k_mutex_unlock(&tof_chain_controller::chain_lock());
