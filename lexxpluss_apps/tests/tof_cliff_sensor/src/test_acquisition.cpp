@@ -70,6 +70,10 @@ struct fake_dev {
     /* A device that will not stop. The interesting case, because the facts must keep saying
      * it is started rather than quietly recording a quiescence that never happened. */
     int stop_rc{0};
+    /* What the real cliff adapter reports when its second arming call failed AND the
+     * best-effort StopMeasurement() that follows also failed: the device was armed and nothing
+     * has confirmed it is quiet. Only meaningful beside a nonzero start_rc. */
+    bool start_leaves_ranging_unknown{false};
     bool lock_held_in_open{false};
     bool lock_held_in_read{false};
 };
@@ -141,8 +145,10 @@ int fake_start(void *dev, void *, acq::op_status *st)
 
     ++d.start_calls;
     memset(st, 0, sizeof(*st));
-    if (d.start_rc != 0)
+    if (d.start_rc != 0) {
         st->stage = d.start_stage;
+        st->ranging_unknown = d.start_leaves_ranging_unknown;
+    }
     return d.start_rc;
 }
 
@@ -298,8 +304,11 @@ void before(void *)
      *
      * Then assert, because a subsystem that will not retire even with the injection cleared is
      * a real defect and must not be carried silently into the next case. */
-    for (fake_dev &d : devs)
+    for (fake_dev &d : devs) {
         d.stop_rc = 0;
+        d.start_rc = 0;
+        d.start_leaves_ranging_unknown = false;
+    }
     zassert_equal(acq::teardown(), 0, "a previous case left the subsystem un-retirable");
 
     acq::stop();
@@ -1295,6 +1304,105 @@ ZTEST(tof_acquisition, test_stopping_acquisition_does_not_stop_the_heartbeat)
  * THE INJECTION IS HELD FOR THE WHOLE CASE. It is never cleared here, so there is no second
  * attempt that could quietly succeed and hide the first failure; the retry is a separate test
  * below, where the clearing is explicit. */
+/* ------------------------------- a start that left the device armed owes a stop ----- */
+
+/* THE ADAPTER SAYS "I COULD NOT CONFIRM THIS DEVICE IS STOPPED", AND IT USED TO BE DROPPED.
+ *
+ * The cliff adapter issues StartMeasurement() before its second arming call; when that call
+ * fails it tries a best-effort StopMeasurement(), and when that fails too it sets
+ * ranging_unknown. The bring-up branch recorded the error and moved on with `started` false.
+ *
+ * `started` false is right for reading -- the source has no usable stream. It was wrong for
+ * cleanup: stop_locked() iterated on `started`, so the device was skipped forever and the next
+ * commissioning session re-addressed a part that was never confirmed quiet.
+ *
+ * So the obligation is carried separately, and the two halves are asserted separately here:
+ * not readable, and not finished with. */
+ZTEST(tof_acquisition, test_a_start_that_left_the_device_armed_is_neither_read_nor_forgotten)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    devs[1].start_rc = -EIO;
+    devs[1].start_leaves_ranging_unknown = true;
+
+    zassert_equal(acq::bring_up(), 0, "one bad source must not stop the others");
+
+    const int reads_before{devs[1].read_calls};
+    acq::run_cycle();
+    zassert_equal(devs[1].read_calls, reads_before,
+                  "a source with no usable stream must not be read");
+
+    acq::cycle_facts f{};
+    acq::copy_facts(f);
+    zassert_false(f.sources[1].sample_produced, "and must not publish a sample");
+
+    /* THE QUIESCE IS WHAT ISOLATES THE SECOND HALF, and leaving it out made an earlier version
+     * of this test green with the fix removed: bring_up() sets running_, so is_idle() was
+     * already false for a reason that had nothing to do with the obligation. Stopping first
+     * clears running_ and in_cycle_, so the only thing that can still hold the chain busy is
+     * the owed stop.
+     *
+     * The stop is made to fail so the obligation survives it -- a successful one would
+     * discharge it, which is a different test. */
+    devs[1].stop_rc = -EIO;
+    zassert_not_equal(acq::stop(), 0, "the cleanup must REACH this source, and here it fails");
+    zassert_true(devs[1].stop_calls > 0, "a source owed a stop must not be skipped");
+
+    zassert_false(acq::is_idle(), "a device owed a stop is not an idle chain");
+    zassert_equal(acq::begin_epoch(), -EBUSY, "and the numbering must not restart under it");
+}
+
+/* The obligation survives cycles. A later cycle touches the other sources and must not clear
+ * it on the way past -- that is how a sticky obligation becomes a one-cycle warning. */
+ZTEST(tof_acquisition, test_the_cleanup_obligation_survives_later_cycles_and_blocks_teardown)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    devs[1].start_rc = -EIO;
+    devs[1].start_leaves_ranging_unknown = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[1].stop_rc = -EIO;   // the stop keeps failing, for the whole case
+
+    acq::run_cycle();
+    acq::run_cycle();
+
+    zassert_false(acq::is_idle(), "two cycles must not have cleared the obligation");
+    zassert_not_equal(acq::teardown(), 0, "an owed stop is not a retirement");
+    zassert_equal(acq::init(make_config(2)), -EALREADY);
+}
+
+/* And a stop that SUCCEEDS discharges it. The device was never `started`, so this is the path
+ * that proves the cleanup reaches a source the old code skipped entirely. */
+ZTEST(tof_acquisition, test_a_successful_stop_discharges_the_cleanup_obligation)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    devs[1].start_rc = -EIO;
+    devs[1].start_leaves_ranging_unknown = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    const int stops_before{devs[1].stop_calls};
+    zassert_equal(acq::stop(), 0, "the stop must succeed and must reach this source");
+    zassert_true(devs[1].stop_calls > stops_before,
+                 "a source owed a stop must actually be stopped, not skipped");
+
+    zassert_true(acq::is_idle(), "the obligation is discharged by a stop that succeeded");
+    zassert_equal(acq::teardown(), 0, "and the subsystem can then retire");
+}
+
+/* THE CONTROL GROUP, and it is the one that stops this from being "any start failure blocks
+ * everything". A start that failed but whose own cleanup SUCCEEDED reports no ranging_unknown,
+ * owes nothing, and must leave the chain idle. */
+ZTEST(tof_acquisition, test_a_start_failure_whose_cleanup_succeeded_owes_nothing)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    devs[1].start_rc = -EIO;
+    devs[1].start_leaves_ranging_unknown = false;   // the adapter confirmed it is quiet
+    zassert_equal(acq::bring_up(), 0);
+
+    acq::stop();
+    zassert_true(acq::is_idle(), "nothing is owed, so the chain is idle");
+    zassert_equal(acq::teardown(), 0);
+}
+
 ZTEST(tof_acquisition, test_teardown_refuses_while_a_device_will_not_stop)
 {
     zassert_equal(acq::init(make_config(3)), 0);

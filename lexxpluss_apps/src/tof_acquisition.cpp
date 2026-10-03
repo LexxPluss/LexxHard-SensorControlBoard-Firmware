@@ -328,10 +328,11 @@ void record(source_facts &f, int rc, const op_status &st);
  * rather than about the devices.
  *
  * Caller holds the chain lock. */
-bool any_source_started_locked()
+bool any_source_unquiesced_locked()
 {
     for (int i{0}; i < facts_.source_count; ++i) {
-        if (facts_.sources[i].started)
+        const source_facts &f{facts_.sources[i]};
+        if (f.started || f.cleanup_pending)
             return true;
     }
     return false;
@@ -347,22 +348,27 @@ int stop_locked()
         source_facts &f{facts_.sources[i]};
         op_status st{};
 
-        if (!f.started)
+        /* Both obligations, not just the readable one. A source that failed its second
+         * arming call with the device left armed carries cleanup_pending without started;
+         * iterating on started alone skipped it forever. */
+        if (!f.started && !f.cleanup_pending)
             continue;
         const int rc{d.ops->stop(d.dev, &st)};
         if (rc != 0) {
             record(f, rc, st);
-            /* Sticky, for the same reason a failed re-arm is: a device that will not stop
-             * will not produce a trustworthy sample either, and only a complete
+            /* Sticky, for the same reason a failed re-arm is: a device whose stop cannot be
+             * confirmed will not produce a trustworthy sample either, and only a complete
              * re-bring-up may clear it. */
             f.rearm_failed = true;
-            LOG_ERR("source %d stop failed at %s rc %d errno %d -- still ranging", i,
+            LOG_ERR("source %d stop failed at %s rc %d errno %d -- stop not confirmed", i,
                     tof_cliff_stage_name(st.stage), rc, st.port_errno);
             if (first_error == 0)
                 first_error = rc;
-            continue;   // f.started stays true: it is still ranging
+            continue;   // both flags stay set: the stop was not confirmed
         }
         f.started = false;
+        /* The obligation is discharged only by a stop that returned success. */
+        f.cleanup_pending = false;
     }
 
     in_cycle_ = false;
@@ -505,7 +511,7 @@ bool is_idle()
      * free while a sensor might still have been driving the bus, and commissioning -- which
      * asks exactly this question before dropping enable lines -- would have proceeded to
      * re-address a device it could not confirm was stopped. */
-    const bool idle{!running_ && !in_cycle_ && !any_source_started_locked()};
+    const bool idle{!running_ && !in_cycle_ && !any_source_unquiesced_locked()};
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     return idle;
 }
@@ -629,7 +635,7 @@ int begin_epoch()
      * uniqueness guarantee is over the triple, not the cycle. Whether such a frame has ever
      * been emitted is not established here; the point is that the gate must not depend on it
      * not happening. */
-    const bool idle{!running_ && !in_cycle_ && !any_source_started_locked()};
+    const bool idle{!running_ && !in_cycle_ && !any_source_unquiesced_locked()};
     if (idle)
         next_cycle_seq_ = 0;
     k_mutex_unlock(&tof_chain_controller::chain_lock());
@@ -698,7 +704,7 @@ int bring_up()
          * -- so stop_locked() skipped it for the rest of the subsystem's life and the next
          * commissioning session re-addressed a live sensor. A re-bring-up that cannot
          * quiesce the previous device is not a re-bring-up; it is two drivers on one part. */
-        if (f.started) {
+        if (f.started || f.cleanup_pending) {
             op_status stop_st{};
             const int stop_rc{d.ops->stop(d.dev, &stop_st)};
             if (stop_rc != 0) {
@@ -706,9 +712,10 @@ int bring_up()
                 f.rearm_failed = true;
                 LOG_ERR("source %d could not be stopped before re-bring-up at %s rc %d", i,
                         tof_cliff_stage_name(stop_st.stage), stop_rc);
-                continue;   // f.started stays true: the device was never quiesced
+                continue;   // both flags stay set: the device was never quiesced
             }
             f.started = false;
+            f.cleanup_pending = false;
         }
         clear_cycle_outcomes(f);
 
@@ -730,6 +737,26 @@ int bring_up()
         rc = d.ops->start(d.dev, d.stream, &st);
         if (rc != 0) {
             record(f, rc, st);
+            /* THE ADAPTER'S ranging_unknown IS AN OBLIGATION, AND IT USED TO BE DROPPED HERE.
+             *
+             * The cliff adapter issues StartMeasurement() before its second arming call. When
+             * that call fails it attempts a best-effort StopMeasurement(), and when that fails
+             * too it sets this: the device was armed and nothing has confirmed it is quiet.
+             * This branch recorded the error and moved on, leaving `started` false -- so the
+             * source was never read, which is right, but stop_locked() skipped it forever,
+             * which is not. The device stayed armed for the rest of the subsystem's life and
+             * the next commissioning session re-addressed it.
+             *
+             * `started` is deliberately NOT set: it means "may be read", and a source with no
+             * usable stream must not re-enter run_cycle(). The obligation is carried
+             * separately. */
+            if (st.ranging_unknown) {
+                f.cleanup_pending = true;
+                f.rearm_failed = true;
+                LOG_ERR("source %d start failed at %s rc %d and its cleanup did not confirm "
+                        "the device is stopped -- a stop is owed", i,
+                        tof_cliff_stage_name(st.stage), rc);
+            }
             continue;
         }
         f.started = true;

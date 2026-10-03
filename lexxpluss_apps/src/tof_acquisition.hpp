@@ -177,6 +177,24 @@ struct source_facts {
      * OR-ed into the snapshot's per-source fault bit, since that word is the only signal
      * guaranteed to be sent. */
     bool rearm_failed{false};
+
+    /* STICKY TOO, and it answers a different question from `started`.
+     *
+     * `started` means "this source may be read". `cleanup_pending` means "this source still
+     * owes a successful stop". They are usually the same, and the case that separates them is
+     * the one this field exists for: the cliff adapter issues StartMeasurement() before its
+     * second arming call, and when that second call fails it attempts a best-effort
+     * StopMeasurement(). If THAT also fails it reports `ranging_unknown` -- the device was
+     * armed and nothing has confirmed it is quiet.
+     *
+     * Such a source must not be read: it never completed bring-up and has no usable stream, so
+     * `started` stays false. But it must also not be skipped by the cleanup, which is what
+     * iterating on `started` alone did -- the device was left armed for the rest of the
+     * subsystem's life and the next commissioning session re-addressed it.
+     *
+     * Cleared only by a stop that returns success. Recovery is a stop, never a retried start:
+     * a half-armed device has to come down before it can go up. */
+    bool cleanup_pending{false};
     op_status status{};
 };
 
