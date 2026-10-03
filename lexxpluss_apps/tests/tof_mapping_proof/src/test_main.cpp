@@ -548,7 +548,13 @@ ZTEST(tof_mapping_proof, test_a_position_the_walk_never_commanded_enabled_is_ref
  * nothing to do with the check. It was green because the bug is undefined behaviour, not
  * because the bug was absent. Following each fingerprint with zeroed positions of the same
  * type makes the overrun read equal values instead, so an unbounded same() returns TRUE and
- * this assertion reddens. */
+ * this assertion reddens.
+ *
+ * What that does and does not establish, stated so the next reader does not over-read it:
+ * it shows the mutation is detected IN THIS BUILD, with this layout and this compiler. The
+ * overrun is still undefined behaviour, so the padding is not a portable guarantee that an
+ * unbounded same() misbehaves -- it is a way of making the defect reliably visible here.
+ * The bound itself is what makes the question moot; the test exists to keep it. */
 ZTEST(tof_mapping_proof, test_same_refuses_fingerprints_claiming_more_positions_than_can_exist)
 {
     struct padded {
@@ -640,6 +646,67 @@ ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_cliff_claiming
     pf::fingerprint fp{commissioning_fingerprint()};
     fp.at[4].source_id = 1;
     zassert_false(pf::is_commissioning_profile(fp), "a cliff position carries no grid source");
+}
+
+/* ------------------------------------- the issuing path, not just the helper ------- */
+
+/* THE HELPER REFUSING IS NOT THE GATE REFUSING, and for a while only the helper did.
+ *
+ * is_commissioning_profile() rejects a fingerprint missing a grid source, and the authority
+ * re-checks it at commit, so PROVEN was never reachable. But gate::evaluate() issued a
+ * VALID TOKEN for that chain first: the spec-side checks it does run read the model
+ * sequence and the roles, and neither looks at source_id. A token that says proven is
+ * something other code is entitled to trust, so "the last gate catches it" is not the same
+ * as "it was never authorised".
+ *
+ * require_all_sources is switched off here because that is the only way to build this
+ * transaction -- it is the enumerator's own escape hatch, and it is what let the shape
+ * through validate_spec() in the first place. */
+ZTEST(tof_mapping_proof, test_the_gate_issues_no_token_for_a_chain_missing_a_grid_source)
+{
+    transaction t;
+    t.spec.require_all_sources = false;
+    t.spec.at[1].source_id = -1;
+    t.walk1.source_allowed[1] = false;
+    t.walk2.source_allowed[1] = false;
+
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    const pf::verdict v{g.evaluate(t.evidence(), c)};
+
+    zassert_false(v.granted(), "a chain missing a grid source must not be authorised");
+    zassert_equal(v.reason, pf::refusal::spec_not_commissioning_profile);
+    zassert_false(v.token.valid(), "and the token it hands back must authorise nothing");
+}
+
+/* The control group, so the test above is known to be refusing the right thing rather than
+ * refusing everything: the production shape still gets a token. */
+ZTEST(tof_mapping_proof, test_the_gate_still_issues_a_token_for_the_production_shape)
+{
+    transaction t;
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    const pf::verdict v{g.evaluate(t.evidence(), c)};
+
+    zassert_true(v.granted(), "the production chain must still prove");
+    zassert_true(v.token.valid(), "and must still carry a usable token");
+}
+
+/* The bench path keeps its freedom: evaluate_bench() describes chains that are not this
+ * profile, which is the whole reason it exists. The issuing check must not have taken that
+ * away. */
+ZTEST(tof_mapping_proof, test_the_bench_path_still_describes_a_chain_missing_a_grid_source)
+{
+    transaction t;
+    t.spec.require_all_sources = false;
+    t.spec.at[1].source_id = -1;
+    t.walk1.source_allowed[1] = false;
+    t.walk2.source_allowed[1] = false;
+
+    pf::gate g;
+    const pf::bench_report b{g.evaluate_bench(t.evidence())};
+    zassert_true(b.clean(), "the bench path must still describe this chain without refusing it");
+    zassert_equal(b.reason, pf::refusal::none);
 }
 
 ZTEST(tof_mapping_proof, test_a_position_that_never_verified_is_refused)

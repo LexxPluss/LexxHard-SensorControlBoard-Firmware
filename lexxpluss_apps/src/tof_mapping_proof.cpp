@@ -446,8 +446,11 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
      * commanded. Proving a mapping from it would attribute ranges to corners on the strength
      * of a chain nobody can describe.
      *
-     * Checked over the spec's position count, which the walk has already been made to match
-     * above. */
+     * Iterated over the spec's position count. Indexing is safe because validate_spec()
+     * above bounds spec.positions to kMaxPositions and at[] holds that many. It is NOT
+     * safe because the walk was made to match the spec -- that equality is enforced later,
+     * in fingerprint_of(), which returns walk_position_count. An earlier version of this
+     * comment claimed the match had already happened here; it had not. */
     if (!ev.walk1->control_state_known || !ev.walk2->control_state_known)
         return refusal::walk_control_unknown;
     for (size_t i{0}; i < spec.positions; ++i) {
@@ -522,6 +525,29 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
 
     if (!same(fp1, fp2))
         return refusal::fingerprint_mismatch;
+
+    /* The profile, on the fingerprint the two walks agree on, and only for a proof that
+     * could open PROVEN.
+     *
+     * The spec-side checks above are not this check. is_commissioning_topology() reads the
+     * model sequence and has_the_four_cliff_roles() reads the roles; neither looks at
+     * source_id, so a spec that switches off require_all_sources and carries one grid
+     * source reached this point and a VALID TOKEN WAS ISSUED for it. The authority refused
+     * it later -- commit_proof() re-checks the profile, so PROVEN was never reachable --
+     * but "the last gate catches it" is not the same as "it was never authorised", and a
+     * token that says proven is the thing other code is entitled to trust.
+     *
+     * is_commissioning_profile() is reused rather than reimplemented on the spec side, so
+     * the issuing path and the committing path cannot come to different answers about what
+     * the production chain is. That is the same reason validate_spec() was made public.
+     *
+     * After the fingerprint comparison, because this asks about the chain both walks
+     * proved, not about either one alone; and before isolation, because "this is not the
+     * production chain" is a more fundamental answer than any isolation verdict taken on
+     * it. require_profile leaves evaluate_bench() free to describe smaller chains, which is
+     * what it is for. */
+    if (require_profile && !is_commissioning_profile(fp2))
+        return refusal::spec_not_commissioning_profile;
 
     /* Isolation last, because it is the criterion whose meaning depends on everything
      * above: "the tail answers its own address" is only informative once we know which
