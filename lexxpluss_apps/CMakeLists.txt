@@ -29,7 +29,14 @@ project(lexxpluss_apps)
 FILE(GLOB app_sources src/*.cpp)
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
 target_sources(app PRIVATE ${app_sources} ${ros_sources})
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs)
+# docs/can holds the generated production half of the CAN wire contracts --
+# identifiers, field encodings and the cliff status classification table. Production
+# code includes it directly, exactly as the tests do, so there is no vendored copy to
+# drift from the contract it was generated from. Only tof_cliff_contract.h is meant to
+# be reachable this way; the vector header and the commissioning timing profile are
+# separate artefacts and are not on this path by accident.
+target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../docs/can)
 
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)
