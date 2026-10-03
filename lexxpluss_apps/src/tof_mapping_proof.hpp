@@ -96,6 +96,8 @@ enum class refusal : uint8_t {
     walk_spec_rejected,      // the enumerator rejected the spec this walk ran against
     walk1_not_complete,      // status != complete
     walk2_not_complete,
+    walk_control_unknown,    // a walk that cannot say what it asked of the enable chain
+    walk_position_not_enabled,   // a position the walk never commanded enabled
     position_not_verified,   // a verdict that does not normalise to verified
     l4_retained,             // an L4 reported retained: contradicts the reset-class enable
     address_mismatch,        // a verified position does not answer on its spec target

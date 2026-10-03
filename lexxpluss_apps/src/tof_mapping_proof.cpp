@@ -434,6 +434,28 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
     if (ev.walk2->status != enm::chain_status::complete)
         return refusal::walk2_not_complete;
 
+    /* A complete walk must also be able to say what it asked of the enable chain, and must
+     * have asked for every position.
+     *
+     * `complete` alone does not establish either. chain_result is filled in by whoever built
+     * it -- the same reason validate_spec() is called above rather than trusting the walk's
+     * own spec claim -- so a fabricated walk can report complete beside a control state it
+     * never had. The enumerator itself clears control_state_known on a control failure, and
+     * that is precisely the state in which the hardware may not have executed the last
+     * request: the addresses in such a walk may belong to a configuration that was never
+     * commanded. Proving a mapping from it would attribute ranges to corners on the strength
+     * of a chain nobody can describe.
+     *
+     * Checked over the spec's position count, which the walk has already been made to match
+     * above. */
+    if (!ev.walk1->control_state_known || !ev.walk2->control_state_known)
+        return refusal::walk_control_unknown;
+    for (size_t i{0}; i < spec.positions; ++i) {
+        if (!ev.walk1->at[i].enable_commanded_high ||
+            !ev.walk2->at[i].enable_commanded_high)
+            return refusal::walk_position_not_enabled;
+    }
+
     /* The role table, before the electrical checks. A machine can be electrically perfect
      * and still unprovable: the masks a consumer reads are keyed by source_id, not by
      * chain position, so without the frozen mounting roles nothing downstream can be

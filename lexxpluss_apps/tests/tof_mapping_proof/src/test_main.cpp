@@ -501,6 +501,38 @@ ZTEST(tof_mapping_proof, test_an_incomplete_second_walk_is_refused)
     zassert_equal(refused(t), pf::refusal::walk2_not_complete);
 }
 
+/* ------------------------------------- the walk's own control state ------- */
+
+/* `complete` says the walk finished. It does not say the walk can describe what it asked
+ * of the enable chain, and chain_result is filled in by whoever built it. The enumerator
+ * clears control_state_known on a control failure -- the state in which the hardware may
+ * not have executed the last request -- so a walk carrying both is describing addresses
+ * that may belong to a configuration nobody commanded. */
+ZTEST(tof_mapping_proof, test_a_first_walk_that_cannot_describe_its_control_state_is_refused)
+{
+    transaction t;
+    t.walk1.control_state_known = false;
+    zassert_equal(refused(t), pf::refusal::walk_control_unknown);
+}
+
+ZTEST(tof_mapping_proof, test_a_second_walk_that_cannot_describe_its_control_state_is_refused)
+{
+    transaction t;
+    t.walk2.control_state_known = false;
+    zassert_equal(refused(t), pf::refusal::walk_control_unknown);
+}
+
+/* A position the walk never commanded enabled cannot have been proven by it, whatever the
+ * verdict beside it says. The two fields come from different places -- the verdict from the
+ * census, the commanded state from the control sequence -- so one can be clean while the
+ * other was never set. */
+ZTEST(tof_mapping_proof, test_a_position_the_walk_never_commanded_enabled_is_refused)
+{
+    transaction t;
+    t.walk2.at[3].enable_commanded_high = false;
+    zassert_equal(refused(t), pf::refusal::walk_position_not_enabled);
+}
+
 /* ------------------------------------- the public fingerprint comparison ------- */
 
 /* same() is public and takes two caller-built fingerprints, so `positions` is whatever the
