@@ -90,6 +90,17 @@ bool is_commissioning_profile(const fingerprint &fp)
 
 bool same(const fingerprint &a, const fingerprint &b)
 {
+    /* Bound before indexing at[]. This function is public and takes two caller-built
+     * fingerprints, so `positions` is whatever the caller wrote there -- the commissioning
+     * topology check that bounds the other paths never runs on this one, and neither does
+     * fingerprint_of()'s own bound, which only constrains fingerprints this file built.
+     *
+     * Refusing is both the safe answer and the true one: a fingerprint that claims more
+     * positions than can exist describes no chain, so it is not the same chain as anything,
+     * including another fingerprint making the same impossible claim. */
+    if (a.positions > enm::chain_spec::kMaxPositions ||
+        b.positions > enm::chain_spec::kMaxPositions)
+        return false;
     if (a.positions != b.positions)
         return false;
     for (size_t i{0}; i < a.positions; ++i) {

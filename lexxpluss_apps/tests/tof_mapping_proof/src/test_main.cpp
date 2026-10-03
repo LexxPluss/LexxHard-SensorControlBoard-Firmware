@@ -501,6 +501,50 @@ ZTEST(tof_mapping_proof, test_an_incomplete_second_walk_is_refused)
     zassert_equal(refused(t), pf::refusal::walk2_not_complete);
 }
 
+/* ------------------------------------- the public fingerprint comparison ------- */
+
+/* same() is public and takes two caller-built fingerprints, so `positions` is whatever the
+ * caller wrote. Neither the commissioning topology check nor fingerprint_of()'s own bound
+ * runs on this path. Without a bound of its own it indexes at[] past the end.
+ *
+ * Both sides claim the same impossible count, so the early inequality return does not save
+ * it: that is exactly the shape that reaches the loop.
+ *
+ * The padding is what makes this test able to fail. An earlier version of it used two bare
+ * fingerprints, and it passed with the bound removed -- the overrun read whatever happened
+ * to follow each local, the two differed, and same() returned false for a reason that had
+ * nothing to do with the check. It was green because the bug is undefined behaviour, not
+ * because the bug was absent. Following each fingerprint with zeroed positions of the same
+ * type makes the overrun read equal values instead, so an unbounded same() returns TRUE and
+ * this assertion reddens. */
+ZTEST(tof_mapping_proof, test_same_refuses_fingerprints_claiming_more_positions_than_can_exist)
+{
+    struct padded {
+        pf::fingerprint fp{};
+        pf::position_fingerprint beyond[2]{};
+    };
+    padded a{};
+    padded b{};
+    a.fp.positions = enm::chain_spec::kMaxPositions + 1;
+    b.fp.positions = a.fp.positions;
+    zassert_false(pf::same(a.fp, b.fp), "a fingerprint past the array describes no chain");
+}
+
+/* The bound must not cost the honest case: a fingerprint that fills the array exactly is
+ * still compared. A check that refused this would be the same defect in the other
+ * direction. */
+ZTEST(tof_mapping_proof, test_same_still_compares_fingerprints_that_fill_the_array)
+{
+    pf::fingerprint a{};
+    a.positions = enm::chain_spec::kMaxPositions;
+    for (size_t i{0}; i < a.positions; ++i)
+        a.at[i].position = static_cast<uint8_t>(i + 1);
+    pf::fingerprint b{a};
+    zassert_true(pf::same(a, b), "a full fingerprint must still compare equal to itself");
+    b.at[a.positions - 1].address = 0x55;
+    zassert_false(pf::same(a, b), "and must still differ when its last position differs");
+}
+
 ZTEST(tof_mapping_proof, test_a_position_that_never_verified_is_refused)
 {
     /* `absent` is the pos6 failure class from the DS20001 bring-up: enable never arrived.
