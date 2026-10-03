@@ -22,7 +22,11 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 VERSION:=$(shell git describe --tags HEAD | cut -c2-)
-WORKDIR:=$(if $(WORKDIR),$(),workdir)
+# Absolute path to extra/ (custom -DBOARD_ROOT / -DZEPHYR_EXTRA_MODULES root).
+# Defaults to /workdir, matching the "volumes: .:/workdir" mount in docker-compose.yml.
+# When IN_HOST=1 (no container), override with the worktree's absolute path, e.g.
+# make IN_HOST=1 WORKDIR=$PWD firmware
+WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
 .PHONY: all
@@ -30,7 +34,11 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer build-test-tof-cliff-packer build-test-tof-mapping-authority build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof build-tof-cliff
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer \
+	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
+	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
+	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
+	        build-test-tof-enumerator build-tof-chain
 
 .PHONY: distclean
 distclean: clean
@@ -54,16 +62,16 @@ update:
 	$(RUNNER) west update
 	./scripts/manage_zephyr_patches.sh apply
 
-.PHONY: bootloader
-bootloader:
-	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=/${WORKDIR}/extra
-	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
-
 .PHONY: test
 test: check_language_boundary
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b native_sim lexxpluss_apps/tests/shutter_limit_switch -d build-test -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+	$(RUNNER) west twister -T lexxpluss_apps/tests --platform native_sim -v -A ${WORKDIR}/extra
+
+.PHONY: bootloader
+bootloader:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=${WORKDIR}/extra
+	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
 # Host-side tests for the ToF grid packer, driven by the golden vectors in
 # docs/can/ and pinning the contract SHA-256 (the firmware half of the
@@ -100,6 +108,14 @@ test_tof_cliff_sensor:
 # guarded readdress (exact-traffic properties the enumerator fakes cannot
 # prove, above all zero-writes-after-transport-error); the enumeration state
 # machine suite joins here.
+# The only suite that compiles a vendor translation unit, and it compiles the PATCHED
+# copy: it pins that a failed VL53LX_get_device_results() is reported as a failure and
+# does not move the device's stream-count history. Dropping the patch fails it.
+.PHONY: test_tof_uld_status
+test_tof_uld_status:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_uld_status -d build-test-tof-uld-status -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: test_tof_enumerator
 test_tof_enumerator:
 	$(RUNNER) west zephyr-export
@@ -143,7 +159,7 @@ check_language_boundary:
 firmware:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr.signed.confirmed.bin
 
@@ -151,7 +167,7 @@ firmware:
 firmware_two_state_ksw:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_two_state_ksw.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_two_state_ksw.signed.confirmed.bin
 
@@ -159,7 +175,7 @@ firmware_two_state_ksw:
 firmware_interlock:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_interlock.signed.confirmed.bin
 
@@ -173,7 +189,7 @@ firmware_interlock:
 firmware_bypass_safety_lidar:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.confirmed.bin out/zephyr_bypass_safety_lidar.signed.confirmed.bin
 
@@ -197,16 +213,31 @@ firmware_bypass_safety_lidar:
 #
 # PROVEN is still clamped and the four cliff roles are still unknown, so this image produces the
 # 0x217 health heartbeat and refuses `tof cliff prove`. It does NOT produce measurement frames.
+#
+# NO SAFETY-LIDAR BYPASS, unlike firmware_tof_chain, which this target was first copied from. That
+# flag belongs to a bench image and this one is meant to be a product build; carrying it by
+# inheritance is how a bypass ships. firmware_bypass_safety_lidar remains the named target for a
+# machine with no safety lidar fitted, and a bench that needs both cliff and the bypass needs its
+# own target rather than this one quietly being both.
+#
+# firmware_tof_chain still carries the flag. That is pre-existing and deliberately left alone here;
+# whether a bring-up target should keep it is a separate decision from what this one ships with.
 .PHONY: firmware_tof_cliff
 firmware_tof_cliff:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-cliff -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-cliff -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-tof-cliff/zephyr/zephyr.signed.bin out/zephyr_tof_cliff.signed.bin
 	mv build-tof-cliff/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_cliff.signed.confirmed.bin
 	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
 	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
 
+#
+# The `tof enum` command is present but is NOT expected to complete on this
+# image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition
+# schedule, and commissioning was measured at 0/69 complete walks there. The
+# overlay comment carries the measurement and names the fix, which is not in
+# this change.
 .PHONY: firmware_tof_chain
 firmware_tof_chain:
 	./scripts/manage_zephyr_patches.sh verify

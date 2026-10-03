@@ -25,26 +25,15 @@
 #pragma once
 
 #include <zephyr/kernel.h>
+#include "bmu_lipy041_decode.hpp"
 
 namespace lexxhard::bmu_controller {
 
 #define BMU_CAN_DATA_LENGTH 8
 
-struct msg_bmu {
-    struct {
-        uint16_t value;
-        uint8_t id;
-    } max_voltage, min_voltage, max_cell_voltage, min_cell_voltage;
-    struct {
-        int16_t value;
-        uint8_t id;
-    } max_temp, min_temp, max_current, min_current;
-    int16_t fet_temp, pack_current;
-    uint16_t charging_current, pack_voltage, design_capacity, full_charge_capacity, remain_capacity;
-    uint16_t manufacturing, inspection, serial;
-    uint8_t mod_status1, mod_status2, bmu_status, asoc, rsoc, soh;
-    uint8_t bmu_fw_ver, mod_fw_ver, serial_config, parallel_config, bmu_alarm1, bmu_alarm2;
-} __attribute__((aligned(4)));
+// Definition lives in bmu_lipy041_decode.hpp so decode_frame_bmu_info() can be
+// declared alongside the other decode functions without a circular include.
+using msg_bmu = bmu_lipy041::msg_bmu;
 
 struct msg_rawframe_bmu {
     uint8_t frame[BMU_CAN_DATA_LENGTH];

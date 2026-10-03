@@ -1,6 +1,6 @@
 # ToF grid CAN wire contract (AMRSW-2322)
 
-Contract version: **2026-08-02f**
+Contract version: **2026-08-02g**
 Status: **frozen** for implementation. Everything below is normative. The numeric CAN IDs are
 assigned (see the identifier section) and are still injected as constants/configuration rather
 than parsed out of this prose.
@@ -68,6 +68,19 @@ firmware table changes; the wire format and the driver are untouched.
 
 `chain_position` is still reported, in the health frame, for diagnostics only. Nothing in the
 decoder may branch on it.
+
+**Its base is 0.** `chain_position` is the firmware's index into its own chain descriptor table,
+counted from the head of the enable chain: 0 is the first board and 5 the sixth, so the valid range
+on this machine is **0-5** and the two hanging sensors, being the first two boards, transmit **0 and
+1**. The golden vectors have always carried those values; until this version the document did not
+say which end they counted from, which left a decoder free to read them as 1-based and be wrong by
+one about every board.
+
+It is **not** the cliff health frame's `failing_chain_position`, which counts the same physical
+boards from **one** (1-6, with 0xFF for none). That field names a board for a person to go and look
+at, and an operator counts from one. Two fields, two bases, one chain: a decoder that shares a
+constant or a table between them is off by one for every position, and both numbers are plausible,
+so nothing about the mistake looks wrong.
 
 Note that `source_id 0` being the **right** sensor reverses the legacy SCBDriver convention, in
 which the lower id was the left sensor. Now that the id is a free logical choice rather than a
@@ -140,6 +153,7 @@ byte 1 : source_id << 4 | 0x0 (low nibble reserved, MUST be 0)
 byte 2 : valid_zone_count     (0-64, count of zones not equal to 0xFFF)
 byte 3 : status flags         (see below)
 byte 4 : chain_position low nibble | boards_detected high nibble
+         (chain_position is 0-based, 0-5; boards_detected is a COUNT, 6 on a full chain)
 byte 5 : last error code      (device/driver specific, 0 = none)
 byte 6 : reserved, MUST be 0 on transmit
 byte 7 : reserved, MUST be 0 on transmit

@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Adapter-level tests for tof_cliff_sensor.c.
  *
@@ -15,14 +15,17 @@
  *
  *   - a zero-target cycle still carries RangeData[0], because SetMeasurementData forces
  *     iteration = 1 when active_results < 1;
- *   - a fetch can fail on the bus and still return VL53LX_ERROR_NONE, because
- *     VL53LX_GetMultiRangingData assigns SetMeasurementData's result over the status
- *     that get_device_results produced.
+ *   - a call can fail on the bus and still return VL53LX_ERROR_NONE.
  *
- * The second one is not mocked at the sticky-errno level. The fake performs a REAL port
- * transfer through the emulated controller, has it fail, and then returns success - the
- * exact shape of the defect. If the sticky mechanism were removed, these tests would
- * fail rather than silently pass.
+ * The second shape is posed deliberately, and is NOT a claim about the ULD in this
+ * build. VL53LX_GetMultiRangingData did assign SetMeasurementData's result over the
+ * status get_device_results produced, and patch 0001 fixes exactly that. What the fakes
+ * here exercise is the adapter's defence against the class: they perform a REAL port
+ * transfer through the emulated controller, have it fail, and then return success. That
+ * is what the sticky errno is for, and it has to keep working whether or not the vendor
+ * tree is patched -- an upstream bump, or any path the patch does not cover, puts the
+ * shape back. If the sticky mechanism were removed, these tests would fail rather than
+ * silently pass.
  */
 
 #include <errno.h>
@@ -45,13 +48,21 @@ static struct {
 	VL53LX_Error fetch_rc;
 	VL53LX_Error rearm_rc;
 	int fetch_bus_xfers; /* real port transfers the fetch performs before returning */
-	int rearm_bus_xfers; /* same, for the re-arm, so a masked bus failure can be posed */
+	int rearm_bus_xfers; /* same, for the re-arm, so a bus failure under success can be posed */
 	VL53LX_MultiRangingData_t canned;
 	int ready_calls;
 	int fetch_calls;
 	int rearm_calls;
+	/* Models the real device for the tests that need it: the frame stays available
+	 * until ClearInterruptAndStartMeasurement releases it, and only then does the next
+	 * measurement become the one a fetch will return. Without this the fake hands back
+	 * a brand-new frame on every call, which is the one thing a missing re-arm cannot
+	 * do on hardware -- and a test written against that fake pins the bug as correct. */
+	bool frame_advances_only_on_rearm;
+	uint8_t held_stream_count;
 	int stop_calls;
 	int stop_bus_xfers;
+	VL53LX_Error stop_rc; /* so a cleanup stop can be posed as failing, not just its bus */
 	int start_calls;
 	/* lifecycle */
 	VL53LX_Error boot_rc;
@@ -95,6 +106,9 @@ VL53LX_Error VL53LX_GetMultiRangingData(VL53LX_DEV Dev, VL53LX_MultiRangingData_
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0100 + i), 0x00);
 	}
 
+	if (f.frame_advances_only_on_rearm) {
+		f.canned.StreamCount = f.held_stream_count;
+	}
 	*pData = f.canned;
 	return f.fetch_rc;
 }
@@ -105,9 +119,14 @@ VL53LX_Error VL53LX_ClearInterruptAndStartMeasurement(VL53LX_DEV Dev)
 	order_add('c');
 
 	/* Real traffic when asked for, so the re-arm can fail on the bus while the ULD still
-	 * reports success - the same masking shape as the fetch and the stop. */
+	 * reports success - the same posed shape as the fetch and the stop. */
 	for (int i = 0; i < f.rearm_bus_xfers; i++) {
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0300 + i), 0x00);
+	}
+	if (f.frame_advances_only_on_rearm && f.rearm_rc == VL53LX_ERROR_NONE) {
+		/* The held frame is released and the device goes on to measure the next
+		 * one. A re-arm that never happens leaves the old frame in place. */
+		f.held_stream_count++;
 	}
 	return f.rearm_rc;
 }
@@ -163,11 +182,11 @@ VL53LX_Error VL53LX_StopMeasurement(VL53LX_DEV Dev)
 	order_add('P');
 
 	/* Real traffic when asked for, so a stop can fail on the bus while the ULD still
-	 * reports success - the same masking shape as the fetch. */
+	 * reports success - the same posed shape as the fetch. */
 	for (int i = 0; i < f.stop_bus_xfers; i++) {
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0200 + i), 0x00);
 	}
-	return VL53LX_ERROR_NONE;
+	return f.stop_rc;
 }
 
 /* The BSP wrapper is not compiled either. This mirrors what the real one does with the
@@ -258,19 +277,30 @@ ZTEST(tof_cliff_adapter, test_four_targets_are_all_copied_in_order)
 	zassert_equal(sample.stream_count, 7);
 }
 
-ZTEST(tof_cliff_adapter, test_negative_range_survives_unclamped)
+/* This replaces test_negative_range_survives_unclamped, which posed {-37, VALID} and
+ * {-1, VALID}. Those are combinations the real ULD cannot emit: SetTargetData rewrites a
+ * VALID negative into either a VALID 0 mm or an INVALID negative before this layer sees
+ * it, so the old fixtures proved only that the fake copied what it was handed. The two
+ * shapes below are the ones the ULD does produce -- tests/tof_uld_status pins that they
+ * are, by running the real SetTargetData -- and what is asserted here is the only thing
+ * this layer is responsible for: it copies both fields through without a second opinion. */
+ZTEST(tof_cliff_adapter, test_the_ulds_normalised_negatives_are_copied_through_unchanged)
 {
-	/* The BSP's vl53l4cx_get_result clamps this to 0. For a cliff sensor a reading
-	 * below the floor plane is the signal, not noise, and a 0 would read as a
-	 * surface right at the sensor. */
-	const int16_t mm[2] = {-37, -1};
-	const uint8_t status[2] = {0, 0};
+	/* An INVALID negative from below the tuning threshold, and a VALID 0 mm that the
+	 * ULD synthesised from a negative inside it. */
+	const int16_t mm[2] = {-31, 0};
+	const uint8_t status[2] = {VL53LX_RANGESTATUS_RANGE_INVALID,
+				   VL53LX_RANGESTATUS_RANGE_VALID};
 
 	canned_targets(2, mm, status, 2);
 
 	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
-	zassert_equal(sample.entries[0].range_mm, -37);
-	zassert_equal(sample.entries[1].range_mm, -1);
+	zassert_equal(sample.entries[0].range_mm, -31,
+		      "an INVALID negative must not be clamped away here");
+	zassert_equal(sample.entries[0].range_status, VL53LX_RANGESTATUS_RANGE_INVALID);
+	zassert_equal(sample.entries[1].range_mm, 0);
+	zassert_equal(sample.entries[1].range_status, VL53LX_RANGESTATUS_RANGE_VALID,
+		      "the ULD's synthesised zero is VALID and stays VALID");
 }
 
 ZTEST(tof_cliff_adapter, test_no_status_is_reclassified_or_reduced_here)
@@ -312,6 +342,8 @@ ZTEST(tof_cliff_adapter, test_count_above_the_array_is_a_protocol_error_not_a_tr
 	zassert_false(sample.fresh);
 	zassert_equal(sample.target_count, 0, "no part of a corrupt sample may leak out");
 	zassert_equal(sample.entry_count, 0);
+	zassert_equal(f.rearm_calls, 1,
+		      "the fetch succeeded and the frame was refused, so it must be released");
 
 	/* The rule cannot be bypassed by calling the pure copy step directly either. */
 	zassert_equal(tof_cliff_copy_raw(&f.canned, &sample), -EPROTO);
@@ -391,10 +423,20 @@ ZTEST(tof_cliff_adapter, test_fetch_failure_yields_no_sample)
 	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
 	zassert_false(st.sample_present);
 	zassert_false(sample.fresh, "a failed fetch must not hand up a half-copied sample");
-	zassert_equal(f.rearm_calls, 0);
+
+	/* The frame the device is holding was refused, so it has to be released. Leaving it
+	 * there means the next read is served the same frame: a deterministic failure then
+	 * repeats forever, and a transient one ends with the pre-outage frame arriving after
+	 * recovery and passing the replay guard as fresh. */
+	zassert_equal(f.rearm_calls, 1, "a refused frame must still be released");
+
+	/* And the re-arm must not overwrite what explains the refusal. */
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE,
+		      "a successful re-arm must not zero the fetch diagnosis");
+	zassert_false(st.rearm_failed, "the re-arm itself succeeded");
 }
 
-ZTEST(tof_cliff_adapter, test_bus_failure_masked_by_a_successful_return_code_is_still_caught)
+ZTEST(tof_cliff_adapter, test_a_bus_failure_under_a_success_return_is_still_caught)
 {
 	const int16_t mm[1] = {500};
 	const uint8_t status[1] = {0};
@@ -404,8 +446,10 @@ ZTEST(tof_cliff_adapter, test_bus_failure_masked_by_a_successful_return_code_is_
 	for (size_t i = 0; i < ARRAY_SIZE(at); i++) {
 		before(NULL);
 		canned_targets(1, mm, status, 1);
-		/* This is the defect, reproduced exactly: the transport failed and the
-		 * ULD returns VL53LX_ERROR_NONE anyway. */
+		/* The shape the sticky errno defends against, posed on purpose: the
+		 * transport failed and the ULD returns VL53LX_ERROR_NONE anyway. Patch
+		 * 0001 removes the ULD path that used to produce this shape by itself;
+		 * the defence has to hold regardless, so it is still exercised here. */
 		f.fetch_rc = VL53LX_ERROR_NONE;
 		fake_i2c_fail_on(at[i], -EIO);
 
@@ -624,13 +668,13 @@ ZTEST(tof_cliff_adapter, test_reading_never_stops_or_restarts_the_device)
 	zassert_equal(f.rearm_calls - rearm_after_start, 5, "one re-arm per cycle, no more");
 }
 
-/* C1. GetMultiRangingData can fail internally, overwrite its own status with the copy
- * step's success and leave the PREVIOUS result in its output buffer. The sticky port
- * record catches that only when the bus was involved, so a healthy-bus internal failure
- * would otherwise republish the last range with fresh == true - the floor read while
- * still on the floor, handed up every cycle as current while the robot drives off a
- * ledge. The stream count is the only material already being carried that can tell the
- * two apart. */
+/* C1. The replay guard is an independent defence, and the one that does not depend on
+ * any status being reported correctly. A device that re-presents its PREVIOUS result
+ * while the bus is healthy and every layer returns success defeats both patch 0001 and
+ * the sticky port record - and republishing that range with fresh == true is the floor
+ * read while still on the floor, handed up every cycle as current while the robot drives
+ * off a ledge. The stream count is the only material already being carried that can tell
+ * the two apart. */
 ZTEST(tof_cliff_adapter, test_an_unchanged_stream_count_is_a_replay_not_a_fresh_sample)
 {
 	const int16_t mm[1] = {120};
@@ -654,6 +698,138 @@ ZTEST(tof_cliff_adapter, test_an_unchanged_stream_count_is_a_replay_not_a_fresh_
 	/* And the device is re-armed anyway, or one recoverable replay would leave ready
 	 * asserted and turn every later read into the same failure. */
 	zassert_equal(f.rearm_calls, 2);
+}
+
+/* The other half of C1, and the half that needed a fix in the vendor tree rather than
+ * here: once the ULD reports the failure instead of masking it, this layer must not have
+ * recorded anything from it. The stream history is the part that matters -- it is what
+ * decides whether the NEXT frame looks fresh -- and a failed fetch returns before the
+ * history is written, so a recovery frame carrying the count the failure was going to
+ * claim is still judged on its own merits.
+ *
+ * tests/tof_uld_status pins the vendor half: that the failure is reported at all. */
+ZTEST(tof_cliff_adapter, test_a_failed_fetch_leaves_the_stream_history_alone)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.canned.StreamCount = 5;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(stream.last_stream_count, 5);
+	zassert_true(stream.valid);
+
+	/* The fetch fails, and the count it would have carried is one the guard has never
+	 * seen. Nothing about it may be remembered. */
+	f.canned.StreamCount = 6;
+	f.fetch_rc = VL53LX_ERROR_RANGE_ERROR;
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_false(sample.fresh);
+	zassert_equal(stream.last_stream_count, 5,
+		      "a read that never succeeded must not become the history the next "
+		      "comparison is made against");
+	zassert_true(stream.valid, "and it must not discard the history either");
+}
+
+/* Failing closed must not latch: the sensor recovers and publishes again. What it must
+ * NOT publish is the frame the device was holding through the failure.
+ *
+ * This test used to assert the opposite, and passed, because the old fake produced a
+ * brand-new frame on every fetch -- so "the next read after a failure" was always a fresh
+ * measurement, which is the one thing hardware cannot do while the interrupt is still
+ * asserted. Here the fake holds its frame until the re-arm releases it, which is what the
+ * device does, and the distinction becomes visible: count 6 is the frame measured before
+ * the outage, count 7 is the first frame measured after it. */
+ZTEST(tof_cliff_adapter, test_the_frame_held_through_a_failure_is_not_published_as_fresh)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.frame_advances_only_on_rearm = true;
+	f.held_stream_count = 5;
+
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(sample.stream_count, 5);
+	zassert_equal(f.rearm_calls, 1, "the published frame is released too");
+
+	/* The fetch fails on the frame the device measured next, count 6. */
+	f.fetch_rc = VL53LX_ERROR_RANGE_ERROR;
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_false(sample.fresh);
+	zassert_equal(stream.last_stream_count, 5, "a failed read is not history");
+	zassert_equal(f.rearm_calls, 2, "count 6 was refused, so it must be released");
+
+	/* Recovery. Because count 6 was released rather than left in place, what arrives is
+	 * count 7 -- measured after the outage -- and not the pre-outage frame. */
+	f.fetch_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_true(sample.fresh);
+	zassert_false(st.stale_replay);
+	zassert_equal(sample.entries[0].range_mm, 300);
+	zassert_equal(sample.stream_count, 7,
+		      "6 is the frame the device held through the failure; publishing it "
+		      "would report the floor from before the outage as the floor now");
+	zassert_equal(stream.last_stream_count, 7);
+}
+
+/* The same release is owed when the ULD returns success and only the bus says otherwise.
+ * That path is the reason the sticky errno exists, and it refuses the frame just as hard,
+ * so it must not be the one refusal that leaves the device wedged. */
+ZTEST(tof_cliff_adapter, test_a_transport_failure_under_a_success_return_still_rearms)
+{
+	const int16_t mm[1] = {400};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	/* The shape the sticky errno defends against, posed on purpose rather than claimed
+	 * of the patched ULD: the transport failed and the ULD returned VL53LX_ERROR_NONE
+	 * anyway. The injection is on the fetch's first transfer only, so the re-arm that
+	 * follows runs on a healthy bus. */
+	f.fetch_rc = VL53LX_ERROR_NONE;
+	fake_i2c_fail_on(1, -EIO);
+
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_FETCH);
+	zassert_equal(st.port_errno, -EIO, "the bus failure is what refused this frame");
+	zassert_false(sample.fresh);
+	zassert_equal(f.rearm_calls, 1);
+}
+
+/* When the re-arm on a refusal path fails too, the re-arm is the fact that survives: the
+ * refusal cost one frame, this costs every later one. */
+ZTEST(tof_cliff_adapter, test_a_fetch_failure_whose_rearm_also_fails_reports_the_rearm)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.fetch_rc = VL53LX_ERROR_RANGE_ERROR;
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_true(st.rearm_failed, "the next sample will not arrive either");
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_REARM);
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE);
+	zassert_false(st.sample_present);
+	zassert_false(sample.fresh);
+	zassert_equal(f.rearm_calls, 1);
+}
+
+/* A READY_CHECK failure is the one refusal that must NOT re-arm: nothing has confirmed a
+ * frame was consumed, so clearing the interrupt would discard one nobody looked at. */
+ZTEST(tof_cliff_adapter, test_a_ready_check_failure_does_not_rearm)
+{
+	const int16_t mm[1] = {300};
+	const uint8_t status[1] = {0};
+
+	canned_targets(1, mm, status, 1);
+	f.ready_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_read_once(&obj, &scratch, &stream, &sample, &st), 0);
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_READY_CHECK);
+	zassert_equal(f.fetch_calls, 0);
+	zassert_equal(f.rearm_calls, 0, "no frame was consumed, so none may be discarded");
 }
 
 /* The replay verdict and a failing re-arm are separate facts and both must survive. */
@@ -873,11 +1049,12 @@ ZTEST(tof_cliff_adapter, test_only_a_start_that_completed_both_calls_clears_the_
 	zassert_false(st.stale_replay);
 }
 
-/* The masking shape the sticky errno exists for, applied to the new call: the ULD returns
- * VL53LX_ERROR_NONE while the transfer under it failed. Taking the ULD's word here would
- * record an unarmed device as armed, and the very first read would hand back the previous
- * session's frame - exactly the defect this change removes, reintroduced silently. */
-ZTEST(tof_cliff_adapter, test_the_second_calls_bus_failure_is_not_masked_by_its_uld_result)
+/* The same posed shape, applied to the new call: the ULD returns VL53LX_ERROR_NONE while
+ * the transfer under it failed. Taking the ULD's word here would record an unarmed device
+ * as armed, and the very first read would hand back the previous session's frame. Patch
+ * 0001 does not cover this call, and the sticky errno is what makes the adapter safe
+ * against it either way. */
+ZTEST(tof_cliff_adapter, test_the_second_calls_bus_failure_outranks_its_uld_result)
 {
 	f.rearm_bus_xfers = 1;
 	f.rearm_rc = VL53LX_ERROR_NONE;
@@ -888,6 +1065,76 @@ ZTEST(tof_cliff_adapter, test_the_second_calls_bus_failure_is_not_masked_by_its_
 	zassert_equal(st.port_errno, -EIO);
 	zassert_equal(st.uld_rc, VL53LX_ERROR_NONE, "the ULD really did claim success");
 	zassert_equal(f.stop_calls, 1, "a bus-failed clear is still a half-armed device");
+}
+
+/* A half-armed start attempts a cleanup stop. When that stop works, the device really is
+ * quiet and the caller's "not started" record is accurate, so nothing extra is reported.
+ * This is the control for the test below it. */
+ZTEST(tof_cliff_adapter, test_a_cleanup_stop_that_worked_leaves_no_doubt_about_the_device)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(f.stop_calls, 1, "half-armed, so the cleanup ran");
+	zassert_false(st.ranging_unknown, "the stop succeeded, so the device is known quiet");
+}
+
+/* The state this exists for: StartMeasurement succeeded, the clear failed, and the
+ * best-effort stop failed too. Nothing has confirmed the device stopped, so it may still
+ * be ranging on the shared bus while the caller records it as never started and therefore
+ * never stops it. The return value cannot carry this -- it is already spent on the clear's
+ * failure, which is the stage triage needs -- so it gets its own flag, for the same reason
+ * rearm_failed is separate from sample_present. */
+ZTEST(tof_cliff_adapter, test_a_cleanup_stop_that_also_failed_is_reported_not_swallowed)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	f.stop_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(f.stop_calls, 1, "the cleanup was still attempted");
+	zassert_true(st.ranging_unknown, "nothing confirmed the device is quiet");
+
+	/* The cleanup must not have rewritten which stage failed: that is still the clear. */
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_START_CLEAR);
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE);
+}
+
+/* The posed shape this file uses everywhere, applied to the cleanup: the ULD returns
+ * VL53LX_ERROR_NONE while the transfer under it failed. Judging the cleanup on its ULD
+ * result alone would swallow exactly the failure class the sticky record exists to catch,
+ * and would do it in the one place where the consequence is a sensor left ranging on a
+ * shared bus with nobody reading it. */
+ZTEST(tof_cliff_adapter, test_a_cleanup_stop_that_failed_only_on_the_bus_is_still_reported)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE; /* half-armed, and it makes no traffic */
+	f.stop_rc = VL53LX_ERROR_NONE;               /* the ULD claims the stop worked */
+	f.stop_bus_xfers = 1;
+	fake_i2c_fail_on(1, -EIO); /* the cleanup's transfer is the first on the bus */
+
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(f.stop_calls, 1);
+	zassert_true(st.ranging_unknown, "the ULD said fine; the bus did not");
+
+	/* The cleanup must still not rewrite the diagnosis triage needs. */
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_START_CLEAR);
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE);
+	zassert_equal(st.port_errno, 0, "the clear itself made no traffic, and stays that way");
+}
+
+/* The flag is per operation, like every other field in the status. A later clean start
+ * must not inherit the doubt raised by an earlier one, or the caller can never stop
+ * treating the sensor as suspect. */
+ZTEST(tof_cliff_adapter, test_the_ranging_doubt_does_not_survive_the_next_operation)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	f.stop_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_true(st.ranging_unknown);
+
+	f.rearm_rc = VL53LX_ERROR_NONE;
+	f.stop_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_false(st.ranging_unknown, "a start that completed says nothing is in doubt");
 }
 
 ZTEST(tof_cliff_adapter, test_null_arguments_are_rejected_without_touching_the_device)

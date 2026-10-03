@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Host-side tests for tail isolation.
  *
@@ -107,10 +107,17 @@ struct fake_chain : enm::chain_ops {
 
     int pulses_seen{0};
 
+    /* Per-address transport failure, as distinct from the all-probes-fail flag. The
+     * interesting case is one address the bus cannot answer for while another answers
+     * cleanly, which a global flag cannot pose. */
+    uint8_t transport_error_addr{0};
+
     enm::probe_result probe(uint8_t addr7) override
     {
         note(op::probe, addr7);
         if (probe_transport_error)
+            return {enm::probe_state::transport_error, -EIO};
+        if (transport_error_addr != 0 && addr7 == transport_error_addr)
             return {enm::probe_state::transport_error, -EIO};
         for (size_t i{0}; i < kStages; ++i) {
             if (present[i] && enabled[i] && addr[i] == addr7)
@@ -143,6 +150,24 @@ struct fake_chain : enm::chain_ops {
 
     void wait(wait_reason) override { note(op::wait); }
 };
+
+/* A walk in which every position did what the spec asked. Only the isolation half is
+ * under test here, so the walks must be clean or they would be what refuses the evidence. */
+enm::chain_result clean_walk(const enm::chain_spec &s, bool l7_retained)
+{
+    enm::chain_result r{};
+    r.status = enm::chain_status::complete;
+    r.spec = enm::spec_error::none;
+    r.positions = s.positions;
+    for (size_t i{0}; i < s.positions; ++i) {
+        const bool l7{s.at[i].expected == enm::model::l7cx};
+        r.at[i].verdict = (l7 && l7_retained) ? enm::outcome::retained : enm::outcome::enumerated;
+        r.at[i].address = s.at[i].target_addr;
+        r.at[i].seen = l7 ? kL7Id : kL4Id;
+        r.at[i].enable_commanded_high = true;
+    }
+    return r;
+}
 
 enm::chain_spec product_spec()
 {
@@ -250,6 +275,105 @@ ZTEST(tof_tail_isolation, test_the_merge_shows_up_as_the_neighbours_address)
     zassert_equal(o.answering_addr, 0x2E, "on its neighbour's address");
     zassert_true(o.id_read_ok, "and the identity is read where it answered, not where we hoped");
     zassert_equal(o.seen.first, kL4Id.first);
+}
+
+/* The defect the merge branch used to hide.
+ *
+ * The tail's own address cannot be probed -- the bus fails on it -- while the neighbour's
+ * address answers. That pair used to be written down as a merge: tail_probe overwritten
+ * with ack and answering_addr set to the neighbour's, which comes out of the evaluator as
+ * isolation_wrong_address. An operator reading that goes looking for two devices sharing
+ * an address; the truth is that the question was never answered.
+ *
+ * A transport error proves neither presence nor vacancy, so it cannot be half of a proof
+ * of either, and it must stay dominant. */
+ZTEST(tof_tail_isolation, test_a_transport_error_on_the_tail_is_not_a_merge)
+{
+    const enm::chain_spec spec{product_spec()};
+    fake_chain c{};
+    c.addr[5] = 0x2E;                  // the merge shape: the neighbour's address answers
+    c.transport_error_addr = 0x2F;     // but the tail's own address cannot be asked
+    pf::isolation_observation o{};
+
+    zassert_equal(iso::observe_tail(c, spec, o), 0);
+
+    zassert_equal(o.tail_probe, enm::probe_state::transport_error,
+                  "the bus failure must not be overwritten by the neighbour's ack");
+    zassert_equal(o.answering_addr, 0,
+                  "and nothing may be claimed to have answered");
+    zassert_equal(o.prev_probe, enm::probe_state::ack,
+                  "the neighbour's own result is still recorded as observed");
+    zassert_false(o.id_read_ok, "no identity is read at an address nothing answered on");
+}
+
+/* End to end, because the observation alone is not the defect -- the defect is what the
+ * evaluator makes of it. A fake chain produces the observation, and a real gate turns it
+ * into the refusal a caller would actually see.
+ *
+ * Before this fix that refusal was isolation_wrong_address: a silent merge, which is a
+ * hardware diagnosis pointing at two devices sharing an address. The bus never answered
+ * the question, so the only honest refusal is isolation_transport_error. */
+ZTEST(tof_tail_isolation, test_a_transport_error_reaches_the_evaluator_as_a_transport_error)
+{
+    const enm::chain_spec spec{product_spec()};
+    fake_chain c{};
+    c.addr[5] = 0x2E;
+    c.transport_error_addr = 0x2F;
+    pf::isolation_observation o{};
+    zassert_equal(iso::observe_tail(c, spec, o), 0);
+
+    const enm::chain_result w1{clean_walk(spec, false)};
+    const enm::chain_result w2{clean_walk(spec, true)};
+    pf::evidence ev{};
+    ev.spec = &spec;
+    ev.walk1 = &w1;
+    ev.walk2 = &w2;
+    ev.isolation = o;
+
+    pf::gate g;
+    const pf::verdict v{g.evaluate(ev, g.issue())};
+    zassert_equal(v.reason, pf::refusal::isolation_transport_error,
+                  "a bus that could not answer must not be reported as a silent merge");
+    zassert_false(v.token.valid());
+}
+
+/* And the genuine merge still reaches the evaluator as a wrong address, so the repair has
+ * not widened into refusing the case the check was built for. */
+ZTEST(tof_tail_isolation, test_a_real_merge_reaches_the_evaluator_as_a_wrong_address)
+{
+    const enm::chain_spec spec{product_spec()};
+    fake_chain c{};
+    c.addr[5] = 0x2E;
+    pf::isolation_observation o{};
+    zassert_equal(iso::observe_tail(c, spec, o), 0);
+
+    const enm::chain_result w1{clean_walk(spec, false)};
+    const enm::chain_result w2{clean_walk(spec, true)};
+    pf::evidence ev{};
+    ev.spec = &spec;
+    ev.walk1 = &w1;
+    ev.walk2 = &w2;
+    ev.isolation = o;
+
+    pf::gate g;
+    zassert_equal(g.evaluate(ev, g.issue()).reason, pf::refusal::isolation_wrong_address);
+}
+
+/* The other side of the same condition: the repair must not be so wide that it stops the
+ * real merge being recognised. A clean NACK on the tail's own address plus an ACK on the
+ * neighbour's is still exactly the silent merge this check exists for. */
+ZTEST(tof_tail_isolation, test_a_clean_nack_plus_a_neighbour_ack_is_still_a_merge)
+{
+    const enm::chain_spec spec{product_spec()};
+    fake_chain c{};
+    c.addr[5] = 0x2E;
+    pf::isolation_observation o{};
+
+    zassert_equal(iso::observe_tail(c, spec, o), 0);
+
+    zassert_equal(o.tail_probe, enm::probe_state::ack);
+    zassert_equal(o.answering_addr, 0x2E, "on its neighbour's address");
+    zassert_true(o.id_read_ok);
 }
 
 ZTEST(tof_tail_isolation, test_a_silent_tail_is_reported_as_a_clean_nack)

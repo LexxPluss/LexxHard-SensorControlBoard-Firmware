@@ -2,7 +2,7 @@
  * Copyright (c) 2024-2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * One VL53L4CX cliff sensor, as thin a layer over the vendored ULD as the ULD's own
  * defects allow. Everything here exists because a defect made the obvious call unsafe.
@@ -13,9 +13,9 @@
  *
  *   - vl53l4cx.c holds a function-level `static VL53LX_MultiRangingData_t data;` in
  *     vl53l4cx_get_result, so two instances reading through it share one buffer.
- *   - the same function clamps a negative RangeMilliMeter to 0, which turns a
- *     below-the-floor reading - exactly the interesting case for a cliff - into a
- *     plausible zero.
+ *   - the same function clamps a negative RangeMilliMeter to 0 a second time, on top
+ *     of the normalisation the ULD has already done (see WHERE NEGATIVE RANGES GO),
+ *     so a caller cannot tell an ULD-normalised zero from a BSP-invented one.
  *   - it copies only RangeData[0 .. NumberOfObjectsFound), so a zero-target cycle
  *     yields no entry at all and the reason for the zero is lost.
  *   - its blocking poll casts VL53LX_GetMeasurementDataReady's return to void and
@@ -24,6 +24,30 @@
  *
  * So this layer calls VL53LX_GetMeasurementDataReady and VL53LX_GetMultiRangingData
  * directly, and the result buffer belongs to the caller.
+ *
+ * WHERE NEGATIVE RANGES GO
+ *
+ * The ULD normalises them before this layer ever sees them, and it is worth being exact
+ * because an earlier version of this comment was not. SetTargetData, which
+ * VL53LX_GetMultiRangingData reaches through SetMeasurementData, ends with
+ * (upstream/modules/vl53lx_api.c:963-970):
+ *
+ *   a VALID range at or above BDTable[VL53LX_TUNING_PROXY_MIN] is rewritten to 0 mm and
+ *   stays VALID; a VALID range below that threshold keeps its negative value and has its
+ *   status rewritten to RANGE_INVALID.
+ *
+ * TUNING_PROXY_MIN defaults to -30 (upstream/modules/vl53lx_preset_setup.h:39, loaded
+ * into BDTable at vl53lx_api.c:70). It is a tuning parameter, not a constant:
+ * VL53LX_SetTuningParameter can move it, so code must not hard-code -30.
+ *
+ * The consequence for this layer: on the normal output of this ULD a VALID negative
+ * range cannot arrive here. A negative value that does arrive is carried with a
+ * non-VALID status, and a below-floor reading inside the threshold arrives as a VALID
+ * 0 mm. That describes what this ULD emits; it is not an invariant this layer enforces.
+ * This layer neither re-clamps nor un-clamps; it copies what the ULD produced, which is
+ * the only thing it can honestly do. The wire contract refuses a VALID negative
+ * outright, as defence against a producer or device combination this ULD is not
+ * supposed to be able to emit -- not as a guard on its normal path.
  *
  * WHAT THIS LAYER MUST NOT DO
  *
@@ -94,14 +118,16 @@ enum tof_cliff_stage {
 
 const char *tof_cliff_stage_name(enum tof_cliff_stage stage);
 
-/* One target as the ULD reported it. Both fields are raw. */
 struct tof_cliff_read_status {
 	enum tof_cliff_stage stage;
 
 	/* First raw Zephyr errno the port recorded during this operation, 0 if none.
-	 * Authoritative over uld_rc: VL53LX_GetMultiRangingData overwrites its Status
-	 * with SetMeasurementData's result unconditionally, so a transport failure can
-	 * arrive here as success. */
+	 * Authoritative over uld_rc, for two reasons. It is the only field that can carry a
+	 * raw Zephyr errno, which is the granularity triage needs and which a VL53LX_Error
+	 * cannot express. And it is the fail-closed backstop if a transport failure is ever
+	 * lost on its way up again -- the specific case that motivated it,
+	 * VL53LX_GetMultiRangingData overwriting its Status with SetMeasurementData's, is
+	 * fixed in this build by patch 0001. */
 	int port_errno;
 
 	int uld_rc; /* raw VL53LX_Error, for the log and for triage */
@@ -123,6 +149,18 @@ struct tof_cliff_read_status {
 	 * as the same -EPROTO at the same stage and nothing downstream can name either.
 	 * Stays set when the re-arm that follows a replay also fails. */
 	bool stale_replay;
+
+	/* The device may still be ranging even though the operation reported failure, so a
+	 * caller that treats it as stopped is wrong. Set by tof_cliff_sensor_start() when
+	 * the first arming call succeeded, the second failed, AND the best-effort
+	 * StopMeasurement that follows also failed -- at that point nothing has confirmed
+	 * the device is quiet. Reported separately for the same reason as rearm_failed: a
+	 * caller that records "not started" and never stops it leaves a sensor ranging on a
+	 * shared bus with nobody reading it, and the return value alone cannot say so.
+	 *
+	 * Recovery is tof_cliff_sensor_stop(), not a retry of start: the half-armed device
+	 * must be brought down before it can be brought up again. */
+	bool ranging_unknown;
 };
 
 /*

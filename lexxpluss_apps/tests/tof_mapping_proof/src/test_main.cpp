@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Host-side tests for the cliff mapping proof.
  *
@@ -140,6 +140,167 @@ pf::refusal bench_refused(const transaction &t)
 } // namespace
 
 ZTEST_SUITE(tof_mapping_proof, NULL, NULL, NULL, NULL, NULL);
+
+/* ------------------------------------------------- the challenge's issuer ------- */
+
+/* Every gate counts its nonces from 1, so two gates' FIRST challenges are identical as
+ * numbers. That is the whole problem: a nonce says which attempt, never whose. */
+ZTEST(tof_mapping_proof, test_two_gates_issue_the_same_first_nonce)
+{
+    pf::gate a;
+    pf::gate b;
+    const pf::challenge ca{a.issue()};
+    const pf::challenge cb{b.issue()};
+    zassert_equal(ca.nonce(), 1u);
+    zassert_equal(cb.nonce(), 1u);
+    zassert_equal(ca.nonce(), cb.nonce(), "identical numbers, different issuers");
+}
+
+ZTEST(tof_mapping_proof, test_a_gate_refuses_a_challenge_another_gate_issued)
+{
+    const transaction t;
+    pf::gate a;
+    pf::gate b;
+    (void)a.issue();
+    const pf::challenge cb{b.issue()};
+
+    const pf::verdict v{a.evaluate(t.evidence(), cb)};
+    zassert_equal(v.reason, pf::refusal::challenge_foreign,
+                  "a matching nonce from another gate is not this gate's challenge");
+    zassert_false(v.token.valid(), "and it mints nothing");
+}
+
+/* The denial-of-service side of the same check. If a foreign challenge spent this gate's
+ * outstanding one, anyone able to call evaluate() could force commissioning to redo two
+ * full walks by presenting a challenge from a gate of their own. */
+ZTEST(tof_mapping_proof, test_a_foreign_challenge_does_not_spend_this_gates_own)
+{
+    const transaction t;
+    pf::gate a;
+    pf::gate b;
+    const pf::challenge ca{a.issue()};
+    const pf::challenge cb{b.issue()};
+
+    zassert_equal(a.evaluate(t.evidence(), cb).reason, pf::refusal::challenge_foreign);
+    zassert_equal(a.outstanding_nonce(), ca.nonce(), "the real challenge is still open");
+
+    const pf::verdict v{a.evaluate(t.evidence(), ca)};
+    zassert_equal(v.reason, pf::refusal::none, "and it still proves");
+    zassert_true(v.token.valid());
+    zassert_true(a.owns(v.token));
+}
+
+/* Provenance is asked of the gate, never read off the token: owns() is the only question
+ * that can be answered correctly, and a second gate must not answer yes about this one's
+ * work. */
+ZTEST(tof_mapping_proof, test_only_the_issuing_gate_owns_its_token)
+{
+    const transaction t;
+    pf::gate a;
+    pf::gate b;
+    const pf::challenge ca{a.issue()};
+    (void)b.issue();
+
+    pf::verdict v{a.evaluate(t.evidence(), ca)};
+    zassert_true(v.granted());
+    zassert_true(a.owns(v.token));
+    zassert_false(b.owns(v.token), "another gate must not claim this token");
+}
+
+/* The move carries the issuer to the destination and empties the source.
+ *
+ * On the SOURCE side, be precise about what this pins and what it does not. owns() is
+ * valid() && issuer == this, and valid() already requires a non-zero nonce, so clearing
+ * the nonce alone is enough to make owns() answer no. The move also clears issuer_, and
+ * that clearing is NOT observable through the public API -- a mutation that leaves it
+ * behind passes this test. It is kept as hygiene rather than as a checked invariant: a
+ * moved-from token that still points at a gate is a dangling claim waiting for the next
+ * person who adds a field or relaxes valid(). Saying so here is better than an assertion
+ * that looks like it covers it.
+ *
+ * What IS pinned: the destination carries the issuer, so owns() follows the token. */
+ZTEST(tof_mapping_proof, test_a_moved_token_carries_its_issuer_and_the_source_is_spent)
+{
+    const transaction t;
+    pf::gate a;
+    const pf::challenge ca{a.issue()};
+
+    pf::verdict v{a.evaluate(t.evidence(), ca)};
+    zassert_true(v.granted());
+
+    pf::proof_token moved{static_cast<pf::proof_token &&>(v.token)};
+    zassert_true(moved.valid());
+    zassert_true(a.owns(moved), "the destination carries the issuer");
+    zassert_false(v.token.valid(), "the source is spent");
+    zassert_false(a.owns(v.token), "so owns() answers no -- via the nonce, see above");
+
+    pf::proof_token assigned{};
+    assigned = static_cast<pf::proof_token &&>(moved);
+    zassert_true(a.owns(assigned), "move-assignment carries the issuer too");
+    zassert_false(moved.valid());
+    zassert_false(a.owns(moved));
+}
+
+/* The counter fails closed at the top instead of coming round again.
+ *
+ * It used to wrap -- `if (next_ == 0) next_ = 1` -- which reset the very thing revoke() is
+ * careful to preserve. After a wrap a retained token from the first attempt carries the same
+ * issuer AND the same nonce as the current one, so commit_proof() would accept evidence from
+ * 2^32 attempts ago. 2^32 is unreachable in practice, but the code had an explicit rule for
+ * the wrap, and the rule was the unsafe one. */
+ZTEST(tof_mapping_proof, test_the_last_nonce_is_usable_and_nothing_comes_after_it)
+{
+    const transaction t;
+    pf::gate g;
+
+    g.set_next_for_test(UINT32_MAX);
+    zassert_false(g.exhausted());
+
+    const pf::challenge last{g.issue()};
+    zassert_true(last.valid(), "the last number must still be usable");
+    zassert_equal(last.nonce(), UINT32_MAX);
+    zassert_true(g.exhausted(), "and it is the last one");
+
+    /* It still works, so exhaustion costs the attempt already open nothing. */
+    const pf::verdict v{g.evaluate(t.evidence(), last)};
+    zassert_equal(v.reason, pf::refusal::none);
+    zassert_true(g.owns(v.token));
+
+    /* Every call after it, for the rest of this gate's life. Not a wrap to 1. */
+    for (int i = 0; i < 4; i++) {
+        const pf::challenge after{g.issue()};
+        zassert_false(after.valid(), "call %d produced a challenge after exhaustion", i);
+        zassert_not_equal(after.nonce(), 1u, "the counter must not come round again");
+        zassert_true(g.exhausted());
+    }
+    zassert_equal(g.evaluate(t.evidence(), pf::challenge{}).reason,
+                  pf::refusal::challenge_invalid);
+}
+
+/* revoke() must not undo exhaustion either: it deliberately leaves the counter alone, and the
+ * exhausted flag is part of that counter's state. */
+ZTEST(tof_mapping_proof, test_revoking_does_not_refill_an_exhausted_gate)
+{
+    pf::gate g;
+    g.set_next_for_test(UINT32_MAX);
+    (void)g.issue();
+    zassert_true(g.exhausted());
+    g.revoke();
+    zassert_true(g.exhausted(), "revoke() refilled the counter");
+    zassert_false(g.issue().valid());
+}
+
+/* A fabricated challenge has no issuer at all, and that is the earlier refusal: it is not
+ * foreign, it is empty. */
+ZTEST(tof_mapping_proof, test_a_default_constructed_challenge_is_invalid_not_foreign)
+{
+    const transaction t;
+    pf::gate a;
+    (void)a.issue();
+    zassert_equal(a.evaluate(t.evidence(), pf::challenge{}).reason,
+                  pf::refusal::challenge_invalid);
+    zassert_not_equal(a.outstanding_nonce(), 0u, "and it spends nothing either");
+}
 
 ZTEST(tof_mapping_proof, test_a_clean_transaction_is_proven)
 {
@@ -340,6 +501,214 @@ ZTEST(tof_mapping_proof, test_an_incomplete_second_walk_is_refused)
     zassert_equal(refused(t), pf::refusal::walk2_not_complete);
 }
 
+/* ------------------------------------- the walk's own control state ------- */
+
+/* `complete` says the walk finished. It does not say the walk can describe what it asked
+ * of the enable chain, and chain_result is filled in by whoever built it. The enumerator
+ * clears control_state_known on a control failure -- the state in which the hardware may
+ * not have executed the last request -- so a walk carrying both is describing addresses
+ * that may belong to a configuration nobody commanded. */
+ZTEST(tof_mapping_proof, test_a_first_walk_that_cannot_describe_its_control_state_is_refused)
+{
+    transaction t;
+    t.walk1.control_state_known = false;
+    zassert_equal(refused(t), pf::refusal::walk_control_unknown);
+}
+
+ZTEST(tof_mapping_proof, test_a_second_walk_that_cannot_describe_its_control_state_is_refused)
+{
+    transaction t;
+    t.walk2.control_state_known = false;
+    zassert_equal(refused(t), pf::refusal::walk_control_unknown);
+}
+
+/* A position the walk never commanded enabled cannot have been proven by it, whatever the
+ * verdict beside it says. The two fields come from different places -- the verdict from the
+ * census, the commanded state from the control sequence -- so one can be clean while the
+ * other was never set. */
+ZTEST(tof_mapping_proof, test_a_position_the_walk_never_commanded_enabled_is_refused)
+{
+    transaction t;
+    t.walk2.at[3].enable_commanded_high = false;
+    zassert_equal(refused(t), pf::refusal::walk_position_not_enabled);
+}
+
+/* ------------------------------------- the public fingerprint comparison ------- */
+
+/* same() is public and takes two caller-built fingerprints, so `positions` is whatever the
+ * caller wrote. Neither the commissioning topology check nor fingerprint_of()'s own bound
+ * runs on this path. Without a bound of its own it indexes at[] past the end.
+ *
+ * Both sides claim the same impossible count, so the early inequality return does not save
+ * it: that is exactly the shape that reaches the loop.
+ *
+ * The padding is what makes this test able to fail. An earlier version of it used two bare
+ * fingerprints, and it passed with the bound removed -- the overrun read whatever happened
+ * to follow each local, the two differed, and same() returned false for a reason that had
+ * nothing to do with the check. It was green because the bug is undefined behaviour, not
+ * because the bug was absent. Following each fingerprint with zeroed positions of the same
+ * type makes the overrun read equal values instead, so an unbounded same() returns TRUE and
+ * this assertion reddens.
+ *
+ * What that does and does not establish, stated so the next reader does not over-read it:
+ * it shows the mutation is detected IN THIS BUILD, with this layout and this compiler. The
+ * overrun is still undefined behaviour, so the padding is not a portable guarantee that an
+ * unbounded same() misbehaves -- it is a way of making the defect reliably visible here.
+ * The bound itself is what makes the question moot; the test exists to keep it. */
+ZTEST(tof_mapping_proof, test_same_refuses_fingerprints_claiming_more_positions_than_can_exist)
+{
+    struct padded {
+        pf::fingerprint fp{};
+        pf::position_fingerprint beyond[2]{};
+    };
+    padded a{};
+    padded b{};
+    a.fp.positions = enm::chain_spec::kMaxPositions + 1;
+    b.fp.positions = a.fp.positions;
+    zassert_false(pf::same(a.fp, b.fp), "a fingerprint past the array describes no chain");
+}
+
+/* The bound must not cost the honest case: a fingerprint that fills the array exactly is
+ * still compared. A check that refused this would be the same defect in the other
+ * direction. */
+ZTEST(tof_mapping_proof, test_same_still_compares_fingerprints_that_fill_the_array)
+{
+    pf::fingerprint a{};
+    a.positions = enm::chain_spec::kMaxPositions;
+    for (size_t i{0}; i < a.positions; ++i)
+        a.at[i].position = static_cast<uint8_t>(i + 1);
+    pf::fingerprint b{a};
+    zassert_true(pf::same(a, b), "a full fingerprint must still compare equal to itself");
+    b.at[a.positions - 1].address = 0x55;
+    zassert_false(pf::same(a, b), "and must still differ when its last position differs");
+}
+
+/* ------------------------------------- the commissioning profile's grid sources ------- */
+
+namespace {
+
+/* The profile a proven production chain produces: two grid sources, then four cliff
+ * positions carrying no grid source at all. */
+pf::fingerprint commissioning_fingerprint()
+{
+    pf::fingerprint fp{};
+    fp.positions = 6;
+    const enm::l4_role roles[4]{enm::l4_role::front_left, enm::l4_role::rear_left,
+                                enm::l4_role::rear_right, enm::l4_role::front_right};
+    for (size_t i{0}; i < 6; ++i) {
+        fp.at[i].position = static_cast<uint8_t>(i + 1);
+        fp.at[i].expected = i < 2 ? enm::model::l7cx : enm::model::l4cx;
+        fp.at[i].source_id = i < 2 ? static_cast<int8_t>(i) : static_cast<int8_t>(-1);
+        fp.at[i].role = i < 2 ? enm::l4_role::unknown : roles[i - 2];
+        fp.at[i].verified = true;
+    }
+    return fp;
+}
+
+} // namespace
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_accepts_the_production_shape)
+{
+    zassert_true(pf::is_commissioning_profile(commissioning_fingerprint()),
+                 "the shape every other test in this group varies from must itself pass");
+}
+
+/* validate_spec() will not catch this: require_all_sources is the enumerator's escape
+ * hatch for a bench chain carrying fewer than both hanging sources, and a spec may switch
+ * it off. The hatch must not reach a commissioning token -- a mask keyed by source_id
+ * cannot be filled from a chain missing one. */
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_requires_a_grid_source_to_be_present)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[1].source_id = -1;
+    zassert_false(pf::is_commissioning_profile(fp), "a missing grid source is not this profile");
+}
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_duplicated_grid_source)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[1].source_id = 0;
+    zassert_false(pf::is_commissioning_profile(fp), "two positions cannot be one source");
+}
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_grid_source_out_of_range)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[0].source_id = 2;
+    zassert_false(pf::is_commissioning_profile(fp), "only sources 0 and 1 exist");
+}
+
+/* source_id is the GRID table. A cliff position claiming one is a contradiction, not a
+ * variation: a cliff measurement's source_id comes from its role through the contract's
+ * own table and is never read from this field. */
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_cliff_claiming_a_grid_source)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[4].source_id = 1;
+    zassert_false(pf::is_commissioning_profile(fp), "a cliff position carries no grid source");
+}
+
+/* ------------------------------------- the issuing path, not just the helper ------- */
+
+/* THE HELPER REFUSING IS NOT THE GATE REFUSING, and for a while only the helper did.
+ *
+ * is_commissioning_profile() rejects a fingerprint missing a grid source, and the authority
+ * re-checks it at commit, so PROVEN was never reachable. But gate::evaluate() issued a
+ * VALID TOKEN for that chain first: the spec-side checks it does run read the model
+ * sequence and the roles, and neither looks at source_id. A token that says proven is
+ * something other code is entitled to trust, so "the last gate catches it" is not the same
+ * as "it was never authorised".
+ *
+ * require_all_sources is switched off here because that is the only way to build this
+ * transaction -- it is the enumerator's own escape hatch, and it is what let the shape
+ * through validate_spec() in the first place. */
+ZTEST(tof_mapping_proof, test_the_gate_issues_no_token_for_a_chain_missing_a_grid_source)
+{
+    transaction t;
+    t.spec.require_all_sources = false;
+    t.spec.at[1].source_id = -1;
+    t.walk1.source_allowed[1] = false;
+    t.walk2.source_allowed[1] = false;
+
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    const pf::verdict v{g.evaluate(t.evidence(), c)};
+
+    zassert_false(v.granted(), "a chain missing a grid source must not be authorised");
+    zassert_equal(v.reason, pf::refusal::spec_not_commissioning_profile);
+    zassert_false(v.token.valid(), "and the token it hands back must authorise nothing");
+}
+
+/* The control group, so the test above is known to be refusing the right thing rather than
+ * refusing everything: the production shape still gets a token. */
+ZTEST(tof_mapping_proof, test_the_gate_still_issues_a_token_for_the_production_shape)
+{
+    transaction t;
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    const pf::verdict v{g.evaluate(t.evidence(), c)};
+
+    zassert_true(v.granted(), "the production chain must still prove");
+    zassert_true(v.token.valid(), "and must still carry a usable token");
+}
+
+/* The bench path keeps its freedom: evaluate_bench() describes chains that are not this
+ * profile, which is the whole reason it exists. The issuing check must not have taken that
+ * away. */
+ZTEST(tof_mapping_proof, test_the_bench_path_still_describes_a_chain_missing_a_grid_source)
+{
+    transaction t;
+    t.spec.require_all_sources = false;
+    t.spec.at[1].source_id = -1;
+    t.walk1.source_allowed[1] = false;
+    t.walk2.source_allowed[1] = false;
+
+    pf::gate g;
+    const pf::bench_report b{g.evaluate_bench(t.evidence())};
+    zassert_true(b.clean(), "the bench path must still describe this chain without refusing it");
+    zassert_equal(b.reason, pf::refusal::none);
+}
+
 ZTEST(tof_mapping_proof, test_a_position_that_never_verified_is_refused)
 {
     /* `absent` is the pos6 failure class from the DS20001 bring-up: enable never arrived.
@@ -365,17 +734,157 @@ ZTEST(tof_mapping_proof, test_the_live_chain_must_answer_on_its_assigned_address
     zassert_equal(refused(t), pf::refusal::address_mismatch);
 }
 
-ZTEST(tof_mapping_proof, test_two_positions_on_one_address_are_refused)
+/* This used to assert address_not_distinct, and the change of answer is the point.
+ *
+ * Duplicate target addresses are a spec defect, and the spec is now validated on the way
+ * in with the enumerator's own validator, so the fabrication is caught at its source
+ * rather than two hundred lines later as a consequence. Both walks still claim
+ * spec_error::none -- that claim is exactly what this module no longer takes on trust.
+ *
+ * The address_not_distinct loop is deliberately KEPT even though a validated spec makes
+ * it unreachable: distinct targets plus "every position answered on its own target"
+ * already implies distinct observed addresses. It costs nothing, it stays correct if the
+ * ordering here ever changes, and removing a belt-and-braces check because something
+ * upstream currently subsumes it is how the next reordering becomes a hole. Its own
+ * comment in tof_mapping_proof.cpp records that. */
+ZTEST(tof_mapping_proof, test_duplicate_target_addresses_are_refused_as_an_invalid_spec)
 {
-    /* The spec's targets are distinct, so this needs a spec the enumerator would have
-     * rejected AND walks that claim it accepted -- a fabrication on both counts. It is
-     * checked because a proof module that trusts its inputs is not a proof module. */
     transaction t;
     t.spec.at[5].target_addr = t.spec.at[4].target_addr;
     t.walk1 = clean_walk(t.spec, false);
     t.walk2 = clean_walk(t.spec, true);
     t.isolation = clean_isolation(t.spec);
-    zassert_equal(refused(t), pf::refusal::address_not_distinct);
+    zassert_equal(t.walk1.spec, enm::spec_error::none, "the fabrication claims acceptance");
+    zassert_equal(t.walk2.spec, enm::spec_error::none);
+    zassert_equal(refused(t), pf::refusal::spec_invalid);
+    zassert_equal(bench_refused(t), pf::refusal::spec_invalid);
+}
+
+/* The bounds check, which is the one rule that must precede every other: at[] holds
+ * kMaxPositions and `positions` is a caller-supplied size_t, so every loop below it used
+ * to run off the end. evaluate_bench() is the reachable door -- it is public, it takes
+ * arbitrary evidence, and it does not apply the commissioning topology check that would
+ * otherwise have bounded the count at six. */
+ZTEST(tof_mapping_proof, test_a_position_count_past_the_array_is_refused_before_anything_is_read)
+{
+    static const size_t counts[] = {enm::chain_spec::kMaxPositions + 1, 9, 200, 4000};
+
+    for (size_t i = 0; i < ARRAY_SIZE(counts); i++) {
+        transaction t;
+        /* The walks agree with the spec's claim, so walk_position_count cannot be what
+         * refuses this, and both claim the enumerator accepted it. */
+        t.spec.positions = counts[i];
+        t.walk1.positions = counts[i];
+        t.walk2.positions = counts[i];
+        t.walk1.spec = enm::spec_error::none;
+        t.walk2.spec = enm::spec_error::none;
+        zassert_equal(bench_refused(t), pf::refusal::spec_invalid,
+                      "positions=%u was not refused", (unsigned)counts[i]);
+        /* Both doors give the same answer, because the bounds check precedes even the
+         * topology check: nothing may be read from at[] before the count is known sane. */
+        zassert_equal(refused(t), pf::refusal::spec_invalid,
+                      "positions=%u", (unsigned)counts[i]);
+    }
+}
+
+/* The other side of the bound, and the reason it is `>` rather than `>=`: a spec that
+ * fills at[] exactly must go through, not be refused for being full. Cheap to state and
+ * the only thing that pins the comparison. It does not have to be provable -- it just has
+ * to get past the bound and be answered by a later, specific rule. */
+ZTEST(tof_mapping_proof, test_a_spec_that_fills_the_array_exactly_is_not_refused_by_the_bound)
+{
+    transaction t;
+    t.spec.positions = enm::chain_spec::kMaxPositions;
+    /* Two more cliff positions on free addresses. Their mounting roles are left unknown,
+     * which is a proof-level refusal rather than a spec error -- exactly the kind of
+     * specific answer this test wants to see instead of spec_invalid. */
+    t.spec.at[6] = {enm::model::l4cx, 0x3A, -1, enm::l4_role::unknown};
+    t.spec.at[7] = {enm::model::l4cx, 0x3B, -1, enm::l4_role::unknown};
+    t.walk1 = clean_walk(t.spec, false);
+    t.walk2 = clean_walk(t.spec, true);
+    t.isolation = clean_isolation(t.spec);
+
+    zassert_equal(enm::validate_spec(t.spec), enm::spec_error::none,
+                  "a full array is a legal spec");
+    zassert_not_equal(bench_refused(t), pf::refusal::spec_invalid,
+                      "positions == kMaxPositions must get past the bound");
+    zassert_equal(refused(t), pf::refusal::spec_not_commissioning_profile,
+                  "and the product door answers on the topology, not on the bound");
+}
+
+/* The structural rules the proof does not have its own copy of. Each of these is a spec
+ * the enumerator would reject, presented with walks that claim it accepted -- and each
+ * must be refused on the spec rather than inherited from the walk's own flag. */
+ZTEST(tof_mapping_proof, test_specs_the_enumerator_would_reject_are_refused_despite_clean_walks)
+{
+    {
+        /* A hanging source on a drop-sense board. Source 1 has to be taken off its L7
+         * first: with kMaxSources == 2 both ids are already placed, so leaving it there
+         * would trip source_id_duplicate before this rule is reached. */
+        transaction t;
+        t.spec.at[1].source_id = -1;
+        t.spec.at[5].source_id = 1;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::source_on_non_l7);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "source on a non-L7");
+    }
+    {
+        /* A mounting role on an L7, which has no mounting role to have. */
+        transaction t;
+        t.spec.at[0].role = enm::l4_role::front_left;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::role_on_non_l4);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "role on an L7");
+    }
+    {
+        /* A target that is the factory default: the address every part starts on. */
+        transaction t;
+        t.spec.at[3].target_addr = enm::kDefaultAddr;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::target_is_default);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "target is the default");
+    }
+    {
+        /* Two positions claiming one hanging source. */
+        transaction t;
+        t.spec.at[1].source_id = t.spec.at[0].source_id;
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, true);
+        zassert_equal(enm::validate_spec(t.spec), enm::spec_error::source_id_duplicate);
+        zassert_equal(refused(t), pf::refusal::spec_invalid, "duplicate source id");
+    }
+}
+
+/* The specific bench diagnoses must survive the new validation, which is why the full
+ * validate_spec() call sits AFTER the proof's own spec rules rather than before them.
+ * Answering "no tail L4" with a flat spec_invalid would lose the one thing the bench
+ * report exists to say. */
+ZTEST(tof_mapping_proof, test_bench_diagnoses_are_not_swallowed_by_spec_validation)
+{
+    {
+        transaction t;
+        t.spec.positions = 3;
+        t.spec.at[0] = {enm::model::l4cx, 0x2C, -1, enm::l4_role::front_left};
+        t.spec.at[1] = {enm::model::l4cx, 0x2D, -1, enm::l4_role::rear_left};
+        t.spec.at[2] = {enm::model::l7cx, 0x2A, 0, enm::l4_role::unknown};
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, false);
+        zassert_not_equal(enm::validate_spec(t.spec), enm::spec_error::none,
+                          "this spec IS invalid; the point is that it still says why");
+        zassert_equal(bench_refused(t), pf::refusal::spec_no_tail_l4);
+    }
+    {
+        transaction t;
+        t.spec.positions = 1;
+        t.spec.at[0] = {enm::model::l4cx, 0x2C, -1, enm::l4_role::front_left};
+        t.walk1 = clean_walk(t.spec, false);
+        t.walk2 = clean_walk(t.spec, false);
+        zassert_not_equal(enm::validate_spec(t.spec), enm::spec_error::none);
+        zassert_equal(bench_refused(t), pf::refusal::spec_too_few_positions);
+    }
 }
 
 ZTEST(tof_mapping_proof, test_the_live_chain_identity_must_match_the_model)

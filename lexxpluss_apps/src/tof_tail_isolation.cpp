@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "tof_tail_isolation.hpp"
@@ -75,14 +75,25 @@ int observe_tail(enm::chain_ops &ops, const enm::chain_spec &spec,
     if (tail_at_own.state == enm::probe_state::ack) {
         out.tail_probe = enm::probe_state::ack;
         out.answering_addr = tail_addr;
-    } else if (at_prev.state == enm::probe_state::ack) {
-        /* The merge signature. The tail is alive and answering, just not where it should be. */
+    } else if (tail_at_own.state == enm::probe_state::nack &&
+               at_prev.state == enm::probe_state::ack) {
+        /* The merge signature, and it takes BOTH halves. The tail was asked on its own
+         * address and cleanly denied being there, and the neighbour's address answered --
+         * that pair is what says one device holds two addresses.
+         *
+         * The nack requirement is not decoration. Without it a transport error on the
+         * tail's own probe was overwritten with ack here, and a bus fault came out the far
+         * end as isolation_wrong_address: a silent merge, which sends an operator looking
+         * for two devices sharing an address when the truth is that the bus could not
+         * answer the question at all. A transport error proves neither presence nor
+         * vacancy, so it cannot be half of a proof of either. */
         out.tail_probe = enm::probe_state::ack;
         out.answering_addr = prev_addr;
     } else {
-        /* Nothing answered. Carry the tail's own probe state rather than flattening it: a clean
-         * NACK means the board is silent, a transport error means the bus could not tell us
-         * either way, and the evaluator refuses those for different reasons. */
+        /* Nothing answered, or the tail's own probe could not tell us. Carry the tail's own
+         * probe state rather than flattening it: a clean NACK means the board is silent, a
+         * transport error means the bus could not tell us either way, and the evaluator
+         * refuses those for different reasons. */
         out.tail_probe = tail_at_own.state;
         out.answering_addr = 0;
     }

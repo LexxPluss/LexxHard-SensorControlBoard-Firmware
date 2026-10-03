@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
@@ -49,18 +49,30 @@ bool in_cycle_{false};
 
 /* The acquisition thread, and the fact of its existence.
  *
- * thread_active_ and owner_ are written only by start() and by the thread's own exit path, both
- * before/after the thread can be contended, and read by the ownership guard. owner_ is what makes
- * the guard possible at all: "is this call coming from the thread that owns the ULD" cannot be
- * answered by a flag. */
+ * ATOMIC, and the decision they feed is made under the chain lock. Two separate defects needed
+ * both halves.
+ *
+ * They are written by start() and by the thread's own exit path and read by any caller, so as
+ * plain objects they were a data race in the C++ sense -- undefined, not merely stale, whatever
+ * the observed values happened to be. Atomics settle that.
+ *
+ * Atomics alone would not settle the other half. The guard used to run BEFORE the caller took the
+ * chain lock, so a caller could pass while no thread owned the chain, block on the mutex, and drive
+ * the ULD after start() had installed an owner. Every guarded path now takes the lock first and
+ * asks second, which is why the function is named for its precondition.
+ *
+ * owner_ is what makes the guard possible at all: "is this call coming from the thread that owns
+ * the ULD" cannot be answered by a flag. */
 k_thread thread_;
-k_tid_t owner_{nullptr};
+atomic_ptr_t owner_{ATOMIC_PTR_INIT(nullptr)};
 /* Two flags, because they answer different questions. thread_active_ is "is a thread driving the
  * ULD right now", which is what the ownership guard and try_stop() need. thread_created_ is "does
  * the kernel thread object still belong to a thread nobody has joined", which is what makes
  * restarting safe: k_thread_create() on an object whose previous thread has not been joined reuses a
  * live kernel structure. The thread itself clears the first; only join() clears the second. */
-bool thread_active_{false};
+atomic_t thread_active_{ATOMIC_INIT(0)};
+/* Not atomic and deliberately so: it is read and written only by start() and join(), both of which
+ * are lifecycle calls from the commissioning side, never from the acquisition thread. */
 bool thread_created_{false};
 thread_config tcfg_{};
 atomic_t stop_requested_{ATOMIC_INIT(0)};
@@ -69,13 +81,22 @@ atomic_t stop_requested_{ATOMIC_INIT(0)};
  * waiting one cadence and waiting for a timeout it then reports as a refusal. */
 K_SEM_DEFINE(stop_sem_, 0, 1);
 atomic_t foreign_calls_{ATOMIC_INIT(0)};
+/* The acquisition thread stops the devices on its way out, and the only caller that cares is
+ * commissioning -- which does not see the thread, only join(). Without this the thread's stop
+ * failure was a log line and nothing else, and try_stop() reported quiescence over a device
+ * that was still ranging. */
+atomic_t thread_stop_rc_{ATOMIC_INIT(0)};
 
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
- * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed. */
-bool may_touch_devices()
+ * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed.
+ *
+ * PRECONDITION, in the name: the chain lock is already held. Deciding ownership and then acquiring
+ * the lock is the time-of-check-to-time-of-use this replaced. */
+bool may_touch_devices_locked()
 {
-    if (!thread_active_ || owner_ == k_current_get())
+    if (atomic_get(&thread_active_) == 0 ||
+        atomic_ptr_get(&owner_) == static_cast<void *>(k_current_get()))
         return true;
     atomic_inc(&foreign_calls_);
     return false;
@@ -285,22 +306,73 @@ void clear_cycle_outcomes(source_facts &f)
  * Callers publish the snapshot after releasing, not here: publishing under the chain lock would
  * put a lock between the health path and the acquisition path, and the heartbeat is required to
  * keep running while the chain is busy for seconds at a time. */
-void stop_locked()
+// Defined below; stop_locked() needs it to record a stop that failed.
+void record(source_facts &f, int rc, const op_status &st);
+
+/* Returns 0 when every started source is stopped, otherwise the first failure.
+ *
+ * A device that would not stop stays started in the facts, and that is the whole point.
+ * Recording it as stopped was a lie with teeth: try_stop() reported success, commissioning
+ * took that as permission to drop enable lines while the device was still ranging, and the
+ * later cleanup skipped it because the flag said there was nothing to stop. Quiescence is a
+ * claim about hardware, so it cannot be established by clearing a bool.
+ *
+ * Every source is attempted even after one fails. Stopping three of four is strictly better
+ * than stopping one and giving up, and the return value reports that it was not complete. */
+/* Is any source NOT CONFIRMED STOPPED, as far as this module knows?
+ *
+ * stop_locked() deliberately leaves `started` set on a device whose stop failed. The device may
+ * or may not still be ranging -- a failed stop means the result is unknown, not that ranging is
+ * known to continue -- and `started` is the only record that the question is open. It is the one
+ * flag that survives a failed stop, so an idle predicate ignoring it answers about the scheduler
+ * rather than about the devices.
+ *
+ * Caller holds the chain lock. */
+bool any_source_unquiesced_locked()
+{
+    for (int i{0}; i < facts_.source_count; ++i) {
+        const source_facts &f{facts_.sources[i]};
+        if (f.started || f.cleanup_pending)
+            return true;
+    }
+    return false;
+}
+
+int stop_locked()
 {
     running_ = false;
 
+    int first_error{0};
     for (int i{0}; i < facts_.source_count; ++i) {
         const source_desc &d{cfg_.sources[i]};
         source_facts &f{facts_.sources[i]};
         op_status st{};
 
-        if (!f.started)
+        /* Both obligations, not just the readable one. A source that failed its second
+         * arming call with the device left armed carries cleanup_pending without started;
+         * iterating on started alone skipped it forever. */
+        if (!f.started && !f.cleanup_pending)
             continue;
-        (void)d.ops->stop(d.dev, &st);
+        const int rc{d.ops->stop(d.dev, &st)};
+        if (rc != 0) {
+            record(f, rc, st);
+            /* Sticky, for the same reason a failed re-arm is: a device whose stop cannot be
+             * confirmed will not produce a trustworthy sample either, and only a complete
+             * re-bring-up may clear it. */
+            f.rearm_failed = true;
+            LOG_ERR("source %d stop failed at %s rc %d errno %d -- stop not confirmed", i,
+                    tof_cliff_stage_name(st.stage), rc, st.port_errno);
+            if (first_error == 0)
+                first_error = rc;
+            continue;   // both flags stay set: the stop was not confirmed
+        }
         f.started = false;
+        /* The obligation is discharged only by a stop that returned success. */
+        f.cleanup_pending = false;
     }
 
     in_cycle_ = false;
+    return first_error;
 }
 
 void record(source_facts &f, int rc, const op_status &st)
@@ -397,9 +469,17 @@ mapping_state clamp_mapping_state(mapping_state reported)
         // one careless -D away from shipping and would not show up in a diff of the code
         // it disables; lifting this is an edit here, in its own commit, once both of the
         // above are closed.
-        static bool warned{false};
-        if (!warned) {
-            warned = true;
+        /* ATOMIC, because this function has two callers on two threads: the acquisition path
+         * reaches it through publish_snapshot() and publication_allowed(), and
+         * health_work_handler() reaches it from the system workqueue. A plain bool read and
+         * written from both is a data race -- undefined behaviour, not merely a warning that
+         * might print twice.
+         *
+         * atomic_cas is the whole guard: exactly one caller sees the 0 and takes the
+         * transition, every other caller sees 1 and skips. ATOMIC_INIT is a constant
+         * initialiser, so this needs no thread-safe-statics guard of its own. */
+        static atomic_t warned{ATOMIC_INIT(0)};
+        if (atomic_cas(&warned, 0, 1)) {
             LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- proven on hardware "
                     "only at 100 kHz, never at the product's 400 kHz, and the acquisition "
                     "thread has no stack watermark");
@@ -433,7 +513,13 @@ bool is_idle()
     //
     // Never call this from the health path: it can wait for a whole cycle.
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-    const bool idle{!running_ && !in_cycle_};
+    /* The third term is about the devices, not the scheduler. stop_locked() clears running_
+     * and in_cycle_ even when a device refused to stop, keeping that source's `started` set
+     * because its state is then unknown. Without this term the predicate reported the chain
+     * free while a sensor might still have been driving the bus, and commissioning -- which
+     * asks exactly this question before dropping enable lines -- would have proceeded to
+     * re-address a device it could not confirm was stopped. */
+    const bool idle{!running_ && !in_cycle_ && !any_source_unquiesced_locked()};
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     return idle;
 }
@@ -469,7 +555,14 @@ int init(const config &cfg)
     for (int i{0}; i < cfg.source_count; ++i) {
         const source_desc &d{cfg.sources[i]};
 
-        if (d.ops == nullptr || d.ops->open == nullptr || d.ops->read_cliff_sample == nullptr)
+        /* ALL FIVE, not the two this function used to name. bring_up() calls configure()
+         * and start() unconditionally and stop_locked() calls stop(), so a table accepted
+         * here with any of them null does not fail at init -- it dereferences null on the
+         * first lifecycle operation, which is a crash in the acquisition thread rather
+         * than an -EINVAL to the caller who built the table. */
+        if (d.ops == nullptr || d.ops->open == nullptr || d.ops->configure == nullptr ||
+            d.ops->start == nullptr || d.ops->read_cliff_sample == nullptr ||
+            d.ops->stop == nullptr)
             return -EINVAL;
         // The cliff path needs both a device object and a scratch; the stubbed grid
         // path is allowed to have neither yet.
@@ -544,7 +637,13 @@ int begin_epoch()
      * guarantee is over (source_id, mapping_epoch, cycle_seq), the triple rather than the
      * cycle alone, so a renumber under a live epoch reissues triples already used. */
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-    const bool idle{!running_ && !in_cycle_};
+    /* Same three terms as is_idle(), and for the same reason: a source left `started` by a
+     * failed stop is not confirmed stopped, and renumbering the sequence while that is open
+     * risks reissuing (source_id, mapping_epoch, cycle_seq) triples -- the contract's
+     * uniqueness guarantee is over the triple, not the cycle. Whether such a frame has ever
+     * been emitted is not established here; the point is that the gate must not depend on it
+     * not happening. */
+    const bool idle{!running_ && !in_cycle_ && !any_source_unquiesced_locked()};
     if (idle)
         next_cycle_seq_ = 0;
     k_mutex_unlock(&tof_chain_controller::chain_lock());
@@ -556,10 +655,12 @@ int bring_up()
 {
     if (!configured_)
         return -EINVAL;
-    if (!may_touch_devices())
-        return -EPERM;
 
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    if (!may_touch_devices_locked()) {
+        k_mutex_unlock(&tof_chain_controller::chain_lock());
+        return -EPERM;
+    }
     in_cycle_ = true;
 
     /* Deliberately NOT resetting next_cycle_seq_ here. Restarting the cycle count without
@@ -603,7 +704,27 @@ int bring_up()
         op_status st{};
         int rc;
 
-        f.started = false;
+        /* A source that is already started is stopped FIRST, and its started flag is only
+         * cleared when that stop succeeds.
+         *
+         * This used to clear the flag unconditionally before the retry. If the retry then
+         * failed, the old device could still be ranging while the facts said it was stopped
+         * -- so stop_locked() skipped it for the rest of the subsystem's life and the next
+         * commissioning session re-addressed a live sensor. A re-bring-up that cannot
+         * quiesce the previous device is not a re-bring-up; it is two drivers on one part. */
+        if (f.started || f.cleanup_pending) {
+            op_status stop_st{};
+            const int stop_rc{d.ops->stop(d.dev, &stop_st)};
+            if (stop_rc != 0) {
+                record(f, stop_rc, stop_st);
+                f.rearm_failed = true;
+                LOG_ERR("source %d could not be stopped before re-bring-up at %s rc %d", i,
+                        tof_cliff_stage_name(stop_st.stage), stop_rc);
+                continue;   // both flags stay set: the device was never quiesced
+            }
+            f.started = false;
+            f.cleanup_pending = false;
+        }
         clear_cycle_outcomes(f);
 
         rc = d.ops->open(d.dev, d.addr_7bit, &st);
@@ -624,6 +745,26 @@ int bring_up()
         rc = d.ops->start(d.dev, d.stream, &st);
         if (rc != 0) {
             record(f, rc, st);
+            /* THE ADAPTER'S ranging_unknown IS AN OBLIGATION, AND IT USED TO BE DROPPED HERE.
+             *
+             * The cliff adapter issues StartMeasurement() before its second arming call. When
+             * that call fails it attempts a best-effort StopMeasurement(), and when that fails
+             * too it sets this: the device was armed and nothing has confirmed it is quiet.
+             * This branch recorded the error and moved on, leaving `started` false -- so the
+             * source was never read, which is right, but stop_locked() skipped it forever,
+             * which is not. The device stayed armed for the rest of the subsystem's life and
+             * the next commissioning session re-addressed it.
+             *
+             * `started` is deliberately NOT set: it means "may be read", and a source with no
+             * usable stream must not re-enter run_cycle(). The obligation is carried
+             * separately. */
+            if (st.ranging_unknown) {
+                f.cleanup_pending = true;
+                f.rearm_failed = true;
+                LOG_ERR("source %d start failed at %s rc %d and its cleanup did not confirm "
+                        "the device is stopped -- a stop is owed", i,
+                        tof_cliff_stage_name(st.stage), rc);
+            }
             continue;
         }
         f.started = true;
@@ -664,10 +805,12 @@ void run_cycle()
      * Returning here leaves the cycle NOT BEGUN: no on_cycle_begin, no on_cycle, and
      * next_cycle_seq_ untouched. That is the correct account of what happened -- the cycle did not
      * happen, so it owes no health frame and must not consume a cycle number. */
-    if (!may_touch_devices())
-        return;
-
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+
+    if (!may_touch_devices_locked()) {
+        k_mutex_unlock(&tof_chain_controller::chain_lock());
+        return;
+    }
 
     if (!running_) {
         k_mutex_unlock(&tof_chain_controller::chain_lock());
@@ -711,17 +854,28 @@ void run_cycle()
             cfg_.hooks.on_cliff_sample(i, facts_.cycle_seq, f, sample);
     }
 
+    /* Per COMPLETED cycle -- which is why it is not at the top -- and UNDER THE LOCK, which is
+     * why it is not after the hooks.
+     *
+     * It used to be the last line of this function, after the unlock and after on_cycle(). That
+     * left a window in which this cycle was finished but had not consumed its number: another
+     * caller could stop acquisition, call begin_epoch() -- which takes the same lock, finds the
+     * chain idle and resets next_cycle_seq_ to 0 -- and then this line would increment the new
+     * epoch's counter to 1. The first cycle of that epoch would be numbered 1, and the contract
+     * requires cycles to be numbered from 0 per mapping_epoch.
+     *
+     * begin_epoch() cannot observe the half-finished state now, because it cannot hold this lock
+     * until the increment is done. The hooks stay outside the lock, where they were: they must
+     * not run with the chain held. */
+    ++next_cycle_seq_;
     in_cycle_ = false;
     k_mutex_unlock(&tof_chain_controller::chain_lock());
 
     publish_snapshot();
     cfg_.hooks.on_cycle(facts_);
-
-    /* Per COMPLETED cycle, which is why this is here and not at the top. */
-    ++next_cycle_seq_;
 }
 
-void teardown()
+int teardown()
 {
     /* The real shutdown: quiesce acquisition, stop the heartbeat, then WAIT for any health work
      * already submitted to finish. Separate from stop() because they answer different questions
@@ -734,7 +888,7 @@ void teardown()
      * relying on it -- and leaves the work item reading a cfg_ the next init() is entitled to
      * replace. */
     if (!configured_)
-        return;
+        return 0;
     /* The thread first, and through the same request-and-join path: retiring the subsystem while a
      * thread is still driving sensors would tear cfg_ out from under it. An unbounded wait is
      * correct HERE and only here -- teardown means the subsystem is going away, so there is nothing
@@ -745,7 +899,24 @@ void teardown()
         (void)k_thread_join(&thread_, K_FOREVER);
         thread_created_ = false;
     }
-    stop();
+
+    /* RETIREMENT IS CONDITIONAL ON THE QUIESCE SUCCEEDING, and this return used to be
+     * discarded.
+     *
+     * stop() returns an error and leaves that source's `started` set when a device would not
+     * stop -- meaning its state is unknown, not that it is known to be ranging. Retiring on
+     * top of that cleared configured_, which is the one thing holding init() to -EALREADY; the
+     * next init() was then free to replace the descriptors and re-address a device nobody
+     * could confirm had stopped, with no path back to the old ones and nothing left that would
+     * retry the cleanup.
+     *
+     * So a failed quiesce keeps the subsystem exactly as it is: configured, its device state
+     * intact, and the heartbeat still running -- that is when a consumer most needs to be told
+     * the subsystem is alive and not producing. init() stays refused, and teardown() may be
+     * called again once the fault clears. Nothing here is torn down by halves. */
+    if (const int rc{stop()}; rc != 0)
+        return rc;
+
     k_timer_stop(&health_timer_);
     static k_work_sync sync;
     (void)k_work_cancel_sync(&health_work_, &sync);
@@ -758,19 +929,22 @@ void teardown()
      * not have stayed theoretical for long. A fresh init() is now the only way back. */
     active_ = false;
     configured_ = false;
+    return 0;
 }
 
-void stop()
+int stop()
 {
     if (!configured_)
-        return;
-    if (!may_touch_devices())
-        return;
+        return 0;
 
     // Quiesce, then release. Commissioning may only enumerate once this returns: the
     // enumeration drops enable lines, which re-addresses parts underneath a reader.
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-    stop_locked();
+    if (!may_touch_devices_locked()) {
+        k_mutex_unlock(&tof_chain_controller::chain_lock());
+        return -EPERM;
+    }
+    const int rc{stop_locked()};
     /* The health timer is deliberately NOT stopped here.
      *
      * stop() means "stop reading sensors", and the contract requires health to keep flowing
@@ -784,6 +958,7 @@ void stop()
      * is a separate, deliberate act. */
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     publish_snapshot();
+    return rc;
 }
 
 static void thread_entry(void *, void *, void *)
@@ -817,9 +992,14 @@ static void thread_entry(void *, void *, void *)
     /* At a cycle boundary, from the thread that owns the devices. This is the reason try_stop() no
      * longer stops devices itself: a foreign thread doing it while this one is mid-cycle interleaves
      * two callers inside the ULD, whose port keeps ONE transport record. */
-    stop();
-    thread_active_ = false;
-    owner_ = nullptr;
+    atomic_set(&thread_stop_rc_, stop());
+    /* Ownership is released under the same lock that every ownership decision is made under, so a
+     * caller cannot observe the release half-applied. Released AFTER stop() returns, never before:
+     * the devices this thread owns must be quiesced while it still owns them. */
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
+    atomic_set(&thread_active_, 0);
+    atomic_ptr_set(&owner_, nullptr);
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
 }
 
 int start(const thread_config &tcfg)
@@ -830,7 +1010,7 @@ int start(const thread_config &tcfg)
      * still owns the kernel object, and creating over it is undefined. A caller that requested a
      * stop and never joined gets -EALREADY, which is the honest answer -- it has not finished
      * stopping. */
-    if (thread_active_ || thread_created_)
+    if (atomic_get(&thread_active_) != 0 || thread_created_)
         return -EALREADY;
     /* No defaults, the same rule the periods follow. A join timeout invented here would decide how
      * long commissioning waits before refusing, which is a deployment decision. */
@@ -840,20 +1020,36 @@ int start(const thread_config &tcfg)
     tcfg_ = tcfg;
     atomic_set(&stop_requested_, 0);
     k_sem_reset(&stop_sem_);
+    /* The stop result belongs to a thread's LIFETIME, so it is initialised where that lifetime
+     * begins and nowhere else.
+     *
+     * try_stop() used to clear it, and that handoff could not be made safe by moving the clear
+     * earlier. request_stop() is callable from anywhere -- the shell, teardown(), a previous
+     * try_stop() that timed out -- so by the time try_stop() runs, the thread may already have
+     * stopped the devices, written a FAILING result and exited. Clearing before its own
+     * request_stop() would still overwrite that, and clearing after is worse. The caller then
+     * read 0 and reported a quiesce that never happened, which is exactly what lets
+     * commissioning drop enable lines on a device that was never stopped.
+     *
+     * Here there is no such window: no thread exists yet to have written anything. */
+    atomic_set(&thread_stop_rc_, 0);
 
     /* NOT touching next_cycle_seq_. Starting a thread is not the start of an epoch: the contract
      * numbers cycles from 0 per mapping_epoch, begin_epoch() does that as one step of the
      * authority's commit, and a reset here would either renumber a sequence a consumer is part-way
      * through or reissue a (source_id, epoch, cycle_seq) triple that has already been used. */
-    thread_active_ = true;
-    thread_created_ = true;
+    /* Installed under the chain lock, so an owner cannot appear between another caller's
+     * ownership decision and its use of the devices -- that caller is holding this lock while it
+     * decides, so it cannot be mid-decision here. The new thread's first act is bring_up(), which
+     * takes the same lock, so it waits for this to finish rather than racing it. */
+    k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
 
     /* K_FOREVER, then an explicit start, because the ownership record has to be COMPLETE before
      * the new thread can run a single instruction.
      *
      * With K_NO_WAIT the thread becomes runnable inside k_thread_create(), so a priority higher
      * than the caller's preempts right there -- before the return value has been assigned to
-     * owner_. The new thread then calls may_touch_devices(), finds thread_active_ already true and
+     * owner_. The new thread then calls may_touch_devices_locked(), finds thread_active_ already true
      * owner_ still null, and concludes that IT is the foreign thread. bring_up() returns -EPERM at
      * the guard, running_ is never set, and every later run_cycle() takes the !running_ path
      * forever: a live thread that owns the chain, reports itself running, and never touches a
@@ -869,9 +1065,25 @@ int start(const thread_config &tcfg)
      * also why owner_ is not simply assigned &thread_ beforehand: that would work, but only because
      * k_thread_create happens to return that pointer, which is a convention this file would then
      * depend on silently. */
-    owner_ = k_thread_create(&thread_, tcfg_.stack, tcfg_.stack_size, thread_entry, nullptr, nullptr,
-                             nullptr, tcfg_.priority, 0, K_FOREVER);
-    k_thread_start(owner_);
+    k_tid_t const tid{k_thread_create(&thread_, tcfg_.stack, tcfg_.stack_size, thread_entry, nullptr,
+                                      nullptr, nullptr, tcfg_.priority, 0, K_FOREVER)};
+    atomic_ptr_set(&owner_, tid);
+    thread_created_ = true;
+
+    /* PUBLISHED LAST, and this ordering is for observers OUTSIDE this function.
+     *
+     * Suspended creation above settles what the NEW thread can see. It does nothing for a
+     * caller on a third thread, because thread_running() is deliberately lock-free. With
+     * thread_active_ set before k_thread_create(), such a caller could see "running" while
+     * thread_ and owner_ were still uninitialised, enter try_stop(), and call k_thread_join()
+     * on a kernel object that did not exist yet.
+     *
+     * Everything a caller reaches through that flag -- the thread object join() waits on, the
+     * owner the ownership decision reads, the created flag teardown() checks -- is therefore
+     * installed first, and the flag that advertises them is the last write before the unlock. */
+    atomic_set(&thread_active_, 1);
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    k_thread_start(tid);
     return 0;
 }
 
@@ -900,7 +1112,11 @@ int join(uint32_t timeout_ms)
 
 bool thread_running()
 {
-    return thread_active_;
+    /* Lock-free on purpose. try_stop() asks this before deciding whether it may touch the chain at
+     * all, and taking the chain lock to answer would block a shell thread behind a cycle in
+     * progress -- the exact wait try_stop() exists to avoid. The atomic read is sound on its own:
+     * this reports a fact, it does not authorise touching a device. */
+    return atomic_get(&thread_active_) != 0;
 }
 
 uint32_t foreign_lifecycle_calls()
@@ -911,7 +1127,7 @@ uint32_t foreign_lifecycle_calls()
 #ifdef CONFIG_ZTEST
 k_tid_t thread_id_for_test()
 {
-    return owner_;
+    return static_cast<k_tid_t>(atomic_ptr_get(&owner_));
 }
 #endif
 
@@ -930,17 +1146,28 @@ int try_stop()
      *
      * A timeout leaves everything exactly as it was -- thread running, devices ranging -- and says
      * -EBUSY. Nothing is killed: see join(). */
-    if (thread_active_) {
+    if (thread_running()) {
         request_stop();
-        return join(tcfg_.join_timeout_ms);
+        /* NOT cleared here. The thread may already have run its stop, recorded a failure and
+         * exited -- request_stop() is callable from anywhere and may have been called long
+         * before this. Clearing at any point in this function overwrites a result that is
+         * already final. start() initialises it, once, where the thread's lifetime begins. */
+        if (int const rc{join(tcfg_.join_timeout_ms)}; rc != 0)
+            return rc;
+        /* Joined, so the thread has run its stop and recorded the outcome. A thread that
+         * exited cleanly but could not stop a device has NOT quiesced the chain, and saying
+         * 0 here is what let commissioning drop enable lines on a live sensor. */
+        return static_cast<int>(atomic_get(&thread_stop_rc_));
     }
 
     if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_NO_WAIT) != 0)
         return -EBUSY;   // somebody else owns the chain; nothing touched, so refusing is safe
 
-    stop_locked();
+    const int rc{stop_locked()};
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     publish_snapshot();
+    if (rc != 0)
+        return rc;
 
     /* Idle by construction rather than by a second query: the state was set under the lock we
      * just held, and re-reading it through is_idle() would take the chain again with K_FOREVER --

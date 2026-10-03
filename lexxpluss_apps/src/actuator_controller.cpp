@@ -39,7 +39,8 @@
 #include "adc_reader.hpp"
 #include "board_controller.hpp"
 #include "common.hpp"
-#include "shutter_limit_switch.hpp"
+#include "motor_driver.hpp"
+#include "shutter_motor_controller.hpp"
 #include "tug_encoder_controller.hpp"
 
 // for HW counter
@@ -348,6 +349,7 @@ public:
     static float get_mm_per_pulse(POS pos) {
         switch (pos) {
         case POS::CENTER:
+            LOG_WRN("get_mm_per_pulse(CENTER) called: Center is Shutter, has no encoder.");
             return 50.0f / 1054.0f;
         case POS::LEFT:
             if (tug_encoder_controller::is_tug_connected()) {
@@ -389,59 +391,6 @@ private:
     encoder enc;
     float mm_per_pulse{0.0f};
     int32_t velocity{0}, pulse_value{0}, prev_pulse_value{0};
-};
-
-// This class for control 2 GPIOs as PWM
-class pwm_driver {
-public:
-    int init(POS pos) {
-        switch (pos) {
-        case POS::CENTER:
-            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm5));
-            dev[1] = dev[0];
-            pin[0] = 1;
-            pin[1] = 2;
-            break;
-        case POS::LEFT:
-            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm8));
-            dev[1] = dev[0];
-            pin[0] = 1;
-            pin[1] = 2;
-            break;
-        case POS::RIGHT:
-            dev[0] = DEVICE_DT_GET(DT_NODELABEL(pwm2));
-            dev[1] = dev[0];
-            pin[0] = 3;
-            pin[1] = 4;
-            break;
-        }
-        if (!device_is_ready(dev[0]) || !device_is_ready(dev[1]))
-            return -1;
-        set_duty(msg_control::STOP);
-        return 0;
-    }
-    void set_duty(int8_t direction, uint8_t duty = 0) {
-        uint32_t pulse_ns[2]{CONTROL_PERIOD_NS, CONTROL_PERIOD_NS};
-        if (direction != msg_control::STOP && duty != 0) {
-            uint32_t duty_rev{std::clamp(100U - duty, 0U, 100U)};
-            uint32_t ns{duty_rev * CONTROL_PERIOD_NS / 100};
-            pulse_ns[direction < msg_control::STOP ? 0 : 1] = ns;
-        }
-        pwm_set(dev[0], pin[0], CONTROL_PERIOD_NS, pulse_ns[0], PWM_POLARITY_NORMAL);
-        pwm_set(dev[1], pin[1], CONTROL_PERIOD_NS, pulse_ns[1], PWM_POLARITY_NORMAL);
-        this->direction = direction;
-        this->duty = duty;
-    }
-    std::tuple<int8_t, uint8_t> get_duty() const {
-        return {direction, duty};
-    }
-private:
-    uint32_t pin[2]{0, 0};
-    int8_t direction{msg_control::STOP};
-    uint8_t duty{0};
-    const device *dev[2]{nullptr, nullptr};
-    static constexpr uint32_t CONTROL_HZ{10000};
-    static constexpr uint32_t CONTROL_PERIOD_NS{1000000000ULL / CONTROL_HZ};
 };
 
 // This calls counter
@@ -504,29 +453,19 @@ private:
 class actuator {
 public:
     int init(POS pos) {
-        if (pwm.init(pos) != 0)
-            return -1;
-        cnt.init(pos);
-
+        motor_driver::axis a;
         switch (pos) {
-        case POS::CENTER:
-            current_adc = adc_reader::ACTUATOR_C;
-            fail_checker.init(POS::CENTER);
-            break;
-        case POS::LEFT:
-            current_adc = adc_reader::ACTUATOR_L;
-            fail_checker.init(POS::LEFT);
-            break;
-        case POS::RIGHT:
-            current_adc = adc_reader::ACTUATOR_R;
-            fail_checker.init(POS::RIGHT);
-            break;
+        case POS::CENTER: a = motor_driver::axis::CENTER; break;
+        case POS::LEFT:   a = motor_driver::axis::LEFT; break;
+        case POS::RIGHT:  a = motor_driver::axis::RIGHT; break;
         default:
             LOG_INF("invalid actuator position.");
             return -1;
         }
-        if (!fail_checker.ready())
+        if (pwm.init(a) != 0) {
             return -1;
+        }
+        cnt.init(pos);
         return 0;
     }
     void poll() {
@@ -570,55 +509,17 @@ public:
         auto [direction, duty]{pwm.get_duty()};
         return {
             cnt.get_pulse(),
-            calc_current(current_adc >= 0 ? adc_reader::get(current_adc) : 0),
-            fail_checker.is_failed(),
+            pwm.get_current(),
+            pwm.is_failed(),
             direction,
             duty
         };
     }
 private:
-    int32_t calc_current(int32_t adc_voltage_mv) const {
-        static constexpr float AMP_GAIN{50.0f}, VOLTAGE_DIVIDER{1.0f}, SHUNT_REGISTER{0.01f};
-        float current_a{adc_voltage_mv * 1e-3f / AMP_GAIN * VOLTAGE_DIVIDER / SHUNT_REGISTER};
-        return static_cast<int32_t>(current_a * 1e+3f);
-    }
     counter cnt;
-    pwm_driver pwm;
+    motor_driver::driver pwm;
     position_control posctl{cnt};
     uint32_t prev_cycle{0};
-    int32_t current_adc{-1};
-    class {
-    public:
-        void init(POS pos) {
-            switch (pos) {
-            case POS::CENTER:
-                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_c_fail), gpios);
-                break;
-            case POS::LEFT:
-                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_l_fail), gpios);
-                break;
-            case POS::RIGHT:
-                dev = GPIO_DT_SPEC_GET(DT_NODELABEL(act_r_fail), gpios);
-                break;
-            default:
-                LOG_INF("invalid actuator position.");
-                return;
-            }
-            
-            if (gpio_is_ready_dt(&dev))
-                gpio_pin_configure_dt(&dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
-            this->pin = pin;
-        }
-        bool ready() const {return gpio_is_ready_dt(&dev);}
-        
-        bool is_failed() const {
-            return ready() ? gpio_pin_get_dt(&dev) == 0 : false;
-        }
-    private:
-        uint32_t pin{0};
-        // const device *dev{nullptr};
-        gpio_dt_spec dev;
-    } fail_checker;
 };
 
 class actuator_controller_impl {
@@ -630,8 +531,9 @@ public:
     }
 
     void run() {
-        if (act[0].init(POS::CENTER) != 0 ||
-            act[1].init(POS::LEFT) != 0 ||
+        // act[0] (Center) is intentionally left uninitialized -- Shutter is
+        // owned by shutter_motor_controller's Minor loop, not this array.
+        if (act[1].init(POS::LEFT) != 0 ||
             act[2].init(POS::RIGHT) != 0)
         {
             LOG_ERR("actuator init failed.");
@@ -675,13 +577,9 @@ public:
         bool command_timeout_latched{false};
 
         while (true) {
-            for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+            // index 0 (Center) skipped -- not part of this array (see run()).
+            for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
                 act[i].poll();
-            // Shutter motor is the Center axis (index 0) of this same
-            // actuator array; polled here rather than from a dedicated
-            // thread/stack so a future stop-on-limit-switch feature can act
-            // on shutter_limit_switch's state within this same loop.
-            shutter_limit_switch::poll();
             bool is_emergency{board_controller::is_emergency()};  // -> board controller
             msg_control can2actuator;
             if (k_msgq_get(&msgq_control, &can2actuator, K_NO_WAIT) == 0 && !is_emergency) {
@@ -732,7 +630,17 @@ public:
             if (dt_ms > 20) {
                 prev_cycle = now_cycle;
                 bool failed{false};
-                for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+                {
+                    // Center slot: Shutter has no encoder, so encoder_count
+                    // is always 0; current/fail come from the independent
+                    // shutter object, not act[0]. Its fail is reported but
+                    // excluded from `failed` -- reset_actuator() can't fix it.
+                    auto const shutter_info{shutter_motor_controller::get_info()};
+                    actuator2can.encoder_count[0] = shutter_info.encoder_count;
+                    actuator2can.current[0] = shutter_info.current;
+                    actuator2can.fail[0] = shutter_info.fail;
+                }
+                for (uint32_t i{1}; i < ACTUATOR_NUM; ++i) {
                     int8_t direction;
                     uint8_t duty;
                     std::tie(actuator2can.encoder_count[i],
@@ -751,6 +659,10 @@ public:
             k_msleep(10);
         }
     }
+    // Center (index 0) of `directions`/`location`/`power` is always ignored
+    // here -- Shutter is not an encoder-controlled actuator, so init/location
+    // service requests don't apply to it (actuator_service_controller.cpp
+    // logs a warning when a real request for Center arrives).
     int init_location(const int8_t (&directions)[ACTUATOR_NUM]) {
         LOG_INF("initialize location.");
 
@@ -759,7 +671,7 @@ public:
             return -1;
         }
 
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i) {
             if (directions[i] != msg_control::UP && directions[i] != msg_control::STOP && directions[i] != msg_control::DOWN) {
                 LOG_WRN("invalid direction.");
                 return -1;
@@ -775,7 +687,7 @@ public:
             LOG_WRN("can not initialize location.");
             return -1;
         }
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i) {
             if (directions[i] == msg_control::UP || directions[i] == msg_control::DOWN) {
                 act[i].reset();
             }
@@ -791,7 +703,7 @@ public:
             LOG_WRN("location not initialized.");
             return -1;
         }
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
             act[i].to_location(location[i], power[i]);
         bool stopped{wait_actuator_stop(30000, 100)};
         pwm_trampoline_all(msg_control::STOP);
@@ -804,8 +716,8 @@ public:
     void set_current_monitor() const {
     }
     void info(const shell *shell) const {
-        shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i) {
+        shell_print(shell, "[notice] parameter order [Left] [Right] (Center: see 'shutter_motor info')");
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i) {
             auto [pulse, current, fail, direction, duty]{act[i].get_info()};
             const double mm_per_pulse{counter::get_mm_per_pulse(static_cast<POS>(i))};
             shell_print(shell,
@@ -833,34 +745,48 @@ public:
             k_msgq_purge(&msgq_control);
     }
 private:
+    // Center (index 0) is not part of act[] -- Shutter is a standalone
+    // object owned solely by shutter_motor_controller's Minor loop. Only an
+    // EXTERNAL_CAN_0X208 frame's Center slot is forwarded there; an INTERNAL
+    // frame (e.g. control_trampoline() for Left/Right homing) always carries
+    // a meaningless placeholder for Center, so it's dropped rather than
+    // forwarded.
     void handle_control(const msg_control &msg) {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+        if (msg.source == msg_control::source_type::EXTERNAL_CAN_0X208) {
+            shutter_motor_controller::msg_request const req{msg.actuators[0].direction, msg.actuators[0].power};
+            while (k_msgq_put(&shutter_motor_controller::msgq_request, &req, K_NO_WAIT) != 0)
+                k_msgq_purge(&shutter_motor_controller::msgq_request);
+        }
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
             act[i].direct(msg.actuators[i].direction, msg.actuators[i].power);
     }
     void handle_pwmtrampoline(const msg_pwmtrampoline &msg) {
-        if (msg.all)
+        if (msg.all) {
             pwm_direct_all(msg.direction, msg.duty);
-        else
+        } else if (msg.index != 0) {
             act[msg.index].direct(msg.direction, msg.duty);
+        } else {
+            LOG_WRN("ignoring direct-PWM request for Center: use 'shutter_motor' commands instead.");
+        }
     }
     void pwm_direct_all(int direction, uint8_t pwm_duty = 0) {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
             act[i].direct(direction, pwm_duty);
     }
     bool any_position_control_active() const {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
             if (act[i].is_position_control_active())
                 return true;
         return false;
     }
     bool any_direct_driving() const {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
             if (act[i].is_direct_driving())
                 return true;
         return false;
     }
     static bool has_nonzero_direct_command(const msg_control &msg) {
-        for (uint32_t i{0}; i < ACTUATOR_NUM; ++i)
+        for (uint32_t i{1}; i < ACTUATOR_NUM; ++i)
             if (msg.actuators[i].direction != msg_control::STOP && msg.actuators[i].power != 0)
                 return true;
         return false;
@@ -873,11 +799,13 @@ private:
         while (k_msgq_put(&msgq_pwmtrampoline, &message, K_NO_WAIT) != 0)
             k_msgq_purge(&msgq_pwmtrampoline);
     }
+    // Only waits on Left/Right (index 1,2) -- Center isn't tracked by act[]
+    // (see run()).
     bool wait_actuator_stop(uint32_t timeout_ms, uint32_t sleep_ms) {
-        int remaining{3};
+        int remaining{2};
         for (uint32_t i{0}, end{timeout_ms / sleep_ms}; i < end; ++i) {
-            remaining = 3;
-            for (uint32_t j{0}; j < ACTUATOR_NUM; ++j) {
+            remaining = 2;
+            for (uint32_t j{1}; j < ACTUATOR_NUM; ++j) {
                 if (i >= 4 && !act[j].is_moving()) {
                     pwm_trampoline(j, msg_control::STOP);
                     --remaining;
@@ -896,7 +824,7 @@ private:
 
 int cmd_duty(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
+    shell_print(shell, "[notice] parameter order [Center(ignored, see 'shutter_motor')] [Left] [Right]");
     if (argc != 3 && argc != 5 && argc != 7) {
         shell_error(shell, "Usage: %s %s <direction> <power> ...\n", argv[-1], argv[0]);
         return 1;
@@ -914,9 +842,10 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 {
     int rep_num = 10000;
 
-    shell_print(shell, "Repeat Up-Down 10,000 times with 5sec interval.");
+    shell_print(shell, "Repeat Up-Down 10,000 times with 5sec interval. "
+                        "(Left/Right only; Center is ignored, see 'shutter_motor')");
     for (int ii{0}; ii < rep_num; ++ii) {
-        for (size_t i{0}; i < 3; ++i) {
+        for (size_t i{1}; i < 3; ++i) {
             uint8_t direction, duty;
             direction = 1;
             duty      = 100;
@@ -925,7 +854,7 @@ int cmd_duty_rep_all(const shell *shell, size_t argc, char **argv)
 
         k_msleep(5000);
 
-        for (size_t i{0}; i < 3; ++i) {
+        for (size_t i{1}; i < 3; ++i) {
             uint8_t direction, duty;
             direction = -1;
             duty      = 100;
@@ -956,7 +885,7 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
         directions[i-1] = cur_dir;
     }
 
-    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
+    shell_print(shell, "[notice] parameter order [Center(ignored, see 'shutter_motor')] [Left] [Right]");
     if (impl.init_location(directions) != 0)
         shell_print(shell, "init error.");
     return 0;
@@ -964,7 +893,7 @@ int cmd_init(const shell *shell, size_t argc, char **argv)
 
 int locate(const shell *shell, size_t argc, char **argv)
 {
-    shell_print(shell, "[notice] parameter order [Center] [Left] [Right]");
+    shell_print(shell, "[notice] parameter order [Center(ignored, see 'shutter_motor')] [Left] [Right]");
     int8_t location[ACTUATOR_NUM]{0, 0, 0};
     uint8_t power[ACTUATOR_NUM]{0, 0, 0};
     uint8_t detail[ACTUATOR_NUM]{0, 0, 0};

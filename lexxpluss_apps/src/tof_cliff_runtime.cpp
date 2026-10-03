@@ -374,7 +374,12 @@ void set_thread_stack_for_test(k_thread_stack_t *stack, size_t size)
 
 void reset_for_test()
 {
-    acq::teardown();
+    /* The return is dropped deliberately, and that is only safe because of what this function is
+     * for. teardown() refuses while a device will not stop, keeping the subsystem configured so
+     * the cleanup can be retried; a case that ends with injected stop failures is a legitimate
+     * end state and this reset must not assert on it. Clearing the injection and checking the
+     * retire is the CALLER's fixture's job, which is where the acquisition suite does it. */
+    (void)acq::teardown();
     stage_ = stage::not_started;
     keyed_ = false;
     keyed_epoch_ = 0;

@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "tof_mapping_proof.hpp"
@@ -71,6 +71,33 @@ bool is_commissioning_profile(const fingerprint &fp)
             return false;
     }
 
+    /* The grid sources, which the model check above cannot see.
+     *
+     * validate_spec() will not catch a missing one either: `require_all_sources` is the
+     * enumerator's own escape hatch for a bench chain that legitimately carries fewer than
+     * both hanging sources, and a spec may switch it off. That hatch must not reach a
+     * commissioning token. This predicate is the thing that says "the chain in front of you
+     * is the six-board production chain", and a grid source missing from it means a mask
+     * keyed by source_id cannot be filled honestly.
+     *
+     * The cliff positions are required to carry no grid source at all: source_id is the grid
+     * table, and a cliff position claiming a grid source is a contradiction rather than a
+     * variation. A cliff measurement's source_id comes from its role through the contract's
+     * own table, never from this field. */
+    bool grid_seen[enm::chain_result::kMaxSources]{};
+    for (size_t i{0}; i < 2; ++i) {
+        const int8_t s{fp.at[i].source_id};
+        if (s < 0 || static_cast<size_t>(s) >= enm::chain_result::kMaxSources)
+            return false;
+        if (grid_seen[static_cast<size_t>(s)])
+            return false;
+        grid_seen[static_cast<size_t>(s)] = true;
+    }
+    for (size_t i{2}; i < kPositions; ++i) {
+        if (fp.at[i].source_id != -1)
+            return false;
+    }
+
     /* Same set check as the spec-side one, over the other type. Two small loops rather than
      * one generic helper: the alternative was a template over two unrelated structs, which
      * costs more to read than it saves. */
@@ -90,6 +117,17 @@ bool is_commissioning_profile(const fingerprint &fp)
 
 bool same(const fingerprint &a, const fingerprint &b)
 {
+    /* Bound before indexing at[]. This function is public and takes two caller-built
+     * fingerprints, so `positions` is whatever the caller wrote there -- the commissioning
+     * topology check that bounds the other paths never runs on this one, and neither does
+     * fingerprint_of()'s own bound, which only constrains fingerprints this file built.
+     *
+     * Refusing is both the safe answer and the true one: a fingerprint that claims more
+     * positions than can exist describes no chain, so it is not the same chain as anything,
+     * including another fingerprint making the same impossible claim. */
+    if (a.positions > enm::chain_spec::kMaxPositions ||
+        b.positions > enm::chain_spec::kMaxPositions)
+        return false;
     if (a.positions != b.positions)
         return false;
     for (size_t i{0}; i < a.positions; ++i) {
@@ -150,13 +188,41 @@ bool fingerprint_of(const enm::chain_spec &spec, const enm::chain_result &walk,
 
 challenge gate::issue()
 {
-    /* Never zero, on wrap or otherwise: zero is the value a fabricated challenge has, and
-     * it must stay unusable. */
-    if (next_ == 0)
-        next_ = 1;
-    current_ = next_++;
+    /* EXHAUSTION IS PERMANENT, and the alternative was worse than it looks.
+     *
+     * This used to wrap: `if (next_ == 0) next_ = 1`. That made the counter reset, which is
+     * exactly what revoke() is careful not to do -- a nonce that comes round again is a nonce an
+     * old token may still carry, and after the wrap a retained token from the first attempt has
+     * the same issuer pointer AND the same number as the current one, so commit_proof() would
+     * accept evidence from 2^32 attempts ago. Refusing to reuse a number is the whole basis of
+     * that check; wrapping quietly withdrew it.
+     *
+     * 2^32 attempts in one power cycle is not reachable in practice. That is a reason to make
+     * the boundary cheap, not a reason to leave it wrong: the code had an explicit rule for the
+     * wrap, so it was a stated policy rather than an oversight, and the stated policy was the
+     * unsafe one.
+     *
+     * UINT32_MAX is issued normally; every call after it returns an empty challenge, for this
+     * gate, for the rest of the boot. A power cycle is the only reset, which is the same
+     * lifetime the epoch space already has. */
+    if (exhausted_)
+        return challenge{};
+    current_ = next_;
+    if (next_ == UINT32_MAX)
+        exhausted_ = true;
+    else
+        ++next_;
     consumed_ = false;
-    return challenge{current_};
+    return challenge{current_, this};
+}
+
+void gate::revoke()
+{
+    /* current_ is left alone on purpose. consumed_ is what evaluate() tests, and clearing
+     * the number as well would make outstanding_nonce() and the stale check disagree about
+     * which challenge died. next_ is untouched, so the next issue() climbs past every nonce
+     * any live token carries. */
+    consumed_ = true;
 }
 
 namespace {
@@ -221,6 +287,21 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
         v.reason = refusal::challenge_invalid;
         return v;
     }
+    /* Provenance BEFORE staleness, and deliberately without spending anything.
+     *
+     * Before, because a challenge from another gate is not a stale one -- every gate's
+     * counter starts at 1, so a foreign first challenge carries the same nonce as this
+     * gate's first and would be reported as current, which is the confusion this check
+     * exists to end.
+     *
+     * Without spending, because the alternative is a denial of service: anyone able to
+     * call evaluate() with a gate of their own could burn this gate's outstanding
+     * challenge and force commissioning to start its two walks again. A foreign challenge
+     * must cost the holder of this gate nothing. */
+    if (c.issuer_ != this) {
+        v.reason = refusal::challenge_foreign;
+        return v;
+    }
     if (c.nonce() != current_) {
         v.reason = refusal::challenge_stale;
         return v;
@@ -239,7 +320,7 @@ verdict gate::evaluate(const evidence &ev, const challenge &c)
     }
 
     v.reason = refusal::none;
-    v.token = proof_token{c.nonce(), proven};
+    v.token = proof_token{c.nonce(), this, proven};
     return v;
 }
 
@@ -271,6 +352,17 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
         return refusal::missing_evidence;
 
     const enm::chain_spec &spec{*ev.spec};
+
+    /* BOUNDS FIRST, before any at[] access anywhere below.
+     *
+     * at[] is kMaxPositions long and `positions` is a caller-supplied size_t. Every loop
+     * below runs to `positions`, and evaluate_bench() reaches them with require_profile
+     * false, so nothing else here bounds it -- a spec claiming 200 positions used to read
+     * off the end of the array. This is the only check that must precede the others; the
+     * rest of the structural rules come after, so that a bench chain still gets the
+     * specific diagnosis it came for rather than a flat "invalid spec". */
+    if (spec.positions > enm::chain_spec::kMaxPositions)
+        return refusal::spec_invalid;
 
     /* The product's topology, and only for a proof that could open PROVEN. A three-board
      * bench chain can be checked against every other rule here and still must not be
@@ -309,10 +401,31 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
     if (spec.at[tail].expected != enm::model::l4cx)
         return refusal::spec_no_tail_l4;
 
-    /* Both walks must have been run against a spec the enumerator itself accepted. Cheap,
-     * and it closes the one hole this module cannot close on its own: it does not validate
-     * the spec (the validator is internal to enumerate()), so without this a caller could
-     * present a spec the enumerator would have rejected outright. */
+    /* The spec itself, against the enumerator's own rules -- duplicate targets, a source on
+     * a drop-sense board, a role on an L7, an unusable address, and the rest.
+     *
+     * This used to be inferred from `walk->spec == spec_error::none`, which is circular:
+     * chain_result is filled in by whoever built it, so a fabricated pair of walks can
+     * claim the spec was accepted over a spec these rules reject. validate_spec() is the
+     * enumerator's own validator, made public for exactly this call so there is one
+     * implementation of the rules rather than two that drift apart.
+     *
+     * After the proof's own spec rules, deliberately. Those produce the specific refusals a
+     * bench chain came for -- no tail L4, no cliff, too few to isolate -- and answering
+     * them with a flat spec_invalid would lose the diagnosis. A bench spec that legitimately
+     * carries fewer than both hanging sources sets require_all_sources itself; that is the
+     * enumerator's own escape hatch, not something to reproduce here.
+     *
+     * Its own refusal, and not walk_spec_rejected: an illegal input spec is not a walk that
+     * misbehaved, and reporting it as one sends a reader to look at a walk that did exactly
+     * what it was told. */
+    if (enm::validate_spec(spec) != enm::spec_error::none)
+        return refusal::spec_invalid;
+
+    /* And the walks must each claim they ran against an accepted spec. Kept after the check
+     * above rather than in place of it: this says what the WALK was told, which is still
+     * worth refusing on, but it no longer carries the weight of establishing that the spec
+     * is well formed. */
     if (ev.walk1->spec != enm::spec_error::none || ev.walk2->spec != enm::spec_error::none)
         return refusal::walk_spec_rejected;
 
@@ -320,6 +433,31 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
         return refusal::walk1_not_complete;
     if (ev.walk2->status != enm::chain_status::complete)
         return refusal::walk2_not_complete;
+
+    /* A complete walk must also be able to say what it asked of the enable chain, and must
+     * have asked for every position.
+     *
+     * `complete` alone does not establish either. chain_result is filled in by whoever built
+     * it -- the same reason validate_spec() is called above rather than trusting the walk's
+     * own spec claim -- so a fabricated walk can report complete beside a control state it
+     * never had. The enumerator itself clears control_state_known on a control failure, and
+     * that is precisely the state in which the hardware may not have executed the last
+     * request: the addresses in such a walk may belong to a configuration that was never
+     * commanded. Proving a mapping from it would attribute ranges to corners on the strength
+     * of a chain nobody can describe.
+     *
+     * Iterated over the spec's position count. Indexing is safe because validate_spec()
+     * above bounds spec.positions to kMaxPositions and at[] holds that many. It is NOT
+     * safe because the walk was made to match the spec -- that equality is enforced later,
+     * in fingerprint_of(), which returns walk_position_count. An earlier version of this
+     * comment claimed the match had already happened here; it had not. */
+    if (!ev.walk1->control_state_known || !ev.walk2->control_state_known)
+        return refusal::walk_control_unknown;
+    for (size_t i{0}; i < spec.positions; ++i) {
+        if (!ev.walk1->at[i].enable_commanded_high ||
+            !ev.walk2->at[i].enable_commanded_high)
+            return refusal::walk_position_not_enabled;
+    }
 
     /* The role table, before the electrical checks. A machine can be electrically perfect
      * and still unprovable: the masks a consumer reads are keyed by source_id, not by
@@ -387,6 +525,29 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
 
     if (!same(fp1, fp2))
         return refusal::fingerprint_mismatch;
+
+    /* The profile, on the fingerprint the two walks agree on, and only for a proof that
+     * could open PROVEN.
+     *
+     * The spec-side checks above are not this check. is_commissioning_topology() reads the
+     * model sequence and has_the_four_cliff_roles() reads the roles; neither looks at
+     * source_id, so a spec that switches off require_all_sources and carries one grid
+     * source reached this point and a VALID TOKEN WAS ISSUED for it. The authority refused
+     * it later -- commit_proof() re-checks the profile, so PROVEN was never reachable --
+     * but "the last gate catches it" is not the same as "it was never authorised", and a
+     * token that says proven is the thing other code is entitled to trust.
+     *
+     * is_commissioning_profile() is reused rather than reimplemented on the spec side, so
+     * the issuing path and the committing path cannot come to different answers about what
+     * the production chain is. That is the same reason validate_spec() was made public.
+     *
+     * After the fingerprint comparison, because this asks about the chain both walks
+     * proved, not about either one alone; and before isolation, because "this is not the
+     * production chain" is a more fundamental answer than any isolation verdict taken on
+     * it. require_profile leaves evaluate_bench() free to describe smaller chains, which is
+     * what it is for. */
+    if (require_profile && !is_commissioning_profile(fp2))
+        return refusal::spec_not_commissioning_profile;
 
     /* Isolation last, because it is the criterion whose meaning depends on everything
      * above: "the tail answers its own address" is only informative once we know which

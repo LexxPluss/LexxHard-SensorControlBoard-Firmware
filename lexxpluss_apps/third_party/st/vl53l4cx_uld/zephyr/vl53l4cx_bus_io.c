@@ -2,7 +2,7 @@
  * Copyright (c) 2024-2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * There is exactly one real I2C path in this port, and it is in
  * vl53lx_platform.c. The BSP IO block still has to be filled, because

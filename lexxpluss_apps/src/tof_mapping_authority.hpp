@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -67,6 +67,12 @@ enum class commit_refusal : uint8_t {
     no_attempt,                // commit without a begin_proof(), or after one was superseded
     invalid_token,             // the fabricated token: nonce 0, authorises nothing
     wrong_attempt,             // a token from an attempt that is no longer the current one
+    /* A token this authority's gate did not issue. Separate from wrong_attempt, and not
+     * folded into it, because the two say different things to whoever reads the refusal:
+     * wrong_attempt is a timing mistake by a legitimate caller, this is evidence that was
+     * authorised by somebody else's challenge. It also does NOT close the current attempt
+     * -- a foreign token must not be able to cancel a commissioning session in progress. */
+    wrong_issuer,
     // Re-checked here rather than trusted from the token. DELIBERATELY UNREACHABLE today and
     // therefore untested: the evaluator refuses anything but the commissioning profile, so
     // every valid token already describes one, and a token cannot be fabricated. It stays
@@ -111,6 +117,11 @@ enum class begin_refusal : uint8_t {
     none = 0,
     not_initialised,
     acquisition_not_idle, // a proof moves enable lines; cycles must have stopped first
+    /* The gate can no longer produce a nonce it has not already used. Permanent for the rest
+     * of the boot: a reused nonce is a nonce an old token may still carry, and the whole
+     * commit check rests on numbers not coming round again. Checked BEFORE anything is
+     * revoked, so an exhausted gate costs a robot nothing it already had. */
+    nonce_exhausted,
 };
 
 // What begin_proof() returns. The challenge is worthless unless `reason` is none, and pairing
@@ -158,6 +169,29 @@ int init(const config &cfg);
 // Refuses outright unless acquisition is idle. Checking here rather than at commit time is
 // the difference between refusing to start and discovering the problem after two walks have
 // already re-addressed the chain underneath a running reader.
+//
+// PRECONDITION, AND THIS PREDICATE DOES NOT ESTABLISH IT: the caller must already hold the
+// chain lock, and must hold it unbroken until it has committed or aborted.
+//
+// acquisition_idle() is a sample. It reserves nothing: on its own, acquisition could start
+// between the predicate returning true and the caller's first enable pulse, and the chain
+// would be re-addressed underneath a live reader. The authority cannot close that window --
+// it owns no lock and has no way to make one side wait for the other.
+//
+// It is closed by the caller instead, and that is a deliberate division rather than an
+// omission. The chain lock already exists, acquisition already takes it for every path that
+// touches a device, and a second ownership mechanism here would mean two rules about who
+// owns the chain, which is worse than one. The commissioning session takes the lock BEFORE
+// calling this and holds it, by scope, across both walks, the isolation, the evaluation and
+// the commit or abort -- including every early return. Under that lock the sample cannot go
+// stale, because nothing else can begin touching devices while it is held.
+//
+// The recursion this relies on is a documented Zephyr property, not an accident: this call
+// reaches is_idle(), and commit_proof() reaches begin_epoch(), and both take that same mutex
+// from inside the caller's session. k_mutex is recursive for its owning thread.
+//
+// So a caller that does NOT hold the chain lock for the whole transaction gets no protection
+// from the check below, whatever it returns.
 //
 // Any previously issued challenge and any token minted from it stop being committable here.
 attempt begin_proof();
@@ -258,6 +292,9 @@ uint32_t epochs_used();
 // back. Tests need each case to start empty, and the honest way to give them that is an
 // explicit test-only door rather than weakening what init() means in production.
 void reset_epoch_history_for_test();
+// Moves the authority's own gate counter to the boundary. The product has no path to 2^32
+// attempts, and a boundary nothing can reach is a boundary nothing pins.
+void set_gate_next_for_test(uint32_t n);
 #endif
 
 } // namespace lexxhard::tof_authority

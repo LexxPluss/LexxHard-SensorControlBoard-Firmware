@@ -29,7 +29,7 @@
 //
 // Self-assigned integration allocation, authorized by the team (2026-08-06)
 // and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
-// version 2026-08-02f): the SCB peripheral block 0x200-0x213 is contiguously
+// version 2026-08-02g): the SCB peripheral block 0x200-0x213 is contiguously
 // occupied across both repositories and a live bus capture agrees, 0x214+
 // extends that block, and all three values rank below every existing control
 // and safety identifier in CAN arbitration. The adjacency of the data and

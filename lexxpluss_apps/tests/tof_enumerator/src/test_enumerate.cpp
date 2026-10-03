@@ -72,6 +72,11 @@ struct fake_chain final : chain_ops {
         // enable cascade for everything downstream.
         int vanish_at_pulse{-1};
         int vanish_at_readdress{-1};
+        // Goes silent AFTER its own readdress has already returned success.
+        // vanish_at_readdress mutes before the helper looks the device up, so
+        // the move itself fails; this one is the other case -- the backend
+        // reports the move done and the very next probe finds nothing.
+        bool vanish_after_own_readdress{false};
         bool mute{false};
     };
     device dev[kMax]{};
@@ -178,6 +183,8 @@ struct fake_chain final : chain_ops {
         if (i < 0)
             return {-EIO, readdress_stage::verify};
         dev[i].addr = new7;
+        if (dev[i].vanish_after_own_readdress)
+            dev[i].mute = true;
         return {0, readdress_stage::none};
     }
     int set_data(bool level) override
@@ -565,6 +572,34 @@ ZTEST(tof_enumerate, test_vanish_during_post_census_revokes_only_its_source)
     zassert_true(r.at[0].verdict == outcome::enumerated, "verdicts are history");
     zassert_false(r.source_allowed[0], "revoked in the POST census");
     zassert_true(r.source_allowed[1], "the untouched source keeps its permission");
+    zassert_true(r.status == chain_status::degraded);
+}
+
+// Review question (PR #97): after a successful readdress, is the position
+// accepted as enumerated without anyone confirming the TARGET address answers?
+// run_census() exempts `current` from the unowned-target sweep, which is what
+// prompted the question -- but the caller sets owned[k] BEFORE the post-census,
+// so the owned sweep is what covers it, and that sweep requires an ack.
+//
+// This test is the answer rather than the argument: the move returns success
+// and the device goes silent before the next probe. If the target address were
+// unchecked the position would read `enumerated` at an address nothing owns.
+ZTEST(tof_enumerate, test_a_device_silent_right_after_its_own_readdress_is_not_enumerated)
+{
+    chain_spec const s{dasher_spec()};
+    fake_chain c{dasher_chain()};
+    c.dev[1].vanish_after_own_readdress = true;  // position 2 moves, then stops answering
+
+    auto const r{enumerate(c, s)};
+
+    zassert_false(r.at[1].verdict == outcome::enumerated,
+                  "an address nothing answers on must not be reported as enumerated");
+    zassert_true(r.at[1].verdict == outcome::verified_device_missing,
+                 "and the reason must name what happened, not merely refuse");
+    zassert_equal(r.at[1].offending_addr, s.at[1].target_addr);
+    zassert_equal(r.frozen_at, 2, "the sweep stops at the position that failed");
+    zassert_false(r.source_allowed[s.at[1].source_id >= 0 ? s.at[1].source_id : 0],
+                  "its source is not granted");
     zassert_true(r.status == chain_status::degraded);
 }
 

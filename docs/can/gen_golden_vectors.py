@@ -118,6 +118,10 @@ def unpack_chunk(frame):
 def pack_health(generation, source_id, grid, flags=0, chain_position=None,
                 boards_detected=6, last_error=0, valid_count_override=None):
     if chain_position is None:
+        # 0-BASED, per the contract's *Source identity*: the index into the firmware's chain
+        # descriptor table, 0-5, and the two hanging boards are the first two. These vectors
+        # always carried 0 and 1; until 2026-08-02g the document did not say which end they
+        # counted from, and the cliff health frame's failing_chain_position counts from one.
         chain_position = 0 if source_id == SRC_RIGHT else 1
     valid_zone_count = (valid_count_override if valid_count_override is not None
                         else sum(1 for v in grid if v != INVALID))

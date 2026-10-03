@@ -44,6 +44,8 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
+    # For tof_enum::validate_spec, which both init() and the proof call.
+    ${APP_SRC_DIR}/tof_enumerator.cpp
 )
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
 target_include_directories(app PRIVATE ${APP_SRC_DIR} ${CONTRACT_DIR})

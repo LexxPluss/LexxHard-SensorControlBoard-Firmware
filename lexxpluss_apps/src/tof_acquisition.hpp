@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -17,10 +17,12 @@
 //     does not suit an 8x8 grid. When the real L7 path lands, the ops table and the sinks
 //     both change shape; the grid stub refusing a cliff-shaped read is the visible marker
 //     of that debt, not a design.
-//   - The packer, the publisher and the CAN glue all exist and are wired, and
-//     tof_cliff_runtime::bootstrap() is a production caller: a shipping image runs the heartbeat
-//     from power-on. Cycles need a proven mapping first, so today they happen only behind
-//     commissioning.
+//   - There is no production caller at this tip. The packer, the publisher, the CAN glue
+//     and tof_cliff_runtime::bootstrap() are the layer above and are not in this PR; what
+//     is here is a standalone lifecycle driven by tests. The header used to describe the
+//     wired-up arrangement as though it already existed, which claimed a reachable
+//     production path a reader would then go looking for. Update this when the downstream
+//     runtime lands.
 //   - PROVEN is unreachable by construction, see effective_mapping_state().
 //   - Stack watermark and boot time are unmeasured; both need a run on the board, and the
 //     acquisition thread's stack size is a devicetree value chosen without one.
@@ -175,6 +177,24 @@ struct source_facts {
      * OR-ed into the snapshot's per-source fault bit, since that word is the only signal
      * guaranteed to be sent. */
     bool rearm_failed{false};
+
+    /* STICKY TOO, and it answers a different question from `started`.
+     *
+     * `started` means "this source may be read". `cleanup_pending` means "this source still
+     * owes a successful stop". They are usually the same, and the case that separates them is
+     * the one this field exists for: the cliff adapter issues StartMeasurement() before its
+     * second arming call, and when that second call fails it attempts a best-effort
+     * StopMeasurement(). If THAT also fails it reports `ranging_unknown` -- the device was
+     * armed and nothing has confirmed it is quiet.
+     *
+     * Such a source must not be read: it never completed bring-up and has no usable stream, so
+     * `started` stays false. But it must also not be skipped by the cleanup, which is what
+     * iterating on `started` alone did -- the device was left armed for the rest of the
+     * subsystem's life and the next commissioning session re-addressed it.
+     *
+     * Cleared only by a stop that returns success. Recovery is a stop, never a retried start:
+     * a half-armed device has to come down before it can go up. */
+    bool cleanup_pending{false};
     op_status status{};
 };
 
@@ -343,7 +363,11 @@ k_tid_t thread_id_for_test();
 //
 // BLOCKS on the chain lock. Fine for a shutdown path that has nothing better to do; wrong for
 // commissioning, which must fail fast rather than queue up behind whoever holds the chain.
-void stop();
+// Returns 0 when every started source stopped, the first failing rc otherwise, and -EPERM
+// when the caller does not own the chain. A non-zero return means at least one device is
+// STILL RANGING and its source_facts still say `started`, which is what stops a later
+// cleanup from skipping it.
+int stop();
 
 // The commissioning quiesce: the same thing stop() does, except that it never waits for the
 // chain.
@@ -372,13 +396,25 @@ int try_stop();
 // subsystem cannot be confused -- a consumer must be able to tell a controlled pause from a
 // silence that looks like a crashed producer.
 //
-// After this returns, no further health frame can be emitted. Stopping the timer alone does not
-// give that: a work item submitted by the last tick may still be queued or running, so a frame
-// could go out after teardown claimed the subsystem was down.
+// ON A ZERO RETURN, and only then, no further health frame can be emitted. Stopping the timer
+// alone does not give that: a work item submitted by the last tick may still be queued or
+// running, so a frame could go out after teardown claimed the subsystem was down.
 //
-// Until it is called, a second init() is refused with -EALREADY rather than overwriting a live
-// configuration underneath a work item that is reading it.
-void teardown();
+// Returns:
+//   0        nothing was configured, or everything stopped and the subsystem is retired.
+//   nonzero  stop() refused: at least one device is not confirmed stopped. NOTHING is retired --
+//            the configuration, the device state and the heartbeat all stay exactly as they
+//            were, deliberately, because that is when a consumer most needs to be told the
+//            subsystem is alive and not producing. Call it again once the fault clears.
+//
+// A caller that ignores the return keeps a live subsystem it believes is retired. The
+// difference matters because clearing the configuration is what releases init() from
+// -EALREADY: a discarded error let the next init() replace the descriptors and re-address a
+// device nobody could confirm had stopped.
+//
+// Until it returns zero, a second init() is refused with -EALREADY rather than overwriting a
+// live configuration underneath a work item that is reading it.
+int teardown();
 
 // True only when the chain is genuinely free: not mid-cycle AND not running. The
 // distinction matters because commissioning drops enable lines, which re-addresses parts;

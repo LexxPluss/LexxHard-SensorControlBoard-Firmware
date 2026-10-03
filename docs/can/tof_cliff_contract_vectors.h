@@ -1,18 +1,17 @@
-// clang-format off
 /*
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 /* GENERATED FILE -- do not edit. Regenerate with:
  *     docs/can/gen_cliff_golden_vectors.py --emit
  *
  * Contract : tof_cliff_wire_contract.md
- * Version  : commissioning-2026-08-18c
- * SHA-256  : fb94706a4d2488aa9acdc7c7defcd7fac92379cba01964ab31f949fa50955188
- * ArtefactSet : 3db018e9f0be3ae85a295240a8314fff97491b587ec909021b8e478745caf9aa
+ * Version  : commissioning-2026-10-03b
+ * SHA-256  : 037c9ba5c0432c92de0f6c54ed9ee0b919cc258db9c7babebfd2fec7f3f8f6eb
+ * ArtefactSet : 46a7e94ede9846d6318047b30c7a7ed224066c865e6975aadc401894604bd221
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
@@ -25,14 +24,14 @@
  *
  * Zero dependencies on purpose: the SCBDriver tests have no JSON parser.
  *
- * clang-format is disabled for the whole file, from its very first line -- above
- * this licence block, not merely above the include guard.
+ * clang-format is disabled for the whole file, starting above the include guard.
  * SCBDriver's CI reformats every .h in the repository with an explicitly named
  * style file, which overrides any directory .clang-format -- so a generated file
  * can only stay byte-identical across the two repositories by opting out here, in
  * the generator, rather than per checkout.
  */
 
+// clang-format off
 #pragma once
 
 #include "tof_cliff_contract.h"

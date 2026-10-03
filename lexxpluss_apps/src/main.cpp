@@ -40,6 +40,7 @@
 #include "uss_controller.hpp"
 #include "gpio_controller.hpp"
 #include "shutter_limit_switch.hpp"
+#include "shutter_motor_controller.hpp"
 #include "tug_encoder_controller.hpp"
 #ifdef ENABLE_TOF_CHAIN
 #include <zephyr/dfu/mcuboot.h>
@@ -61,6 +62,7 @@ K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(gpio_controller_stack, 2048);
+K_THREAD_STACK_DEFINE(shutter_motor_controller_stack, 2048);
 #ifndef ENABLE_TOF_CHAIN
 K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
 #endif
@@ -141,7 +143,11 @@ void init_gpio() {
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(comm_mode), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
-    
+    // uss4 trig (PB5), unpopulated on Dasher: drive low, feeds level-shifter U8
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(uss4_trig_unused), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_OUTPUT_LOW | GPIO_ACTIVE_HIGH);
+
     // Input
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(ps_sw_in), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
@@ -210,6 +216,10 @@ void init_gpio() {
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
     gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(safety_lidar_res_req2), gpios);
+    if (gpio_is_ready_dt(&gpio_dev))
+        gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
+    // uss4 echo (PC0), unpopulated on Dasher: no internal pull, R12 already provides an external pull-down
+    gpio_dev = GPIO_DT_SPEC_GET(DT_NODELABEL(uss4_echo_unused), gpios);
     if (gpio_is_ready_dt(&gpio_dev))
         gpio_pin_configure_dt(&gpio_dev, GPIO_INPUT | GPIO_ACTIVE_HIGH);
 
@@ -304,6 +314,7 @@ int main()
     lexxhard::uss_controller::init();
     lexxhard::shutter_limit_switch::init();
     lexxhard::gpio_controller::init();
+    lexxhard::shutter_motor_controller::init();
 #ifdef ENABLE_TOF_CHAIN
     // The ToF chain owns i2c2; the tug encoder must resolve to
     // "disconnected" without ever touching the bus, and its polling thread
@@ -326,6 +337,10 @@ int main()
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
     RUN(gpio_controller, 2);
+    // Priority 1 (same tier as led/pgv): the ~1ms Limit-Switch-to-stop cadence
+    // is safety-relevant (no encoder backup for Shutter), so it must not be
+    // starved by the 10ms-cadence controllers at priority 2+.
+    RUN(shutter_motor_controller, 1);
 #ifndef ENABLE_TOF_CHAIN
     RUN(tug_encoder_controller, 2);
 #endif

@@ -65,7 +65,15 @@ completed_verified_grid completed_verified_grid::from_read(const sensor_read &re
             grid.zones[i] = kInvalidSentinel;
             continue;
         }
-        grid.zones[i] = read.zones_mm[i] > kMaxValidMm ? kMaxValidMm : read.zones_mm[i];
+        /* Negative is not a long reading and must not become one. Clamping it
+         * would publish the sentinel's opposite: "nothing within range" from a
+         * zone that reported something the driver cannot express. */
+        if (read.zones_mm[i] < 0) {
+            grid.zones[i] = kInvalidSentinel;
+            continue;
+        }
+        uint16_t const raw{static_cast<uint16_t>(read.zones_mm[i])};
+        grid.zones[i] = raw > kMaxValidMm ? kMaxValidMm : raw;
         ++valid;
     }
     grid.valid_zone_count = valid;

@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "tof_mapping_authority.hpp"
@@ -187,22 +187,51 @@ void masks_from(const pf::fingerprint &fp, uint8_t &enumerated, uint8_t &model_v
 
 } // namespace
 
+/* Ends the current attempt, wherever it is ended from.
+ *
+ * Both halves matter and neither is sufficient alone. Clearing attempt_ stops commit_proof()
+ * accepting a token; revoking the gate's challenge stops a caller who still holds that
+ * challenge from MINTING one afterwards. Leaving the second out is the subtler hole: the
+ * evidence was gathered before the loss, the challenge is still outstanding, and
+ * evaluate() would happily grant a token for a chain that has since gone away.
+ *
+ * The gate's counter is not reset, so a later attempt always gets a larger nonce and no
+ * old token can be resurrected by number. */
+void invalidate_attempt()
+{
+    attempt_ = 0;
+    gate_.revoke();
+}
+
 int init(const config &cfg)
 {
+    /* The runtime spec is validated, not merely non-empty. matches_runtime() indexes it
+     * position by position on every commit, and it is the thing a proven mapping is
+     * compared against -- so an ill-formed one here would be read out of bounds and would
+     * decide commits. Same validator the enumerator and the proof use; there is no second
+     * opinion about what a legal spec is. */
     if (cfg.runtime_spec == nullptr || cfg.begin_epoch == nullptr ||
         cfg.acquisition_idle == nullptr || cfg.install_mapping == nullptr ||
-        cfg.runtime_spec->positions == 0) {
+        cfg.runtime_spec->positions == 0 ||
+        enm::validate_spec(*cfg.runtime_spec) != enm::spec_error::none) {
         /* A failed init leaves the authority unusable rather than quietly running on whatever
          * was configured before. That direction costs a proven mapping -- but the alternative
          * is a commit compared against a configuration nobody meant to be current, and of the
          * two, losing PROVEN is the one that fails safe. */
         initialised_ = false;
+        /* A failed init must leave nothing behind that still looks authoritative.
+         * installed_mapping() has no initialised_ guard of its own, so without this it
+         * would keep handing out the previous PROVEN mapping while the published state
+         * says not_ready -- two answers to the same question, and the stale one is the
+         * one a consumer reads without checking. */
+        invalidate_attempt();
+        installed_ = kNoMapping;
         publish(kUnknown);
         return -EINVAL;
     }
 
     cfg_ = cfg;
-    attempt_ = 0;
+    invalidate_attempt();
     installed_ = kNoMapping;
     /* used_epochs_ is deliberately NOT cleared here -- see its definition. A re-init means a
      * new configuration, not a new power cycle. */
@@ -228,9 +257,25 @@ attempt begin_proof()
      *
      * Nothing is revoked on this path either: a running acquisition under a proven mapping is
      * the normal state, and tearing it down because someone asked at the wrong moment would
-     * turn a mistimed request into an outage. */
+     * turn a mistimed request into an outage.
+     *
+     * A SAMPLE, NOT A RESERVATION, and the header states the precondition that makes it
+     * sound: the caller holds the chain lock across the whole transaction. Without that, this
+     * returning true says only that acquisition was idle at this instant. */
     if (!cfg_.acquisition_idle()) {
         a.reason = begin_refusal::acquisition_not_idle;
+        return a;
+    }
+
+    /* Exhaustion is checked HERE, before a single thing is revoked.
+     *
+     * Everything below this line is destructive: it publishes LOST over a proven mapping and
+     * clears installed_, on the understanding that an attempt is about to open and the chain is
+     * about to be re-enumerated. If the challenge could not be issued after that, the authority
+     * would have thrown away a PROVEN mapping and opened nothing -- a half-failure that leaves a
+     * robot worse off than refusing did. A refusal here changes no state at all. */
+    if (gate_.exhausted()) {
+        a.reason = begin_refusal::nonce_exhausted;
         return a;
     }
 
@@ -259,7 +304,8 @@ attempt begin_proof()
     installed_ = kNoMapping;
 
     /* A fresh challenge invalidates the previous one, so a token minted before this
-     * revocation can no longer be committed. */
+     * revocation can no longer be committed. The exhaustion check above is what makes this
+     * issue() safe to treat as infallible; if it ever stops being, the check has moved. */
     const pf::challenge c{gate_.issue()};
     attempt_ = c.nonce();
     a.challenge = c;
@@ -306,6 +352,19 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
         return commit_refusal::no_attempt;
     if (!held.valid())
         return commit_refusal::invalid_token;
+    /* Provenance before the attempt number, and before anything is spent.
+     *
+     * The nonce alone was never an identity: every gate counts from 1, so a caller holding
+     * its own pf::gate could evaluate evidence it built itself, get a token numbered 1, and
+     * present it here while this authority's first attempt was open. The profile and
+     * runtime checks below would still have to pass -- but they are not what the challenge
+     * was for. The challenge exists so that the evidence behind a PROVEN was evaluated by
+     * THIS authority's gate, and only the gate can say whether it was.
+     *
+     * The attempt is deliberately left open: a token from somebody else's gate must not be
+     * able to cancel a commissioning session that is legitimately in progress. */
+    if (!gate_.owns(held))
+        return commit_refusal::wrong_issuer;
     if (held.nonce() != attempt_)
         return commit_refusal::wrong_attempt;
 
@@ -314,7 +373,7 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
      * caller could re-present the same evidence until a later check happened to pass, and each
      * retry would be judged against a chain that is one attempt older. */
     struct spend_attempt {
-        ~spend_attempt() { attempt_ = 0; }
+        ~spend_attempt() { invalidate_attempt(); }
     } const spend{};
 
     /* Re-checked here rather than trusted. The evaluator refuses anything but the profile
@@ -385,9 +444,27 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
 
 bool abort_proof(const pf::challenge &c)
 {
-    if (!initialised_ || !c.valid() || c.nonce() != attempt_ || attempt_ == 0)
+    if (!initialised_ || !c.valid() || attempt_ == 0)
         return false;
-    attempt_ = 0;
+
+    /* Provenance before the number, the same order evaluate() and commit_proof() use, and for
+     * the same reason: every gate counts nonces from 1, so a caller holding its own pf::gate can
+     * issue until one matches this authority's current attempt. On the other two paths that
+     * would forge a proof; here it would CANCEL one -- a commissioning session in progress,
+     * ended by somebody who was never part of it.
+     *
+     * This path was missed when the issuer was introduced, which is why the check reads as a
+     * separate statement rather than another clause: the two questions are "is this mine" and
+     * "is this current", and collapsing them is how one of them got forgotten.
+     *
+     * A foreign challenge returns false and changes nothing. It must not close the attempt it
+     * failed to authenticate. */
+    if (!gate_.owns(c))
+        return false;
+    if (c.nonce() != attempt_)
+        return false;
+
+    invalidate_attempt();
     return true;
 }
 
@@ -395,6 +472,15 @@ void note_mapping_lost()
 {
     if (!initialised_)
         return;
+
+    /* BEFORE the state check, not after it.
+     *
+     * Whether anything is published depends on what was proven; whether an in-flight proof
+     * may still commit does not. The chain was reported lost, so the walks behind any open
+     * attempt describe a machine that no longer exists -- and an early return on "we were
+     * not PROVEN anyway" would leave that attempt live and let it publish PROVEN moments
+     * later from evidence the loss already contradicted. */
+    invalidate_attempt();
 
     const snapshot now{current()};
     /* Only a proven mapping can be lost. Reporting LOST from UNKNOWN would tell a consumer
@@ -412,6 +498,11 @@ bool note_chain_fault(uint8_t chain_flags, uint8_t failing_position)
 {
     if (!initialised_)
         return false;
+
+    /* First, and before any argument validation can change the return value. A chain fault
+     * says the chain is not what a proof in flight measured; that is true whatever this
+     * function decides to publish, and whatever it thinks of its arguments. */
+    invalidate_attempt();
 
     /* Validated HERE, at the publishing boundary, rather than stated in the header as a comment.
      * A snapshot the wire encoder refuses does not become a logged error downstream -- it becomes
@@ -476,6 +567,11 @@ uint32_t attempt_nonce()
 }
 
 #ifdef CONFIG_ZTEST
+void set_gate_next_for_test(uint32_t n)
+{
+    gate_.set_next_for_test(n);
+}
+
 void reset_epoch_history_for_test()
 {
     memset(used_epochs_, 0, sizeof used_epochs_);

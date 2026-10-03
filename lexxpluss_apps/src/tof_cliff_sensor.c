@@ -2,7 +2,7 @@
  * Copyright (c) 2024-2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <errno.h>
@@ -17,10 +17,19 @@
  *
  *   reset the port's sticky errno -> make the call -> read the sticky errno back
  *
- * and the sticky value wins. VL53LX_GetMultiRangingData runs get_device_results and
- * then assigns SetMeasurementData's result over the same Status variable, so a failed
- * transfer inside the results read can return VL53LX_ERROR_NONE. Without the sticky
- * check there is no way to tell that apart from a good read.
+ * and the sticky value wins.
+ *
+ * The ULD defect that motivated this shape -- VL53LX_GetMultiRangingData assigning
+ * SetMeasurementData's result over the status get_device_results produced, so a failed
+ * transfer could return VL53LX_ERROR_NONE -- is FIXED in this build by
+ * third_party/st/vl53l4cx_uld/zephyr/patches/0001-propagate-get-device-results-status.patch.
+ *
+ * The sticky check stays for two reasons that outlive that patch. It carries the raw
+ * Zephyr errno, which a VL53LX_Error cannot express and which is what triage needs. And
+ * it is the fail-closed backstop for the same class of defect reappearing: an upstream
+ * bump, a path the patch does not cover, or any future call that loses a transport
+ * error. Reading the ULD's return code alone would make this layer's correctness depend
+ * on a vendor tree staying patched.
  */
 static int tof_cliff_finish(struct tof_cliff_read_status *st, enum tof_cliff_stage stage,
 			    VL53LX_Error rc)
@@ -49,6 +58,52 @@ static void tof_cliff_status_reset(struct tof_cliff_read_status *st)
 	st->sample_present = false;
 	st->rearm_failed = false;
 	st->stale_replay = false;
+	st->ranging_unknown = false;
+}
+
+/* Re-arm after refusing the frame the device is currently holding.
+ *
+ * Every path that sees ready=1 and then refuses to publish must come through here.
+ * VL53LX_ClearInterruptAndStartMeasurement is what releases the held frame: without it
+ * the interrupt stays asserted and the device keeps offering that same frame. A
+ * deterministic failure then repeats forever, and a transient one is worse - the first
+ * successful fetch after recovery hands back the frame measured *before* the outage,
+ * whose stream count was never published, so the replay guard accepts it and it goes out
+ * with fresh == true. That is the "floor from N seconds ago reported as the floor now"
+ * case this file exists to prevent, arriving through the one door the guard cannot watch.
+ *
+ * The re-arm result is collected in a scratch status and never written straight into st.
+ * A successful re-arm produces VL53LX_ERROR_NONE with no sticky errno, and letting
+ * tof_cliff_finish record that into st would zero the uld_rc and port_errno that explain
+ * the original refusal, leaving a caller with an error return and a clean diagnosis.
+ *
+ * A READY_CHECK failure deliberately does not come here: nothing has confirmed that a
+ * frame was consumed, so clearing the interrupt would discard a frame that may never
+ * have been looked at.
+ */
+static int tof_cliff_rearm_after_refusal(VL53L4CX_Object_t *obj,
+					 struct tof_cliff_read_status *st,
+					 enum tof_cliff_stage refused_stage,
+					 int refused_ret)
+{
+	struct tof_cliff_read_status rearm;
+	int ret;
+
+	tof_cliff_status_reset(&rearm);
+	vl53l4cx_port_sticky_reset();
+	ret = tof_cliff_finish(&rearm, TOF_CLIFF_STAGE_REARM,
+			       VL53LX_ClearInterruptAndStartMeasurement(obj));
+	if (ret != 0) {
+		/* The re-arm failure replaces the original diagnosis rather than hiding
+		 * behind it: the refusal cost one frame, this costs every later one. */
+		st->rearm_failed = true;
+		st->stage = TOF_CLIFF_STAGE_REARM;
+		st->uld_rc = rearm.uld_rc;
+		st->port_errno = rearm.port_errno;
+		return ret;
+	}
+	st->stage = refused_stage;
+	return refused_ret;
 }
 
 const char *tof_cliff_stage_name(enum tof_cliff_stage stage)
@@ -171,6 +226,7 @@ int tof_cliff_sensor_configure(VL53L4CX_Object_t *obj, VL53LX_DistanceModes mode
 int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_stream_state *stream,
 			   struct tof_cliff_read_status *st)
 {
+	VL53LX_Error stop_rc;
 	int ret;
 
 	if (obj == NULL || stream == NULL || st == NULL) {
@@ -203,13 +259,27 @@ int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_stream_state
 		 * because StartMeasurement succeeded, but this function reports failure, so the
 		 * caller records it as not started and will never stop it. Best-effort stop, and
 		 * deliberately NOT through tof_cliff_finish -- st already carries the failure that
-		 * matters and the cleanup must not overwrite which stage it came from. Its own
-		 * result is discarded for the same reason: a cleanup that cannot run does not
-		 * change what went wrong.
+		 * matters and the cleanup must not overwrite which stage it came from.
+		 *
+		 * The cleanup's own result is not routed into stage/uld_rc, for that reason, but
+		 * it is not discarded either. If it also failed, nothing has confirmed the device
+		 * is quiet, and that is exactly the case where "records it as not started and will
+		 * never stop it" turns into a sensor left ranging on a shared bus. That verdict
+		 * gets its own flag rather than being folded into the return value.
+		 *
+		 * The cleanup is judged on BOTH its ULD result and the port's sticky errno, for
+		 * the same reason tof_cliff_finish consults the sticky value first and calls it
+		 * authoritative: a transfer can fail underneath a call that still returns
+		 * VL53LX_ERROR_NONE. Taking only the ULD's word here would swallow exactly the
+		 * failure class the sticky record exists to catch, and would do it in the one
+		 * place where the consequence is a sensor left ranging.
 		 *
 		 * The history is kept here too, for the reason above. */
 		vl53l4cx_port_sticky_reset();
-		(void)VL53LX_StopMeasurement(obj);
+		stop_rc = VL53LX_StopMeasurement(obj);
+		if (stop_rc != VL53LX_ERROR_NONE || vl53l4cx_port_sticky_errno() != 0) {
+			st->ranging_unknown = true;
+		}
 		vl53l4cx_port_sticky_reset();
 		return ret;
 	}
@@ -270,9 +340,12 @@ int tof_cliff_copy_raw(const VL53LX_MultiRangingData_t *in, struct tof_cliff_sam
 	entries = (out->target_count == 0U) ? 1U : out->target_count;
 
 	for (i = 0; i < entries; i++) {
-		/* Raw on both fields. RangeMilliMeter stays int16_t and keeps its sign:
-		 * a negative reading below the floor plane is real information for a
-		 * cliff, and the BSP's clamp to 0 is precisely the loss this avoids. */
+		/* Copied, not interpreted. RangeMilliMeter stays int16_t and keeps whatever
+		 * sign the ULD left on it: SetTargetData has already rewritten a VALID
+		 * negative into either a VALID 0 mm or an INVALID negative, so what this
+		 * preserves is that normalisation, not a raw below-floor reading. The BSP's
+		 * second clamp to 0 would erase the distinction; this does not add one of
+		 * its own either. See WHERE NEGATIVE RANGES GO in the header. */
 		out->entries[i].range_mm = in->RangeData[i].RangeMilliMeter;
 		out->entries[i].range_status = in->RangeData[i].RangeStatus;
 	}
@@ -320,13 +393,18 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 	ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_FETCH,
 			       VL53LX_GetMultiRangingData(obj, &scratch->data));
 	if (ret != 0) {
-		return ret;
+		/* The device is holding a frame that will not be published. Release it, or
+		 * the next read is served the same one -- and after a transient transport
+		 * failure that stale frame would pass the replay guard as fresh. */
+		return tof_cliff_rearm_after_refusal(obj, st, TOF_CLIFF_STAGE_FETCH, ret);
 	}
 
-	/* GetMultiRangingData can return success after an internal failure and leave the
-	 * previous result in its output. The sticky port errno catches transport failures,
-	 * but not every ULD-internal failure. A ready result whose stream count did not
-	 * advance is therefore a replay, never a fresh sample. The comparison is per device;
+	/* An independent defence, against duplicate frames rather than against a lost
+	 * status. Patch 0001 makes a failed results read report itself, and the sticky port
+	 * errno catches transport failures, but neither can prove the bytes in hand are new:
+	 * a device that re-presents its previous result while every layer reports success
+	 * defeats both. A ready result whose stream count did not advance is therefore a
+	 * replay, never a fresh sample. The comparison is per device;
 	 * different sensors are allowed to report the same count, which is also why this
 	 * history cannot live in the scratch - one scratch is shared by all four L4s.
 	 *
@@ -343,25 +421,17 @@ int tof_cliff_read_once(VL53L4CX_Object_t *obj, struct tof_cliff_scratch *scratc
 		st->stale_replay = true;
 		/* Re-arm even though this payload is rejected. Otherwise a recoverable replay
 		 * would leave ready asserted forever and guarantee every later read also fails. */
-		vl53l4cx_port_sticky_reset();
-		ret = tof_cliff_finish(st, TOF_CLIFF_STAGE_REARM,
-				       VL53LX_ClearInterruptAndStartMeasurement(obj));
-		if (ret != 0) {
-			st->rearm_failed = true;
-			return ret;
-		}
-		st->stage = TOF_CLIFF_STAGE_FETCH;
-		return -EPROTO;
+		return tof_cliff_rearm_after_refusal(obj, st, TOF_CLIFF_STAGE_FETCH, -EPROTO);
 	}
 
 	ret = tof_cliff_copy_raw(&scratch->data, sample);
 	if (ret != 0) {
 		/* Impossible metadata. The fetch itself succeeded, so the stage stays
 		 * FETCH, but nothing is published: a corrupt count must not become a
-		 * fresh sample. */
-		st->stage = TOF_CLIFF_STAGE_FETCH;
+		 * fresh sample. The frame is still held by the device and is still refused,
+		 * so it is released here for the same reason the other refusals release it. */
 		memset(sample, 0, sizeof(*sample));
-		return ret;
+		return tof_cliff_rearm_after_refusal(obj, st, TOF_CLIFF_STAGE_FETCH, ret);
 	}
 	/* Recorded from the same expression the comparison above reads, not from the copied
 	 * sample: if the copy step ever transformed the value the two would drift apart and

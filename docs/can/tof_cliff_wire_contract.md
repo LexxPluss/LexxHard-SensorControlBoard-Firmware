@@ -1,62 +1,33 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-08-18c**
+Contract version: **commissioning-2026-10-03b**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
-The `-18b` revision existed for one purpose: to let the commissioning end-to-end path be built against
-byte-exact, double-pinned vectors instead of against prose. It is **not** a product release and must
-never be treated as one.
-
-`-18c` adds nothing to the wire and changes no byte of any vector. It exists because writing the
-mapping-proof implementation against `-18b` surfaced three defects in the prose, and each of them would
-have been resolved in code — silently, and differently in the two repositories — if the document had
-been left as it was:
-
-- **A decoder rule contradicted itself about late measurements.** The required-vector list called a
-  measurement "arriving while health says `LOST`" a firmware fault, while the normative correlation rule
-  says the judgement is made against the measurement's *own* cycle's health frame and that this exact
-  reordering is legal. The firmware makes the reordering routine — its measurement and health sends are
-  deliberately not serialised — so a decoder written to the vector list would have entered protocol
-  `FAULT` on the first genuine mapping loss. Corrected in *Golden vectors*; the normative rule was
-  already right and is unchanged.
-- **The `PROVEN` evidence set could not be satisfied by any single chain state.** Tail isolation
-  destroys the addresses of positions 3-5, so the chain that holds the live addresses can never be the
-  chain that produced the isolation result. `-18b` demanded all three results without saying how the
-  evidence transfers, which invites closing the gap by loosening a criterion. Now specified as a
-  **transaction** with a semantic fingerprint equality between the two enumerations.
-- **`mapping_epoch` issuance had no owner under this profile.** The firmware has no persistent store, so
-  it cannot discharge the cross-restart obligation on its own. The commissioning profile now names the
-  host as the issuing authority and states exactly what the firmware still guarantees and what it no
-  longer claims.
+This revision is **not a product release**. The revision history — what each earlier revision
+changed, which conclusions were withdrawn and why — is in the design notes; this document states the
+current rules only.
 
 What this revision settles, and what it does not:
 
 - **Frame layouts, encodings and validation rules: settled.** Golden vectors for the *layout* are
   generated from this document and pinned by both repositories.
+- **The commissioning downlink identifiers: `0x218` and `0x219`, ALLOCATED 2026-09-19.** The team
+  allocated the pair directly, with authority over the register, so these are not self-assignments
+  pending a row: `0x218` carries the request (host or IPC to SCB) and `0x219` carries both status
+  frames (SCB to host). They are recorded here, in the contract, which is what the generated headers
+  on both sides are built from -- there is no second place naming them and no literal in any handler.
+  `0x214`/`0x215` stay reserved for the L7 grid transport and `0x216`/`0x217` remain the L4
+  measurement and health pair, so the block is contiguous and this pair extends it upwards.
 - **Health CAN identifier: `0x217`, usable here, registration outstanding.** Self-assigned 2026-08-17
   under the same team authorisation as `0x214`/`0x215`/`0x216`, after a fresh scan of both repositories
   and a live `can1` capture. But this contract's own rule is that **the team's CAN ID register is the
   deciding evidence** and a scan and a capture are only supporting — so the row is still owed, along
   with the grid identifiers' rows. It must be closed before production.
-- **Status classes 3 and 11: re-decided 2026-08-18, and `validation_pending`.** Class 3 stays
-  `SENSOR_FAULT`, class 11 stays `NO_TARGET` — the values the classification table already carried.
-  These were **re-opened deliberately** rather than inherited, because an intermediate proposal had both
-  as `SENSOR_FAULT` and the difference is behavioural, not cosmetic: `NO_TARGET` publishes the far-side
-  sentinel and keeps `READY`, while `SENSOR_FAULT` sets a `sensor_fault_mask` bit and loses `READY`
-  immediately with no cycle budget.
-
-  Class 11 is `NO_TARGET` because a merged return is the signature of the hazard, not of broken
-  hardware: a step edge is exactly the geometry that merges pulses, so `SENSOR_FAULT` would drop the
-  subsystem into a fault state every time the robot approached a real cliff, and would attribute a scene
-  property to the sensor. `NO_TARGET` stops the robot for the same reading and recovers on the next cycle
-  once the edge is no longer in view. Class 3 is `SENSOR_FAULT` because a fouled lens and a very near
-  floor are indistinguishable, and a permanently blinded sensor must not read as healthy.
-
-  Authorising both for commissioning is **not** a statement that either has been validated on hardware.
-  The validation column applies in full, and class 11's stated risk is the live one: if merged pulses
-  turn out to be common over plain floor, that is a ROI or timing-configuration problem to fix, not a
-  reason to reclassify.
+- **Status classes 3 and 11: `validation_pending`.** Class 3 is `SENSOR_FAULT`, class 11 is
+  `NO_TARGET`; the reasons and the validation each still owes are in *Status classification*.
+  Authorising them for commissioning is **not** a statement that either has been validated on
+  hardware.
 - **Timing values: a named commissioning profile, not measurements.** They are model-derived and are
   marked as such throughout. **A production configuration must not inherit them**; see
   *Commissioning timing profile*.
@@ -67,14 +38,22 @@ What this revision settles, and what it does not:
 The release ban lifts only when all four of these are closed: the timing values come from the six-board
 schedule measurement; the status 3 / 11 rates and the multi-target scenarios are validated on hardware;
 the **frozen position-to-role table** for the four cliff carriers exists, without which no mask keyed by
-`source_id` can be filled honestly and `PROVEN` is unreachable by rule; and a **firmware-side persistent
-`mapping_epoch` issuer** exists, because the host-issued epoch of this profile presupposes an operator.
-Closing any of them is a version bump and a re-pin on both sides.
+`source_id` can be filled honestly and `PROVEN` is unreachable by rule; and an **unattended release
+profile has a persistent `mapping_epoch` issuer satisfying the requirements in *Commissioning
+`mapping_epoch` issuance***. The issuer may reside on the host or in firmware. That substitutes for
+nothing else in that section: the persistence, the consumer-acceptance window and the unspecified
+downlink are all still required. Closing any of these is a version bump and a re-pin on both sides.
 
 This document is the single source of truth shared by two repositories:
 
 - `LexxHard-SensorControlBoard-Firmware` — the **packer** (SCB firmware cliff ToF producer)
 - `LexxHard-SCBDriver` — the **decoder** and ROS publisher
+
+**Every field encoding, validation rule, state transition and release condition below binds both
+sides.** Where this document fixes something an implementation could otherwise choose freely, it is
+because two implementations choosing differently would each pass their own tests and disagree on the
+bus. That reason is stated once, here, and is not repeated at each rule. Scope that is narrower than
+both sides — a rule that binds only the producer, or only the decoder — is stated where it applies.
 
 It is a **separate contract** from `tof_can_wire_contract.md`. It shares that contract's *mechanism*
 — contract text under version control, golden vectors generated from it, both sides pinning the
@@ -88,13 +67,10 @@ Covers the transport of four **VL53L4CX single-point ranges** for cliff detectio
 the two VL53L7CX hanging-detection sensors is specified in `tof_can_wire_contract.md` and is out of
 scope here.
 
-**The two features fail in opposite directions, on the same bus, from the same firmware.** Missing or
-untrustworthy grid data degrades to LiDAR-only and the robot keeps driving. Missing or untrustworthy
-cliff data means *there may be a cliff* and the robot must stop. Every rule below follows from that,
-and **no reasoning may be transplanted from the grid contract into this one.** Two places where this
-contract deliberately does the opposite of the grid contract, each with its reasoning at the point of
-use: reserved fields are rejected rather than ignored, and the health frame is a safety frame rather
-than a diagnostic one.
+**The two features fail in opposite directions, on the same bus, from the same firmware**: missing
+grid data degrades to LiDAR-only and the robot keeps driving, missing cliff data means *there may be
+a cliff* and the robot must stop. **No reasoning may be transplanted from the grid contract into this
+one.**
 
 ## Transport
 
@@ -103,27 +79,28 @@ CAN classic, 11-bit identifiers, on **CAN2 at 1 Mbit/s** (the SCB-to-IPC bus).
 | Constant | Meaning | Value |
 | --- | --- | --- |
 | `TOF_CLIFF_MEAS_ID` | one measurement frame per sensor per completed read | `0x216` |
-| `TOF_CLIFF_HEALTH_ID` | one health frame per acquisition cycle, and periodically regardless | **unallocated** — see *Open decisions* |
+| `TOF_CLIFF_HEALTH_ID` | one health frame per acquisition cycle, and periodically regardless | `0x217` — **registration outstanding**, see *Open decisions* |
+| `TOF_CLIFF_COMMISSION_REQUEST_ID` | one commissioning request, host or IPC to SCB | `0x218` |
+| `TOF_CLIFF_COMMISSION_STATUS_ID` | session announcements and transaction statuses, SCB to host | `0x219` |
 
-`0x216` was reserved for this purpose on 2026-08-06 under the same team-authorized self-assignment
-that allocated `0x214`/`0x215`. This contract is what un-reserves it: until this document is frozen,
-no filter or handler may claim `0x216` either.
+The commissioning pair was **allocated by the team on 2026-09-19** with authority over the register,
+which is a different thing from the self-assignments above: no row is owed for it. Direction is part
+of the allocation and not a convention — `0x218` is only ever written by a host and only ever read by
+an SCB, and `0x219` the other way round — so a board that receives on `0x219`, or a host that
+receives on `0x218`, is misconfigured rather than merely unlucky.
 
-`0x217` is health, **self-assigned for commissioning on 2026-08-17 and not yet recorded in the team's
-CAN ID register.** Evidence gathered: a fresh source scan of both repositories that day found the
-highest assigned identifier to be `0x216` and `0x217` unclaimed in either tree, and a live `can1`
-capture on DS20001 showed `0x100`-`0x131`, `0x204`, `0x206`/`0x207`, `0x209`/`0x20A`, `0x20C`, `0x20F`
-and `0x212` in use with `0x213`-`0x217` silent.
+**One identifier carries both status kinds**, and that is deliberate. A session announcement and a
+transaction status are the same conversation and are distinguished by byte 1 of the payload, which
+the decoder checks before anything else; splitting them would spend a second identifier to save a
+comparison, and would let a host subscribe to one and believe it had the other.
 
-**Neither of those is an allocation, and the earlier wording in this section still stands.** A source
-sweep cannot see a transmitter whose code we do not hold; a live capture cannot see one that stays
-silent while the bus is recorded — `0x213` is in the source tree and did not appear in that capture,
-which is the point made concretely. **The team's CAN ID register remains the deciding evidence.**
-
-So the status is: usable under this commissioning revision, **with registration outstanding**. That
-outstanding item is the same one the grid allocation left open — `0x214`/`0x215`/`0x216` also still owe
-their rows — and it must be closed before any production release. Self-assignment authorised by the
-team means being responsible for the allocation, not being excused from recording it.
+`0x216` and `0x217` are **self-assigned under team authorisation and not yet recorded in the team's
+CAN ID register**, as `0x214`/`0x215` also still are. They are usable under this commissioning
+revision **with registration outstanding, and that must be closed before any production release**:
+self-assignment authorised by the team means being responsible for the allocation, not being excused
+from recording it. **The team's CAN ID register remains the deciding evidence** — neither a source
+sweep nor a live capture is an allocation. The evidence gathered for each and why it does not suffice
+is in the design notes. Until this document is frozen, no filter or handler may claim `0x216` either.
 
 Two identifiers rather than one because measurement and health must **dispatch independently**.
 Measurement takes the lower identifier because there are four of it per cycle against one health
@@ -138,13 +115,6 @@ acceptable to justify the ordering by calling health diagnostic.
 
 Sensor identity travels **in the payload**, not in the identifier. Four identifiers would push a
 hardware detail into the filter table and make re-ordering boards a bus-level change.
-
-### Bus load, provisional
-
-Five frames per acquisition cycle: four measurements and one health. At a nominal 20 Hz cycle that is
-100 frames/s of 8-byte payload, roughly **1.3%** of CAN2 at 1 Mbit/s including stuff bits and
-inter-frame space, on top of the grid path's 2.24%. The figure is provisional because the cycle rate
-is one of the open timing values.
 
 ## Source identity
 
@@ -164,23 +134,12 @@ Only 0-3 exist; any other value makes the frame malformed.
 only while `mapping_state == PROVEN`, and `PROVEN` is a claim about the machine in front of you, not
 about the design.
 
-**Updated 2026-08-17.** The defect that made `PROVEN` unreachable — one enable clock pulse advancing
-two stages, so two identical VL53L4CX could sit on the factory-default address at once and a single
-address assignment moved both undetectably — was root-caused and has a working fix. The cause was a
-timing race, not a wiring error: the shared clock net is heavily loaded while each data line is a
-single point-to-point hop, so the fast data edge beat the slow clock edge into the receiving flip-flop.
-A series resistor on the data line slows and delays that edge, and with it fitted the on-machine gate
-passed 5/5 rounds on DS20001 — six positions individually addressed with type-appropriate identity
-reads at six distinct addresses, nothing left at the default address, and tail isolation showing
-position 6 on its own address rather than position 5's.
-
-Two things that does **not** mean. It is a **commissioning workaround on one machine**, not a
-production-qualified fix; the resistor value, its placement at every hop, and the flip-flop's hold
-margin are all open. And it changes nothing about the rule: on hardware that has not passed that gate,
-`mapping_state` stays `UNKNOWN`, a conforming implementation publishes **no role-named data at all**,
-`0x216` carries **no traffic**, and the only cliff traffic is the health heartbeat reporting `UNKNOWN`.
-That remains the intended behaviour rather than a defect, and it is what a bring-up engineer should
-expect to see on an ungated machine.
+**An enable-clock mitigation exists; production qualification remains open.** See the design notes
+for the evidence and the outstanding hardware checks. The rule is unchanged by it: on hardware that has not
+passed that gate, `mapping_state` stays `UNKNOWN`, a conforming implementation publishes **no
+role-named data at all**, `0x216` carries **no traffic**, and the only cliff traffic is the health
+heartbeat reporting `UNKNOWN`. That is intended behaviour, not a defect, and it is what a bring-up
+engineer should expect to see on an ungated machine.
 
 `chain_position` appears only in the health frame's `failing_chain_position`, for diagnostics.
 Nothing in the decoder may branch on it. **The two numbering spaces are different**: `source_id` is
@@ -330,26 +289,23 @@ byte 7 : reserved, MUST be 0 on transmit and MUST be rejected if non-zero
 ### Why the sentinel is at the far end, and why a real cliff looks like an invalid read
 
 An invalid reading must never be decodable as "the floor is right there": that reads as *no cliff* and
-lets the robot drive into one. The rule is written so that it holds even for a careless
-implementation: **even a decoder that ignores the status byte entirely must not be able to read an
-invalid measurement as a near floor.**
+lets the robot drive into one. The rule holds even for a careless implementation: **even a decoder
+that ignores the status byte entirely must not be able to read an invalid measurement as a near
+floor.**
 
-A consequence that will look like a defect and is not: **a genuine cliff and an unusable read produce
-the same code point.** A real drop-off returns nothing within the ranging window, which is
-`NO_TARGET`, which is `0xFFFF` — the same value a sensor fault produces. This is deliberate, because
-both must stop the robot. What distinguishes them is the **health channel**, which is why health is a
-safety frame here. Do not "fix" this by giving faults a distinguishable near value.
+**A genuine cliff and an unusable read produce the same code point**, `0xFFFF`, and that is
+deliberate: both must stop the robot. What distinguishes them is the **health channel**, which is why
+health is a safety frame here. **Do not "fix" this by giving faults a distinguishable near value.**
 
-A shallower drop-off may instead return a valid, longer range. Both paths must therefore reach a stop,
-and where the threshold between floor and drop lies is the consumer's decision, not this contract's.
+A shallower drop-off may instead return a valid, longer range. **Both paths must reach a stop**, and
+where the threshold between floor and drop lies is the consumer's decision, not this contract's.
 
 ### One frame carries one range, so the reduction is normative
 
 The VL53L4CX reports **up to four targets** per measurement, each with its own range and status
 (`VL53LX_MAX_RANGE_RESULTS = 4`, `NumberOfObjectsFound`, per-target `RangeStatus` and
-`RangeMilliMeter`). The wire carries exactly one range and one status, so the firmware must reduce, and
-**the reduction is part of this contract rather than an implementation choice.** Two implementations
-reducing differently would disagree about the floor while both passing their own tests.
+`RangeMilliMeter`). The wire carries exactly one range and one status, so the firmware must reduce,
+and **the reduction is part of this contract.**
 
 | Targets | Rule |
 | --- | --- |
@@ -362,44 +318,24 @@ of them.
 
 ### Which target's raw status is transmitted
 
-Added 2026-08-18. The rules above pinned the surviving class and the range but left the status byte
-undefined whenever more than one target carried the surviving class — `[idx0: status 5, idx1: status 8]`
-are both `SENSOR_FAULT`, and nothing said whether `5` or `8` reaches the wire. That is exactly the gap
-that lets two implementations disagree about the floor while each passes its own tests, which is why
-this reduction is contract-owned rather than an implementation choice.
+The rules above pin the surviving class and the range; this one pins the status byte when more than
+one target carries the surviving class.
 
-> Select the highest-priority class first. If that class holds more than one target, select the one with
-> the **lowest index in the ULD's raw result array**, and transmit its raw status unchanged. **Do not
-> sort and then take.** `VALID_RANGE` remains the exception: select the **farthest** target, and
-> transmit **that** target's raw status.
+> Select the highest-priority class. For `VALID_RANGE`, select the **farthest** target and transmit
+> its raw status. Otherwise select the **lowest original ULD target index** in that class and
+> transmit its raw status unchanged. **Sorting before selection is forbidden.**
 
-Why this rule and not the alternatives:
-
-- The status always comes from a **real target**, which is what "transmitted unchanged" requires. Under
-  `VALID_RANGE` the range and the status come from the same target, so the frame describes one target
-  rather than a composite of two.
-- **Lowest index, not lowest numeric value.** The numeric ordering of the status codes carries no safety
-  or device meaning — one enumerator simply happens to be smaller than another. The index does carry
-  meaning: it is the first target the device reported.
-- An aggregate sentinel such as `0xFE` would **no longer be a ULD raw status**, so introducing one is a
+- Lowest **index**, not lowest numeric status value: the index is the first target the device
+  reported, while the numeric ordering of status codes carries no safety or device meaning.
+- An aggregate sentinel such as `0xFE` would no longer be a ULD raw status, so introducing one is a
   `protocol_version` bump, not a reduction rule.
-- If the ULD's target ordering ever jitters, the consequence is confined to the **diagnostic** status
-  byte. The surviving class, the range encoding and therefore the stopping outcome are unchanged. That
-  is the property that makes depending on vendor ordering acceptable here.
-
-This rule is exercised by the packer's reduction tests, not by the layout vectors: the pre-reduction
-target list never reaches the wire, so the decoder cannot see it and there is nothing for a shared
-vector to pin.
-
-**Farthest, not nearest — and this is the opposite of the grid path.** The hanging-object path takes the
-per-zone *minimum*, because there the hazard is something being closer than expected. Here the hazard is
-the floor being *farther* than expected, so the conservative choice inverts: a spurious near return from
-dust, a wheel edge or crosstalk must never be allowed to mask a real drop behind it. Anyone porting the
-reduction from the grid packer will take the minimum and silently disable cliff detection.
-
-Both rules are conservative by construction and both need a rate measured on hardware before the second
-freeze, because each can cost availability: any faulty target condemns the whole measurement, and the
-farthest-valid rule biases toward reporting a drop.
+- **Farthest, not nearest — the opposite of the grid path**, which takes the per-zone minimum. A
+  spurious near return **must never be allowed to mask a real drop behind it**.
+- Exercised by the packer's reduction tests, not by the layout vectors: the pre-reduction target list
+  never reaches the wire.
+- **Both rules need a rate measured on hardware before the second freeze**, because each can cost
+  availability: any faulty target condemns the whole measurement, and the farthest-valid rule biases
+  toward reporting a drop.
 
 ### `cycle_seq` proves novelty, never age
 
@@ -559,13 +495,10 @@ produces no frame and leaves that source's `sample_produced_mask` bit clear.
 ### Two constraints the acquisition path inherits from the hardware
 
 - **The four VL53L4CX must stay enabled continuously and be addressed individually.** On the L4
-  carriers the enable line is reset-class: dropping it returns the device to the default `0x29`. A
-  producer that selected sensors by walking the enable chain would destroy all four assigned addresses
-  on every pass, forcing re-enumeration, an epoch bump and a safe stop.
-- **One scheduler serves all six boards.** The four cliff sensors and the two grid sensors share the
-  differential-I2C bus, and the requirement to trim the grid read exists precisely to protect the
-  cliff rate. An acquisition loop written for the four cliff sensors alone is likely to be one the
-  grid read cannot later be fitted into.
+  carriers the enable line is **reset-class**: dropping it returns the device to the default `0x29`,
+  so walking the enable chain to select a sensor destroys all four assigned addresses.
+- **One scheduler serves all six boards.** The four cliff and two grid sensors share the
+  differential-I2C bus, and the requirement to trim the grid read exists to protect the cliff rate.
 
 ## Status classification
 
@@ -628,16 +561,14 @@ decide what is safe, so every class below is **our** decision and the last colum
 
 ### Two traps this table exists to prevent
 
-**Four ULD symbols begin with `RANGE_VALID`, and only one of them may be published as a range.** Codes
-3, 6 and 11 are all named `RANGE_VALID_*` and are all forbidden as finite ranges here, for three
-different reasons — a blocked lens, an unchecked wrap that can alias near, and a merged edge return.
-An implementer filtering by that name prefix would publish all three.
+**Four ULD symbols begin with `RANGE_VALID`, and only one of them may be published as a range.**
+Codes 3, 6 and 11 are all named `RANGE_VALID_*` and are all **forbidden as finite ranges here**. An
+implementer filtering by that name prefix would publish all three.
 
-**The false-stop budget of this feature is the sum of the `NO_TARGET` rows' rates on a real floor.**
-Every one of them stops the robot while the system reports itself healthy. If that rate turns out
-unacceptable, the remedies are sensor configuration — distance mode, timing budget, sigma and signal
-thresholds, ROI — or a temporal filter in the consumer. **Reclassifying a row toward `VALID_RANGE` is
-not a remedy**, because each of those rows can carry a near-looking value that reads as "floor
+**The false-stop budget of this feature is the sum of the `NO_TARGET` rows' rates on a real floor**,
+and every one of them stops the robot while the system reports itself healthy. The remedies are
+sensor configuration or a temporal filter in the consumer. **Reclassifying a row toward `VALID_RANGE`
+is not a remedy**, because each of those rows can carry a near-looking value that reads as "floor
 present".
 
 ## Decoder and ROS publisher obligations
@@ -702,6 +633,68 @@ Protocol FAULT **latches**. It clears only after one complete, contradiction-fre
 version, correlated with its health frame, and the transition is reported so an operator sees recovery
 rather than only onset.
 
+### Decoder verdicts and precedence
+
+Every frame this contract defines is reduced by a conforming decoder to exactly one **verdict**.
+`ACCEPT` means no rule was violated; every other value names the first rule that was. The names are
+normative: they appear in the generated artefacts and consumers switch on them, so a decoder that
+invents its own vocabulary cannot be checked against the conformance vectors.
+
+**The order below is normative.** A frame may violate more than one rule, and a conforming decoder
+reports the **first** rule in this table that the frame violates, evaluated per frame kind in the
+order given. This is not a stylistic preference: the conformance vectors assert one expected verdict
+per case, which is only well defined if the order is fixed. The *outcome* of a rejection does not
+depend on the order — any non-`ACCEPT` verdict rejects the frame and raises protocol FAULT, as
+*Validation, and protocol fault* requires — but the *reported reason* does, and that reason reaches
+operators and logs.
+
+The rules themselves are stated in *Validation, and protocol fault* and in the frame sections. This
+table does not restate them; it binds each rule to the name a decoder must report.
+
+#### Measurement frame verdicts, in evaluation order
+
+| Verdict | Condition |
+| --- | --- |
+| `DLC_NOT_8` | DLC is not 8 |
+| `FRAME_TYPE_MISMATCH` | byte 0 high nibble is not `0x1` |
+| `SOURCE_ID_OUT_OF_RANGE` | `source_id` outside 0-3 |
+| `RESERVED_FIELD_NONZERO` | byte 7 is non-zero |
+| `TARGET_COUNT_MALFORMED` | `target_count` above `kMaxTargets` |
+| `STATUS_UNDEFINED` | `range_status` is not a code in the status classification table |
+| `STATUS_NOT_TRANSMISSIBLE` | `range_status` classifies as `NO_SAMPLE`; those statuses produce no frame at all, so a frame carrying one is a producer defect rather than an unusable sample |
+| `RANGE_CONTRADICTS_STATUS` | class `VALID_RANGE` with `range_mm == 0xFFFF`, or class `NO_TARGET` / `SENSOR_FAULT` with `range_mm != 0xFFFF` |
+| `NO_TARGET_ENCODING_INCONSISTENT` | the biconditional `target_count == 0` <-> (`range_status == 255` and `range_mm == 0xFFFF`) is violated in either direction |
+| `ACCEPT` | none of the above |
+
+#### Health frame verdicts, in evaluation order
+
+| Verdict | Condition |
+| --- | --- |
+| `DLC_NOT_8` | DLC is not 8 |
+| `FRAME_TYPE_MISMATCH` | byte 0 high nibble is not `0x2` |
+| `PROTOCOL_VERSION_ZERO` | `protocol_version` is 0 |
+| `PROTOCOL_VERSION_UNSUPPORTED` | a non-zero `protocol_version` that is not equal to `PROTOCOL_VERSION`, the only version supported by this contract revision |
+| `MAPPING_STATE_MALFORMED` | `mapping_state` above `0x3` |
+| `CHAIN_POSITION_MALFORMED` | `failing_chain_position` is neither `0xFF` nor 1-6 |
+| `CYCLE_FIELDS_INCONSISTENT` | `cycle_valid` clear while `cycle_seq`, `sample_produced_mask` or `sensor_fault_mask` is non-zero |
+| `MASK_FAULT_WITHOUT_SAMPLE` | a `sensor_fault_mask` bit set without the corresponding `sample_produced_mask` bit |
+| `CHAIN_POSITION_WITHOUT_FAULT` | `failing_chain_position != 0xFF` with no chain-fault flag and both `enumerated_mask` and `model_verified_mask` complete |
+| `ACCEPT` | none of the above |
+
+`DLC_NOT_8`, `FRAME_TYPE_MISMATCH` and `ACCEPT` apply to both frame kinds; every other verdict
+belongs to exactly one of them. The commissioning identifiers `0x218` and `0x219` have no payload
+layout in this contract and therefore no verdicts; see *Transport*.
+
+#### The vocabulary and its order are pinned
+
+The generator's `--check` compares the **ordered sequence** in each table above against the order the
+generator actually evaluates, read from its own syntax tree rather than from a second hand-written
+list beside it. Set equality alone would accept two rows swapped, which changes nothing about whether
+a frame is rejected and everything about which reason is reported. A name added here without an
+implementation, emitted without being defined here, or placed out of order, fails the check. Without
+it this section would be a third description of rules that already exist in two places, free to
+drift from both.
+
 ### Readiness
 
 `READY` means: the four role measurements published now are trustworthy. It requires **all** of the
@@ -736,13 +729,11 @@ The tolerance has **two triggers, and whichever is reached first ends `READY`**:
   at `>=`, not `>`. Reaching it is a `FAULT` rather than a plain `NOT_READY`, because a source that has
   missed that many cycles in a row is not late, it is broken
 
-**The count carries no timing guarantee, and the contract makes no claim that it fires earlier.** An
-earlier draft required `N x T_cycle_nominal <= T_meas_max_gap`; that formula was wrong in the unsafe
-direction. Cycle periods stretch under load — the same service-delay mechanism the six-board scheduling
-analysis quantifies — so N cycles can take considerably longer in wall-clock than N nominal periods, and
-a count-based bound derived from the nominal period would silently be looser than it claimed. The count
-is therefore a supplementary diagnostic trigger with an explicit fault outcome, never the thing that
-bounds blindness.
+**The count carries no timing guarantee, and the contract makes no claim that it fires earlier.**
+Cycle periods stretch under load, so N cycles can take considerably longer in wall-clock than N
+nominal periods. **Do not reintroduce a bound of the form `N x T_cycle_nominal <= T_meas_max_gap`**:
+it was tried, and it is wrong in the unsafe direction. The count is a supplementary diagnostic
+trigger with an explicit fault outcome, never the thing that bounds blindness.
 
 **What is tolerated is a temporarily missing sample, never a faulty one.** A `sensor_fault_mask` bit
 costs `READY` on the cycle it appears in, with no cycle budget and no grace: the sensor has told us its
@@ -828,16 +819,14 @@ The failure MUST NOT take down the rest of `SCBDriver`. The cliff subsystem ente
 
 ### The legacy UART path is not a cliff transport
 
-`receiver_tof` already carries a legacy UART path for the L4 sensors: it recognises **`sensor_id` 0
-and 1 only**, publishes `/sensor_set/tof_front` and `/sensor_set/tof_rear` as variable-length
-`Float32MultiArray` with `-1.0` for no target, and carries no raw status, no epoch and no health. It
-is structurally incapable of expressing four independent roles.
+`receiver_tof`'s legacy UART path is structurally incapable of expressing four independent roles —
+it recognises `sensor_id` 0 and 1 only and carries no raw status, no epoch and no health.
 
-Therefore: cliff is **unavailable**, not degraded, in `legacy_uart` mode; the legacy topics MUST NOT
-be remapped into the cliff namespace, and the cliff topic names above are deliberately chosen so that
-the established `/sensor_set/X -> /global/system/X` remap convention cannot connect them; and this
-transport MUST NOT feed or bridge into `safety_manager/downward`, which stays dead for this feature.
-Two decision paths would mean two threshold sources and two ways to command a stop.
+Therefore, and all three are normative: cliff is **unavailable, not degraded**, in `legacy_uart`
+mode; the legacy topics **MUST NOT** be remapped into the cliff namespace, and the cliff topic names
+above are chosen so that the established `/sensor_set/X -> /global/system/X` convention cannot
+connect them; and this transport **MUST NOT** feed or bridge into `safety_manager/downward`, which
+stays dead for this feature.
 
 ## Commissioning timing profile — model-derived, NOT measured
 
@@ -896,12 +885,11 @@ mapping claim.
 
 ### The proof is a transaction, because the isolated chain is not the chain that produces data
 
-The three results above cannot all come from one chain state, and no implementation should be written as
-if they could. Tail isolation requires positions 3-5 to be disabled, and on the L4 carriers the enable
-line is reset-class — disabling a position returns that device to the default address. So the chain that
-carries the live addresses is **always** a chain enumerated *after* the isolation, and it can never
-itself hold an isolation result. An implementation that tries to satisfy all three from the final state
-will fail every time, and the tempting repair is to weaken one criterion.
+**The three results above cannot all come from one chain state.** Tail isolation disables positions
+3-5, and the L4 enable line is reset-class, so the chain carrying the live addresses is **always**
+enumerated *after* the isolation and can never itself hold an isolation result. An implementation
+that tries to satisfy all three from the final state will fail every time, and the tempting repair is
+to weaken one criterion.
 
 The proof is therefore defined as one **transaction**, in this order:
 
@@ -959,11 +947,66 @@ Under `commissioning-cliff-only-400k`:
   proof supplies a fresh epoch, which is what keeps a post-restart `cycle_seq` from aliasing onto the
   sequence that came before it.
 
-**The limitation, stated plainly: cross-restart uniqueness now rests on procedure, not on firmware.** The
-firmware does not claim it and must not be described as providing it. The property holds because a
-restart cannot reach `PROVEN` without an operator, and it would stop holding the moment anything proves
-the mapping automatically. A production configuration that proves on boot therefore requires a
-firmware-side persistent epoch issuer, and that is a release blocker, not a refinement.
+**For a profile that proves without an operator**, the procedural argument above does not apply, and
+a replacement is required. What the property needs is a persistent issuer that cannot reuse a value;
+which side holds it is a deployment decision, not a property of the guarantee. Uniqueness rests on a
+persistent **full-width ordinal** held by the issuing side, of which `mapping_epoch` is the low 8 bits:
+
+- The ordinal is **reserved before it is used**, and it is durable before it is handed out. A power cut
+  therefore skips a value; it cannot repeat one.
+- **Durability must be proven by the storage medium's own means, not by reading the value back**, and
+  each medium states how it earns the claim. A file-backed store: write a temporary file, `fsync` it,
+  rename it over the record, `fsync` the containing directory. Why a read-back does not establish
+  durability, and why each step of that sequence is required, is in the design notes.
+- **Re-reading after an outcome that could not be established is recovery of judgement, not proof of
+  durability.** When a commit reports neither success nor failure, the next reservation re-reads the
+  store and never resumes from a remembered value — the ambiguous write may have landed, and only the
+  store can say.
+- The ordinal is **strictly increasing and never reused**, including at the top of its range, where
+  exhaustion is a refusal rather than a wrap.
+- The 8-bit wire value still wraps modulo 256, and that remains correct, because ordering is carried by
+  the ordinal. A consumer locates a wire epoch relative to the one it holds, so issuance may run at most
+  **127** ordinals ahead of what a consumer has accepted; a step of exactly 128 is the one delta with no
+  positive counterpart and is refused by consumers, not guessed at. An issuer that cannot establish how
+  far ahead it is **must refuse**, and the value it may not substitute for that knowledge is its own last
+  reservation or its own last successful proof: both run ahead of acceptance in exactly the case the
+  window exists to catch.
+
+**First provisioning is an explicit act.** A store with no record does not start counting. Blank and
+corrupt are distinguished and both refuse, because an unprovisioned machine and a damaged record call for
+different operator actions, and a machine that invented a first ordinal would be asserting an issuance
+history that never happened. The first ordinal comes from the machine's recorded commissioning history or
+from a deliberate provisioning step.
+
+**Every failure is fail-closed, and the guarantee has two halves that must not be conflated.** "Every
+failure leaves the subsystem non-`PROVEN` with no `0x216` transmitted" is **stronger than anything an
+automatic sequence can promise** and must not be written. What is true:
+
+- **Before a mapping is installed** — no epoch, an unconfirmable write, an unestablished window, or a
+  refused proof — the subsystem stays non-`PROVEN` and no measurement frame is transmitted, which is
+  where a failed manual proof already leaves it.
+- **After a mapping is installed but acquisition does not start**, the mapping is `PROVEN` and no
+  acquisition is running. That produces health without measurements, not measurements without a mapping,
+  and it is a legitimate state rather than a contradiction: `PROVEN` describes the mapping, and `0x216`
+  requires an acquisition that is running.
+
+So the narrow claim, which is the one that may be relied on: **no automatic step transmits a measurement
+except after a proof that succeeded and an acquisition start that succeeded.** An automatic sequence
+cannot claim that no `0x216` exists on the bus — acquisition already started by an operator is outside
+its knowledge and outside its control, and a claim that swept that in would be false for a reason nobody
+could see from the automatic path. Nothing in an automatic profile may fabricate a health state or
+suppress one.
+
+**The firmware's three guarantees are unchanged** — it refuses an epoch equal to any it has used since
+power-on, it advances the epoch and resets `cycle_seq` in one transaction, and it stays non-`PROVEN` if
+issuance fails for any reason. An unattended profile adds obligations on the issuing side; it removes
+none from the firmware.
+
+**What this revision deliberately does not fix.** The downlink by which an epoch reaches the firmware —
+its identifier, payload, authorisation, and its binding to a device and to a particular boot — is **not**
+specified here. Freezing a format before the semantics above are settled is how a format ends up unable
+to carry them. Until that is specified and mirrored in both repositories, no automatic profile is
+enabled, and the manual profile above remains the only one in use.
 
 ## Timing values — what the production release still has to resolve
 
@@ -1031,18 +1074,16 @@ instead of the whole history replaying on every spin.
 
 ## Golden vectors
 
-Vectors do **not** exist yet; generating them is the step after the first freeze. They will come from
-`gen_cliff_golden_vectors.py`, emitting a JSON file and a dependency-free C++ header, both carrying the
-SHA-256 of **this** file, pinned independently by the firmware packer test and the driver decoder test.
-The grid contract's generator, vectors and SHA are untouched.
+**Frame-layout vectors exist and are committed; the decoder state-machine vectors are the step after
+the first freeze.** Both come from `gen_cliff_golden_vectors.py`. Every emitted artefact carries this
+file's version, its SHA-256 and the artefact-set id, and **`--check` regenerates them and compares
+byte-for-byte with the committed copies**; the firmware packer test and the driver decoder test
+**pin them independently**. The grid contract's generator, vectors and SHA are untouched. The
+generator's own workflow is described in `docs/can/README.md`.
 
-**The scenario catalogue is already written, and the generator refuses to emit.** `--list` renders every
-scenario with its input sequence, its complete expected event multiset, its publication outcome, the
-parameters it depends on and whether it is blocked on hardware; `--check` verifies the catalogue's
-self-consistency; and plain invocation fails while the contract version carries a `draft-` marker or any
-symbol is unresolved. Scenarios refer to identifiers and timings **by symbol**, never by number, so
-resolving a value is one edit rather than a sweep. Writing the catalogue before the numbers exist is
-what exposed the two boundary scenarios below.
+**Scenarios refer to identifiers and timings by symbol, never by number**, so resolving a value is
+one edit rather than a sweep. Generation refuses while the contract version carries a `draft-` marker
+or any symbol is unresolved.
 
 **One comparison rule is frozen now**, because it decides what a boundary case means and no measurement
 can change it:
@@ -1113,10 +1154,9 @@ Beyond the happy path the vectors MUST cover at least:
   publishes `FAULT`
 - protocol FAULT latching, and clearing only after one clean correlated cycle
 
-As in the grid contract, each scenario declares the **complete multiset** of events it must produce, so
-an implementation cannot pass by emitting the right event alongside wrong ones. These are the cases
-where an implementation silently picks a fail direction; if the vectors only cover the happy path, the
-two sides will each pick one and they will not pick the same one.
+As in the grid contract, each scenario declares the **complete multiset** of events it must produce,
+so an implementation cannot pass by emitting the right event alongside wrong ones. These are the
+cases where an implementation silently picks a fail direction.
 
 ## Open decisions
 

@@ -21,12 +21,41 @@ than left exposed to an external branch changing under the build.
 | Commit that last introduced the ULD subtree | `f86fcef` (initial commit) |
 | ST package version | **1.2.13 rev 2676** |
 | Version evidence in tree | `upstream/modules/LXReleaseNotes.txt` line 2, and `VL53LX_IMPLEMENTATION_VER_MAJOR/MINOR/SUB` = 1/2/13 in `upstream/modules/vl53lx_def.h` |
-| Licence | BSD-3-Clause, `upstream/LICENSE.md`, copied verbatim |
+| Licence | **Mixed — see *Licensing* below.** `upstream/LICENSE.md` is BSD-3-Clause; 17 files in the snapshot carry a different notice |
 | Copied on | 2026-08-12 |
 
-The licence file must travel with the tree: every ST source header says only that the
-software "is licensed under terms that can be found in the LICENSE file", so without
-`upstream/LICENSE.md` those headers point at nothing.
+The licence file must travel with the tree, because most ST source headers say only
+that the software "is licensed under terms that can be found in the LICENSE file" and
+would otherwise point at nothing.
+
+## Licensing
+
+`upstream/LICENSE.md` is BSD-3-Clause, and this document used to describe the whole
+snapshot that way. That is wrong. **17 files carry an explicit and different notice:**
+
+    This file is part of VL53LX Protected and is licensed
+    'STMicroelectronics Proprietary license'
+    License terms: STMicroelectronics Proprietary in accordance with licensing
+    terms at www.st.com/sla0081
+
+**Seven of them are in the production source list**, so they are compiled into the
+firmware rather than merely present in the tree: `vl53lx_dmax.c`,
+`vl53lx_hist_algos_gen3.c`, `vl53lx_hist_algos_gen4.c`, `vl53lx_hist_core.c`,
+`vl53lx_hist_funcs.c`, `vl53lx_sigma_estimate.c`, `vl53lx_xtalk.c`. The other ten are
+their headers and private-struct headers.
+
+They are not optional. They are the histogram ranging algorithms — the path that turns
+a raw histogram into a distance — so a build without them is not a VL53L4CX driver.
+
+SLA0081's own terms are not in the tree — only that URL. `sha256sum -c` over
+`upstream/` passes, so the notices are as ST shipped them.
+
+The snapshot is preserved verbatim and contains mixed licence notices. This PR does
+not interpret or alter those terms; it records them so that anyone reading the
+provenance sees what the files actually say rather than a single licence name that
+does not cover all of them.
+
+Noted during review of PR #98, 2026-09-26.
 
 ## Integrity
 
@@ -43,17 +72,41 @@ editor nor a future repository-wide formatter rewrites vendor code. Nothing else
 
 ## Local modifications
 
-**None to upstream files.** Upstream is never edited in place. All local code lives in
-`zephyr/`:
+**None in place.** Upstream is never edited where it sits. One upstream file is
+compiled from a patched copy in the build directory -- see *Local patch* below -- and
+everything else local lives in `zephyr/`:
 
 | File | Role |
 | --- | --- |
 | `zephyr/vl53lx_platform.c` | The platform layer the ULD requires, on Zephyr I2C |
 | `zephyr/vl53l4cx_bus_io.c/.h` | The `VL53L4CX_IO_t` block registered with the BSP wrapper |
 
-If an upstream change ever becomes unavoidable, it lands as a numbered patch file
-under `zephyr/patches/` with a note here — never as an in-place edit, because that
-would break the manifest's meaning.
+If a further upstream change ever becomes unavoidable, it lands the same way: a
+numbered patch file under `zephyr/patches/` with a note here — never as an in-place
+edit, because that would break the manifest's meaning.
+
+## Local patch
+
+`zephyr/patches/0001-propagate-get-device-results-status.patch` is applied to a copy of
+`upstream/modules/vl53lx_api.c` in the build directory, and that copy is what
+`vl53l4cx_sources.cmake` compiles. It makes one change:
+`VL53LX_GetMultiRangingData()` calls `SetMeasurementData()` only when
+`VL53LX_get_device_results()` succeeded.
+
+Without it, a fetch that failed part-way through is returned as
+`VL53LX_ERROR_NONE` carrying whatever was written before the failure — including an
+already-advanced stream count, which is exactly what a consumer's replay guard relies
+on to tell a repeated frame from a new one. `SetMeasurementData()` also updates
+`pdev->PreviousStreamCount` unconditionally, so the device's own history moved on a
+read that never succeeded. The patch header carries the upstream line references.
+
+Because the patch is never applied in place, `SHA256SUMS` still answers "has anyone
+edited upstream?" with one command. And because it is applied at configure time with
+fixed context, a snapshot refresh that moves this function fails the build rather than
+quietly dropping the fix.
+
+`tests/tof_uld_status` compiles the patched copy and pins the behaviour, including
+that reverting the guard fails the suite.
 
 `upstream/porting/vl53lx_platform.c` is kept **as provenance and is not compiled**. It
 is the upstream example layer: it carries a single file-scope `_I2CBuffer[256]` shared

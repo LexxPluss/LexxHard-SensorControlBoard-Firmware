@@ -1,29 +1,41 @@
 #!/usr/bin/env python3
 """Golden vector generator for the cliff ToF CAN wire contract (AMRSW-2994).
 
-This is a **skeleton with a complete scenario catalogue and no output**. It cannot
-emit vectors yet, and refuses to try, because the contract it would generate from
-is still a draft with unresolved values. What it does carry is every scenario the
-vectors will contain, with its input sequence, its complete expected event
-multiset, its publication outcome, the parameters it depends on and whether it is
-blocked on hardware.
+This emits the **frame-layout** artefacts and refuses to emit the **decoder
+state-machine** vectors, and the split is deliberate. Layout depends on nothing
+that is still open: the identifiers are allocated, the field offsets and the
+status table are frozen, so `--emit` writes `tof_cliff_layout_vectors.json`,
+`tof_cliff_contract.h` and `tof_cliff_contract_vectors.h`. The state-machine
+vectors depend on timing values that are not yet measured and on two status rows
+that are still provisional, so generating them now would freeze guesses.
 
-The point of writing the catalogue before the numbers exist: the scenarios are
-where boundary gaps show up, and finding them now is cheap. Once the live capture
-allocates the health identifier, the schedule measurement fixes the timing values
-and the two provisional status rows are validated on hardware, the remaining work
-is to resolve the symbols, emit, and pin the SHA on both sides - not to design the
-cases.
+What the file carries either way is the complete scenario catalogue: every
+scenario the decoder vectors will contain, with its input sequence, its complete
+expected event multiset, its publication outcome, the parameters it depends on
+and whether it is blocked on hardware. The point of writing the catalogue before
+the numbers exist is that the scenarios are where boundary gaps show up, and
+finding them now is cheap. Once the schedule measurement fixes the timing values
+and the two provisional rows are validated on hardware, the remaining work is to
+resolve the symbols and emit - not to design the cases.
+
+Every emitted artefact carries three pinned values: the contract version, the
+SHA-256 of the contract text, and the artefact-set id, which hashes the contract
+text together with this file's own source. `--check` recomputes all three and
+regenerates each artefact in memory, comparing byte-for-byte with the committed
+copy; it never writes, because a check that repairs what it is checking cannot be
+used in CI.
 
 Usage:
     gen_cliff_golden_vectors.py --list     print the scenario catalogue
-    gen_cliff_golden_vectors.py --check    verify the catalogue's self-consistency
-    gen_cliff_golden_vectors.py           attempt generation (refuses, and says why)
+    gen_cliff_golden_vectors.py --check    verify the catalogue and the committed artefacts
+    gen_cliff_golden_vectors.py --emit     write the frame-layout artefacts
+    gen_cliff_golden_vectors.py           attempt state-machine generation (refuses, and says why)
 
 Nothing here reads or writes the grid contract's artefacts.
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -69,6 +81,11 @@ RESOLVED = {
     # is still owed and REGISTRATION IS OUTSTANDING. Usable under this commissioning revision;
     # must be closed before production.
     "TOF_CLIFF_HEALTH_ID": 0x217,
+    # Allocated by the team on 2026-09-19 with authority over the register, which is why these two
+    # carry no "registration outstanding" note: no row is owed. Direction is part of the allocation --
+    # 0x218 is written only by a host and read only by an SCB, 0x219 the other way round.
+    "TOF_CLIFF_COMMISSION_REQUEST_ID": 0x218,
+    "TOF_CLIFF_COMMISSION_STATUS_ID": 0x219,
     "PROTOCOL_VERSION": 0x1,
     "SENTINEL_INVALID": 0xFFFF,
     "SOURCE_COUNT": 4,
@@ -1013,18 +1030,11 @@ def render_json(vectors, version, sha):
 
 def _licence_and_provenance(version, sha, what):
     return [
-        # FIRST line of the file, before the licence block. It used to sit just above
-        # `#pragma once`, which is "above the include guard" as the note below says, but
-        # BELOW these comment blocks -- so the RELEASE_FORBIDDEN banner, a single long line,
-        # was outside the guard and SCBDriver's CI reformatted it. The generated file could
-        # then never be byte-identical across the two repositories, which is the one thing
-        # this guard exists to guarantee.
-        "// clang-format off",
         "/*",
         " * Copyright (c) 2026, LexxPluss Inc.",
         " * All rights reserved.",
         " *",
-        " * SPDX-License-Identifier: BSD-3-Clause",
+        " * SPDX-License-Identifier: BSD-2-Clause",
         " */",
         "",
         "/* GENERATED FILE -- do not edit. Regenerate with:",
@@ -1040,14 +1050,14 @@ def _licence_and_provenance(version, sha, what):
         " *",
         f" * {what}",
         " *",
-        " * clang-format is disabled for the whole file, from its very first line -- above",
-        " * this licence block, not merely above the include guard.",
+        " * clang-format is disabled for the whole file, starting above the include guard.",
         " * SCBDriver's CI reformats every .h in the repository with an explicitly named",
         " * style file, which overrides any directory .clang-format -- so a generated file",
         " * can only stay byte-identical across the two repositories by opting out here, in",
         " * the generator, rather than per checkout.",
         " */",
         "",
+        "// clang-format off",
         "#pragma once",
         "",
     ]
@@ -1086,6 +1096,10 @@ def render_prod_header(vectors, version, sha):
         "",
         f'inline constexpr uint16_t kMeasId{{0x{RESOLVED["TOF_CLIFF_MEAS_ID"]:03X}}};',
         f'inline constexpr uint16_t kHealthId{{0x{RESOLVED["TOF_CLIFF_HEALTH_ID"]:03X}}};',
+        f'inline constexpr uint16_t kCommissionRequestId'
+        f'{{0x{RESOLVED["TOF_CLIFF_COMMISSION_REQUEST_ID"]:03X}}};',
+        f'inline constexpr uint16_t kCommissionStatusId'
+        f'{{0x{RESOLVED["TOF_CLIFF_COMMISSION_STATUS_ID"]:03X}}};',
         f'inline constexpr uint8_t kProtocolVersion{{0x{RESOLVED["PROTOCOL_VERSION"]:X}}};',
         f'inline constexpr uint16_t kSentinelInvalid{{0x{RESOLVED["SENTINEL_INVALID"]:04X}}};',
         f'inline constexpr uint8_t kSourceCount{{{RESOLVED["SOURCE_COUNT"]}}};',
@@ -1240,8 +1254,144 @@ def contract_identity():
     return version.group(1), hashlib.sha256(text.encode()).hexdigest()
 
 
-def self_check():
+# Every 11-bit identifier either repository allocates in the SCB peripheral block, with the file
+# that owns it. The grid pair is here even though this contract does not define it: a collision check
+# that only looked at the identifiers in front of it would be checking that a list has no duplicates,
+# which it cannot have, rather than that the bus has no two claimants -- and 0x214/0x215 are exactly
+# the values somebody reaching for "the next free identifier" would take.
+ALLOCATED_IDS = [
+    (0x214, "TOF_GRID_DATA_ID (lexxpluss_apps/src/tof_can_ids.hpp, L7 grid transport)"),
+    (0x215, "TOF_GRID_HEALTH_ID (lexxpluss_apps/src/tof_can_ids.hpp, L7 grid transport)"),
+    (RESOLVED["TOF_CLIFF_MEAS_ID"], "TOF_CLIFF_MEAS_ID (this contract)"),
+    (RESOLVED["TOF_CLIFF_HEALTH_ID"], "TOF_CLIFF_HEALTH_ID (this contract)"),
+    (RESOLVED["TOF_CLIFF_COMMISSION_REQUEST_ID"], "TOF_CLIFF_COMMISSION_REQUEST_ID (this contract)"),
+    (RESOLVED["TOF_CLIFF_COMMISSION_STATUS_ID"], "TOF_CLIFF_COMMISSION_STATUS_ID (this contract)"),
+]
+
+
+def identifier_problems():
     problems = []
+    for value, owner in ALLOCATED_IDS:
+        if not 0 <= value <= 0x7FF:
+            problems.append(f"{owner}: 0x{value:X} is not an 11-bit identifier")
+    for i, (value, owner) in enumerate(ALLOCATED_IDS):
+        for other_value, other_owner in ALLOCATED_IDS[i + 1:]:
+            if value == other_value:
+                problems.append(f"identifier collision at 0x{value:X}: {owner} and {other_owner}")
+    return problems
+
+
+# --------------------------------------------------------------------------- verdict parity
+
+# Statements a verdict function may contain and still have a readable evaluation order. Anything
+# else -- a loop, a try, a nested definition -- means the textual order of the returns is not
+# necessarily the order they are reached, so the check refuses to guess.
+_LINEARISABLE = (ast.If, ast.Return, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Pass)
+
+
+def _verdict_returns(body):
+    """Verdict strings returned by this statement list, in source order. None if not linearisable."""
+    out = []
+    for stmt in body:
+        if not isinstance(stmt, _LINEARISABLE):
+            return None
+        if isinstance(stmt, ast.Return):
+            # A return of anything but a string literal -- a variable, a call, a conditional
+            # expression -- is a verdict this check cannot read. Skipping it would leave the
+            # vocabulary and the order looking complete while an unanalysable path existed
+            # beside them, which is the opposite of what refusing to guess means.
+            if not (isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)):
+                return None
+            out.append(stmt.value.value)
+            continue
+        if isinstance(stmt, ast.If):
+            for half in (stmt.body, stmt.orelse):
+                inner = _verdict_returns(half)
+                if inner is None:
+                    return None
+                out.extend(inner)
+    return out
+
+
+def _implemented_verdict_order(func_name):
+    """The order this generator actually evaluates in, read from its own syntax tree.
+
+    Read from the implementation rather than from a second hand-written list beside it: such a
+    list is one more thing that can drift from the function, which is the problem this check
+    exists to remove. Only the named function's own body is read -- a nested definition makes the
+    order unreadable and is refused rather than guessed at.
+    """
+    tree = ast.parse(Path(__file__).resolve().read_text())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            seq = _verdict_returns(node.body)
+            if seq is None:
+                return None, (f"{func_name} contains a statement or a return this check cannot "
+                              "linearise: the order is refused rather than guessed at")
+            folded = [v for i, v in enumerate(seq) if i == 0 or v != seq[i - 1]]
+            if len(folded) != len(set(folded)):
+                dup = sorted({v for v in folded if folded.count(v) > 1})
+                return None, (f"{func_name} returns {', '.join(dup)} from separated places; "
+                              "consecutive repeats fold, separated ones may change precedence "
+                              "and are not merged silently")
+            return folded, None
+    return None, f"{func_name} not found"
+
+
+def _declared_verdict_order(body, heading):
+    sub = re.search(r"^#### " + re.escape(heading) + r"$(.*?)(?=^#### |\Z)", body, re.M | re.S)
+    if sub is None:
+        return None
+    return re.findall(r"^\| `([A-Z][A-Z0-9_]*)` \|", sub.group(1), re.M)
+
+
+def verdict_parity():
+    """The contract's verdict tables must match this generator exactly, and in order.
+
+    Set equality alone would accept two rows swapped, which changes nothing about whether a frame
+    is rejected and everything about which reason is reported -- and that reason reaches operators
+    and logs. The contract declares the precedence normative, so the comparison is ordered.
+    """
+    text = CONTRACT.read_text()
+    sec = re.search(r"^### Decoder verdicts and precedence$(.*?)(?=^### |^## |\Z)", text, re.M | re.S)
+    if sec is None:
+        return ["contract has no '### Decoder verdicts and precedence' section"]
+    body = sec.group(1)
+
+    problems = []
+    for kind, heading, func in (
+            ("measurement", "Measurement frame verdicts, in evaluation order", "meas_verdict"),
+            ("health", "Health frame verdicts, in evaluation order", "health_verdict")):
+        declared = _declared_verdict_order(body, heading)
+        if declared is None:
+            problems.append(f"{kind} verdict table missing from the contract")
+            continue
+        implemented, why = _implemented_verdict_order(func)
+        if implemented is None:
+            problems.append(f"{kind} verdict order unreadable: {why}")
+            continue
+        if set(declared) != set(implemented):
+            problems.append(
+                f"{kind} verdict vocabulary mismatch: contract-only "
+                f"{sorted(set(declared) - set(implemented))}, generator-only "
+                f"{sorted(set(implemented) - set(declared))}")
+        elif declared != implemented:
+            problems.append(
+                f"{kind} verdict order mismatch: contract {declared}, generator {implemented}")
+
+    declared_all = set(re.findall(r"^\| `([A-Z][A-Z0-9_]*)` \|", body, re.M))
+    missing = sorted(set(REJECT_REASONS) - declared_all)
+    extra = sorted(declared_all - set(REJECT_REASONS))
+    if missing:
+        problems.append(f"verdicts emitted but not defined in the contract: {missing}")
+    if extra:
+        problems.append(f"verdicts defined in the contract but never emitted: {extra}")
+    return problems
+
+
+def self_check():
+    problems = identifier_problems()
     seen = set()
     for sc in CATALOGUE:
         sid = sc["id"]
@@ -1264,6 +1414,9 @@ def self_check():
     for sym in UNRESOLVED:
         if sym not in referenced:
             problems.append(f"symbol {sym} is declared unresolved but no scenario depends on it")
+    # Folded into the ordinary self-check rather than put behind a flag: an optional consistency
+    # check between the contract and this generator is one nobody runs.
+    problems.extend(verdict_parity())
     return problems
 
 

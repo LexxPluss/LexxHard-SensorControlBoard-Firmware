@@ -31,16 +31,20 @@
 // electrically on DS20001 (token walk, three independent runs): position 1
 // and 2 are the hanging VL53L7CX boards, 3-6 the VL53L4CX drop-sense boards.
 //
-// Source mapping is CONTRACT-owned (docs/can, 2026-08-02f): source 0 is
+// Source mapping is CONTRACT-owned (docs/can, 2026-08-02g): source 0 is
 // hanging_front_right, source 1 hanging_front_left; the connectivity diagram
 // places PCB1 (position 1) on the right, PCB2 (position 2) on the left.
 // Position-to-side is L0-owned knowledge and still awaits the frozen J29
 // mapping document (Request C) -- if that document contradicts the diagram,
 // THIS table is where the correction lands, nowhere else.
 //
-// The four L4 mounting roles are deliberately `unknown` until the same
-// frozen mapping arrives: electrical enumeration proves the type sequence,
-// never the mounting role of four identical boards.
+// The four L4 mounting roles were `unknown` while this file waited for the
+// same frozen mapping, on the grounds that electrical enumeration proves the
+// type sequence and never the mounting role of four identical boards. That
+// reasoning still holds -- it is why the roles below do NOT come from
+// enumeration. They are now FROZEN from the assembly connectivity drawing,
+// which is a different source of truth and is documented at the table itself,
+// together with the precondition it carries.
 //
 // Target addresses 0x2A..0x2F collide with no known device on this bus
 // (the on-board ADS7138 sits at 0x17) and were used throughout the DS20001
