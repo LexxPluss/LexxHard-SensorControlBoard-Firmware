@@ -38,9 +38,13 @@
 // mapping document (Request C) -- if that document contradicts the diagram,
 // THIS table is where the correction lands, nowhere else.
 //
-// The four L4 mounting roles are deliberately `unknown` until the same
-// frozen mapping arrives: electrical enumeration proves the type sequence,
-// never the mounting role of four identical boards.
+// The four L4 mounting roles were `unknown` while this file waited for the
+// same frozen mapping, on the grounds that electrical enumeration proves the
+// type sequence and never the mounting role of four identical boards. That
+// reasoning still holds -- it is why the roles below do NOT come from
+// enumeration. They are now FROZEN from the assembly connectivity drawing,
+// which is a different source of truth and is documented at the table itself,
+// together with the precondition it carries.
 //
 // Target addresses 0x2A..0x2F collide with no known device on this bus
 // (the on-board ADS7138 sits at 0x17) and were used throughout the DS20001
