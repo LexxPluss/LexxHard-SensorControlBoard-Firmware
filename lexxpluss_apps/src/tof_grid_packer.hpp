@@ -82,7 +82,31 @@ struct sensor_read {
      * branch -- the L7 grid_ops are still -ENOSYS stubs -- so this field exists
      * to make the obligation impossible to supply implicitly once they are
      * implemented. Until then the enumerator computes source_allowed and only
-     * the shell reads it. */
+     * the shell reads it.
+     *
+     * WHAT THIS FIELD DOES NOT DO, stated because a separate bool beside a
+     * separately writable source_id looks like a binding and is not one.
+     *
+     * from_read() checks two things about attribution: that this flag is set,
+     * and that source_id is representable. It cannot check that the permission
+     * BELONGS to that source_id. Both are plain members of a struct the caller
+     * fills in, so a caller that reads permission for source 0 and then labels
+     * the read source 1 is admitted, and the wrong-side attribution this field
+     * is meant to prevent happens anyway. Nothing in this type can close that:
+     * the two values arrive already separated.
+     *
+     * So the binding is an obligation on the PRODUCER, and it is not discharged
+     * by setting this flag. A producer must read chain_result::source_allowed
+     * for the same source_id it writes, as one step rather than two, and must
+     * carry a test that permission for one source never admits a grid labelled
+     * as the other. tof_packer's own suite records the limit rather than the
+     * guarantee -- see test_the_packer_cannot_bind_permission_to_its_source_id.
+     *
+     * The alternative, a source-indexed permission or a token that names its
+     * source, would move the check in here. That is a real design and is
+     * deliberately not being made now: there is no producer to design it
+     * against, and a token shape chosen before the only caller exists is the
+     * kind of interface this contract work keeps having to unpick. */
     bool source_allowed{false};
     /* Not a gate but still initialised: 0 is a representable source, so an
      * indeterminate source_id would pass the range check and attribute a grid

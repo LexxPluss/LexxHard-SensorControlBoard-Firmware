@@ -144,6 +144,32 @@ sensor_read minimal_good_read()
 
 ZTEST_SUITE(tof_grid_packer, NULL, NULL, NULL, NULL, NULL);
 
+/* A KNOWN LIMIT, RECORDED AS ONE. This case asserts what the packer does today and not what it
+ * should guarantee, which is the opposite of every other case in this file, so it is marked.
+ *
+ * `source_allowed` and `source_id` are separate members of a caller-built struct. from_read()
+ * checks that the flag is set and that the id is representable; it has no way to check that the
+ * permission belongs to that id, because the two values arrive already separated. A caller that
+ * reads permission for source 0 and labels the read source 1 is therefore admitted.
+ *
+ * This is pinned rather than left implicit for two reasons. It makes the gap visible to whoever
+ * writes the L7 producer, whose obligation it is: read chain_result::source_allowed for the same
+ * source_id being written, as one step, and test that permission for one source never admits a
+ * grid labelled as the other. And it reddens if someone later changes the packer to bind the two
+ * -- at which point this case should be deleted and replaced by one asserting the refusal, not
+ * updated to keep passing. */
+ZTEST(tof_grid_packer, test_the_packer_cannot_bind_permission_to_its_source_id)
+{
+    sensor_read read{minimal_good_read()};
+    read.source_id = 1;   // permission was granted for source 0 by minimal_good_read()
+
+    const completed_verified_grid grid{completed_verified_grid::from_read(read, false)};
+
+    zassert_true(grid.admitted(),
+                 "if this now refuses, the packer has gained the binding and this case is "
+                 "obsolete: replace it with one asserting the refusal");
+}
+
 // Byte-exact against all four golden grid vectors: 16 data frames plus the
 // closing health frame, nothing derived from this repository's prose.
 ZTEST(tof_grid_packer, test_golden_grid_vectors_byte_exact)
