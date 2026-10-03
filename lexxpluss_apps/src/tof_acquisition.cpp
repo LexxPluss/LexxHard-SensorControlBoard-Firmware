@@ -846,14 +846,25 @@ void run_cycle()
             cfg_.hooks.on_cliff_sample(i, facts_.cycle_seq, f, sample);
     }
 
+    /* Per COMPLETED cycle -- which is why it is not at the top -- and UNDER THE LOCK, which is
+     * why it is not after the hooks.
+     *
+     * It used to be the last line of this function, after the unlock and after on_cycle(). That
+     * left a window in which this cycle was finished but had not consumed its number: another
+     * caller could stop acquisition, call begin_epoch() -- which takes the same lock, finds the
+     * chain idle and resets next_cycle_seq_ to 0 -- and then this line would increment the new
+     * epoch's counter to 1. The first cycle of that epoch would be numbered 1, and the contract
+     * requires cycles to be numbered from 0 per mapping_epoch.
+     *
+     * begin_epoch() cannot observe the half-finished state now, because it cannot hold this lock
+     * until the increment is done. The hooks stay outside the lock, where they were: they must
+     * not run with the chain held. */
+    ++next_cycle_seq_;
     in_cycle_ = false;
     k_mutex_unlock(&tof_chain_controller::chain_lock());
 
     publish_snapshot();
     cfg_.hooks.on_cycle(facts_);
-
-    /* Per COMPLETED cycle, which is why this is here and not at the top. */
-    ++next_cycle_seq_;
 }
 
 int teardown()

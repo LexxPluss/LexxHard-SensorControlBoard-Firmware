@@ -215,10 +215,24 @@ struct {
 acq::mapping_state provider_state{acq::mapping_state::not_ready};
 uint32_t fake_clock_ms{0};
 
+/* When set, on_cycle() quiesces acquisition and begins a new epoch from inside the completion
+ * hook. That hook runs after the cycle is finished and outside the chain lock, which is exactly
+ * the position another caller occupies in the race this models -- except that running it from
+ * the hook makes the ordering a property of the test rather than of the scheduler. */
+bool epoch_reset_from_on_cycle{false};
+int epoch_reset_stop_rc{-999};
+int epoch_reset_begin_rc{-999};
+
 void on_cycle(const acq::cycle_facts &facts)
 {
     ++rec.cycles;
     rec.last = facts;
+
+    if (epoch_reset_from_on_cycle) {
+        epoch_reset_from_on_cycle = false;   // once, on the cycle that triggers it
+        epoch_reset_stop_rc = acq::stop();
+        epoch_reset_begin_rc = acq::begin_epoch();
+    }
 }
 
 uint32_t sample_cycles[8];
@@ -304,6 +318,9 @@ void before(void *)
      *
      * Then assert, because a subsystem that will not retire even with the injection cleared is
      * a real defect and must not be carried silently into the next case. */
+    epoch_reset_from_on_cycle = false;
+    epoch_reset_stop_rc = -999;
+    epoch_reset_begin_rc = -999;
     for (fake_dev &d : devs) {
         d.stop_rc = 0;
         d.start_rc = 0;
@@ -1251,6 +1268,44 @@ ZTEST(tof_acquisition, test_begin_epoch_restarts_the_numbering_when_acquisition_
     zassert_equal(sample_cycles[0], 0, "the first cycle of the new epoch must be 0 again");
 
     acq::stop();
+}
+
+/* THE CYCLE COUNTER USED TO BE INCREMENTED AFTER THE LOCK WAS RELEASED, AND AFTER THE HOOK.
+ *
+ * That left a window in which the cycle was finished but had not consumed its number. Another
+ * caller could stop acquisition and call begin_epoch() -- which takes the chain, finds it idle
+ * and resets next_cycle_seq_ to 0 -- and then the old cycle's increment would take the NEW
+ * epoch's counter to 1. The first cycle of that epoch would be numbered 1, and the contract
+ * numbers cycles from 0 per mapping_epoch.
+ *
+ * The completion hook is used to occupy that window rather than a sleep, because it runs at
+ * exactly the point the racing caller would: cycle finished, lock released, increment pending.
+ * Sleeping would be hoping to land there; this is being there. */
+ZTEST(tof_acquisition, test_an_epoch_begun_from_a_completion_hook_still_numbers_from_zero)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    for (int i = 0; i < 3; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    /* One cycle of the OLD epoch, which is the cycle whose increment is in flight. */
+    sample_cycle_count = 0;
+    epoch_reset_from_on_cycle = true;
+    acq::run_cycle();
+
+    zassert_equal(epoch_reset_stop_rc, 0, "the hook's quiesce must have succeeded");
+    zassert_equal(epoch_reset_begin_rc, 0, "and the epoch must have been allowed to begin");
+
+    /* The first cycle of the new epoch. */
+    for (int i = 0; i < 3; ++i)
+        devs[i].fresh = true;
+    zassert_equal(acq::bring_up(), 0);
+    sample_cycle_count = 0;
+    acq::run_cycle();
+
+    zassert_true(sample_cycle_count > 0, "the new epoch produced no sample to number");
+    zassert_equal(sample_cycles[0], 0u,
+                  "the first cycle of the new epoch was numbered %u, not 0", sample_cycles[0]);
 }
 
 ZTEST(tof_acquisition, test_begin_epoch_refuses_while_cycles_are_being_produced)
