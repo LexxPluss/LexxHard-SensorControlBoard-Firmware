@@ -9,9 +9,9 @@
  *     docs/can/gen_cliff_golden_vectors.py --emit
  *
  * Contract : tof_cliff_wire_contract.md
- * Version  : commissioning-2026-10-02a
- * SHA-256  : a3c83b847035a928fa3962180c0e5280727751ab2f5961fe1c375ec50afc89e4
- * ArtefactSet : 0753deecbb5c841931b44d0284632636334464dea0cc3362f87d8f77bde9907e
+ * Version  : commissioning-2026-10-03a
+ * SHA-256  : fc0d30a2dc89cde9e01a00e00a0d253e54912c7cf8bc3ea262d7435fcee36bd5
+ * ArtefactSet : ee6b13419d2f2f18dd22ebaf069fcbb9c488712c970f831113b2684bc7bc2df4
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.

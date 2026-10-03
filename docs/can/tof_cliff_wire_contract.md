@@ -1,6 +1,6 @@
 # Cliff ToF CAN wire contract (AMRSW-2994)
 
-Contract version: **commissioning-2026-10-02a**
+Contract version: **commissioning-2026-10-03a**
 Wire `PROTOCOL_VERSION`: **1** (unchanged from the draft series — the wire format did not change)
 Release status: **RELEASE_FORBIDDEN.**
 
@@ -114,9 +114,11 @@ What this revision settles, and what it does not:
 The release ban lifts only when all four of these are closed: the timing values come from the six-board
 schedule measurement; the status 3 / 11 rates and the multi-target scenarios are validated on hardware;
 the **frozen position-to-role table** for the four cliff carriers exists, without which no mask keyed by
-`source_id` can be filled honestly and `PROVEN` is unreachable by rule; and a **firmware-side persistent
-`mapping_epoch` issuer** exists, because the host-issued epoch of this profile presupposes an operator.
-Closing any of them is a version bump and a re-pin on both sides.
+`source_id` can be filled honestly and `PROVEN` is unreachable by rule; and an **unattended release
+profile has a persistent `mapping_epoch` issuer satisfying the requirements in *Commissioning
+`mapping_epoch` issuance***. The issuer may reside on the host or in firmware. That substitutes for
+nothing else in that section: the persistence, the consumer-acceptance window and the unspecified
+downlink are all still required. Closing any of these is a version bump and a re-pin on both sides.
 
 This document is the single source of truth shared by two repositories:
 
@@ -225,19 +227,16 @@ Only 0-3 exist; any other value makes the frame malformed.
 only while `mapping_state == PROVEN`, and `PROVEN` is a claim about the machine in front of you, not
 about the design.
 
-**Updated 2026-08-17.** The defect that made `PROVEN` unreachable — one enable clock pulse advancing
-two stages, so two identical VL53L4CX could sit on the factory-default address at once and a single
-address assignment moved both undetectably — was root-caused and has a working fix. The cause was a
-timing race, not a wiring error: the shared clock net is heavily loaded while each data line is a
-single point-to-point hop, so the fast data edge beat the slow clock edge into the receiving flip-flop.
-A series resistor on the data line slows and delays that edge, and with it fitted the on-machine gate
-passed 5/5 rounds on DS20001 — six positions individually addressed with type-appropriate identity
-reads at six distinct addresses, nothing left at the default address, and tail isolation showing
-position 6 on its own address rather than position 5's.
+**An enable-clock mitigation exists; production qualification remains open.** The defect that made
+`PROVEN` unreachable — one enable clock pulse advancing two stages, so two identical VL53L4CX could
+sit on the factory-default address at once and a single address assignment moved both undetectably —
+was root-caused as a timing race, not a wiring error: the shared clock net is heavily loaded while
+each data line is a single point-to-point hop, so the fast data edge beat the slow clock edge into
+the receiving flip-flop. A series resistor on the data line slows and delays that edge. See the
+design notes for the evidence and the outstanding hardware checks; more than one run exists and they
+are recorded there with their conditions.
 
-Two things that does **not** mean. It is a **commissioning workaround on one machine**, not a
-production-qualified fix; the resistor value, its placement at every hop, and the flip-flop's hold
-margin are all open. And it changes nothing about the rule: on hardware that has not passed that gate,
+It changes nothing about the rule: on hardware that has not passed that gate,
 `mapping_state` stays `UNKNOWN`, a conforming implementation publishes **no role-named data at all**,
 `0x216` carries **no traffic**, and the only cliff traffic is the health heartbeat reporting `UNKNOWN`.
 That remains the intended behaviour rather than a defect, and it is what a bring-up engineer should
