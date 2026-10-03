@@ -51,33 +51,87 @@ inline constexpr size_t kZonesPerFrame{4};
 inline constexpr uint16_t kInvalidSentinel{0xFFF};
 inline constexpr uint16_t kMaxValidMm{4094};
 
+// Byte-3 status flag bits, per the wire contract. Only bit 2 is named here:
+// the others are advisory and travel through the packer untouched, whereas
+// this one decides whether a grid may be transmitted at all.
+inline constexpr uint8_t kFlagBindingUntrusted{1U << 2};
+
 // One raw acquisition attempt, as the acquisition thread hands it over.
 // Flags are asserted by the caller; from_read() only judges them.
+//
+// EVERY member carries a default member initialiser, and the safe value is the
+// refusing one. Without them only `sensor_read r{}` zeroed the gates and a plain
+// `sensor_read r;` left them indeterminate -- so a caller that forgot a leg could
+// admit a grid on whatever happened to be on the stack, which is the
+// unsafe-direction failure this struct exists to prevent. See
+// test_default_constructed_read_is_refused.
 struct sensor_read {
-    bool complete;          // all 64 zones present in this read
-    bool io_success;        // no I2C error anywhere in the transaction set
-    bool model_verified;    // device id verified at this chain position
-    uint8_t source_id;      // 0 or 1, per the contract mapping
-    uint8_t generation;
-    uint8_t chain_position;   // diagnostics only, low nibble on the wire
-    uint8_t boards_detected;  // diagnostics only, high nibble on the wire
-    uint8_t recovered_flags;  // contract byte-3 flags: recovered/chain-level only
-    uint8_t last_error;       // device/driver specific, 0 = none
+    bool complete{false};        // all 64 zones present in this read
+    bool io_success{false};      // no I2C error anywhere in the transaction set
+    bool model_verified{false};  // device id verified at this chain position
+    /* The enumerator's per-source permission (chain_result::source_allowed for
+     * this source_id), and the ONLY thing that withholds a grid on an untrusted
+     * chain_position -> source_id binding. It is a separate input from the
+     * status flags on purpose: the wire contract says a flag never suppresses
+     * transmission, so the suppression has to come from the obligation. Reading
+     * byte-3 bit 2 instead would have been the same decision taken through the
+     * wrong door, and would leave a firmware whose acquisition path never
+     * consulted the enumerator at all looking compliant.
+     *
+     * NOT YET WIRED. No production code constructs a sensor_read on this
+     * branch -- the L7 grid_ops are still -ENOSYS stubs -- so this field exists
+     * to make the obligation impossible to supply implicitly once they are
+     * implemented. Until then the enumerator computes source_allowed and only
+     * the shell reads it.
+     *
+     * WHAT THIS FIELD DOES NOT DO, stated because a separate bool beside a
+     * separately writable source_id looks like a binding and is not one.
+     *
+     * from_read() checks two things about attribution: that this flag is set,
+     * and that source_id is representable. It cannot check that the permission
+     * BELONGS to that source_id. Both are plain members of a struct the caller
+     * fills in, so a caller that reads permission for source 0 and then labels
+     * the read source 1 is admitted, and the wrong-side attribution this field
+     * is meant to prevent happens anyway. Nothing in this type can close that:
+     * the two values arrive already separated.
+     *
+     * So the binding is an obligation on the PRODUCER, and it is not discharged
+     * by setting this flag. A producer must read chain_result::source_allowed
+     * for the same source_id it writes, as one step rather than two, and must
+     * carry a test that permission for one source never admits a grid labelled
+     * as the other. tof_packer's own suite records the limit rather than the
+     * guarantee -- see test_the_packer_cannot_bind_permission_to_its_source_id.
+     *
+     * The alternative, a source-indexed permission or a token that names its
+     * source, would move the check in here. That is a real design and is
+     * deliberately not being made now: there is no producer to design it
+     * against, and a token shape chosen before the only caller exists is the
+     * kind of interface this contract work keeps having to unpick. */
+    bool source_allowed{false};
+    /* Not a gate but still initialised: 0 is a representable source, so an
+     * indeterminate source_id would pass the range check and attribute a grid
+     * to whichever side the stack happened to name. */
+    uint8_t source_id{0};     // 0 or 1, per the contract mapping
+    uint8_t generation{0};
+    uint8_t chain_position{0};   // diagnostics only, low nibble on the wire
+    uint8_t boards_detected{0};  // diagnostics only, high nibble on the wire
+    uint8_t recovered_flags{0};  // contract byte-3 flags: recovered/chain-level only, never kFlagBindingUntrusted
+    uint8_t last_error{0};       // device/driver specific, 0 = none
     /* SIGNED, because the ULD's are. A VL53L7CX zone can report a negative
      * distance with a trusted status -- below-floor geometry, or a crosstalk
      * correction that overshoots. Held as uint16_t it wraps to a large positive
      * value, survives the > kMaxValidMm test as "too far", and clamps to
      * 4094 mm: a defect that reads as CLEAR SPACE on a detector whose whole job
      * is to notice something overhead. from_read() rejects negatives outright. */
-    int16_t zones_mm[kZones];       // raw ULD distances
-    uint8_t target_status[kZones];  // raw ULD per-zone status
+    int16_t zones_mm[kZones]{};       // raw ULD distances
+    uint8_t target_status[kZones]{};  // raw ULD per-zone status
 };
 
 class completed_verified_grid {
 public:
     // The gate. Returns a non-admitted grid unless the read satisfies the
-    // transmit obligation (complete && io_success && model_verified) and
-    // carries a representable source_id. Zone reduction to the wire
+    // transmit obligation (complete && io_success && model_verified &&
+    // source_allowed) and carries a representable source_id. Zone reduction to the wire
     // domain happens here: target_status 5 is trusted, 6 and 9 only when
     // accept_low_confidence, everything else becomes the invalid
     // sentinel; a negative raw distance is the sentinel too; valid

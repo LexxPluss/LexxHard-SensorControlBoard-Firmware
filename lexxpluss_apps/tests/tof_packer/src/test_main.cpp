@@ -42,8 +42,8 @@ using namespace lexxhard::tof_grid;
 ZTEST(tof_grid_packer, test_contract_sha_pin)
 {
     zassert_equal(0, strcmp(tof_contract::kContractSha256,
-        "fbc9f1dd1a433cdadb04f8dd9582ffffeac65654293988e60650b13cabc765ea"));
-    zassert_equal(0, strcmp(tof_contract::kContractVersion, "2026-08-02g"));
+        "db75e0ee780eae5708038709cb53a72f2097158e24a0e4372e3a48e9bb771cb9"));
+    zassert_equal(0, strcmp(tof_contract::kContractVersion, "2026-08-02i"));
     // The packer's own constants must agree with the contract's.
     zassert_equal(kInvalidSentinel, tof_contract::kInvalidSentinel);
     zassert_equal(kMaxValidMm, tof_contract::kMaxValidMm);
@@ -105,6 +105,7 @@ sensor_read read_for_vector(const tof_contract::GridVector &vector)
     read.complete = true;
     read.io_success = true;
     read.model_verified = true;
+    read.source_allowed = true;
     read.source_id = vector.source_id;
     read.generation = vector.generation;
     read.recovered_flags = vector.health_frame.bytes[3];
@@ -129,6 +130,7 @@ sensor_read minimal_good_read()
     read.complete = true;
     read.io_success = true;
     read.model_verified = true;
+    read.source_allowed = true;
     read.source_id = 0;
     read.generation = 1;
     for (size_t i{0}; i < kZones; ++i) {
@@ -141,6 +143,32 @@ sensor_read minimal_good_read()
 }
 
 ZTEST_SUITE(tof_grid_packer, NULL, NULL, NULL, NULL, NULL);
+
+/* A KNOWN LIMIT, RECORDED AS ONE. This case asserts what the packer does today and not what it
+ * should guarantee, which is the opposite of every other case in this file, so it is marked.
+ *
+ * `source_allowed` and `source_id` are separate members of a caller-built struct. from_read()
+ * checks that the flag is set and that the id is representable; it has no way to check that the
+ * permission belongs to that id, because the two values arrive already separated. A caller that
+ * reads permission for source 0 and labels the read source 1 is therefore admitted.
+ *
+ * This is pinned rather than left implicit for two reasons. It makes the gap visible to whoever
+ * writes the L7 producer, whose obligation it is: read chain_result::source_allowed for the same
+ * source_id being written, as one step, and test that permission for one source never admits a
+ * grid labelled as the other. And it reddens if someone later changes the packer to bind the two
+ * -- at which point this case should be deleted and replaced by one asserting the refusal, not
+ * updated to keep passing. */
+ZTEST(tof_grid_packer, test_the_packer_cannot_bind_permission_to_its_source_id)
+{
+    sensor_read read{minimal_good_read()};
+    read.source_id = 1;   // permission was granted for source 0 by minimal_good_read()
+
+    const completed_verified_grid grid{completed_verified_grid::from_read(read, false)};
+
+    zassert_true(grid.admitted(),
+                 "if this now refuses, the packer has gained the binding and this case is "
+                 "obsolete: replace it with one asserting the refusal");
+}
 
 // Byte-exact against all four golden grid vectors: 16 data frames plus the
 // closing health frame, nothing derived from this repository's prose.
@@ -166,7 +194,7 @@ ZTEST(tof_grid_packer, test_golden_grid_vectors_byte_exact)
 // non-admitted grid, and the packer writes nothing for it.
 ZTEST(tof_grid_packer, test_gate_refuses_each_failed_leg)
 {
-    for (int leg{0}; leg < 4; ++leg) {
+    for (int leg{0}; leg < 5; ++leg) {
         sensor_read read{minimal_good_read()};
         if (leg == 0)
             read.complete = false;
@@ -174,6 +202,8 @@ ZTEST(tof_grid_packer, test_gate_refuses_each_failed_leg)
             read.io_success = false;
         else if (leg == 2)
             read.model_verified = false;
+        else if (leg == 3)
+            read.source_allowed = false;
         else
             read.source_id = 2; // unrepresentable on the wire
         auto const grid{completed_verified_grid::from_read(read, false)};
@@ -262,7 +292,11 @@ ZTEST(tof_grid_packer, test_low_confidence_policy)
 ZTEST(tof_grid_packer, test_health_reserved_fields_and_flag_mask)
 {
     sensor_read read{minimal_good_read()};
-    read.recovered_flags = 0xFF;
+    // Every byte-3 bit set EXCEPT the untrusted-binding bit, which is not an
+    // advisory and is covered by test_untrusted_binding_is_never_transmitted:
+    // setting it here would refuse the grid and this test would prove nothing
+    // about masking.
+    read.recovered_flags = static_cast<uint8_t>(0xFF & ~kFlagBindingUntrusted);
     read.chain_position = 0xF2;  // only the low nibble may survive
     read.boards_detected = 0xF6;
     auto const grid{completed_verified_grid::from_read(read, false)};
@@ -270,8 +304,139 @@ ZTEST(tof_grid_packer, test_health_reserved_fields_and_flag_mask)
     can_frame_out health;
     zassert_true(packer::pack(grid, data, health));
     zassert_equal(health.bytes[1] & 0x0F, 0);
-    zassert_equal(health.bytes[3], 0x0F);
+    zassert_equal(health.bytes[3], 0x0B);
     zassert_equal(health.bytes[4], 0x62);
     zassert_equal(health.bytes[6], 0);
     zassert_equal(health.bytes[7], 0);
+}
+
+// FAIL-CLOSED BY DEFAULT, proven at compile time and then at run time. The
+// struct's safety claim is that a caller which forgets a leg gets a refused
+// grid, and that only holds if every member has a default member initialiser:
+// `sensor_read r{}` zeroes the gates either way, so a test written that way
+// cannot tell the two cases apart and would have passed against the version
+// this fixes.
+//
+// DEFAULT-initialisation is the case that mattered and the one that was broken.
+// `constexpr` is what pins it: a constexpr object must be fully initialised, so
+// this declaration is ill-formed the moment any member loses its initialiser.
+// Deleting one does not produce a failing assertion, it produces a failing
+// BUILD, which is the strongest form this check can take.
+constexpr sensor_read kDefaultConstructed;
+
+static_assert(!kDefaultConstructed.complete, "complete must default to refusing");
+static_assert(!kDefaultConstructed.io_success, "io_success must default to refusing");
+static_assert(!kDefaultConstructed.model_verified, "model_verified must default to refusing");
+static_assert(!kDefaultConstructed.source_allowed, "source_allowed must default to refusing");
+// Not a gate, but 0 is a representable source: an uninitialised source_id would
+// pass the range check and attribute the grid to whichever side memory named.
+static_assert(kDefaultConstructed.source_id == 0, "source_id must default to a known side");
+
+ZTEST(tof_grid_packer, test_default_constructed_read_is_refused)
+{
+    sensor_read read;  // DEFAULT-initialised, deliberately not `read{}`
+    auto const grid{completed_verified_grid::from_read(read, false)};
+    zassert_false(grid.admitted(), "a read nobody filled in must never be admitted");
+
+    can_frame_out data[kDataFrames];
+    can_frame_out health;
+    memset(data, 0xA5, sizeof data);
+    memset(&health, 0xA5, sizeof health);
+    zassert_false(packer::pack(grid, data, health));
+    zassert_equal(data[0].bytes[0], 0xA5, "wrote data for an unfilled read");
+    zassert_equal(health.bytes[0], 0xA5, "wrote health for an unfilled read");
+
+    // And it is the permission that is missing, not merely everything: granting
+    // every other leg still refuses until source_allowed is set.
+    read.complete = true;
+    read.io_success = true;
+    read.model_verified = true;
+    for (size_t i{0}; i < kZones; ++i) {
+        read.target_status[i] = 5;
+        read.zones_mm[i] = 100;
+    }
+    zassert_false(completed_verified_grid::from_read(read, false).admitted(),
+                  "every leg but the permission must still refuse");
+    read.source_allowed = true;
+    zassert_true(completed_verified_grid::from_read(read, false).admitted(),
+                 "granting the permission must be what admits it");
+}
+
+// THE REASON THE FLAG IS NOT THE GATE. An untrusted binding withholds the grid
+// through the obligation -- source_allowed, the enumerator's own verdict -- with
+// no status flag involved anywhere. Deleting the source_allowed leg from
+// from_read() turns this test red, which is the property the wire contract
+// depends on: "a flag never suppresses transmission" is only honest if the
+// suppression has somewhere else to live.
+//
+// Every advisory combination is swept WITHOUT bit 2, so the refusal cannot be
+// explained by the defensive flag check below it. That check is unreachable
+// from a conforming caller, so if it were doing this work instead, a firmware
+// whose acquisition path never consulted the enumerator would still pass.
+ZTEST(tof_grid_packer, test_revoked_source_allowed_withholds_the_grid)
+{
+    uint8_t const advisories[]{0x00, 0x01, 0x02, 0x08, 0x0B};
+    for (uint8_t flags : advisories) {
+        sensor_read read{minimal_good_read()};
+        read.source_allowed = false;
+        read.recovered_flags = flags;
+        zassert_equal(0, read.recovered_flags & kFlagBindingUntrusted,
+                      "the sweep must not smuggle bit 2 in");
+        auto const grid{completed_verified_grid::from_read(read, false)};
+        zassert_false(grid.admitted(), "flags 0x%02x admitted without permission", flags);
+
+        can_frame_out data[kDataFrames];
+        can_frame_out health;
+        memset(data, 0xA5, sizeof data);
+        memset(&health, 0xA5, sizeof health);
+        zassert_false(packer::pack(grid, data, health), "flags 0x%02x packed", flags);
+        zassert_equal(data[0].bytes[0], 0xA5, "flags 0x%02x wrote data", flags);
+        zassert_equal(health.bytes[0], 0xA5, "flags 0x%02x wrote health", flags);
+    }
+
+    // And the permission is the only thing that changed: the same reads publish
+    // once it is granted, so this test cannot pass by refusing everything.
+    for (uint8_t flags : advisories) {
+        sensor_read read{minimal_good_read()};
+        read.recovered_flags = flags;
+        auto const grid{completed_verified_grid::from_read(read, false)};
+        zassert_true(grid.admitted(), "flags 0x%02x refused with permission", flags);
+    }
+}
+
+// Defence in depth, against an input the contract forbids from existing: a
+// caller that asserts source_allowed AND sets bit 2 is contradicting itself,
+// and the packer refuses rather than guessing which half to believe. This is
+// NOT what implements the contract rule -- test_revoked_source_allowed_withholds
+// _the_grid is -- and the two must not be confused, because a firmware that had
+// only this check would gate on a flag it is not allowed to gate on.
+ZTEST(tof_grid_packer, test_untrusted_binding_is_never_transmitted)
+{
+    uint8_t const companions[]{0x00, 0x01, 0x02, 0x08, 0x0B};
+    for (uint8_t extra : companions) {
+        sensor_read read{minimal_good_read()};
+        read.recovered_flags = static_cast<uint8_t>(kFlagBindingUntrusted | extra);
+        auto const grid{completed_verified_grid::from_read(read, false)};
+        zassert_false(grid.admitted(), "flags 0x%02x admitted", read.recovered_flags);
+
+        can_frame_out data[kDataFrames];
+        can_frame_out health;
+        memset(data, 0xA5, sizeof data);
+        memset(&health, 0xA5, sizeof health);
+        zassert_false(packer::pack(grid, data, health),
+                      "flags 0x%02x packed", read.recovered_flags);
+        zassert_equal(data[0].bytes[0], 0xA5);
+        zassert_equal(health.bytes[0], 0xA5);
+    }
+
+    // The same advisories without bit 2 still publish: the refusal is the
+    // binding, never the company it keeps.
+    sensor_read read{minimal_good_read()};
+    read.recovered_flags = 0x0B;
+    auto const grid{completed_verified_grid::from_read(read, false)};
+    zassert_true(grid.admitted());
+    can_frame_out data[kDataFrames];
+    can_frame_out health;
+    zassert_true(packer::pack(grid, data, health));
+    zassert_equal(health.bytes[3], 0x0B);
 }
