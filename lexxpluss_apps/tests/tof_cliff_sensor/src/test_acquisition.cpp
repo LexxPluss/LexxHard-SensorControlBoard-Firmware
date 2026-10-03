@@ -2051,6 +2051,82 @@ ZTEST(tof_acquisition, test_a_join_that_times_out_changes_nothing_and_kills_noth
  * window, which is exactly how this reached a robot. This one puts the acquisition thread ABOVE its
  * creator, which makes the preemption certain rather than possible.
  */
+/* ---------------------------- what an OUTSIDE observer may see of a starting thread ----- */
+
+/* thread_running() is deliberately lock-free, so a caller on a third thread can read it at any
+ * instant. thread_active_ used to be set BEFORE k_thread_create(), so that caller could see
+ * "running" while thread_ and owner_ were still uninitialised, enter try_stop(), and call
+ * k_thread_join() on a kernel object that did not exist. Everything the flag advertises is now
+ * installed first and the flag is the last write before the unlock.
+ *
+ * WHAT THIS TEST DOES AND DOES NOT SHOW, because the distinction decides how much weight it can
+ * carry. There is no scheduling point between those two writes, and native_sim runs one CPU, so
+ * a cooperating observer cannot be made to land inside the old window on demand: this test
+ * cannot reproduce the defect and is not evidence that the race is gone. The ORDER IN THE CODE
+ * is that evidence. What this does check, repeatedly and deterministically, is the invariant the
+ * order exists to provide -- that an observer which sees thread_running() can immediately act on
+ * everything that flag advertises, join included, and get a clean quiesce rather than a hang or
+ * a fault. A regression that reordered the publication would have to keep that true. */
+K_THREAD_STACK_DEFINE(watcher_stack, 2048);
+k_thread watcher_thread;
+volatile bool watcher_saw_running{false};
+volatile int watcher_stop_rc{-1};
+
+void watcher_entry(void *, void *, void *)
+{
+    /* k_msleep and not k_yield: the watcher sits ABOVE the caller, and k_yield() only gives way
+     * to equal or higher priority, so a yielding spin here starves the very start() it is
+     * waiting for -- the first version of this test timed out that way without ever seeing the
+     * thread. Sleeping blocks, which lets the caller run.
+     *
+     * Bounded, so a failure is a reported assertion rather than a hung suite. */
+    for (int i{0}; i < 500 && !acq::thread_running(); ++i)
+        k_msleep(1);
+    if (!acq::thread_running())
+        return;
+    watcher_saw_running = true;
+    watcher_stop_rc = acq::try_stop();
+}
+
+ZTEST(tof_acquisition, test_an_observer_that_sees_the_thread_running_can_stop_it_at_once)
+{
+    acq::thread_config t{thread_cfg(500)};
+    const int caller_prio{k_thread_priority_get(k_current_get())};
+
+    zassert_equal(acq::init(make_config(2)), 0);
+
+    /* A DELTA, not an absolute. The counter is for the subsystem's lifetime and the legitimate
+     * foreign-caller cases in this file move it, so only the change across this start says
+     * anything -- the same reason the preempting-creator case takes one. */
+    const uint32_t foreign_before{acq::foreign_lifecycle_calls()};
+
+    /* The caller must be preemptible and the watcher must sit above it, so the watcher runs as
+     * early as the scheduler allows -- the same reason the preempting-creator case lowers the
+     * ztest thread. The acquisition thread stays below both; this case is about the observer,
+     * not about the new thread. */
+    k_thread_priority_set(k_current_get(), K_PRIO_PREEMPT(9));
+    t.priority = K_PRIO_PREEMPT(10);
+
+    watcher_saw_running = false;
+    watcher_stop_rc = -1;
+    k_thread_create(&watcher_thread, watcher_stack, K_THREAD_STACK_SIZEOF(watcher_stack),
+                    watcher_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(8), 0, K_NO_WAIT);
+
+    const int start_rc{acq::start(t)};
+
+    (void)k_thread_join(&watcher_thread, K_MSEC(2000));
+    k_thread_priority_set(k_current_get(), caller_prio);
+
+    zassert_equal(start_rc, 0);
+    zassert_true(watcher_saw_running, "the watcher never observed the thread as running");
+    zassert_equal(watcher_stop_rc, 0,
+                  "an observer acting on thread_running() got %d, not a clean quiesce",
+                  watcher_stop_rc);
+    zassert_false(acq::thread_running(), "and the thread must be gone afterwards");
+    zassert_equal(acq::foreign_lifecycle_calls(), foreign_before,
+                  "the ownership rule must not have been broken on the way");
+}
+
 ZTEST(tof_acquisition, test_a_thread_that_preempts_its_creator_still_brings_the_sources_up)
 {
     acq::thread_config t{thread_cfg(500)};

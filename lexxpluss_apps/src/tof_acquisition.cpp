@@ -1011,8 +1011,6 @@ int start(const thread_config &tcfg)
      * decides, so it cannot be mid-decision here. The new thread's first act is bring_up(), which
      * takes the same lock, so it waits for this to finish rather than racing it. */
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
-    atomic_set(&thread_active_, 1);
-    thread_created_ = true;
 
     /* K_FOREVER, then an explicit start, because the ownership record has to be COMPLETE before
      * the new thread can run a single instruction.
@@ -1038,6 +1036,20 @@ int start(const thread_config &tcfg)
     k_tid_t const tid{k_thread_create(&thread_, tcfg_.stack, tcfg_.stack_size, thread_entry, nullptr,
                                       nullptr, nullptr, tcfg_.priority, 0, K_FOREVER)};
     atomic_ptr_set(&owner_, tid);
+    thread_created_ = true;
+
+    /* PUBLISHED LAST, and this ordering is for observers OUTSIDE this function.
+     *
+     * Suspended creation above settles what the NEW thread can see. It does nothing for a
+     * caller on a third thread, because thread_running() is deliberately lock-free. With
+     * thread_active_ set before k_thread_create(), such a caller could see "running" while
+     * thread_ and owner_ were still uninitialised, enter try_stop(), and call k_thread_join()
+     * on a kernel object that did not exist yet.
+     *
+     * Everything a caller reaches through that flag -- the thread object join() waits on, the
+     * owner the ownership decision reads, the created flag teardown() checks -- is therefore
+     * installed first, and the flag that advertises them is the last write before the unlock. */
+    atomic_set(&thread_active_, 1);
     k_mutex_unlock(&tof_chain_controller::chain_lock());
     k_thread_start(tid);
     return 0;
