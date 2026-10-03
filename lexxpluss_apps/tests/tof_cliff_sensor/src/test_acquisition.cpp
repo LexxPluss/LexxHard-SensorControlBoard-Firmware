@@ -287,10 +287,20 @@ acq::config make_config(int count)
 
 void before(void *)
 {
-    /* Retire whatever the previous case left running. init() now refuses -EALREADY while the
-     * subsystem is live -- because the health work item reads cfg_ from another context -- and
-     * several cases call before() themselves inside a loop to re-configure per iteration. */
-    acq::teardown();
+    /* FAULT INJECTION IS CLEARED BEFORE THE RETIRE, NOT AFTER, and the order is load-bearing.
+     *
+     * teardown() now refuses while any device will not stop, keeping the subsystem configured
+     * so the cleanup can be retried. A case that ends with stop_rc set therefore leaves a live
+     * subsystem behind, and this hook's retry would fail for the same injected reason -- the
+     * old order memset devs AFTER the teardown, so the second attempt met the same fault and
+     * the next init() got -EALREADY. Clearing the injection first makes the retry meet a
+     * healthy device.
+     *
+     * Then assert, because a subsystem that will not retire even with the injection cleared is
+     * a real defect and must not be carried silently into the next case. */
+    for (fake_dev &d : devs)
+        d.stop_rc = 0;
+    zassert_equal(acq::teardown(), 0, "a previous case left the subsystem un-retirable");
 
     acq::stop();
     memset(devs, 0, sizeof(devs));
@@ -311,7 +321,11 @@ void before(void *)
  * silently replaced a live configuration. */
 void retire(void *)
 {
-    acq::teardown();
+    /* Deliberately NOT asserted. A case that ends with a device refusing to stop is a
+     * legitimate end state -- several exist on purpose -- and teardown() is supposed to refuse
+     * it. before() is where the suite recovers, with the injection cleared first, and that is
+     * where the assertion lives. */
+    (void)acq::teardown();
 }
 
 ZTEST_SUITE(tof_acquisition, NULL, NULL, before, retire, NULL);
@@ -1269,6 +1283,65 @@ ZTEST(tof_acquisition, test_stopping_acquisition_does_not_stop_the_heartbeat)
                  "the heartbeat stopped with acquisition: %d -> %d", before, rec.health_beats);
 }
 
+/* ---------------------------------------- teardown refuses an unfinished quiesce ----- */
+
+/* TEARDOWN USED TO DISCARD stop()'s ERROR AND RETIRE ANYWAY.
+ *
+ * stop() returns an error and leaves that source's `started` set when a device would not stop.
+ * Clearing configured_ on top of that released init() from -EALREADY, so the next init() could
+ * replace the descriptors and re-address a device nobody could confirm had stopped -- with no
+ * path back to the old descriptors and nothing left that would retry the cleanup.
+ *
+ * THE INJECTION IS HELD FOR THE WHOLE CASE. It is never cleared here, so there is no second
+ * attempt that could quietly succeed and hide the first failure; the retry is a separate test
+ * below, where the clearing is explicit. */
+ZTEST(tof_acquisition, test_teardown_refuses_while_a_device_will_not_stop)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    devs[1].stop_rc = -EIO;   // held for the rest of this case
+
+    zassert_not_equal(acq::teardown(), 0, "a device that will not stop is not a retirement");
+    zassert_false(acq::is_idle(), "the chain cannot be idle while that is true");
+
+    /* Nothing is retired by halves: the configuration still stands, so init() is still refused
+     * and the descriptors cannot be replaced underneath that device. */
+    zassert_equal(acq::init(make_config(2)), -EALREADY,
+                  "a refused teardown must not release init()");
+
+    /* And the heartbeat keeps running, which is the whole point of refusing rather than
+     * half-retiring: this is exactly when a consumer needs to be told the subsystem is alive
+     * and not producing. */
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 4);
+    zassert_true(rec.health_beats >= before + 3,
+                 "a refused teardown stopped the heartbeat: %d -> %d", before, rec.health_beats);
+}
+
+/* The other half: once the fault clears, the retry retires the subsystem properly. The clearing
+ * is the one line that differs from the case above, so what is being tested is the retry and
+ * not some incidental difference in setup. */
+ZTEST(tof_acquisition, test_teardown_retried_after_the_fault_clears_retires_the_subsystem)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    devs[1].stop_rc = -EIO;
+    zassert_not_equal(acq::teardown(), 0);
+
+    devs[1].stop_rc = 0;      // the fault clears, and only here
+    zassert_equal(acq::teardown(), 0, "the retry must retire what the first attempt could not");
+
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 4);
+    zassert_equal(rec.health_beats, before, "a successful teardown must stop the heartbeat");
+
+    zassert_equal(acq::init(make_config(2)), 0, "and must release init()");
+}
+
 ZTEST(tof_acquisition, test_teardown_is_what_stops_the_heartbeat)
 {
     /* The other half. Retiring the subsystem is a separate, deliberate act from pausing it, and
@@ -1566,6 +1639,49 @@ acq::thread_config thread_cfg(uint32_t join_timeout_ms)
     t.priority = K_PRIO_PREEMPT(5);
     t.join_timeout_ms = join_timeout_ms;
     return t;
+}
+
+/* THE SAME BEHAVIOUR ON THE THREAD PATH, because teardown() reaches stop() by a different route
+ * there -- it joins the acquisition thread first, and that thread runs its own stop on the way
+ * out. A fix proven only in the no-thread mode would say nothing about the path production
+ * actually uses.
+ *
+ * The injection is set before the teardown and held across it, so the thread's own stop on exit
+ * and teardown()'s stop both meet the fault. That ordering is deliberate: if it were cleared in
+ * between, a first-fails-then-succeeds sequence would look like a pass. */
+ZTEST(tof_acquisition, test_teardown_refuses_on_the_thread_path_too)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    zassert_true(acq::thread_running());
+    k_msleep(kCyclePeriodMs * 2);
+
+    devs[1].stop_rc = -EIO;   // held for the rest of this case
+
+    zassert_not_equal(acq::teardown(), 0, "the thread path must refuse for the same reason");
+    zassert_false(acq::thread_running(), "the thread is still joined before the quiesce is tried");
+    zassert_false(acq::is_idle());
+    zassert_equal(acq::init(make_config(2)), -EALREADY);
+
+    const int before{rec.health_beats};
+    k_msleep(kHealthPeriodMs * 4);
+    zassert_true(rec.health_beats >= before + 3,
+                 "the heartbeat must survive a refused teardown here too: %d -> %d",
+                 before, rec.health_beats);
+}
+
+ZTEST(tof_acquisition, test_teardown_on_the_thread_path_retries_clean_after_the_fault_clears)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+
+    devs[1].stop_rc = -EIO;
+    zassert_not_equal(acq::teardown(), 0);
+
+    devs[1].stop_rc = 0;
+    zassert_equal(acq::teardown(), 0);
+    zassert_equal(acq::init(make_config(2)), 0, "the retry must release init() here too");
 }
 
 ZTEST(tof_acquisition, test_the_thread_brings_up_and_then_cycles_at_the_cadence)

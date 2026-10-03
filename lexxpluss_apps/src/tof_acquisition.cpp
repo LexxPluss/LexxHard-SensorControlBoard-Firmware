@@ -829,7 +829,7 @@ void run_cycle()
     ++next_cycle_seq_;
 }
 
-void teardown()
+int teardown()
 {
     /* The real shutdown: quiesce acquisition, stop the heartbeat, then WAIT for any health work
      * already submitted to finish. Separate from stop() because they answer different questions
@@ -842,7 +842,7 @@ void teardown()
      * relying on it -- and leaves the work item reading a cfg_ the next init() is entitled to
      * replace. */
     if (!configured_)
-        return;
+        return 0;
     /* The thread first, and through the same request-and-join path: retiring the subsystem while a
      * thread is still driving sensors would tear cfg_ out from under it. An unbounded wait is
      * correct HERE and only here -- teardown means the subsystem is going away, so there is nothing
@@ -853,7 +853,24 @@ void teardown()
         (void)k_thread_join(&thread_, K_FOREVER);
         thread_created_ = false;
     }
-    stop();
+
+    /* RETIREMENT IS CONDITIONAL ON THE QUIESCE SUCCEEDING, and this return used to be
+     * discarded.
+     *
+     * stop() returns an error and leaves that source's `started` set when a device would not
+     * stop -- meaning its state is unknown, not that it is known to be ranging. Retiring on
+     * top of that cleared configured_, which is the one thing holding init() to -EALREADY; the
+     * next init() was then free to replace the descriptors and re-address a device nobody
+     * could confirm had stopped, with no path back to the old ones and nothing left that would
+     * retry the cleanup.
+     *
+     * So a failed quiesce keeps the subsystem exactly as it is: configured, its device state
+     * intact, and the heartbeat still running -- that is when a consumer most needs to be told
+     * the subsystem is alive and not producing. init() stays refused, and teardown() may be
+     * called again once the fault clears. Nothing here is torn down by halves. */
+    if (const int rc{stop()}; rc != 0)
+        return rc;
+
     k_timer_stop(&health_timer_);
     static k_work_sync sync;
     (void)k_work_cancel_sync(&health_work_, &sync);
@@ -866,6 +883,7 @@ void teardown()
      * not have stayed theoretical for long. A fresh init() is now the only way back. */
     active_ = false;
     configured_ = false;
+    return 0;
 }
 
 int stop()

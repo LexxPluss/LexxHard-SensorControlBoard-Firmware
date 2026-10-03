@@ -378,13 +378,25 @@ int try_stop();
 // subsystem cannot be confused -- a consumer must be able to tell a controlled pause from a
 // silence that looks like a crashed producer.
 //
-// After this returns, no further health frame can be emitted. Stopping the timer alone does not
-// give that: a work item submitted by the last tick may still be queued or running, so a frame
-// could go out after teardown claimed the subsystem was down.
+// ON A ZERO RETURN, and only then, no further health frame can be emitted. Stopping the timer
+// alone does not give that: a work item submitted by the last tick may still be queued or
+// running, so a frame could go out after teardown claimed the subsystem was down.
 //
-// Until it is called, a second init() is refused with -EALREADY rather than overwriting a live
-// configuration underneath a work item that is reading it.
-void teardown();
+// Returns:
+//   0        nothing was configured, or everything stopped and the subsystem is retired.
+//   nonzero  stop() refused: at least one device is not confirmed stopped. NOTHING is retired --
+//            the configuration, the device state and the heartbeat all stay exactly as they
+//            were, deliberately, because that is when a consumer most needs to be told the
+//            subsystem is alive and not producing. Call it again once the fault clears.
+//
+// A caller that ignores the return keeps a live subsystem it believes is retired. The
+// difference matters because clearing the configuration is what releases init() from
+// -EALREADY: a discarded error let the next init() replace the descriptors and re-address a
+// device nobody could confirm had stopped.
+//
+// Until it returns zero, a second init() is refused with -EALREADY rather than overwriting a
+// live configuration underneath a work item that is reading it.
+int teardown();
 
 // True only when the chain is genuinely free: not mid-cycle AND not running. The
 // distinction matters because commissioning drops enable lines, which re-addresses parts;
