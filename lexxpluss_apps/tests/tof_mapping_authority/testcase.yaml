@@ -1,0 +1,4 @@
+tests:
+  tof.mapping_authority:
+    platform_allow: native_sim
+    tags: tof

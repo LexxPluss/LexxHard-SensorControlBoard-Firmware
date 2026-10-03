@@ -36,7 +36,16 @@ bool addr_usable(uint8_t a)
     return a >= 0x08 && a <= 0x77;
 }
 
-spec_error validate(const chain_spec &spec)
+} // namespace
+
+/* Public because two callers need the SAME answer, not two implementations of it.
+ * enumerate() validates before touching hardware. tof_proof bounds the position count
+ * first -- that is a separate, earlier check, since nothing may be read from at[] until
+ * the count is sane -- and calls this before trusting the evidence, rather than taking
+ * the caller's word via chain_result::spec, a field filled by whoever built the result.
+ * A second copy of these rules in the proof layer would diverge the first time one of
+ * them gained a check. Pure: no ops, no state, safe on a spec never enumerated. */
+spec_error validate_spec(const chain_spec &spec)
 {
     if (spec.positions == 0 || spec.positions > chain_spec::kMaxPositions)
         return spec_error::position_count;
@@ -91,6 +100,8 @@ spec_error validate(const chain_spec &spec)
     }
     return spec_error::none;
 }
+
+namespace {
 
 // One full sweep of the watched set. Every address is probed regardless of
 // earlier findings (the sweep itself must be complete on the wire); the
@@ -169,19 +180,12 @@ census run_census(chain_ops &ops, const chain_spec &spec, const bool owned[],
     return c;
 }
 
-bool id_matches(model m, const id_bytes &b)
-{
-    if (m == model::l7cx)
-        return b.first == 0xf0 && b.second == 0x02;
-    return b.first == 0xeb && b.second == 0xaa;
-}
-
 }  // namespace
 
 chain_result enumerate(chain_ops &ops, const chain_spec &spec)
 {
     chain_result r{};
-    r.spec = validate(spec);
+    r.spec = validate_spec(spec);
     if (r.spec != spec_error::none)
         return r;  // status stays failed; ZERO hardware operations; positions stays 0
     r.positions = spec.positions;

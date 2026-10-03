@@ -34,8 +34,11 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar twister-out* \
-	       build-test-tof-packer build-test-tof-enumerator build-tof-chain
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer \
+	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
+	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
+	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
+	        build-test-tof-enumerator build-tof-chain
 
 .PHONY: distclean
 distclean: clean
@@ -60,7 +63,7 @@ update:
 	./scripts/manage_zephyr_patches.sh apply
 
 .PHONY: test
-test:
+test: check_language_boundary
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west twister -T lexxpluss_apps/tests --platform native_sim -v -A ${WORKDIR}/extra
 
@@ -81,14 +84,76 @@ test_tof_packer:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_packer -d build-test-tof-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the cliff measurement packer: the contract SHA pin (the firmware
+# half of the cross-repository lock) and the normative reduction, which the layout
+# vectors cannot cover because the pre-reduction target list never reaches the wire.
+# The generator check runs first, for the same reason the grid target does it.
+.PHONY: test_tof_cliff_packer
+test_tof_cliff_packer:
+	$(RUNNER) python3 docs/can/gen_cliff_golden_vectors.py --check
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_cliff_packer -d build-test-tof-cliff-packer -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the cliff (VL53L4CX) sensor layer. Two levels in one image:
+# the port's wire shape and errno path through an emulated I2C controller, and the
+# read_once adapter against fakes that reproduce the ULD's own defects. The ULD's
+# sources are deliberately absent from this build -- driving the real ULD would mean
+# freezing a vendor-internal register sequence into our tests.
+.PHONY: test_tof_cliff_sensor
+test_tof_cliff_sensor:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_cliff_sensor -d build-test-tof-cliff-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the ToF enumeration layer: currently the production
 # guarded readdress (exact-traffic properties the enumerator fakes cannot
 # prove, above all zero-writes-after-transport-error); the enumeration state
 # machine suite joins here.
+# The only suite that compiles a vendor translation unit, and it compiles the PATCHED
+# copy: it pins that a failed VL53LX_get_device_results() is reported as a failure and
+# does not move the device's stream-count history. Dropping the patch fails it.
+.PHONY: test_tof_uld_status
+test_tof_uld_status:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_uld_status -d build-test-tof-uld-status -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: test_tof_enumerator
 test_tof_enumerator:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_enumerator -d build-test-tof-enumerator -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the mapping authority: every way a challenge, an epoch or a proof can fail to authorise, and the guarantee that a refusal costs nothing.
+.PHONY: test_tof_mapping_authority
+test_tof_mapping_authority:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the commissioning orchestrator: the transaction that quiesces
+# acquisition, runs two walks plus tail isolation, and asks the authority to commit.
+# 13 use an injected fake quiesce; 3 link the real acquisition layer.
+.PHONY: test_tof_commissioning
+test_tof_commissioning:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
+.PHONY: test_tof_tail_isolation
+test_tof_tail_isolation:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_tail_isolation -d build-test-tof-tail-isolation -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the mapping proof: the two-walk fingerprint comparison and every refusal it can return, against a fake chain. No device, no bus, no ULD.
+.PHONY: test_tof_mapping_proof
+test_tof_mapping_proof:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_proof -d build-test-tof-mapping-proof -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The golden-vector generators are Python and live in docs/can/ as offline tooling, so
+# they do enter the production Git branch. This gate is what keeps that from becoming
+# Python in the product: it fails if any .py appears outside docs/can/, or if any build
+# description or application file references one. Runs on the host, needs only git.
+.PHONY: check_language_boundary
+check_language_boundary:
+	./scripts/check_language_boundary.sh
 
 .PHONY: firmware
 firmware:
@@ -133,6 +198,46 @@ firmware_bypass_safety_lidar:
 # the NACK-classification patch (verified first) and stacks on the Dasher
 # safety-lidar bypass like the diagnostic build. Dedicated build directory
 # for the usual cache-leak reason.
+# The on-machine cliff build: the chain PLUS the L4 cliff ULD, acquisition, packer, publisher and
+# CAN glue. Distinct from firmware_tof_chain, which is the chain only, with no cliff data path.
+# This is the single cliff capacity number now: the staged TOF_CLIFF_BUDGET probe was retired in
+# the same commit that made this path reachable, because its per-step storage double-counted
+# against the production storage and its increments no longer isolated anything.
+#
+# Delivered as a padded TEST image, like firmware_tof_chain and for the same measured reason: the
+# CAN DFU writes raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer
+# embedded in the file can request a swap. An unpadded signed.bin therefore sits in slot1 doing
+# nothing while the machine keeps running the old firmware -- and that looks identical to a revert.
+# main.cpp confirms the image after thread creation, so a crash in main initialisation (which is
+# where the cliff bootstrap runs) rolls back on the next boot.
+#
+# This image produces the 0x217 health heartbeat and does NOT produce measurement frames, because
+# the PROVEN clamp is applied unconditionally at the single authorisation exit.
+#
+# That is the only thing the clamp decides. It does not decide the proof: `tof cliff prove` succeeds
+# or fails on its evidence, and the four cliff roles are no longer unknown -- they are frozen from
+# the assembly connectivity drawing in tof_chain_spec.hpp, which is what makes the production spec
+# provable at all. What is still open is the hardware: walk 1 has never reached COMPLETE at the
+# 400 kHz this overlay pins, so a run on a real machine fails there rather than at the role table.
+#
+# NO SAFETY-LIDAR BYPASS, unlike firmware_tof_chain, which this target was first copied from. That
+# flag belongs to a bench image and this one is meant to be a product build; carrying it by
+# inheritance is how a bypass ships. firmware_bypass_safety_lidar remains the named target for a
+# machine with no safety lidar fitted, and a bench that needs both cliff and the bypass needs its
+# own target rather than this one quietly being both.
+#
+# firmware_tof_chain still carries the flag. That is pre-existing and deliberately left alone here;
+# whether a bring-up target should keep it is a separate decision from what this one ships with.
+.PHONY: firmware_tof_cliff
+firmware_tof_cliff:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-cliff -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-cliff/zephyr/zephyr.signed.bin out/zephyr_tof_cliff.signed.bin
+	mv build-tof-cliff/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_cliff.signed.confirmed.bin
+	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
+	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
+
 #
 # The `tof enum` command is present but is NOT expected to complete on this
 # image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition
