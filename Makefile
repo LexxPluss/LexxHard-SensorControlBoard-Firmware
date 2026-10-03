@@ -211,8 +211,14 @@ firmware_bypass_safety_lidar:
 # main.cpp confirms the image after thread creation, so a crash in main initialisation (which is
 # where the cliff bootstrap runs) rolls back on the next boot.
 #
-# PROVEN is still clamped and the four cliff roles are still unknown, so this image produces the
-# 0x217 health heartbeat and refuses `tof cliff prove`. It does NOT produce measurement frames.
+# This image produces the 0x217 health heartbeat and does NOT produce measurement frames, because
+# the PROVEN clamp is applied unconditionally at the single authorisation exit.
+#
+# That is the only thing the clamp decides. It does not decide the proof: `tof cliff prove` succeeds
+# or fails on its evidence, and the four cliff roles are no longer unknown -- they are frozen from
+# the assembly connectivity drawing in tof_chain_spec.hpp, which is what makes the production spec
+# provable at all. What is still open is the hardware: walk 1 has never reached COMPLETE at the
+# 400 kHz this overlay pins, so a run on a real machine fails there rather than at the role table.
 #
 # NO SAFETY-LIDAR BYPASS, unlike firmware_tof_chain, which this target was first copied from. That
 # flag belongs to a bench image and this one is meant to be a product build; carrying it by
