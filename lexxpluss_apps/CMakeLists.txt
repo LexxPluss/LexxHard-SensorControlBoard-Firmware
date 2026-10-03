@@ -66,8 +66,10 @@ if(ENABLE_TOF_CHAIN)
 endif()
 
 # Cliff ToF: the vendored VL53L4CX ULD and its Zephyr platform layer. Off by
-# default, so the production image is byte-identical until the acquisition path
-# is real. TOF_CLIFF_BUDGET selects a build point of the flash/RAM budget series.
+# default. With it on, the whole cliff data path is reachable from
+# tof_chain_controller, so this option now costs what the feature costs; there is
+# no longer a staged series to measure it in pieces. See the retirement note in
+# the commit that removed TOF_CLIFF_BUDGET.
 if(ENABLE_TOF_CLIFF_ULD)
     # The chain flag is a DEPENDENCY, not a neighbour. i2c2 is the tug encoder's
     # bus until ENABLE_TOF_CHAIN replaces its init with init_disconnected_for_tof()
@@ -95,18 +97,13 @@ if(ENABLE_TOF_CLIFF_ULD)
     # global -Wno-*. Only this target's compile options are affected.
     set_source_files_properties(${VL53L4CX_ULD_PRODUCTION_SOURCES} PROPERTIES
         COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable;-Wno-missing-field-initializers")
-    # The sensor layer itself. Compiled whenever the ULD is, so the budget series
-    # measures the real production file rather than a probe-local copy of it.
+    # The sensor layer itself. Compiled whenever the ULD is.
     target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_sensor.c)
     # src/*.cpp is globbed at the top of this file, so tof_acquisition.cpp is already a
     # source of every build. It needs this definition to compile its body: without the
     # ULD's include directories a chain build without the cliff sensors failed on
     # vl53l4cx.h, which is exactly what its guard prevents.
     add_definitions(-DENABLE_TOF_CLIFF_ULD)
-    if(TOF_CLIFF_BUDGET)
-        target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_budget_probe.c)
-        add_definitions(-DTOF_CLIFF_BUDGET=${TOF_CLIFF_BUDGET})
-    endif()
 endif()
 
 if(VERSION)

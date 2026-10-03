@@ -34,12 +34,11 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar twister-out* \
-	       build-test-tof-packer build-test-tof-cliff-packer \
-	       build-test-tof-cliff-sensor build-test-tof-uld-status \
-	       build-test-tof-enumerator build-test-tof-mapping-authority \
-	       build-test-tof-tail-isolation build-test-tof-mapping-proof \
-	       build-tof-chain
+	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer \
+	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
+	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
+	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
+	        build-test-tof-enumerator build-tof-chain
 
 .PHONY: distclean
 distclean: clean
@@ -128,6 +127,14 @@ test_tof_mapping_authority:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_authority -d build-test-tof-mapping-authority -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the commissioning orchestrator: the transaction that quiesces
+# acquisition, runs two walks plus tail isolation, and asks the authority to commit.
+# 13 use an injected fake quiesce; 3 link the real acquisition layer.
+.PHONY: test_tof_commissioning
+test_tof_commissioning:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
 .PHONY: test_tof_tail_isolation
 test_tof_tail_isolation:
@@ -191,6 +198,46 @@ firmware_bypass_safety_lidar:
 # the NACK-classification patch (verified first) and stacks on the Dasher
 # safety-lidar bypass like the diagnostic build. Dedicated build directory
 # for the usual cache-leak reason.
+# The on-machine cliff build: the chain PLUS the L4 cliff ULD, acquisition, packer, publisher and
+# CAN glue. Distinct from firmware_tof_chain, which is the chain only, with no cliff data path.
+# This is the single cliff capacity number now: the staged TOF_CLIFF_BUDGET probe was retired in
+# the same commit that made this path reachable, because its per-step storage double-counted
+# against the production storage and its increments no longer isolated anything.
+#
+# Delivered as a padded TEST image, like firmware_tof_chain and for the same measured reason: the
+# CAN DFU writes raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer
+# embedded in the file can request a swap. An unpadded signed.bin therefore sits in slot1 doing
+# nothing while the machine keeps running the old firmware -- and that looks identical to a revert.
+# main.cpp confirms the image after thread creation, so a crash in main initialisation (which is
+# where the cliff bootstrap runs) rolls back on the next boot.
+#
+# This image produces the 0x217 health heartbeat and does NOT produce measurement frames, because
+# the PROVEN clamp is applied unconditionally at the single authorisation exit.
+#
+# That is the only thing the clamp decides. It does not decide the proof: `tof cliff prove` succeeds
+# or fails on its evidence, and the four cliff roles are no longer unknown -- they are frozen from
+# the assembly connectivity drawing in tof_chain_spec.hpp, which is what makes the production spec
+# provable at all. What is still open is the hardware: walk 1 has never reached COMPLETE at the
+# 400 kHz this overlay pins, so a run on a real machine fails there rather than at the role table.
+#
+# NO SAFETY-LIDAR BYPASS, unlike firmware_tof_chain, which this target was first copied from. That
+# flag belongs to a bench image and this one is meant to be a product build; carrying it by
+# inheritance is how a bypass ships. firmware_bypass_safety_lidar remains the named target for a
+# machine with no safety lidar fitted, and a bench that needs both cliff and the bypass needs its
+# own target rather than this one quietly being both.
+#
+# firmware_tof_chain still carries the flag. That is pre-existing and deliberately left alone here;
+# whether a bring-up target should keep it is a separate decision from what this one ships with.
+.PHONY: firmware_tof_cliff
+firmware_tof_cliff:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-cliff -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-cliff/zephyr/zephyr.signed.bin out/zephyr_tof_cliff.signed.bin
+	mv build-tof-cliff/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_cliff.signed.confirmed.bin
+	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
+	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
+
 #
 # The `tof enum` command is present but is NOT expected to complete on this
 # image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition
