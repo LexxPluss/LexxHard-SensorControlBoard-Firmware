@@ -162,8 +162,13 @@ struct chain_ops {
 
 // The whole glue rule for turning the patched driver's return codes into
 // the tri-state probe. Requires the in-repo Zephyr patch
-// (patches/zephyr/0001-i2c-stm32-v2-distinguish-nack.patch): a pure NACK
-// comes back as -ENXIO, transport faults as -EIO / -ETIMEDOUT. Without the
+// (patches/zephyr/0005-i2c-stm32-v2-backport-isr-rework.patch), which is
+// what contracts the classification this depends on: a pure NACK comes
+// back as -ENXIO, transport faults as -EIO / -ETIMEDOUT. That patch took
+// the place of 0001-i2c-stm32-v2-distinguish-nack.patch and absorbed its
+// classification; the host suite in lexxpluss_apps/tests/i2c_stm32_v2_isr
+// pins all three codes, including for the zero-length probe raw_probe()
+// issues. Without the
 // patch every failure reads -EIO and this classifier reports
 // transport_error -- the machine then freezes rather than guesses, and the
 // production build refuses to start anyway (the Makefile verifies the
