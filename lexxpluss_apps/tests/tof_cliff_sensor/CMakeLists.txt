@@ -46,18 +46,32 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(tof_cliff_sensor_test)
 
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
+# The generated contract headers the publisher and the packer pin against.
+set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
 set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
 
 target_sources(app PRIVATE
     src/fake_i2c.c
     src/test_port_traffic.c
     src/test_read_once.c
+    src/test_acquisition.cpp
+    src/test_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_sensor.c
+    ${APP_SRC_DIR}/tof_acquisition.cpp
+    ${APP_SRC_DIR}/tof_cliff_packer.cpp
+    ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${ULD_DIR}/zephyr/vl53lx_platform.c
     ${ULD_DIR}/zephyr/vl53l4cx_bus_io.c
 )
+
+# The acquisition layer is compiled only under ENABLE_TOF_CHAIN and ENABLE_TOF_CLIFF_ULD in
+# production, so the test defines both. The chain controller itself is NOT linked here: the test
+# fakes chain_lock() with a real k_mutex, which keeps the lock assertions honest without dragging
+# the bus and the shell into a suite about lifecycle.
+target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
+    ${CONTRACT_DIR}
     ${ULD_DIR}/zephyr
     ${ULD_DIR}/upstream
     ${ULD_DIR}/upstream/modules
