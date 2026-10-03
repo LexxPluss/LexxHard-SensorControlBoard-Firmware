@@ -29,7 +29,14 @@ project(lexxpluss_apps)
 FILE(GLOB app_sources src/*.cpp)
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
 target_sources(app PRIVATE ${app_sources} ${ros_sources})
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs)
+# docs/can holds the generated production half of the CAN wire contracts --
+# identifiers, field encodings and the cliff status classification table. Production
+# code includes it directly, exactly as the tests do, so there is no vendored copy to
+# drift from the contract it was generated from. Only tof_cliff_contract.h is meant to
+# be reachable this way; the vector header and the commissioning timing profile are
+# separate artefacts and are not on this path by accident.
+target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../docs/can)
 
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)
@@ -56,6 +63,47 @@ if(ENABLE_TOF_CHAIN)
     message(WARNING "TOF CHAIN BUILD: tug encoder polling is disabled; "
                     "the ToF chain owns i2c2. Driver return-code hardware "
                     "verification is still pending.")
+endif()
+
+# Cliff ToF: the vendored VL53L4CX ULD and its Zephyr platform layer. Off by
+# default. With it on, the whole cliff data path is reachable from
+# tof_chain_controller, so this option now costs what the feature costs; there is
+# no longer a staged series to measure it in pieces. See the retirement note in
+# the commit that removed TOF_CLIFF_BUDGET.
+if(ENABLE_TOF_CLIFF_ULD)
+    # The chain flag is a DEPENDENCY, not a neighbour. i2c2 is the tug encoder's
+    # bus until ENABLE_TOF_CHAIN replaces its init with init_disconnected_for_tof()
+    # and starts no polling thread for it (see main.cpp). The cliff ULD reaches the
+    # same bus, so the combination without the chain flag gives one bus two owners,
+    # no chain overlay and no ownership handover. Refuse it at configure time rather
+    # than let it link.
+    #
+    # This used to add "and TOF_CLIFF_BUDGET >= 5 does so from a SYS_INIT at boot,
+    # before anyone could intervene". That is no longer true and the sentence is
+    # removed rather than left to mislead: the budget probes now register an anchor
+    # that keeps the walk linked without executing it during init, because they
+    # measure REACHABLE code and a boot-time run only ever probed an unpowered,
+    # uncommissioned bus. The dependency below stands on its own without it.
+    if(NOT ENABLE_TOF_CHAIN)
+        message(FATAL_ERROR
+            "ENABLE_TOF_CLIFF_ULD requires ENABLE_TOF_CHAIN: without it the tug "
+            "encoder keeps i2c2 and its polling thread, while the cliff ULD "
+            "drives the same bus.")
+    endif()
+    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l4cx_uld/vl53l4cx_sources.cmake)
+    target_sources(app PRIVATE ${VL53L4CX_ULD_PRODUCTION_SOURCES})
+    target_include_directories(app PRIVATE ${VL53L4CX_ULD_INCLUDE_DIRS})
+    # Third-party code, exempted narrowly rather than by deleting files or by a
+    # global -Wno-*. Only this target's compile options are affected.
+    set_source_files_properties(${VL53L4CX_ULD_PRODUCTION_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable;-Wno-missing-field-initializers")
+    # The sensor layer itself. Compiled whenever the ULD is.
+    target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/tof_cliff_sensor.c)
+    # src/*.cpp is globbed at the top of this file, so tof_acquisition.cpp is already a
+    # source of every build. It needs this definition to compile its body: without the
+    # ULD's include directories a chain build without the cliff sensors failed on
+    # vl53l4cx.h, which is exactly what its guard prevents.
+    add_definitions(-DENABLE_TOF_CLIFF_ULD)
 endif()
 
 if(VERSION)

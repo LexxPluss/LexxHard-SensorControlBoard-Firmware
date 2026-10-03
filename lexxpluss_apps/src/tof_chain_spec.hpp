@@ -38,9 +38,13 @@
 // mapping document (Request C) -- if that document contradicts the diagram,
 // THIS table is where the correction lands, nowhere else.
 //
-// The four L4 mounting roles are deliberately `unknown` until the same
-// frozen mapping arrives: electrical enumeration proves the type sequence,
-// never the mounting role of four identical boards.
+// The four L4 mounting roles were `unknown` while this file waited for the
+// same frozen mapping, on the grounds that electrical enumeration proves the
+// type sequence and never the mounting role of four identical boards. That
+// reasoning still holds -- it is why the roles below do NOT come from
+// enumeration. They are now FROZEN from the assembly connectivity drawing,
+// which is a different source of truth and is documented at the table itself,
+// together with the precondition it carries.
 //
 // Target addresses 0x2A..0x2F collide with no known device on this bus
 // (the on-board ADS7138 sits at 0x17) and were used throughout the DS20001
@@ -56,10 +60,27 @@ inline constexpr tof_enum::chain_spec dasher_spec()
     s.positions = 6;
     s.at[0] = {tof_enum::model::l7cx, 0x2A, 0, tof_enum::l4_role::unknown};
     s.at[1] = {tof_enum::model::l7cx, 0x2B, 1, tof_enum::l4_role::unknown};
-    s.at[2] = {tof_enum::model::l4cx, 0x2C, -1, tof_enum::l4_role::unknown};
-    s.at[3] = {tof_enum::model::l4cx, 0x2D, -1, tof_enum::l4_role::unknown};
-    s.at[4] = {tof_enum::model::l4cx, 0x2E, -1, tof_enum::l4_role::unknown};
-    s.at[5] = {tof_enum::model::l4cx, 0x2F, -1, tof_enum::l4_role::unknown};
+    /* The four cliff roles, FROZEN from the assembly connectivity drawing (dasher_connectivity.png):
+     * PCB3 front-left, PCB4 rear-left, PCB5 rear-right, PCB6 front-right, in chain order.
+     *
+     * The source of this mapping matters more than its content. Electrical enumeration cannot
+     * establish it -- four identical carriers on one chain are indistinguishable to the bus, and the
+     * enable chain's own defect (one clock pulse lighting two boards) once made a "one pulse, one
+     * position" reading produce a position attribution that had to be retracted. So this comes from
+     * the drawing, and only from the drawing.
+     *
+     * PRECONDITION, and it is not checkable in software: the installed harness must match that
+     * drawing. Re-verify after any harness rework or board swap; a transposed connector produces a
+     * chain that enumerates perfectly and publishes one corner's range under another corner's
+     * source_id, which is invisible on the wire.
+     *
+     * source_id stays -1 here because that field is the GRID source table. A cliff measurement's
+     * source_id is derived from the role by tof_proof::source_id_of(), the contract's own table --
+     * never by arithmetic on the enum, and never written out a second time here. */
+    s.at[2] = {tof_enum::model::l4cx, 0x2C, -1, tof_enum::l4_role::front_left};
+    s.at[3] = {tof_enum::model::l4cx, 0x2D, -1, tof_enum::l4_role::rear_left};
+    s.at[4] = {tof_enum::model::l4cx, 0x2E, -1, tof_enum::l4_role::rear_right};
+    s.at[5] = {tof_enum::model::l4cx, 0x2F, -1, tof_enum::l4_role::front_right};
     s.alloff_pulses = 8;
     s.watch_count = 0;
     s.require_all_sources = true;
