@@ -71,6 +71,33 @@ bool is_commissioning_profile(const fingerprint &fp)
             return false;
     }
 
+    /* The grid sources, which the model check above cannot see.
+     *
+     * validate_spec() will not catch a missing one either: `require_all_sources` is the
+     * enumerator's own escape hatch for a bench chain that legitimately carries fewer than
+     * both hanging sources, and a spec may switch it off. That hatch must not reach a
+     * commissioning token. This predicate is the thing that says "the chain in front of you
+     * is the six-board production chain", and a grid source missing from it means a mask
+     * keyed by source_id cannot be filled honestly.
+     *
+     * The cliff positions are required to carry no grid source at all: source_id is the grid
+     * table, and a cliff position claiming a grid source is a contradiction rather than a
+     * variation. A cliff measurement's source_id comes from its role through the contract's
+     * own table, never from this field. */
+    bool grid_seen[enm::chain_result::kMaxSources]{};
+    for (size_t i{0}; i < 2; ++i) {
+        const int8_t s{fp.at[i].source_id};
+        if (s < 0 || static_cast<size_t>(s) >= enm::chain_result::kMaxSources)
+            return false;
+        if (grid_seen[static_cast<size_t>(s)])
+            return false;
+        grid_seen[static_cast<size_t>(s)] = true;
+    }
+    for (size_t i{2}; i < kPositions; ++i) {
+        if (fp.at[i].source_id != -1)
+            return false;
+    }
+
     /* Same set check as the spec-side one, over the other type. Two small loops rather than
      * one generic helper: the alternative was a template over two unrelated structs, which
      * costs more to read than it saves. */

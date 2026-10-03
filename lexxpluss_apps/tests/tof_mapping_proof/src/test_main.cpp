@@ -545,6 +545,71 @@ ZTEST(tof_mapping_proof, test_same_still_compares_fingerprints_that_fill_the_arr
     zassert_false(pf::same(a, b), "and must still differ when its last position differs");
 }
 
+/* ------------------------------------- the commissioning profile's grid sources ------- */
+
+namespace {
+
+/* The profile a proven production chain produces: two grid sources, then four cliff
+ * positions carrying no grid source at all. */
+pf::fingerprint commissioning_fingerprint()
+{
+    pf::fingerprint fp{};
+    fp.positions = 6;
+    const enm::l4_role roles[4]{enm::l4_role::front_left, enm::l4_role::rear_left,
+                                enm::l4_role::rear_right, enm::l4_role::front_right};
+    for (size_t i{0}; i < 6; ++i) {
+        fp.at[i].position = static_cast<uint8_t>(i + 1);
+        fp.at[i].expected = i < 2 ? enm::model::l7cx : enm::model::l4cx;
+        fp.at[i].source_id = i < 2 ? static_cast<int8_t>(i) : static_cast<int8_t>(-1);
+        fp.at[i].role = i < 2 ? enm::l4_role::unknown : roles[i - 2];
+        fp.at[i].verified = true;
+    }
+    return fp;
+}
+
+} // namespace
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_accepts_the_production_shape)
+{
+    zassert_true(pf::is_commissioning_profile(commissioning_fingerprint()),
+                 "the shape every other test in this group varies from must itself pass");
+}
+
+/* validate_spec() will not catch this: require_all_sources is the enumerator's escape
+ * hatch for a bench chain carrying fewer than both hanging sources, and a spec may switch
+ * it off. The hatch must not reach a commissioning token -- a mask keyed by source_id
+ * cannot be filled from a chain missing one. */
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_requires_a_grid_source_to_be_present)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[1].source_id = -1;
+    zassert_false(pf::is_commissioning_profile(fp), "a missing grid source is not this profile");
+}
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_duplicated_grid_source)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[1].source_id = 0;
+    zassert_false(pf::is_commissioning_profile(fp), "two positions cannot be one source");
+}
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_grid_source_out_of_range)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[0].source_id = 2;
+    zassert_false(pf::is_commissioning_profile(fp), "only sources 0 and 1 exist");
+}
+
+/* source_id is the GRID table. A cliff position claiming one is a contradiction, not a
+ * variation: a cliff measurement's source_id comes from its role through the contract's
+ * own table and is never read from this field. */
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_cliff_claiming_a_grid_source)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[4].source_id = 1;
+    zassert_false(pf::is_commissioning_profile(fp), "a cliff position carries no grid source");
+}
+
 ZTEST(tof_mapping_proof, test_a_position_that_never_verified_is_refused)
 {
     /* `absent` is the pos6 failure class from the DS20001 bring-up: enable never arrived.
