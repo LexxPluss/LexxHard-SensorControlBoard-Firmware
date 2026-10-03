@@ -257,7 +257,11 @@ attempt begin_proof()
      *
      * Nothing is revoked on this path either: a running acquisition under a proven mapping is
      * the normal state, and tearing it down because someone asked at the wrong moment would
-     * turn a mistimed request into an outage. */
+     * turn a mistimed request into an outage.
+     *
+     * A SAMPLE, NOT A RESERVATION, and the header states the precondition that makes it
+     * sound: the caller holds the chain lock across the whole transaction. Without that, this
+     * returning true says only that acquisition was idle at this instant. */
     if (!cfg_.acquisition_idle()) {
         a.reason = begin_refusal::acquisition_not_idle;
         return a;

@@ -170,6 +170,29 @@ int init(const config &cfg);
 // the difference between refusing to start and discovering the problem after two walks have
 // already re-addressed the chain underneath a running reader.
 //
+// PRECONDITION, AND THIS PREDICATE DOES NOT ESTABLISH IT: the caller must already hold the
+// chain lock, and must hold it unbroken until it has committed or aborted.
+//
+// acquisition_idle() is a sample. It reserves nothing: on its own, acquisition could start
+// between the predicate returning true and the caller's first enable pulse, and the chain
+// would be re-addressed underneath a live reader. The authority cannot close that window --
+// it owns no lock and has no way to make one side wait for the other.
+//
+// It is closed by the caller instead, and that is a deliberate division rather than an
+// omission. The chain lock already exists, acquisition already takes it for every path that
+// touches a device, and a second ownership mechanism here would mean two rules about who
+// owns the chain, which is worse than one. The commissioning session takes the lock BEFORE
+// calling this and holds it, by scope, across both walks, the isolation, the evaluation and
+// the commit or abort -- including every early return. Under that lock the sample cannot go
+// stale, because nothing else can begin touching devices while it is held.
+//
+// The recursion this relies on is a documented Zephyr property, not an accident: this call
+// reaches is_idle(), and commit_proof() reaches begin_epoch(), and both take that same mutex
+// from inside the caller's session. k_mutex is recursive for its owning thread.
+//
+// So a caller that does NOT hold the chain lock for the whole transaction gets no protection
+// from the check below, whatever it returns.
+//
 // Any previously issued challenge and any token minted from it stop being committable here.
 attempt begin_proof();
 
