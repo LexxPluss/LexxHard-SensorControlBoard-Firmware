@@ -454,6 +454,37 @@ ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
 
 /* ------------------------------------------------------------ publication gate ----- */
 
+/* The PROVEN clamp's one-time warning sits in effective_mapping_state(), which has callers on
+ * two threads: the acquisition path reaches it through publish_snapshot() and
+ * publication_allowed(), and health_work_handler() reaches it from the system workqueue. Its
+ * guard was a plain function-local bool, read and written from both -- a data race.
+ *
+ * WHAT THIS CASE IS. The fix is an atomic one-time guard and changes no observable value, so
+ * there is nothing new to assert about the result: the clamp is pinned by the cases below. What
+ * this adds is the two-thread exercise the old guard never got in this suite -- the heartbeat
+ * running while cycles run, with the provider reporting PROVEN, so both callers reach the guard.
+ * Under the old code that was undefined behaviour; it is not a proof that the race is gone, and
+ * a sanitizer build is where it would be caught. */
+ZTEST(tof_acquisition, test_the_clamp_holds_from_both_the_health_and_the_acquisition_paths)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    provider_state = acq::mapping_state::proven;
+
+    const int beats_before{rec.health_beats};
+    for (int i = 0; i < 6; ++i) {
+        acq::run_cycle();
+        k_msleep(kHealthPeriodMs);
+    }
+    zassert_true(rec.health_beats > beats_before,
+                 "the health path has to have run for this case to exercise anything");
+
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready,
+                 "the clamp must still hold with both callers active");
+    zassert_false(acq::publication_allowed(),
+                  "and nothing may be published on an unproven mapping");
+}
+
 ZTEST(tof_acquisition, test_proven_is_unreachable_and_has_no_bypass_flag)
 {
     zassert_equal(acq::init(make_config(4)), 0);

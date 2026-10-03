@@ -469,9 +469,17 @@ mapping_state clamp_mapping_state(mapping_state reported)
         // one careless -D away from shipping and would not show up in a diff of the code
         // it disables; lifting this is an edit here, in its own commit, once both of the
         // above are closed.
-        static bool warned{false};
-        if (!warned) {
-            warned = true;
+        /* ATOMIC, because this function has two callers on two threads: the acquisition path
+         * reaches it through publish_snapshot() and publication_allowed(), and
+         * health_work_handler() reaches it from the system workqueue. A plain bool read and
+         * written from both is a data race -- undefined behaviour, not merely a warning that
+         * might print twice.
+         *
+         * atomic_cas is the whole guard: exactly one caller sees the 0 and takes the
+         * transition, every other caller sees 1 and skips. ATOMIC_INIT is a constant
+         * initialiser, so this needs no thread-safe-statics guard of its own. */
+        static atomic_t warned{ATOMIC_INIT(0)};
+        if (atomic_cas(&warned, 0, 1)) {
             LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- proven on hardware "
                     "only at 100 kHz, never at the product's 400 kHz, and the acquisition "
                     "thread has no stack watermark");
