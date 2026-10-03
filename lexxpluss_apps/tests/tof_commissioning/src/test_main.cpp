@@ -365,6 +365,78 @@ ZTEST(tof_commissioning, test_a_healthy_chain_with_frozen_roles_is_proven)
     zassert_true(another_thread_can_take_the_chain(), "the session did not release the chain");
 }
 
+/* ------------------------- the chain is held FOR the transaction, not just around it ----- */
+
+/* THE HALF THIS SUITE NEVER ASSERTED. It checks nine times that the chain can be taken again
+ * AFTER a transaction, and never once that it cannot be taken DURING one. The second half is the
+ * one the authority's precondition rests on: `acquisition_idle()` is a sample that reserves
+ * nothing, and what makes it sound is that this session holds the chain unbroken from before
+ * begin_proof() until commit or abort. Nothing proved that.
+ *
+ * The handshake is what makes it a fact rather than a hope. The enumerator's sensor-boot wait
+ * runs on the thread executing the transaction, mid-walk, so the fake signals the prober from
+ * there and blocks until it answers. The prober takes the SAME mutex with K_NO_WAIT -- no wait,
+ * so it cannot deadlock against the holder, and no recursion, because it is a different thread
+ * and would therefore have to acquire it for real. */
+K_SEM_DEFINE(midtx_go, 0, 1);
+K_SEM_DEFINE(midtx_done, 0, 1);
+K_THREAD_STACK_DEFINE(midtx_stack, 2048);
+k_thread midtx_thread;
+volatile int midtx_lock_rc{-999};
+volatile int midtx_attempts{0};
+
+void midtx_entry(void *, void *, void *)
+{
+    if (k_sem_take(&midtx_go, K_MSEC(5000)) != 0)
+        return;
+    ++midtx_attempts;
+    midtx_lock_rc = k_mutex_lock(&chain_mutex, K_NO_WAIT);
+    if (midtx_lock_rc == 0)
+        k_mutex_unlock(&chain_mutex);
+    k_sem_give(&midtx_done);
+}
+
+void midtx_probe_once()
+{
+    /* Once per run, from the first wait the walk reaches. Later waits must not re-signal a
+     * prober that has already finished. */
+    if (midtx_attempts != 0)
+        return;
+    k_sem_give(&midtx_go);
+    (void)k_sem_take(&midtx_done, K_MSEC(5000));
+}
+
+ZTEST(tof_commissioning, test_another_thread_cannot_take_the_chain_during_the_transaction)
+{
+    arrange(provable_spec());
+
+    k_sem_reset(&midtx_go);
+    k_sem_reset(&midtx_done);
+    midtx_lock_rc = -999;
+    midtx_attempts = 0;
+    k_thread_create(&midtx_thread, midtx_stack, K_THREAD_STACK_SIZEOF(midtx_stack), midtx_entry,
+                    nullptr, nullptr, nullptr, K_PRIO_PREEMPT(1), 0, K_NO_WAIT);
+
+    chain.on_wait = midtx_probe_once;
+    const cm::outcome r{cm::prove(9)};
+    chain.on_wait = nullptr;
+
+    (void)k_thread_join(&midtx_thread, K_MSEC(5000));
+
+    zassert_equal(midtx_attempts, 1, "the prober never ran inside the transaction");
+    zassert_not_equal(midtx_lock_rc, 0,
+                      "another thread took the chain mid-transaction: the proof's walks can be "
+                      "interleaved with somebody else's device access");
+
+    /* And the other half, which this suite already knew how to ask: once the transaction is over
+     * the chain is free again. Without this the case above would be satisfied by a session that
+     * simply never released. */
+    zassert_true(r.proven(), "stage %d proof %d commit %d", static_cast<int>(r.failed_at),
+                 static_cast<int>(r.proof), static_cast<int>(r.commit));
+    zassert_true(another_thread_can_take_the_chain(),
+                 "the chain was still held after the transaction returned");
+}
+
 ZTEST(tof_commissioning, test_the_recursive_locks_inside_the_session_do_not_deadlock)
 {
     /* begin_proof() -> is_idle() and commit_proof() -> begin_epoch() both take the chain mutex from

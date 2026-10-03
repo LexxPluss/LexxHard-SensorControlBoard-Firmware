@@ -135,7 +135,18 @@ struct fake_chain final : enm::chain_ops {
         return {};
     }
 
-    void wait(wait_reason) override {}
+    /* Called from inside the transaction, on the thread running it, while that thread holds
+     * whatever locks the transaction took. The enumerator waits for sensor boot at a point where
+     * every stage of the walk is under way, which makes this the one hook a test can use to
+     * observe the chain's state MID-transaction rather than before or after it. Left null by
+     * every case that does not need it. */
+    void (*on_wait)(){nullptr};
+
+    void wait(wait_reason) override
+    {
+        if (on_wait != nullptr)
+            on_wait();
+    }
 };
 
 inline enm::chain_spec provable_spec()
