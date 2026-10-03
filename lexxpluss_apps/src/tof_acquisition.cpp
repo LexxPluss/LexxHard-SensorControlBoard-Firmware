@@ -1001,6 +1001,19 @@ int start(const thread_config &tcfg)
     tcfg_ = tcfg;
     atomic_set(&stop_requested_, 0);
     k_sem_reset(&stop_sem_);
+    /* The stop result belongs to a thread's LIFETIME, so it is initialised where that lifetime
+     * begins and nowhere else.
+     *
+     * try_stop() used to clear it, and that handoff could not be made safe by moving the clear
+     * earlier. request_stop() is callable from anywhere -- the shell, teardown(), a previous
+     * try_stop() that timed out -- so by the time try_stop() runs, the thread may already have
+     * stopped the devices, written a FAILING result and exited. Clearing before its own
+     * request_stop() would still overwrite that, and clearing after is worse. The caller then
+     * read 0 and reported a quiesce that never happened, which is exactly what lets
+     * commissioning drop enable lines on a device that was never stopped.
+     *
+     * Here there is no such window: no thread exists yet to have written anything. */
+    atomic_set(&thread_stop_rc_, 0);
 
     /* NOT touching next_cycle_seq_. Starting a thread is not the start of an epoch: the contract
      * numbers cycles from 0 per mapping_epoch, begin_epoch() does that as one step of the
@@ -1116,7 +1129,10 @@ int try_stop()
      * -EBUSY. Nothing is killed: see join(). */
     if (thread_running()) {
         request_stop();
-        atomic_set(&thread_stop_rc_, 0);
+        /* NOT cleared here. The thread may already have run its stop, recorded a failure and
+         * exited -- request_stop() is callable from anywhere and may have been called long
+         * before this. Clearing at any point in this function overwrites a result that is
+         * already final. start() initialises it, once, where the thread's lifetime begins. */
         if (int const rc{join(tcfg_.join_timeout_ms)}; rc != 0)
             return rc;
         /* Joined, so the thread has run its stop and recorded the outcome. A thread that

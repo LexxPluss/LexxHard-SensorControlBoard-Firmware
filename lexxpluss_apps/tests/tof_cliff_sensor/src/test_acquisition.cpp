@@ -2088,6 +2088,76 @@ void watcher_entry(void *, void *, void *)
     watcher_stop_rc = acq::try_stop();
 }
 
+/* ------------------------------- the thread's stop result is not the caller's to clear ----- */
+
+/* try_stop() USED TO CLEAR thread_stop_rc_ AFTER ASKING THE THREAD TO STOP. The thread writes
+ * that result and only THEN clears thread_active_, so a try_stop() landing between the two took
+ * the thread branch, overwrote a finished result with zero, joined, and returned 0 -- reporting
+ * a quiesce that never happened.
+ *
+ * NONE OF THE CASES BELOW DISCRIMINATES THAT RACE, and saying so is the point of this comment.
+ * The defect is observable only inside that window, and the window cannot be entered on demand
+ * here: the thread's own stop() takes the chain lock, so holding the lock parks it BEFORE the
+ * result is written, not between the two writes. An earlier version of this file tried exactly
+ * that, asserted on a precondition that could never hold, and -- because the assertion fired
+ * while the test still held the chain lock -- deadlocked every case after it. The ordering
+ * argument in the fix is the evidence; what these cases pin is the behaviour that ordering
+ * exists to protect, in the shapes a caller actually produces. */
+ZTEST(tof_acquisition, test_a_stop_that_failed_is_never_reported_as_a_clean_quiesce)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+
+    devs[1].stop_rc = -EIO;          // held for the rest of this case
+
+    /* The thread runs its own stop on the way out and records the outcome. */
+    acq::request_stop();
+    zassert_equal(acq::join(500), 0, "the thread must have exited for this to mean anything");
+    zassert_false(acq::thread_running());
+
+    zassert_equal(acq::try_stop(), -EIO, "a quiesce that did not happen must not report 0");
+    zassert_false(acq::is_idle(), "and the chain cannot be idle after that");
+}
+
+/* The same with no wait between the request and the call, which is the shape commissioning
+ * actually produces -- it asks and then waits with its own bound. Whichever branch try_stop()
+ * ends up taking, a failing stop must not come back as 0. */
+ZTEST(tof_acquisition, test_a_fast_exiting_thread_still_reports_its_stop_failure)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+
+    devs[1].stop_rc = -EIO;
+
+    acq::request_stop();
+    zassert_equal(acq::try_stop(), -EIO, "a quiesce that did not happen must not report 0");
+}
+
+/* The control group: a thread whose stop succeeds still reports 0, so the two cases above are
+ * not passing on a blanket failure. It also pins the other half of the lifetime rule -- a NEW
+ * start() must clear the previous thread's result, or a failure would be inherited forever. */
+ZTEST(tof_acquisition, test_a_new_thread_does_not_inherit_the_previous_ones_stop_failure)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+
+    devs[1].stop_rc = -EIO;
+    acq::request_stop();
+    zassert_equal(acq::try_stop(), -EIO);
+
+    /* The fault clears, the source is quiesced, and a fresh thread starts. */
+    devs[1].stop_rc = 0;
+    zassert_equal(acq::try_stop(), 0, "the retry must now succeed");
+    zassert_equal(acq::start(thread_cfg(500)), 0);
+    k_msleep(kCyclePeriodMs * 2);
+
+    zassert_equal(acq::try_stop(), 0,
+                  "a new thread must not inherit the previous thread's failure");
+}
+
 ZTEST(tof_acquisition, test_an_observer_that_sees_the_thread_running_can_stop_it_at_once)
 {
     acq::thread_config t{thread_cfg(500)};
