@@ -1404,6 +1404,70 @@ ZTEST(tof_acquisition, test_stopping_acquisition_does_not_stop_the_heartbeat)
  *
  * So the obligation is carried separately, and the two halves are asserted separately here:
  * not readable, and not finished with. */
+/* A RE-BRING-UP MUST QUIESCE THE OWED DEVICE FIRST, AND MUST NOT PROCEED IF IT CANNOT.
+ *
+ * This is the path the other cleanup cases do not cover: they stop, retire or run cycles. Here
+ * the caller asks for a fresh bring-up while a source still owes a stop, and the ordering is the
+ * whole safety property -- open/configure/start on a device that was never quiesced is two
+ * drivers on one part, which is exactly the shape the chain lock and the proof exist to prevent.
+ *
+ * The injection is held for the whole case, so there is no second attempt that could quietly
+ * succeed. */
+ZTEST(tof_acquisition, test_a_re_bring_up_refuses_to_touch_a_source_it_could_not_stop)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    devs[1].start_rc = -EIO;
+    devs[1].start_leaves_ranging_unknown = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[1].stop_rc = -EIO;            // held for the rest of this case
+
+    const int opens{devs[1].open_calls};
+    const int starts{devs[1].start_calls};
+    const int stops{devs[1].stop_calls};
+
+    zassert_equal(acq::bring_up(), 0, "one bad source must not fail the whole bring-up");
+
+    zassert_true(devs[1].stop_calls > stops,
+                 "the owed stop must be attempted before anything else touches this source");
+    zassert_equal(devs[1].open_calls, opens,
+                  "a source that could not be stopped must not be opened again");
+    zassert_equal(devs[1].start_calls, starts,
+                  "and must not be started again");
+
+    /* The other sources are untouched by that refusal -- it is per source, not a whole-chain
+     * abort. */
+    zassert_true(devs[0].start_calls > 0 && devs[2].start_calls > 0,
+                 "the healthy sources must still have been brought up");
+}
+
+/* And once the stop succeeds, the same call does proceed: the obligation is discharged and the
+ * source is opened, configured and started again. Without this the case above would be
+ * satisfied by a bring-up that simply never touches that source. */
+ZTEST(tof_acquisition, test_a_re_bring_up_proceeds_once_the_owed_stop_succeeds)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    devs[1].start_rc = -EIO;
+    devs[1].start_leaves_ranging_unknown = true;
+    zassert_equal(acq::bring_up(), 0);
+
+    /* The device can be stopped now, and the start would succeed on a retry. */
+    devs[1].start_rc = 0;
+    devs[1].start_leaves_ranging_unknown = false;
+
+    const int opens{devs[1].open_calls};
+    const int stops{devs[1].stop_calls};
+
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_true(devs[1].stop_calls > stops, "the owed stop still comes first");
+    zassert_true(devs[1].open_calls > opens, "and then the source is brought up again");
+    zassert_true(acq::is_idle() == false, "it is running now, so not idle");
+
+    acq::stop();
+    zassert_true(acq::is_idle(), "and nothing is owed once that stop succeeds");
+}
+
 ZTEST(tof_acquisition, test_a_start_that_left_the_device_armed_is_neither_read_nor_forgotten)
 {
     zassert_equal(acq::init(make_config(3)), 0);
