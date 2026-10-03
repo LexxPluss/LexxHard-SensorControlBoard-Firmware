@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026, LexxPluss Inc.
-# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-License-Identifier: BSD-2-Clause
 #
 # Applies, verifies or reverses the repository's Zephyr patches.
 #

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2026, LexxPluss Inc.
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * ToF chain enumeration glue (AMRSW-2322 Phase 2, ENABLE_TOF_CHAIN builds).
  *
