@@ -501,6 +501,214 @@ ZTEST(tof_mapping_proof, test_an_incomplete_second_walk_is_refused)
     zassert_equal(refused(t), pf::refusal::walk2_not_complete);
 }
 
+/* ------------------------------------- the walk's own control state ------- */
+
+/* `complete` says the walk finished. It does not say the walk can describe what it asked
+ * of the enable chain, and chain_result is filled in by whoever built it. The enumerator
+ * clears control_state_known on a control failure -- the state in which the hardware may
+ * not have executed the last request -- so a walk carrying both is describing addresses
+ * that may belong to a configuration nobody commanded. */
+ZTEST(tof_mapping_proof, test_a_first_walk_that_cannot_describe_its_control_state_is_refused)
+{
+    transaction t;
+    t.walk1.control_state_known = false;
+    zassert_equal(refused(t), pf::refusal::walk_control_unknown);
+}
+
+ZTEST(tof_mapping_proof, test_a_second_walk_that_cannot_describe_its_control_state_is_refused)
+{
+    transaction t;
+    t.walk2.control_state_known = false;
+    zassert_equal(refused(t), pf::refusal::walk_control_unknown);
+}
+
+/* A position the walk never commanded enabled cannot have been proven by it, whatever the
+ * verdict beside it says. The two fields come from different places -- the verdict from the
+ * census, the commanded state from the control sequence -- so one can be clean while the
+ * other was never set. */
+ZTEST(tof_mapping_proof, test_a_position_the_walk_never_commanded_enabled_is_refused)
+{
+    transaction t;
+    t.walk2.at[3].enable_commanded_high = false;
+    zassert_equal(refused(t), pf::refusal::walk_position_not_enabled);
+}
+
+/* ------------------------------------- the public fingerprint comparison ------- */
+
+/* same() is public and takes two caller-built fingerprints, so `positions` is whatever the
+ * caller wrote. Neither the commissioning topology check nor fingerprint_of()'s own bound
+ * runs on this path. Without a bound of its own it indexes at[] past the end.
+ *
+ * Both sides claim the same impossible count, so the early inequality return does not save
+ * it: that is exactly the shape that reaches the loop.
+ *
+ * The padding is what makes this test able to fail. An earlier version of it used two bare
+ * fingerprints, and it passed with the bound removed -- the overrun read whatever happened
+ * to follow each local, the two differed, and same() returned false for a reason that had
+ * nothing to do with the check. It was green because the bug is undefined behaviour, not
+ * because the bug was absent. Following each fingerprint with zeroed positions of the same
+ * type makes the overrun read equal values instead, so an unbounded same() returns TRUE and
+ * this assertion reddens.
+ *
+ * What that does and does not establish, stated so the next reader does not over-read it:
+ * it shows the mutation is detected IN THIS BUILD, with this layout and this compiler. The
+ * overrun is still undefined behaviour, so the padding is not a portable guarantee that an
+ * unbounded same() misbehaves -- it is a way of making the defect reliably visible here.
+ * The bound itself is what makes the question moot; the test exists to keep it. */
+ZTEST(tof_mapping_proof, test_same_refuses_fingerprints_claiming_more_positions_than_can_exist)
+{
+    struct padded {
+        pf::fingerprint fp{};
+        pf::position_fingerprint beyond[2]{};
+    };
+    padded a{};
+    padded b{};
+    a.fp.positions = enm::chain_spec::kMaxPositions + 1;
+    b.fp.positions = a.fp.positions;
+    zassert_false(pf::same(a.fp, b.fp), "a fingerprint past the array describes no chain");
+}
+
+/* The bound must not cost the honest case: a fingerprint that fills the array exactly is
+ * still compared. A check that refused this would be the same defect in the other
+ * direction. */
+ZTEST(tof_mapping_proof, test_same_still_compares_fingerprints_that_fill_the_array)
+{
+    pf::fingerprint a{};
+    a.positions = enm::chain_spec::kMaxPositions;
+    for (size_t i{0}; i < a.positions; ++i)
+        a.at[i].position = static_cast<uint8_t>(i + 1);
+    pf::fingerprint b{a};
+    zassert_true(pf::same(a, b), "a full fingerprint must still compare equal to itself");
+    b.at[a.positions - 1].address = 0x55;
+    zassert_false(pf::same(a, b), "and must still differ when its last position differs");
+}
+
+/* ------------------------------------- the commissioning profile's grid sources ------- */
+
+namespace {
+
+/* The profile a proven production chain produces: two grid sources, then four cliff
+ * positions carrying no grid source at all. */
+pf::fingerprint commissioning_fingerprint()
+{
+    pf::fingerprint fp{};
+    fp.positions = 6;
+    const enm::l4_role roles[4]{enm::l4_role::front_left, enm::l4_role::rear_left,
+                                enm::l4_role::rear_right, enm::l4_role::front_right};
+    for (size_t i{0}; i < 6; ++i) {
+        fp.at[i].position = static_cast<uint8_t>(i + 1);
+        fp.at[i].expected = i < 2 ? enm::model::l7cx : enm::model::l4cx;
+        fp.at[i].source_id = i < 2 ? static_cast<int8_t>(i) : static_cast<int8_t>(-1);
+        fp.at[i].role = i < 2 ? enm::l4_role::unknown : roles[i - 2];
+        fp.at[i].verified = true;
+    }
+    return fp;
+}
+
+} // namespace
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_accepts_the_production_shape)
+{
+    zassert_true(pf::is_commissioning_profile(commissioning_fingerprint()),
+                 "the shape every other test in this group varies from must itself pass");
+}
+
+/* validate_spec() will not catch this: require_all_sources is the enumerator's escape
+ * hatch for a bench chain carrying fewer than both hanging sources, and a spec may switch
+ * it off. The hatch must not reach a commissioning token -- a mask keyed by source_id
+ * cannot be filled from a chain missing one. */
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_requires_a_grid_source_to_be_present)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[1].source_id = -1;
+    zassert_false(pf::is_commissioning_profile(fp), "a missing grid source is not this profile");
+}
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_duplicated_grid_source)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[1].source_id = 0;
+    zassert_false(pf::is_commissioning_profile(fp), "two positions cannot be one source");
+}
+
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_grid_source_out_of_range)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[0].source_id = 2;
+    zassert_false(pf::is_commissioning_profile(fp), "only sources 0 and 1 exist");
+}
+
+/* source_id is the GRID table. A cliff position claiming one is a contradiction, not a
+ * variation: a cliff measurement's source_id comes from its role through the contract's
+ * own table and is never read from this field. */
+ZTEST(tof_mapping_proof, test_the_commissioning_profile_rejects_a_cliff_claiming_a_grid_source)
+{
+    pf::fingerprint fp{commissioning_fingerprint()};
+    fp.at[4].source_id = 1;
+    zassert_false(pf::is_commissioning_profile(fp), "a cliff position carries no grid source");
+}
+
+/* ------------------------------------- the issuing path, not just the helper ------- */
+
+/* THE HELPER REFUSING IS NOT THE GATE REFUSING, and for a while only the helper did.
+ *
+ * is_commissioning_profile() rejects a fingerprint missing a grid source, and the authority
+ * re-checks it at commit, so PROVEN was never reachable. But gate::evaluate() issued a
+ * VALID TOKEN for that chain first: the spec-side checks it does run read the model
+ * sequence and the roles, and neither looks at source_id. A token that says proven is
+ * something other code is entitled to trust, so "the last gate catches it" is not the same
+ * as "it was never authorised".
+ *
+ * require_all_sources is switched off here because that is the only way to build this
+ * transaction -- it is the enumerator's own escape hatch, and it is what let the shape
+ * through validate_spec() in the first place. */
+ZTEST(tof_mapping_proof, test_the_gate_issues_no_token_for_a_chain_missing_a_grid_source)
+{
+    transaction t;
+    t.spec.require_all_sources = false;
+    t.spec.at[1].source_id = -1;
+    t.walk1.source_allowed[1] = false;
+    t.walk2.source_allowed[1] = false;
+
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    const pf::verdict v{g.evaluate(t.evidence(), c)};
+
+    zassert_false(v.granted(), "a chain missing a grid source must not be authorised");
+    zassert_equal(v.reason, pf::refusal::spec_not_commissioning_profile);
+    zassert_false(v.token.valid(), "and the token it hands back must authorise nothing");
+}
+
+/* The control group, so the test above is known to be refusing the right thing rather than
+ * refusing everything: the production shape still gets a token. */
+ZTEST(tof_mapping_proof, test_the_gate_still_issues_a_token_for_the_production_shape)
+{
+    transaction t;
+    pf::gate g;
+    const pf::challenge c{g.issue()};
+    const pf::verdict v{g.evaluate(t.evidence(), c)};
+
+    zassert_true(v.granted(), "the production chain must still prove");
+    zassert_true(v.token.valid(), "and must still carry a usable token");
+}
+
+/* The bench path keeps its freedom: evaluate_bench() describes chains that are not this
+ * profile, which is the whole reason it exists. The issuing check must not have taken that
+ * away. */
+ZTEST(tof_mapping_proof, test_the_bench_path_still_describes_a_chain_missing_a_grid_source)
+{
+    transaction t;
+    t.spec.require_all_sources = false;
+    t.spec.at[1].source_id = -1;
+    t.walk1.source_allowed[1] = false;
+    t.walk2.source_allowed[1] = false;
+
+    pf::gate g;
+    const pf::bench_report b{g.evaluate_bench(t.evidence())};
+    zassert_true(b.clean(), "the bench path must still describe this chain without refusing it");
+    zassert_equal(b.reason, pf::refusal::none);
+}
+
 ZTEST(tof_mapping_proof, test_a_position_that_never_verified_is_refused)
 {
     /* `absent` is the pos6 failure class from the DS20001 bring-up: enable never arrived.

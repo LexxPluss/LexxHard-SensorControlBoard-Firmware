@@ -8,3 +8,10 @@
 # kind later does not start reporting a defect that would break the patch if anyone fixed it.
 patches/zephyr/*.patch -whitespace
 lexxpluss_apps/third_party/st/*/zephyr/patches/*.patch -whitespace
+
+# The cliff contract's identity is the SHA-256 of the contract file, and the artefact-set id hashes
+# the contract and the generator's own source as raw bytes. Both are pinned in this repository and in
+# LexxAuto. A CRLF checkout changes those bytes, so the two pins would move for a reason that is
+# neither a contract change nor a generator change. Pin the whole directory to LF so the published
+# SHA is reproducible with sha256sum on any platform.
+docs/can/** text eol=lf

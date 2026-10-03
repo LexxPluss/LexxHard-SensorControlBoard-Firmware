@@ -62,6 +62,7 @@ static struct {
 	uint8_t held_stream_count;
 	int stop_calls;
 	int stop_bus_xfers;
+	VL53LX_Error stop_rc; /* so a cleanup stop can be posed as failing, not just its bus */
 	int start_calls;
 	/* lifecycle */
 	VL53LX_Error boot_rc;
@@ -185,7 +186,7 @@ VL53LX_Error VL53LX_StopMeasurement(VL53LX_DEV Dev)
 	for (int i = 0; i < f.stop_bus_xfers; i++) {
 		(void)VL53LX_WrByte(Dev, (uint16_t)(0x0200 + i), 0x00);
 	}
-	return VL53LX_ERROR_NONE;
+	return f.stop_rc;
 }
 
 /* The BSP wrapper is not compiled either. This mirrors what the real one does with the
@@ -1064,6 +1065,76 @@ ZTEST(tof_cliff_adapter, test_the_second_calls_bus_failure_outranks_its_uld_resu
 	zassert_equal(st.port_errno, -EIO);
 	zassert_equal(st.uld_rc, VL53LX_ERROR_NONE, "the ULD really did claim success");
 	zassert_equal(f.stop_calls, 1, "a bus-failed clear is still a half-armed device");
+}
+
+/* A half-armed start attempts a cleanup stop. When that stop works, the device really is
+ * quiet and the caller's "not started" record is accurate, so nothing extra is reported.
+ * This is the control for the test below it. */
+ZTEST(tof_cliff_adapter, test_a_cleanup_stop_that_worked_leaves_no_doubt_about_the_device)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(f.stop_calls, 1, "half-armed, so the cleanup ran");
+	zassert_false(st.ranging_unknown, "the stop succeeded, so the device is known quiet");
+}
+
+/* The state this exists for: StartMeasurement succeeded, the clear failed, and the
+ * best-effort stop failed too. Nothing has confirmed the device stopped, so it may still
+ * be ranging on the shared bus while the caller records it as never started and therefore
+ * never stops it. The return value cannot carry this -- it is already spent on the clear's
+ * failure, which is the stage triage needs -- so it gets its own flag, for the same reason
+ * rearm_failed is separate from sample_present. */
+ZTEST(tof_cliff_adapter, test_a_cleanup_stop_that_also_failed_is_reported_not_swallowed)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	f.stop_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(f.stop_calls, 1, "the cleanup was still attempted");
+	zassert_true(st.ranging_unknown, "nothing confirmed the device is quiet");
+
+	/* The cleanup must not have rewritten which stage failed: that is still the clear. */
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_START_CLEAR);
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE);
+}
+
+/* The posed shape this file uses everywhere, applied to the cleanup: the ULD returns
+ * VL53LX_ERROR_NONE while the transfer under it failed. Judging the cleanup on its ULD
+ * result alone would swallow exactly the failure class the sticky record exists to catch,
+ * and would do it in the one place where the consequence is a sensor left ranging on a
+ * shared bus with nobody reading it. */
+ZTEST(tof_cliff_adapter, test_a_cleanup_stop_that_failed_only_on_the_bus_is_still_reported)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE; /* half-armed, and it makes no traffic */
+	f.stop_rc = VL53LX_ERROR_NONE;               /* the ULD claims the stop worked */
+	f.stop_bus_xfers = 1;
+	fake_i2c_fail_on(1, -EIO); /* the cleanup's transfer is the first on the bus */
+
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_equal(f.stop_calls, 1);
+	zassert_true(st.ranging_unknown, "the ULD said fine; the bus did not");
+
+	/* The cleanup must still not rewrite the diagnosis triage needs. */
+	zassert_equal(st.stage, TOF_CLIFF_STAGE_START_CLEAR);
+	zassert_equal(st.uld_rc, VL53LX_ERROR_CONTROL_INTERFACE);
+	zassert_equal(st.port_errno, 0, "the clear itself made no traffic, and stays that way");
+}
+
+/* The flag is per operation, like every other field in the status. A later clean start
+ * must not inherit the doubt raised by an earlier one, or the caller can never stop
+ * treating the sensor as suspect. */
+ZTEST(tof_cliff_adapter, test_the_ranging_doubt_does_not_survive_the_next_operation)
+{
+	f.rearm_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	f.stop_rc = VL53LX_ERROR_CONTROL_INTERFACE;
+	zassert_not_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_true(st.ranging_unknown);
+
+	f.rearm_rc = VL53LX_ERROR_NONE;
+	f.stop_rc = VL53LX_ERROR_NONE;
+	zassert_equal(tof_cliff_sensor_start(&obj, &stream, &st), 0);
+	zassert_false(st.ranging_unknown, "a start that completed says nothing is in doubt");
 }
 
 ZTEST(tof_cliff_adapter, test_null_arguments_are_rejected_without_touching_the_device)

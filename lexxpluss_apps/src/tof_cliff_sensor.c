@@ -58,6 +58,7 @@ static void tof_cliff_status_reset(struct tof_cliff_read_status *st)
 	st->sample_present = false;
 	st->rearm_failed = false;
 	st->stale_replay = false;
+	st->ranging_unknown = false;
 }
 
 /* Re-arm after refusing the frame the device is currently holding.
@@ -225,6 +226,7 @@ int tof_cliff_sensor_configure(VL53L4CX_Object_t *obj, VL53LX_DistanceModes mode
 int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_stream_state *stream,
 			   struct tof_cliff_read_status *st)
 {
+	VL53LX_Error stop_rc;
 	int ret;
 
 	if (obj == NULL || stream == NULL || st == NULL) {
@@ -257,13 +259,27 @@ int tof_cliff_sensor_start(VL53L4CX_Object_t *obj, struct tof_cliff_stream_state
 		 * because StartMeasurement succeeded, but this function reports failure, so the
 		 * caller records it as not started and will never stop it. Best-effort stop, and
 		 * deliberately NOT through tof_cliff_finish -- st already carries the failure that
-		 * matters and the cleanup must not overwrite which stage it came from. Its own
-		 * result is discarded for the same reason: a cleanup that cannot run does not
-		 * change what went wrong.
+		 * matters and the cleanup must not overwrite which stage it came from.
+		 *
+		 * The cleanup's own result is not routed into stage/uld_rc, for that reason, but
+		 * it is not discarded either. If it also failed, nothing has confirmed the device
+		 * is quiet, and that is exactly the case where "records it as not started and will
+		 * never stop it" turns into a sensor left ranging on a shared bus. That verdict
+		 * gets its own flag rather than being folded into the return value.
+		 *
+		 * The cleanup is judged on BOTH its ULD result and the port's sticky errno, for
+		 * the same reason tof_cliff_finish consults the sticky value first and calls it
+		 * authoritative: a transfer can fail underneath a call that still returns
+		 * VL53LX_ERROR_NONE. Taking only the ULD's word here would swallow exactly the
+		 * failure class the sticky record exists to catch, and would do it in the one
+		 * place where the consequence is a sensor left ranging.
 		 *
 		 * The history is kept here too, for the reason above. */
 		vl53l4cx_port_sticky_reset();
-		(void)VL53LX_StopMeasurement(obj);
+		stop_rc = VL53LX_StopMeasurement(obj);
+		if (stop_rc != VL53LX_ERROR_NONE || vl53l4cx_port_sticky_errno() != 0) {
+			st->ranging_unknown = true;
+		}
 		vl53l4cx_port_sticky_reset();
 		return ret;
 	}

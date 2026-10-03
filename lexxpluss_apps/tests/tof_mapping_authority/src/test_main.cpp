@@ -77,6 +77,11 @@ enm::chain_result clean_walk(const enm::chain_spec &s, bool l7_retained)
                                               : enm::outcome::enumerated;
         r.at[i].address = s.at[i].target_addr;
         r.at[i].seen = l7 ? kL7Id : kL4Id;
+        /* A complete walk commanded every position enabled; the enumerator sets this per
+         * position as it advances. This file's copy of the fixture had drifted from the
+         * one in tof_mapping_proof and omitted it, which was invisible until the proof
+         * started refusing walks that cannot say what they asked of the enable chain. */
+        r.at[i].enable_commanded_high = true;
     }
     r.source_allowed[0] = true;
     r.source_allowed[1] = true;

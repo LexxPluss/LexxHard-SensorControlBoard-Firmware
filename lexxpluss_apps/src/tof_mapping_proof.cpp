@@ -71,6 +71,33 @@ bool is_commissioning_profile(const fingerprint &fp)
             return false;
     }
 
+    /* The grid sources, which the model check above cannot see.
+     *
+     * validate_spec() will not catch a missing one either: `require_all_sources` is the
+     * enumerator's own escape hatch for a bench chain that legitimately carries fewer than
+     * both hanging sources, and a spec may switch it off. That hatch must not reach a
+     * commissioning token. This predicate is the thing that says "the chain in front of you
+     * is the six-board production chain", and a grid source missing from it means a mask
+     * keyed by source_id cannot be filled honestly.
+     *
+     * The cliff positions are required to carry no grid source at all: source_id is the grid
+     * table, and a cliff position claiming a grid source is a contradiction rather than a
+     * variation. A cliff measurement's source_id comes from its role through the contract's
+     * own table, never from this field. */
+    bool grid_seen[enm::chain_result::kMaxSources]{};
+    for (size_t i{0}; i < 2; ++i) {
+        const int8_t s{fp.at[i].source_id};
+        if (s < 0 || static_cast<size_t>(s) >= enm::chain_result::kMaxSources)
+            return false;
+        if (grid_seen[static_cast<size_t>(s)])
+            return false;
+        grid_seen[static_cast<size_t>(s)] = true;
+    }
+    for (size_t i{2}; i < kPositions; ++i) {
+        if (fp.at[i].source_id != -1)
+            return false;
+    }
+
     /* Same set check as the spec-side one, over the other type. Two small loops rather than
      * one generic helper: the alternative was a template over two unrelated structs, which
      * costs more to read than it saves. */
@@ -90,6 +117,17 @@ bool is_commissioning_profile(const fingerprint &fp)
 
 bool same(const fingerprint &a, const fingerprint &b)
 {
+    /* Bound before indexing at[]. This function is public and takes two caller-built
+     * fingerprints, so `positions` is whatever the caller wrote there -- the commissioning
+     * topology check that bounds the other paths never runs on this one, and neither does
+     * fingerprint_of()'s own bound, which only constrains fingerprints this file built.
+     *
+     * Refusing is both the safe answer and the true one: a fingerprint that claims more
+     * positions than can exist describes no chain, so it is not the same chain as anything,
+     * including another fingerprint making the same impossible claim. */
+    if (a.positions > enm::chain_spec::kMaxPositions ||
+        b.positions > enm::chain_spec::kMaxPositions)
+        return false;
     if (a.positions != b.positions)
         return false;
     for (size_t i{0}; i < a.positions; ++i) {
@@ -396,6 +434,31 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
     if (ev.walk2->status != enm::chain_status::complete)
         return refusal::walk2_not_complete;
 
+    /* A complete walk must also be able to say what it asked of the enable chain, and must
+     * have asked for every position.
+     *
+     * `complete` alone does not establish either. chain_result is filled in by whoever built
+     * it -- the same reason validate_spec() is called above rather than trusting the walk's
+     * own spec claim -- so a fabricated walk can report complete beside a control state it
+     * never had. The enumerator itself clears control_state_known on a control failure, and
+     * that is precisely the state in which the hardware may not have executed the last
+     * request: the addresses in such a walk may belong to a configuration that was never
+     * commanded. Proving a mapping from it would attribute ranges to corners on the strength
+     * of a chain nobody can describe.
+     *
+     * Iterated over the spec's position count. Indexing is safe because validate_spec()
+     * above bounds spec.positions to kMaxPositions and at[] holds that many. It is NOT
+     * safe because the walk was made to match the spec -- that equality is enforced later,
+     * in fingerprint_of(), which returns walk_position_count. An earlier version of this
+     * comment claimed the match had already happened here; it had not. */
+    if (!ev.walk1->control_state_known || !ev.walk2->control_state_known)
+        return refusal::walk_control_unknown;
+    for (size_t i{0}; i < spec.positions; ++i) {
+        if (!ev.walk1->at[i].enable_commanded_high ||
+            !ev.walk2->at[i].enable_commanded_high)
+            return refusal::walk_position_not_enabled;
+    }
+
     /* The role table, before the electrical checks. A machine can be electrically perfect
      * and still unprovable: the masks a consumer reads are keyed by source_id, not by
      * chain position, so without the frozen mounting roles nothing downstream can be
@@ -462,6 +525,29 @@ refusal check_transaction(const evidence &ev, bool require_profile, fingerprint 
 
     if (!same(fp1, fp2))
         return refusal::fingerprint_mismatch;
+
+    /* The profile, on the fingerprint the two walks agree on, and only for a proof that
+     * could open PROVEN.
+     *
+     * The spec-side checks above are not this check. is_commissioning_topology() reads the
+     * model sequence and has_the_four_cliff_roles() reads the roles; neither looks at
+     * source_id, so a spec that switches off require_all_sources and carries one grid
+     * source reached this point and a VALID TOKEN WAS ISSUED for it. The authority refused
+     * it later -- commit_proof() re-checks the profile, so PROVEN was never reachable --
+     * but "the last gate catches it" is not the same as "it was never authorised", and a
+     * token that says proven is the thing other code is entitled to trust.
+     *
+     * is_commissioning_profile() is reused rather than reimplemented on the spec side, so
+     * the issuing path and the committing path cannot come to different answers about what
+     * the production chain is. That is the same reason validate_spec() was made public.
+     *
+     * After the fingerprint comparison, because this asks about the chain both walks
+     * proved, not about either one alone; and before isolation, because "this is not the
+     * production chain" is a more fundamental answer than any isolation verdict taken on
+     * it. require_profile leaves evaluate_bench() free to describe smaller chains, which is
+     * what it is for. */
+    if (require_profile && !is_commissioning_profile(fp2))
+        return refusal::spec_not_commissioning_profile;
 
     /* Isolation last, because it is the criterion whose meaning depends on everything
      * above: "the tail answers its own address" is only informative once we know which
