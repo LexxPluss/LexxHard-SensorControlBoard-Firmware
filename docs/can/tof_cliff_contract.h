@@ -9,9 +9,9 @@
  *     docs/can/gen_cliff_golden_vectors.py --emit
  *
  * Contract : tof_cliff_wire_contract.md
- * Version  : commissioning-2026-09-26a
- * SHA-256  : 7b5863db361ac49e2fe5facb2e0d6adffc8e7dffdfa61259b70c7468a9fca9b3
- * ArtefactSet : eca174e125943ab861eda9c6316ec233b27c1886ee647a61217c9aa4301a82d5
+ * Version  : commissioning-2026-10-03b
+ * SHA-256  : 037c9ba5c0432c92de0f6c54ed9ee0b919cc258db9c7babebfd2fec7f3f8f6eb
+ * ArtefactSet : 46a7e94ede9846d6318047b30c7a7ed224066c865e6975aadc401894604bd221
  * Profile  : commissioning-cliff-only-400k
  *
  * COMMISSIONING ONLY -- RELEASE_FORBIDDEN. Regenerate and re-pin both sides after the six-board schedule measurement; status 3/11 remain unvalidated.
@@ -36,15 +36,15 @@
 
 namespace tof_cliff_contract {
 
-inline constexpr char kContractVersion[]{"commissioning-2026-09-26a"};
-inline constexpr char kContractSha256[]{"7b5863db361ac49e2fe5facb2e0d6adffc8e7dffdfa61259b70c7468a9fca9b3"};
+inline constexpr char kContractVersion[]{"commissioning-2026-10-03b"};
+inline constexpr char kContractSha256[]{"037c9ba5c0432c92de0f6c54ed9ee0b919cc258db9c7babebfd2fec7f3f8f6eb"};
 inline constexpr char kProfileName[]{"commissioning-cliff-only-400k"};
 
 // The contract SHA says which contract. This says which generated artefacts: it
 // hashes the contract text together with the generator's own source, so a change
 // to what the generator emits is visible even when the contract stands still.
 // Both repositories pin it.
-inline constexpr char kArtefactSetId[]{"eca174e125943ab861eda9c6316ec233b27c1886ee647a61217c9aa4301a82d5"};
+inline constexpr char kArtefactSetId[]{"46a7e94ede9846d6318047b30c7a7ed224066c865e6975aadc401894604bd221"};
 inline constexpr bool kReleaseForbidden{true};
 
 inline constexpr uint16_t kMeasId{0x216};

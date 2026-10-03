@@ -14,8 +14,11 @@
  *                       initialised. Measures static RAM per instance. The object
  *                       must be file scope or it lands on a stack and the report
  *                       shows nothing.
- *   TOF_CLIFF_BUDGET=3  one sensor is initialised through the real production entry
- *                       points. Measures reachable code for the bring-up path.
+ *   TOF_CLIFF_BUDGET=3  the single-sensor bring-up path is reachable through the real
+ *                       production entry points: RegisterBusIO, ReadID, Init. Measures
+ *                       reachable code for bring-up. Like B5 below it links that path
+ *                       without running it - nothing here initialises a sensor at boot,
+ *                       because at boot the bus is neither powered nor commissioned.
  *   TOF_CLIFF_BUDGET=4  four real objects, one shared scratch and per-source state,
  *                       linked and not initialised. Measures the resident data cost
  *                       of the whole chain, which multiplication cannot be trusted
@@ -99,18 +102,47 @@ static void cliff_walk_one(int i)
 	 * talking to a chain. */
 	src->addr_7bit = 0x29;
 
+	/* EVERY STAGE IS A PREREQUISITE FOR THE NEXT. The walk used to run all five
+	 * regardless, which meant a sensor that failed to open was then handed to
+	 * configure, start, read and stop as if it had registered on the bus. That turns
+	 * an ordinary bring-up error into ULD calls against an object that never completed
+	 * registration. Reachability is what B5 measures and early returns do not reduce
+	 * it: every call below is still linked and still counted. */
 	rc = tof_cliff_sensor_open(obj, src->addr_7bit, &src->status);
 	cliff_sink_rc = rc;
 	if (rc != 0) {
 		LOG_WRN("source %d open failed at %s errno %d", i,
 			tof_cliff_stage_name(src->status.stage), src->status.port_errno);
+		src->sensor_fault = true;
+		src->proven = false;
+		return;
 	}
 
 	/* Long range and a 33 ms budget are placeholders for the measurement only. Both
 	 * are unresolved symbols in the wire contract and must not be frozen anywhere. */
-	cliff_sink_rc = tof_cliff_sensor_configure(obj, VL53LX_DISTANCEMODE_LONG, 33000,
-						   &src->status);
-	cliff_sink_rc = tof_cliff_sensor_start(obj, &src->stream, &src->status);
+	rc = tof_cliff_sensor_configure(obj, VL53LX_DISTANCEMODE_LONG, 33000,
+					&src->status);
+	cliff_sink_rc = rc;
+	if (rc != 0) {
+		LOG_WRN("source %d configure failed at %s errno %d", i,
+			tof_cliff_stage_name(src->status.stage), src->status.port_errno);
+		src->sensor_fault = true;
+		src->proven = false;
+		/* Opened but never started: there is no measurement to stop. */
+		return;
+	}
+
+	rc = tof_cliff_sensor_start(obj, &src->stream, &src->status);
+	cliff_sink_rc = rc;
+	if (rc != 0) {
+		LOG_WRN("source %d start failed at %s errno %d", i,
+			tof_cliff_stage_name(src->status.stage), src->status.port_errno);
+		src->sensor_fault = true;
+		src->proven = false;
+		/* tof_cliff_sensor_start() already makes its own best-effort stop when it
+		 * fails part way, so calling stop again here would be the second one. */
+		return;
+	}
 
 	rc = tof_cliff_read_once(obj, cliff_scratch_ref, &src->stream, &src->sample,
 				 &src->status);
@@ -128,6 +160,11 @@ static void cliff_walk_one(int i)
 	cliff_sink_rc = tof_cliff_sensor_stop(obj, &src->status);
 }
 
+/* Static on purpose. This is not an API: it has no header declaration, no caller, and no
+ * ownership contract with the chain controller, and the file it lives in is a build-point
+ * probe rather than production code. It exists to be REACHED by the linker, and the
+ * volatile anchor below is what keeps it reachable. Publishing it would advertise an
+ * entry point that nothing is allowed to call. */
 static int tof_cliff_budget_walk(void)
 {
 	/* Sequential, one sensor at a time, sharing one scratch - the shape the real
@@ -144,7 +181,30 @@ static int tof_cliff_budget_walk(void)
 	return 0;
 }
 
-SYS_INIT(tof_cliff_budget_walk, APPLICATION, 99);
+/*
+ * WHAT B5 MEASURES IS REACHABLE CODE, NOT A RUN. The walk was registered directly as
+ * SYS_INIT(..., APPLICATION, 99), which runs before main() calls init_gpio() and before
+ * tof_chain_controller::init() establishes the enable and address state. So it probed an
+ * unpowered, uncommissioned bus during boot and issued ULD traffic before the chain had
+ * an owner -- and any number it produced described that, not the intended chain.
+ *
+ * SYS_INIT was only ever being used as a LINK ANCHOR: the calls have to be reachable or
+ * the linker collects them and the build point measures nothing. That is what the B4
+ * variant's touch function does too, without initialising anything. So the anchor stays
+ * and the execution goes. The guard is volatile, so the compiler cannot prove the branch
+ * dead and the whole walk stays linked and counted, and it is never set during boot.
+ */
+static volatile bool tof_cliff_budget_run_walk_at_init;
+
+static int tof_cliff_budget_anchor(void)
+{
+	if (tof_cliff_budget_run_walk_at_init) {
+		return tof_cliff_budget_walk();
+	}
+	return 0;
+}
+
+SYS_INIT(tof_cliff_budget_anchor, APPLICATION, 99);
 
 #elif defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET == 4
 /* Keep the four objects, the shared scratch and the per-source state from being
@@ -163,6 +223,10 @@ static int tof_cliff_budget_touch4(void)
 SYS_INIT(tof_cliff_budget_touch4, APPLICATION, 99);
 
 #elif defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET == 3
+/* Static for the same reason as B5's walk above: reachable, not callable. Note also what
+ * this function does NOT establish. ReadID and Init only warn on failure and it still
+ * returns 0, so its return value is not a bring-up verdict and must not be read as one.
+ * That is acceptable only because nothing calls it -- it is here to be linked. */
 static int tof_cliff_budget_init(void)
 {
 	VL53L4CX_IO_t io;
@@ -196,7 +260,23 @@ static int tof_cliff_budget_init(void)
 	return 0;
 }
 
-SYS_INIT(tof_cliff_budget_init, APPLICATION, 99);
+/* Same reasoning as B5's anchor above: B3 measures the REACHABLE bring-up path, and
+ * running it from SYS_INIT drove RegisterBusIO, ReadID and Init against an unpowered,
+ * uncommissioned bus before main() had called init_gpio(). The volatile guard keeps the
+ * call linked and counted without executing it at boot. Only the B5 walk was flagged in
+ * review, but this is the same defect one build point down, and fixing only the flagged
+ * instance would have left it next door. */
+static volatile bool tof_cliff_budget_run_init_at_init;
+
+static int tof_cliff_budget_init_anchor(void)
+{
+	if (tof_cliff_budget_run_init_at_init) {
+		return tof_cliff_budget_init();
+	}
+	return 0;
+}
+
+SYS_INIT(tof_cliff_budget_init_anchor, APPLICATION, 99);
 
 #elif defined(TOF_CLIFF_BUDGET) && TOF_CLIFF_BUDGET == 2
 /* Keep the object from being garbage collected without initialising it. */
