@@ -154,6 +154,49 @@ ZTEST(tof_l7_boot_order, test_a_failed_speed_change_skips_recovery_and_still_bri
     zassert_false(sc_.log.ran(ord::step::recover));
     zassert_true(r.pins_configured, "an optional step failing must not cost the chain its pins");
     zassert_equal(r.rc, 0);
+
+    /* AND THE RESTORE IS STILL ATTEMPTED. A configure that returns an error has not promised to
+     * have left the controller alone -- it may have written the timing registers and failed
+     * afterwards -- so what obliges us to put the product speed back is the attempt, not the
+     * success. This used to be gated on the set having succeeded, which left the bus at whatever a
+     * failed configure had reached, for everything downstream that was promised the devicetree's
+     * speed. */
+    zassert_true(sc_.log.ran(ord::step::restore_product_speed),
+                 "a failed speed change must still be followed by a restore attempt");
+    zassert_true(sc_.log.index_of(ord::step::restore_product_speed) <
+                     sc_.log.index_of(ord::step::configure_data_pin),
+                 "and it must come before the pins, like every other bus step");
+}
+
+/* The restore is attempted even when the readback is what failed, for the same reason: the
+ * controller was written to either way. */
+ZTEST(tof_l7_boot_order, test_a_failed_readback_still_restores_the_product_speed)
+{
+    reset_script();
+    sc_.readback_rc = -EIO;
+
+    const ord::report r{ord::run(wired())};
+
+    zassert_false(r.speed_readback_ok);
+    zassert_false(r.recovery_ran);
+    zassert_true(sc_.log.ran(ord::step::restore_product_speed));
+    zassert_true(r.pins_configured);
+}
+
+/* And an image that never asks for the recovery speed must not issue a restore it never owed: the
+ * obligation comes from the attempt, so with no attempt there is nothing to undo. */
+ZTEST(tof_l7_boot_order, test_an_image_that_never_changes_the_speed_does_not_restore_one)
+{
+    reset_script();
+    ord::steps st{wired()};
+    st.set_recovery_speed = nullptr;
+
+    const ord::report r{ord::run(st)};
+
+    zassert_false(sc_.log.ran(ord::step::restore_product_speed),
+                  "nothing changed the speed, so nothing owes it back");
+    zassert_false(r.product_speed_restored);
+    zassert_true(r.pins_configured);
 }
 
 /* A configure that silently did nothing is the case the readback exists for, and it is not

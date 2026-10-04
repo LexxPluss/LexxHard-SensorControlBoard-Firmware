@@ -62,13 +62,23 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     if (port_errno != 0)
         return port_errno;
 
-    /* The transport worked and the device did not identify as an L7. Reported the same way as a
-     * NACK on purpose: this pass stops L7 sessions and has no business issuing a five-second stop
-     * sequence to something that is not one. An ACK with a wrong identity is a real anomaly, and
-     * the place that acts on it is enumeration, whose census exists for exactly that. */
+    /* A NON-OK STATUS WITH NO TRANSPORT ERROR IS A FAILED PROBE, NOT AN EMPTY ADDRESS.
+     *
+     * This used to return 0 with *alive false, on the reading that a device which does not identify
+     * as an L7 should be passed over. That is a real case and it is NOT this one.
+     * vl53l7cx_is_alive() reports a wrong identity by setting its out-parameter to zero and
+     * returning OK -- the status can only become non-OK from one of the four platform calls it
+     * makes, and every one of those sets the port's sticky errno, which was checked above. So
+     * reaching here means the port said every transfer succeeded and the ULD still refused, which
+     * is an anomaly, and calling it "nobody there" would file it as the most ordinary observation a
+     * cold boot makes. */
     if (uld_status != VL53L7CX_STATUS_OK)
-        return 0;
+        return -EIO;
 
+    /* An ACK from something that is not an L7. Reported as a completed probe with nobody to stop,
+     * on purpose: this pass stops L7 sessions and has no business issuing a five-second stop
+     * sequence to a device that is not one. It is a real anomaly, and the place that acts on it is
+     * enumeration, whose census exists for exactly that. */
     *alive = answered != 0U;
     return 0;
 }

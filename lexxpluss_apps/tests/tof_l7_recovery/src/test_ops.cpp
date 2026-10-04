@@ -154,17 +154,43 @@ ZTEST(tof_l7_recovery_ops, test_a_live_sensor_is_probed_at_the_shifted_address)
 
 /* An ACK from something that is not an L7. This pass stops L7 sessions, and it has no business
  * sending a five-second stop sequence to whatever else answered; the census in enumeration is what
- * acts on an identity that does not belong. */
+ * acts on an identity that does not belong.
+ *
+ * THE SHAPE OF THIS CASE WAS WRONG, AND THAT WAS THE DEFECT. It used to drive a non-OK ULD status
+ * with the answer flag set, which is not how vl53l7cx_is_alive() reports a foreign device: it
+ * compares the device and revision ids, sets its out-parameter to zero when they do not match, and
+ * returns OK. A wrong identity therefore looks like THIS. */
 ZTEST(tof_l7_recovery_ops, test_an_ack_from_a_foreign_device_is_not_a_survivor)
 {
     reset_spy();
-    spy_.alive_status = VL53L7CX_STATUS_ERROR;
-    spy_.alive_answer = 1;
+    spy_.alive_status = VL53L7CX_STATUS_OK;
+    spy_.alive_answer = 0;
     bool alive{true};
 
     const rec::ops o{ops_under_test()};
     zassert_equal(o.is_alive(o.ctx, 0x2AU, &alive), 0);
     zassert_false(alive, "identified as something else, so not something this pass may stop");
+}
+
+/* AND A NON-OK STATUS IS A FAILED PROBE, which is the case the one above used to occupy.
+ *
+ * vl53l7cx_is_alive()'s status can only become non-OK from one of its four platform calls, and
+ * every one of those sets the port's sticky errno -- which this adapter checks first. So a non-OK
+ * status with no transport error means the port said every transfer succeeded and the ULD still
+ * refused. That is an anomaly, and reporting it as an empty address would file it as the most
+ * ordinary observation a cold boot makes. */
+ZTEST(tof_l7_recovery_ops, test_a_uld_failure_without_a_transport_error_is_a_failed_probe)
+{
+    reset_spy();
+    spy_.alive_status = VL53L7CX_STATUS_ERROR;
+    spy_.alive_answer = 0;
+    spy_.alive_port_error = 0;
+    bool alive{true};
+
+    const rec::ops o{ops_under_test()};
+    zassert_equal(o.is_alive(o.ctx, 0x2AU, &alive), -EIO,
+                  "the transport was fine and the ULD refused: that is not an empty address");
+    zassert_false(alive, "and nothing may be concluded about what is there");
 }
 
 /* The precondition the whole recovery rests on. A zeroed configuration carries

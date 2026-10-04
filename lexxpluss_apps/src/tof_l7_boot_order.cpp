@@ -19,8 +19,15 @@ report run(const steps &s)
      * that the alternative is a boot which refuses to bring the chain up because it could not do
      * something optional to it. */
     bool may_recover{true};
+    /* SEPARATE FROM r.speed_set, and the difference is the whole of the restore rule below.
+     * `speed_set` is whether the call SUCCEEDED; this is whether it was MADE. A configure that
+     * returns an error has not promised to have left the controller alone -- it may have written
+     * the timing registers and failed afterwards -- so the attempt is what obliges us to put the
+     * product speed back, not the success. */
+    bool speed_change_attempted{false};
 
     if (s.set_recovery_speed != nullptr) {
+        speed_change_attempted = true;
         if (s.set_recovery_speed(s.ctx) == 0)
             r.speed_set = true;
         else
@@ -41,9 +48,12 @@ report run(const steps &s)
         r.recovery_rc = s.recover_survivors(s.ctx);
     }
 
-    /* Restored whether or not recovery ran, because what changed the speed was the attempt, not the
-     * success, and everything downstream was promised the devicetree's speed. */
-    if (r.speed_set && s.restore_product_speed != nullptr)
+    /* Restored whether or not recovery ran AND whether or not the change succeeded, because what
+     * may have changed the speed was the attempt, not the success, and everything downstream was
+     * promised the devicetree's speed. This used to be gated on r.speed_set, which said the
+     * opposite of the comment above it: a failed configure left the bus at whatever it had reached
+     * and nothing put it back. */
+    if (speed_change_attempted && s.restore_product_speed != nullptr)
         r.product_speed_restored = s.restore_product_speed(s.ctx) == 0;
 
     if (s.configure_data_pin != nullptr) {
