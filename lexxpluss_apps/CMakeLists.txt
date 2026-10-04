@@ -88,6 +88,24 @@ if(ENABLE_TOF_CHAIN)
                     "verification is still pending.")
 endif()
 
+# The automatic-commissioning build: the cliff image plus the hardware entropy the session token
+# needs. A separate flag, a separate overlay and a separate Kconfig fragment, so that every other
+# image -- product, chain, cliff -- comes out byte for byte as it did before this existed.
+#
+# WHAT THIS FLAG DOES AND DOES NOT DO IN THIS BRANCH. It compiles the downlink runtime, the bus
+# binding and the entropy module. It does not start any of them: nothing calls
+# tof_commission_bind::start(), so a build with the flag on carries the code, installs no CAN
+# filter, draws no token and proves nothing. The caller, and the two deployment decisions that
+# govern what it may do -- entertain a request at all, and re-enumerate the chain when it gets one
+# -- belong to the boot-wiring change and are deliberately not here. A flag nothing reads is worse
+# than a flag that does not exist yet.
+if(ENABLE_TOF_AUTO_COMMISSION)
+    if(NOT ENABLE_TOF_CLIFF_ULD)
+        message(FATAL_ERROR "ENABLE_TOF_AUTO_COMMISSION requires ENABLE_TOF_CLIFF_ULD")
+    endif()
+    add_definitions(-DENABLE_TOF_AUTO_COMMISSION)
+endif()
+
 # Cliff ToF: the vendored VL53L4CX ULD and its Zephyr platform layer. Off by
 # default. With it on, the whole cliff data path is reachable from
 # tof_chain_controller, so this option now costs what the feature costs; there is
