@@ -40,9 +40,7 @@ clean:
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
 	        build-test-tof-enumerator build-tof-chain build-tof-l7 \
 	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob \
-	        build-test-tof-l7-uld-stop
-
-	        build-test-tof-enumerator build-tof-chain build-test-tof-progress \
+	        build-test-tof-l7-uld-stop build-test-tof-progress \
 	        build-test-tof-task-watchdog build-test-tof-watchdog-tombstone \
 	        build-test-tof-watchdog-feeder
 
