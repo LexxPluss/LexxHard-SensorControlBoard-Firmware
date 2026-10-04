@@ -16,6 +16,11 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* Only for the stage vocabulary. An image without the grid driver has no l7 domain to name. */
+#include "tof_l7_status.hpp"
+#endif
+
 #include "tof_chain_controller.hpp"
 
 LOG_MODULE_REGISTER(tof_acq, CONFIG_LOG_DEFAULT_LEVEL);
@@ -286,7 +291,7 @@ void clear_cycle_outcomes(source_facts &f)
     f.protocol_error = false;
     f.unsupported = false;
     f.usage_error = false;
-    f.status = op_status{};
+    f.status = source_status{};
 }
 
 // Records an operation's outcome as a neutral fact. The only interpretation performed
@@ -375,9 +380,44 @@ int stop_locked()
     return first_error;
 }
 
+/* The L4 adapter's status, converted rather than assigned. The fields line up one for one; what
+ * the conversion adds is the domain, without which `stage` is a number whose scale depends on who
+ * wrote it. */
+const char *stage_name_in_domain(const source_status &status)
+{
+    switch (status.domain) {
+    case status_domain::none:
+        return "none";
+    case status_domain::l4:
+        return tof_cliff_stage_name(static_cast<enum tof_cliff_stage>(status.stage));
+    case status_domain::l7:
+#if defined(ENABLE_TOF_L7_ULD)
+        return tof_l7::stage_name(static_cast<tof_l7::stage>(status.stage));
+#else
+        /* An image without the grid driver has no vocabulary for an L7 stage and must not invent
+         * one. It also cannot produce this value: nothing records an l7 domain without the driver
+         * that fills it in. */
+        return "l7";
+#endif
+    }
+    return "unknown";
+}
+
+source_status from_l4(const op_status &st)
+{
+    source_status out{};
+
+    out.domain = status_domain::l4;
+    out.stage = static_cast<uint8_t>(st.stage);
+    out.port_errno = st.port_errno;
+    out.uld_status = st.uld_rc;
+    out.sample_present = st.sample_present;
+    return out;
+}
+
 void record(source_facts &f, int rc, const op_status &st)
 {
-    f.status = st;
+    f.status = from_l4(st);
     if (rc == 0)
         return;
     if (rc == -EPROTO)
@@ -396,6 +436,11 @@ void record(source_facts &f, int rc, const op_status &st)
 }
 
 }  // namespace
+
+const char *operation_stage_name(const source_status &status)
+{
+    return stage_name_in_domain(status);
+}
 
 const source_ops &l7_stub_ops()
 {

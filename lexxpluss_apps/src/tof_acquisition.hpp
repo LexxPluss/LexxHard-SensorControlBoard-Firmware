@@ -104,6 +104,40 @@ enum class model : uint8_t {
 // vocabulary. It says nothing about what the failure means.
 using op_status = struct tof_cliff_read_status;
 
+/* WHICH VENDOR'S VOCABULARY `stage` IS IN. The two ULDs' enums are unrelated numbers that happen
+ * to share a range, so a stage is meaningless without the domain that interprets it. `none` is the
+ * state of a source that has not been read this cycle -- not a third device. */
+enum class status_domain : uint8_t {
+    none,
+    l4,
+    l7,
+};
+
+/* A MODEL-NEUTRAL DIAGNOSTIC SNAPSHOT, and the reason this type exists at all.
+ *
+ * `source_facts::status` used to be an op_status -- that is, literally a tof_cliff_read_status --
+ * for every source including a grid sensor. An L7 failure had to be expressed in L4 words or not
+ * at all, and `stage` silently meant a different thing depending on which sensor filled it in.
+ * This carries the domain with the number so the two can never be read as the same scale.
+ *
+ * WHAT IT DOES NOT ABSORB, deliberately. The four error classifications on source_facts stay where
+ * they are: this is raw device detail, and they are the per-cycle MEANING, which was decided in
+ * review rather than derived from an errno. Nor does it carry rearm_failed or cleanup_pending --
+ * those are sticky facts about the device across cycles, and a per-read snapshot is the wrong
+ * place for them. The development branch's version of this struct had its own rearm_failed beside
+ * source_facts', which is two fields with one name and two lifetimes. */
+struct source_status {
+    status_domain domain{status_domain::none};
+    /* Raw, and interpreted only inside `domain`. */
+    uint8_t stage{0};
+    int port_errno{0};
+    int uld_status{0};
+    bool sample_present{false};
+};
+
+/* Names the stage in its own domain. Returns "none" for a source nothing has read yet. */
+const char *operation_stage_name(const source_status &status);
+
 // One source's device operations. There is no enable, no address change and no reset:
 // the enable line is the chain's addressing mechanism and belongs to commissioning.
 //
@@ -195,7 +229,10 @@ struct source_facts {
      * Cleared only by a stop that returns success. Recovery is a stop, never a retried start:
      * a half-armed device has to come down before it can go up. */
     bool cleanup_pending{false};
-    op_status status{};
+    /* The last device-level detail recorded for this source, in the vocabulary of whichever model
+     * produced it. See source_status: the domain is part of the value because `stage` is a raw
+     * vendor number and the two vendors' enums are unrelated. */
+    source_status status{};
 };
 
 struct cycle_facts {

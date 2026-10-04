@@ -680,6 +680,15 @@ ZTEST(tof_acquisition, test_a_bring_up_failure_survives_the_cycles_that_follow)
     zassert_false(f.sources[0].started);
     zassert_true(f.sources[0].transport_error, "the bring-up reason was erased");
     zassert_equal(f.sources[0].status.stage, TOF_CLIFF_STAGE_BOOT);
+    /* AND THE DOMAIN THAT MAKES THAT NUMBER MEAN ANYTHING. `stage` is a raw vendor value and the
+     * two ULDs' enums are unrelated, so a stage without its domain is a number on an unknown
+     * scale. Asserted here because every other assertion in this file reads the stage as an L4
+     * one, and until this field existed that was an assumption rather than a fact on the value. */
+    zassert_equal(f.sources[0].status.domain, acq::status_domain::l4,
+                  "an L4 source records its status in the L4 vocabulary");
+    zassert_true(strcmp(acq::operation_stage_name(f.sources[0].status),
+                        tof_cliff_stage_name(TOF_CLIFF_STAGE_BOOT)) == 0,
+                 "and names it in that vocabulary");
     zassert_not_equal(acq::snapshot() & (1U << (2 + acq::kMaxSources)), 0U,
                       "a source that failed to come up must stay faulted");
     zassert_true(f.sources[1].sample_produced);
