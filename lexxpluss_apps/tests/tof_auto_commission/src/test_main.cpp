@@ -36,6 +36,18 @@ struct fakes {
     int prove_calls{0};
     int start_calls{0};
     uint32_t last_epoch_proved{0};
+
+    /* THE ORDER, not just the counts. Counting calls cannot distinguish "proved, then started" from
+     * "started, then proved" -- both leave prove_calls==1 and start_calls==1, and the second is the
+     * failure the whole module exists to prevent. Every hook appends itself here. */
+    char order[16]{};
+    int order_len{0};
+
+    void note(char c)
+    {
+        if (order_len < static_cast<int>(sizeof order) - 1)
+            order[order_len++] = c;
+    }
 };
 
 fakes f_{};
@@ -44,6 +56,7 @@ bool fake_permitted(void *ctx)
 {
     auto *f{static_cast<fakes *>(ctx)};
     ++f->permitted_calls;
+    f->note('p');
     return f->permitted;
 }
 
@@ -51,6 +64,7 @@ int fake_acquire(void *ctx, uint32_t *out)
 {
     auto *f{static_cast<fakes *>(ctx)};
     ++f->acquire_calls;
+    f->note('e');
     if (!f->epoch_available)
         return -1;
     *out = f->epoch;
@@ -61,6 +75,7 @@ int fake_prove(void *ctx, uint32_t epoch)
 {
     auto *f{static_cast<fakes *>(ctx)};
     ++f->prove_calls;
+    f->note('P');
     f->last_epoch_proved = epoch;
     return f->prove_rc;
 }
@@ -69,6 +84,7 @@ int fake_start(void *ctx)
 {
     auto *f{static_cast<fakes *>(ctx)};
     ++f->start_calls;
+    f->note('S');
     return f->start_rc;
 }
 
@@ -222,6 +238,40 @@ ZTEST(tof_auto_commission, test_a_successful_proof_starts_acquisition_once)
     zassert_equal(ac::step(), ac::step_result::already_started, "and it does not run again");
     zassert_equal(f_.prove_calls, 1, "no second proof");
     zassert_equal(f_.start_calls, 1, "no second start");
+}
+
+/* THE ORDER IS THE INVARIANT, AND COUNTS CANNOT PIN IT.
+ *
+ * `test_a_successful_proof_starts_acquisition_once` asserts one proof and one start. So would a
+ * module that called `start()` first and `prove()` afterwards -- which is precisely the failure
+ * this one exists to prevent, because acquisition would be running against a mapping nothing had
+ * verified. The hooks therefore record the sequence and this case asserts it literally.
+ *
+ * 'p' permitted, 'e' epoch acquired, 'P' prove, 'S' start. The permission question comes first
+ * because a machine that may not re-enumerate must not even be asked for an epoch; the epoch is
+ * acquired before the proof because the proof is what spends it; and 'S' comes last, after a 'P'
+ * that returned success. */
+ZTEST(tof_auto_commission, test_the_hooks_run_in_the_order_the_invariant_requires)
+{
+    enable(3);
+
+    zassert_equal(ac::step(), ac::step_result::started);
+    zassert_mem_equal(f_.order, "pePS", 4,
+                      "hook order was '%s', expected 'pePS'", f_.order);
+}
+
+/* And the negative half: when the proof fails, 'S' must not appear at all. A case that only counted
+ * start_calls would pass against a module that called start() and then undid something. */
+ZTEST(tof_auto_commission, test_a_failed_proof_leaves_start_out_of_the_sequence_entirely)
+{
+    enable(1);
+    f_.prove_rc = -5;
+
+    (void)ac::step();
+    zassert_equal(f_.start_calls, 0, "start must not have been called");
+    for (int i{0}; i < f_.order_len; ++i)
+        zassert_not_equal(f_.order[i], 'S', "start appeared in the sequence at index %d", i);
+    zassert_mem_equal(f_.order, "peP", 3, "hook order was '%s', expected 'peP'", f_.order);
 }
 
 ZTEST(tof_auto_commission, test_a_failed_start_retries_the_start_and_not_the_proof)

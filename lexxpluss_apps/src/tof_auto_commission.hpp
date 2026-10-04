@@ -58,10 +58,29 @@
  * busy chain therefore arrives as an ordinary proof failure, is retried, and is bounded like any
  * other. Adding a second lock here would mean two things claiming to serialise the same chain.
  *
- * BOUNDED, NOT PERSISTENT. `max_attempts` is counted within one power-on. There is no unbounded
- * retry, and there is no memory of attempts across a reset -- a board that comes up again is a board
+ * BOUNDED PER INITIALISATION, which is narrower than per power-on and is stated that way because
+ * the difference is the caller's to close. `init()` resets both counters, so what this module
+ * guarantees is that the attempts following any one `init()` are bounded. A caller that wants the
+ * budget to cover a whole boot must not re-initialise within that lifetime; calling `init()` again
+ * grants a fresh budget, by construction rather than by oversight -- re-initialising IS the way to
+ * start over. An earlier version of this comment said "counted within one power-on", which claimed
+ * the caller's discipline as this module's property.
+ *
+ * There is no memory of attempts across a reset either: a board that comes up again is a board
  * whose conditions may have changed, and pretending otherwise would be inventing the persistence
  * whose absence is the open decision.
+ *
+ * CONCURRENCY: NONE, AND THE LOWER LOCK DOES NOT SUPPLY IT. The configuration, the hooks, the two
+ * counters and the state are plain objects with no synchronisation of their own. The chain lock
+ * taken inside the transaction serialises access to the CHAIN; it says nothing about this module's
+ * state, which is read and written before and after that lock is ever taken.
+ *
+ * So every entry point here must be called serially, from one context, and none of them may be
+ * re-entered from a hook -- a hook that called `step()` or `init()` would be mutating the state
+ * machine that is currently deciding what to do with it. That is a requirement on the caller, not
+ * something checked here. No lock is added because the intended caller is a single worker and a
+ * second lock would be a second thing claiming to serialise this; if a caller ever needs more than
+ * one context, the right change is that caller's, and this note is what tells it so.
  */
 
 #include <stdint.h>
