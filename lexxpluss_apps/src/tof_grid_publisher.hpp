@@ -122,10 +122,19 @@ struct counters {
      * because the number a consumer sees jumping is this one, and an unexplained gap in
      * generations reads like lost frames. */
     uint32_t generations_retired{0};
-    /* Frames of a grid that was packed and then not sent, because the source's permission was
-     * withdrawn between the two. Counted apart from cycles_discarded_unauthorised: that one is the
-     * chain-level mapping going away, this one is a single source losing the right to be
-     * attributed while the mapping itself still holds. */
+    /* TWO EVENTS, TWO COUNTERS, BOTH IN GRIDS. They were one counter, which mixed units as well
+     * as meanings: the sampling end added one per grid and the flush added one per frame, so the
+     * number was neither a grid count nor a frame count and could not be read as either.
+     *
+     * Both are distinct from cycles_discarded_unauthorised, which is the chain-level mapping going
+     * away. These two are a single source losing the right to be attributed while the mapping
+     * itself still holds. */
+    /* A sample refused at the moment it was labelled: the source had no permission, so no grid was
+     * ever packed for it. */
+    uint32_t suppressed_not_permitted{0};
+    /* A grid that WAS packed and then not sent, because the permission went away between the
+     * packing and the flush. Counted in grids, like the one above -- a dropped grid is one event
+     * whether it was going to cost seventeen frames or none. */
     uint32_t suppressed_permission_withdrawn{0};
     /* Frames of a grid that were not offered to the bus at all, because an earlier frame of
      * the SAME grid failed. Sending the rest would be bus traffic for a grid the consumer can

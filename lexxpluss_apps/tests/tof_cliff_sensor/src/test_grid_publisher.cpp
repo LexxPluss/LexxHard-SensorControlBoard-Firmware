@@ -816,6 +816,9 @@ ZTEST(tof_grid_publisher, test_a_source_without_permission_is_never_admitted)
 
     zassert_equal(bus.count, 0, "nothing on the bus for a source that may not be attributed");
     zassert_equal(counters_now().grids_sent, 0U);
+    /* The sampling end: no grid was ever packed, so it is counted there and not as a withdrawal. */
+    zassert_equal(counters_now().suppressed_not_permitted, 1U);
+    zassert_equal(counters_now().suppressed_permission_withdrawn, 0U);
 }
 
 /* WITHDRAWN BETWEEN PACKING AND SENDING, which the state and epoch re-read did not cover.
@@ -842,8 +845,12 @@ ZTEST(tof_grid_publisher, test_permission_withdrawn_after_packing_still_stops_th
 
     zassert_equal(bus.count, 0, "a packed grid is not a sent grid");
     zassert_equal(counters_now().grids_sent, 0U);
-    zassert_true(counters_now().suppressed_permission_withdrawn > 0U,
-                 "and it is counted as a permission withdrawal, not a lost mapping");
+    /* ONE GRID, counted in grids. The two counters mixed units before this -- one per grid at the
+     * sampling end, one per FRAME at the flush -- so the number was neither. */
+    zassert_equal(counters_now().suppressed_permission_withdrawn, 1U,
+                  "one withdrawn grid, not the seventeen frames it would have cost");
+    zassert_equal(counters_now().suppressed_not_permitted, 0U,
+                  "it was permitted when it was packed: this is the flush end");
     zassert_equal(counters_now().cycles_discarded_unauthorised, 0U,
                   "the mapping itself never went away");
 }
@@ -931,6 +938,14 @@ ZTEST(tof_grid_publisher, test_a_withdrawn_source_retires_its_generation_and_kee
     zassert_equal(bus.count, 17);
     zassert_equal(bus.frames[16].data[3] & 0x01, 0x01,
                   "the transfer-error flag survived a grid that was never sent");
+    /* AND THE GENERATION DID NOT GO BACK. The retired one was 0; this is the next grid this source
+     * starts transmitting, so it is 1. Asserting only that generations_retired moved would pass on
+     * a firmware that counted the retirement and then handed the number out again -- which is the
+     * mutation that puts two different grids under one generation, and the one a consumer cannot
+     * detect. Byte 0 is the generation; byte 1 is source_id << 4 | chunk_index. */
+    zassert_equal(bus.frames[0].data[0], 1,
+                  "the retired generation is spent, not reused");
+    zassert_equal(bus.frames[0].data[1] >> 4, 0, "and it is still source 0's");
 }
 
 /* THE PACKER CANNOT CHECK THIS AND SAYS SO, which is why the producer carries the test.

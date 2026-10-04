@@ -409,7 +409,7 @@ void on_grid_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts &
      * source's authorisation into both going quiet. Which is the same rule the flush applies when
      * the permission is withdrawn later; this is the other end of the same window. */
     if (!read.source_allowed) {
-        counters_.suppressed_permission_withdrawn++;
+        counters_.suppressed_not_permitted++;
         return;
     }
 
@@ -487,6 +487,8 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
         }
 
         uint32_t stale{0};
+        /* Frames skipped, used only to decide whether anything was withdrawn at all. The counter
+         * that leaves this function is in grids; see withdrawn[]. */
         uint32_t unpermitted{0};
         bool withdrawn[kGridSources]{};
         for (int i{0}; i < queued_; ++i) {
@@ -516,7 +518,6 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
             outgoing[count++] = queue_[i];
         }
         if (unpermitted != 0) {
-            counters_.suppressed_permission_withdrawn += unpermitted;
             /* NOT cycle_invalid_, and that is the whole point of doing this per source.
              *
              * cycle_invalid_ means "this cycle's account of the chain is wrong, so nothing may be
@@ -531,7 +532,12 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
              * whose health frame actually reached the bus, so a flag belonging to a grid that was
              * never sent is reported by the next one. */
             for (int s{0}; s < kGridSources; ++s) {
-                if (!withdrawn[s] || !reported_[s])
+                if (!withdrawn[s])
+                    continue;
+                /* IN GRIDS, not in the frames that were dropped: one source losing its permission
+                 * is one event, and `unpermitted` counts the frames it happened to cost. */
+                counters_.suppressed_permission_withdrawn++;
+                if (!reported_[s])
                     continue;
                 counters_.generations_retired++;
                 reported_[s] = false;
