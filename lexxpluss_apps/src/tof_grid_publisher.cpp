@@ -398,6 +398,21 @@ void on_grid_sample(int index, uint32_t cycle_seq, const tof_acq::source_facts &
         read.target_status[z] = sample.target_status[z];
     }
 
+    /* NO PERMISSION IS A KNOWN STATE, NOT A PRODUCER DEFECT, and it has to be separated here
+     * before the packer's refusal is read as one.
+     *
+     * The packer refuses a read whose source_allowed is clear, which is correct -- but the flush
+     * treats a packer refusal as structural, meaning "this cycle's account of the chain is wrong,
+     * so nothing may be sent". That reading is right for a grid this firmware built badly and wrong
+     * for a source the enumerator has simply not authorised: the other source's grid is still
+     * complete and still belongs to the id it is labelled with, and dropping it would turn one
+     * source's authorisation into both going quiet. Which is the same rule the flush applies when
+     * the permission is withdrawn later; this is the other end of the same window. */
+    if (!read.source_allowed) {
+        counters_.suppressed_permission_withdrawn++;
+        return;
+    }
+
     const gp::completed_verified_grid grid{
         gp::completed_verified_grid::from_read(read, cfg_.accept_low_confidence)};
     if (!grid.admitted()) {
@@ -473,6 +488,7 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
 
         uint32_t stale{0};
         uint32_t unpermitted{0};
+        bool withdrawn[kGridSources]{};
         for (int i{0}; i < queued_; ++i) {
             if (queue_[i].cycle_seq != facts.cycle_seq) {
                 ++stale;
@@ -493,13 +509,33 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
              * correlated unit, and dropping part of one is what the stale check forbids. */
             if (!permitted(now, queue_[i].source_id)) {
                 ++unpermitted;
+                if (queue_[i].source_id < kGridSources)
+                    withdrawn[queue_[i].source_id] = true;
                 continue;
             }
             outgoing[count++] = queue_[i];
         }
         if (unpermitted != 0) {
             counters_.suppressed_permission_withdrawn += unpermitted;
-            cycle_invalid_ = true;
+            /* NOT cycle_invalid_, and that is the whole point of doing this per source.
+             *
+             * cycle_invalid_ means "this cycle's account of the chain is wrong, so nothing may be
+             * sent" -- a packer refusal, a duplicate source id, a full queue. One source losing its
+             * permission is not that: the other source's grid is still complete and still belongs
+             * to the id it is labelled with, and suppressing it would turn one source's
+             * authorisation change into both sources going quiet.
+             *
+             * The withdrawn source's generation is retired here rather than at the send loop, which
+             * only sees frames that were offered. Retiring it clears reported_[s], and that is also
+             * what keeps its pending recovery flags standing: they are cleared only for a source
+             * whose health frame actually reached the bus, so a flag belonging to a grid that was
+             * never sent is reported by the next one. */
+            for (int s{0}; s < kGridSources; ++s) {
+                if (!withdrawn[s] || !reported_[s])
+                    continue;
+                counters_.generations_retired++;
+                reported_[s] = false;
+            }
         }
         if (stale != 0) {
             counters_.discarded_stale_cycle += stale;

@@ -215,17 +215,28 @@ void cycle_with_both(uint32_t seq, const uint16_t *zones0, const uint16_t *zones
 
 /* A cycle in which one source's read failed: no sample, and the outcome recorded the way the
  * scheduler records it. This is the only way the recovered flags can ever be set. */
-void cycle_with_failure(uint32_t seq, int index, bool transport, l7::stage stage)
+/* A cycle in which one source's read failed, with the device-level detail stated rather than
+ * implied. `uld` matters: the readiness check can fail as a timeout, as a bus error or as
+ * impossible metadata, and only the first of those is the contract's bit 1. */
+void cycle_with_failure_status(uint32_t seq, int index, bool transport, l7::stage stage, int uld,
+                               bool protocol = false)
 {
     acq::cycle_facts cf{quiet_cycle(seq)};
     acq::source_facts &f{cf.sources[index]};
 
     f.transport_error = transport;
+    f.protocol_error = protocol;
+    f.status.domain = acq::status_domain::l7;
     f.status.port_errno = transport ? -EIO : 0;
-    f.status.uld_status = transport ? 0 : 255;
+    f.status.uld_status = uld;
     f.status.stage = static_cast<uint8_t>(stage);
     pub::on_cycle_begin(seq);
     pub::on_cycle_complete(cf);
+}
+
+void cycle_with_failure(uint32_t seq, int index, bool transport, l7::stage stage)
+{
+    cycle_with_failure_status(seq, index, transport, stage, transport ? 0 : 255);
 }
 
 void advance_generations(int index, int grids)
@@ -638,13 +649,60 @@ ZTEST(tof_grid_publisher, test_a_recovered_transfer_error_is_reported_on_the_nex
     zassert_equal(bus.frames[16].data[5], 0x00);
 }
 
+/* BIT 1 IS THE DATA-READY TIMEOUT, and the fixture now says so instead of implying it. This case
+ * used to drive the readiness stage with an ordinary failure status and assert the timeout flag,
+ * which passed only because the stage alone was being read. */
 ZTEST(tof_grid_publisher, test_a_recovered_readiness_timeout_sets_its_own_flag)
 {
-    cycle_with_failure(1, 1, false, l7::stage::ready_check);
+    cycle_with_failure_status(1, 1, false, l7::stage::ready_check, l7::kUldTimeoutStatus);
     cycle_with_one(2, 1, 1, filler_zones);
 
     zassert_equal(bus.frames[16].data[3] & 0x02, 0x02, "the data-ready timeout flag");
     zassert_equal(bus.frames[16].data[3] & 0x01, 0x00, "and not the transfer flag");
+}
+
+/* AN ORDINARY FAILURE AT THE SAME STAGE IS NOT A TIMEOUT. Telling a consumer the sensor is slow
+ * when the ULD refused for some other reason sends whoever reads it to the wrong place. */
+ZTEST(tof_grid_publisher, test_an_ordinary_readiness_failure_does_not_masquerade_as_a_timeout)
+{
+    cycle_with_failure_status(1, 1, false, l7::stage::ready_check, 255);
+    cycle_with_one(2, 1, 1, filler_zones);
+
+    zassert_equal(bus.frames[16].data[3] & 0x02, 0x00, "not the timeout flag");
+}
+
+/* A BUS ERROR AT THE SAME STAGE IS BIT 0 AND ONLY BIT 0. It is the case the stage-only reading got
+ * most wrong: a broken bus reported as a slow sensor. */
+ZTEST(tof_grid_publisher, test_a_bus_error_at_the_readiness_check_is_a_transfer_error_not_a_timeout)
+{
+    cycle_with_failure_status(1, 1, true, l7::stage::ready_check, 0);
+    cycle_with_one(2, 1, 1, filler_zones);
+
+    zassert_equal(bus.frames[16].data[3] & 0x01, 0x01, "the transfer flag");
+    zassert_equal(bus.frames[16].data[3] & 0x02, 0x00, "and not the timeout flag");
+}
+
+/* IMPOSSIBLE DEVICE METADATA IS NEITHER. read_once reports -EPROTO at the readiness stage when the
+ * ready byte is not 0 or 1; the ULD itself returned success, so there is no timeout to claim. */
+ZTEST(tof_grid_publisher, test_impossible_readiness_metadata_is_not_a_timeout)
+{
+    cycle_with_failure_status(1, 1, false, l7::stage::ready_check, 0, /*protocol=*/true);
+    cycle_with_one(2, 1, 1, filler_zones);
+
+    zassert_equal(bus.frames[16].data[3] & 0x02, 0x00, "not the timeout flag");
+}
+
+/* AND NOT-YET-READY IS NOT A FAILURE AT ALL. read_once does one non-blocking check and returns, so
+ * a sensor that simply had nothing ready produces a quiet cycle -- no outcome recorded, no flag. */
+ZTEST(tof_grid_publisher, test_a_sensor_that_was_merely_not_ready_sets_no_flag)
+{
+    acq::cycle_facts cf{quiet_cycle(1)};
+
+    pub::on_cycle_begin(1);
+    pub::on_cycle_complete(cf);
+    cycle_with_one(2, 1, 1, filler_zones);
+
+    zassert_equal(bus.frames[16].data[3] & 0x03, 0x00, "nothing happened, so nothing is reported");
 }
 
 ZTEST(tof_grid_publisher, test_a_flag_survives_a_health_frame_that_did_not_reach_the_bus)
@@ -672,20 +730,58 @@ ZTEST(tof_grid_publisher, test_a_failure_on_one_source_is_not_reported_by_the_ot
     zassert_equal(bus.frames[16].data[3] & 0x01, 0x01, "source 0 still reports its own");
 }
 
-ZTEST(tof_grid_publisher, test_the_chain_level_flags_are_restated_every_cycle)
+/* BIT 3 IS RESTATED EVERY CYCLE, and a grid still goes out while it is set.
+ *
+ * It says ANOTHER sensor on the chain failed enumeration, which is exactly the case where the
+ * sensor that still works has to keep reporting: refusing its grid would turn one dead sensor into
+ * correlated blindness on both sides. This is the positive half, and it is the half that proves the
+ * bit-2 case below is about bit 2 rather than about the fixture having stopped publishing. */
+ZTEST(tof_grid_publisher, test_bit_three_is_restated_every_cycle_and_does_not_withhold_the_grid)
 {
-    binding_untrusted_flag = true;
     other_enum_flag = true;
     cycle_with_one(1, 0, 0, filler_zones);
-    zassert_equal(bus.frames[16].data[3] & 0x0C, 0x0C, "bits 2 and 3 come from the mapping");
+    zassert_equal(bus.count, 17, "a peer's enumeration failure does not silence this sensor");
+    zassert_equal(bus.frames[16].data[3] & 0x08, 0x08, "bit 3 comes from the mapping");
 
     bus = {};
-    binding_untrusted_flag = false;
     other_enum_flag = false;
     cycle_with_one(2, 0, 0, filler_zones);
-    /* Not accumulated and not cleared by having been reported: they are a statement about the
-     * chain now, so the moment the chain agrees again they stop being sent. */
-    zassert_equal(bus.frames[16].data[3] & 0x0C, 0x00);
+    /* Not accumulated and not cleared by having been reported: it is a statement about the chain
+     * now, so the moment the chain agrees again it stops being sent. */
+    zassert_equal(bus.frames[16].data[3] & 0x08, 0x00);
+}
+
+/* BIT 2 NOW MEANS A GRID IS NOT PUBLISHED AT ALL, under contract 2026-08-02i.
+ *
+ * The bit says the `chain_position -> source_id` binding cannot be trusted, and the permission that
+ * admits a grid is the enumerator's verdict on that same binding -- so the two come from one
+ * chain_result and cannot disagree. A producer that asserted permission AND set the bit would be
+ * contradicting itself, and the packer refuses that outright as defence in depth.
+ *
+ * This case used to set the bit and assert a published grid. It passed on a pre-i premise: nothing
+ * set source_allowed then, so the contradiction was unreachable and the refusal never fired. */
+ZTEST(tof_grid_publisher, test_an_untrusted_binding_publishes_nothing)
+{
+    binding_untrusted_flag = true;
+    permit[0] = false;   // the same verdict, from the same chain_result
+
+    cycle_with_one(1, 0, 0, filler_zones);
+
+    zassert_equal(bus.count, 0, "an untrusted binding is not a grid with a flag on it");
+    zassert_equal(counters_now().grids_sent, 0U);
+}
+
+/* AND THE SELF-CONTRADICTION IS REFUSED RATHER THAN RESOLVED. No conforming producer can reach
+ * this, which is why it is tested: the refusal must not be the thing that is deleted when somebody
+ * decides it is unreachable. */
+ZTEST(tof_grid_publisher, test_permission_asserted_beside_an_untrusted_binding_is_refused)
+{
+    binding_untrusted_flag = true;
+    permit[0] = true;   // contradicts the bit
+
+    cycle_with_one(1, 0, 0, filler_zones);
+
+    zassert_equal(bus.count, 0, "the safe reading of a contradiction is the unsafe-direction one");
 }
 
 ZTEST(tof_grid_publisher, test_the_authorisation_is_read_once_per_cycle_and_once_at_the_flush)
@@ -772,8 +868,69 @@ ZTEST(tof_grid_publisher, test_one_source_losing_permission_does_not_take_the_ot
     pub::on_cycle_complete(cf);
 
     zassert_equal(bus.count, 17, "exactly the permitted source's grid");
+    /* BYTE 1's HIGH NIBBLE, per the contract: byte 0 is the generation and byte 1 is
+     * `source_id << 4 | chunk_index`. Reading byte 0 for the source would have compared a
+     * generation against a source id and passed or failed for arithmetic reasons. */
     for (int i = 0; i < bus.count; ++i)
-        zassert_equal(bus.frames[i].data[0] >> 6, 1, "and every frame is source 1's");
+        zassert_equal(bus.frames[i].data[1] >> 4, 1, "and every frame is source 1's");
+    zassert_equal(counters_now().grids_sent, 1U, "the permitted source published");
+    zassert_equal(counters_now().cycles_invalid, 0U,
+                  "one source losing permission is not a broken account of the chain");
+}
+
+/* THE SAME, BUT WITHDRAWN BEFORE THE CYCLE RATHER THAN AFTER PACKING. The other source must
+ * publish in both cases: the two paths reach the refusal at different points -- one in the step
+ * that labels the data, one at the flush -- and only one of them was ever covered. */
+ZTEST(tof_grid_publisher, test_a_source_unpermitted_from_the_start_does_not_take_the_others_grid)
+{
+    permit[0] = false;
+    permit[1] = true;
+
+    cycle_with_both(1, filler_zones, filler_zones);
+
+    zassert_equal(bus.count, 17, "exactly the permitted source's grid");
+    for (int i = 0; i < bus.count; ++i)
+        zassert_equal(bus.frames[i].data[1] >> 4, 1);
+    zassert_equal(counters_now().grids_sent, 1U);
+}
+
+/* WHAT THE WITHDRAWN SOURCE IS OWED, which is not nothing.
+ *
+ * Its generation was allocated and will never be transmitted, so it is RETIRED rather than rolled
+ * back -- a consumer that sees the numbers jump needs the jump to be accounted for, and reusing the
+ * number would put two different grids under one generation. And the recovery flags it had not yet
+ * managed to report stay pending: those are cleared only for a source whose health frame actually
+ * reached the bus, so a failure recorded before a grid that was never sent is reported by the next
+ * one rather than lost with it. */
+ZTEST(tof_grid_publisher, test_a_withdrawn_source_retires_its_generation_and_keeps_its_pending_flags)
+{
+    /* A transfer error on source 0, so it has something pending to report. */
+    cycle_with_failure(1, 0, true, l7::stage::fetch);
+
+    const uint32_t retired_before{counters_now().generations_retired};
+
+    permit[0] = permit[1] = true;
+    acq::cycle_facts cf{quiet_cycle(2)};
+    const acq::source_facts f{make_facts(0, descs[0].role_id, true)};
+
+    cf.sources[0] = f;
+    pub::on_cycle_begin(2);
+    pub::on_grid_sample(0, 2, f, make_sample(filler_zones));
+    permit[0] = false;
+    pub::on_cycle_complete(cf);
+
+    zassert_equal(bus.count, 0, "nothing was sent for it");
+    zassert_equal(counters_now().generations_retired, retired_before + 1U,
+                  "its generation is retired, not reused");
+
+    /* Next cycle, permission back: the flag it could not report is reported now. */
+    bus = {};
+    permit[0] = true;
+    cycle_with_one(3, 0, 0, filler_zones);
+
+    zassert_equal(bus.count, 17);
+    zassert_equal(bus.frames[16].data[3] & 0x01, 0x01,
+                  "the transfer-error flag survived a grid that was never sent");
 }
 
 /* THE PACKER CANNOT CHECK THIS AND SAYS SO, which is why the producer carries the test.
