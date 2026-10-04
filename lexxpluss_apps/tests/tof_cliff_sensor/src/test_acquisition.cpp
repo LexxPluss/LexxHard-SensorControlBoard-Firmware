@@ -436,8 +436,10 @@ acq::config make_config(int count)
         d.scratch = &devs[i]; /* the fake ops ignore it; only non-null matters */
         d.stream = &streams[i]; /* per source, never shared - see source_desc */
 #if defined(ENABLE_TOF_L7_ULD)
-        /* ONE TABLE EACH, which is what the production descriptors look like. The other one is a
-         * trap, so a call through it is a failed test rather than an indistinguishable success. */
+        /* ONE TABLE EACH. The other one is a trap, so a call through it is a failed test rather
+         * than an indistinguishable success. This is the BOUND shape -- the one a production table
+         * will build once it binds the real adapter; what build_descriptors() builds today is the
+         * unbound shape, covered separately below. */
         if (d.kind == acq::model::l7_grid) {
             d.ops = &kTrapOps;
             d.grid_ops = &kFakeGridOps;
@@ -927,6 +929,36 @@ ZTEST(tof_acquisition, test_a_grid_re_bring_up_that_cannot_quiesce_opens_nothing
     zassert_true(f.rearm_failed);
     zassert_equal(devs[4].read_calls, reads_before, "and it is not read");
     zassert_equal(rec.grid_samples, samples_before, "nor offered to a publisher");
+}
+#endif
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE SHAPE PRODUCTION ACTUALLY BUILDS TODAY, in a build with the L7 driver compiled in.
+ * build_descriptors() gives every grid position the named -ENOSYS stub in d.ops and leaves
+ * grid_ops null, because nothing binds the real adapter yet. That descriptor must configure, and
+ * the source must go on behaving as the stub. Dispatching on the model alone instead of on "is the
+ * adapter bound" sent it into the grid path with a null table, and validating it as a bound source
+ * rejected it outright -- which on an ENABLE_TOF_L7_ULD board is acquisition failing to init. */
+ZTEST(tof_acquisition, test_an_unbound_grid_source_is_accepted_and_stays_a_stub)
+{
+    acq::config c{make_config(acq::kMaxSources)};
+
+    for (int i{4}; i < acq::kMaxSources; ++i) {
+        four_cliff_two_grid[i].ops = &acq::l7_stub_ops();
+        four_cliff_two_grid[i].grid_ops = nullptr;
+    }
+
+    zassert_equal(acq::init(c), 0, "the not-yet-bound grid descriptor must still configure");
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    const acq::source_facts &f{rec.last.sources[4]};
+
+    zassert_false(f.started, "the stub refuses to start, so the source never becomes readable");
+    zassert_true(f.unsupported, "and that refusal classifies as unsupported");
+    zassert_false(f.transport_error, "a model with no implementation is not a bus failure");
+    zassert_equal(rec.grid_samples, 0, "an unbound source offers a publisher nothing");
+    zassert_false(wrong_table_called, "and the trap was replaced, so nothing could have tripped it");
 }
 #endif
 
@@ -2876,8 +2908,10 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         d.scratch = &devs[i];
         d.stream = &streams[i];
 #if defined(ENABLE_TOF_L7_ULD)
-        /* ONE TABLE EACH, which is what the production descriptors look like. The other one is a
-         * trap, so a call through it is a failed test rather than an indistinguishable success. */
+        /* ONE TABLE EACH. The other one is a trap, so a call through it is a failed test rather
+         * than an indistinguishable success. This is the BOUND shape -- the one a production table
+         * will build once it binds the real adapter; what build_descriptors() builds today is the
+         * unbound shape, covered separately below. */
         if (d.kind == acq::model::l7_grid) {
             d.ops = &kTrapOps;
             d.grid_ops = &kFakeGridOps;

@@ -433,6 +433,19 @@ void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
 
 /* Stop one grid source. The flag discipline is the cliff path's, verbatim: both obligations stay
  * set when the stop is not confirmed, and only a stop that returned success discharges them. */
+/* A GRID SOURCE WHOSE ADAPTER IS ACTUALLY BOUND. The model alone is not the question the dispatch
+ * needs answered.
+ *
+ * No production table binds the real L7 adapter yet: build_descriptors() gives every grid position
+ * the named -ENOSYS stub in d.ops and leaves grid_ops null, and "a stubbed model is not a sensor
+ * fault" is behaviour this branch does not change. Dispatching on the kind alone sent exactly that
+ * configuration -- an ENABLE_TOF_L7_ULD build on a real board -- into the grid path with a null
+ * table, and made init() reject the only grid descriptor production builds. */
+inline bool grid_bound(const source_desc &d)
+{
+    return d.kind == model::l7_grid && d.grid_ops != nullptr;
+}
+
 int stop_grid_locked(int i, const source_desc &d, source_facts &f)
 {
     tof_l7::operation_status st{};
@@ -478,7 +491,7 @@ int stop_locked()
             continue;
 
 #if defined(ENABLE_TOF_L7_ULD)
-        if (d.kind == model::l7_grid) {
+        if (grid_bound(d)) {
             if (const int grid_rc{stop_grid_locked(i, d, f)}; grid_rc != 0 && first_error == 0)
                 first_error = grid_rc;
             continue;
@@ -743,8 +756,13 @@ int init(const config &cfg)
          * the first lifecycle operation: a crash in the acquisition thread rather than an -EINVAL
          * to the caller who built the table. */
 #if defined(ENABLE_TOF_L7_ULD)
-        if (d.kind == model::l7_grid) {
-            if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
+        /* A BOUND grid source, not every grid source. Until a production table binds the real L7
+         * adapter, a grid descriptor carries the complete -ENOSYS stub in d.ops and no grid_ops,
+         * and it is validated as the stub below -- requiring grid_ops of every grid source
+         * rejected the only grid descriptor production builds today. A grid_ops that is present
+         * but half-filled is still refused here rather than dereferenced on the first call. */
+        if (grid_bound(d)) {
+            if (d.grid_ops->open == nullptr ||
                 d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
                 d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr)
                 return -EINVAL;
@@ -917,7 +935,7 @@ int bring_up()
              * been called for the quiesce. */
             int stop_rc;
 #if defined(ENABLE_TOF_L7_ULD)
-            if (d.kind == model::l7_grid) {
+            if (grid_bound(d)) {
                 stop_rc = stop_grid_locked(i, d, f);
             } else
 #endif
@@ -946,7 +964,7 @@ int bring_up()
         clear_cycle_outcomes(f);
 
 #if defined(ENABLE_TOF_L7_ULD)
-        if (d.kind == model::l7_grid) {
+        if (grid_bound(d)) {
             bring_up_grid_locked(i, d, f);
             continue;
         }
@@ -1070,7 +1088,7 @@ void run_cycle()
         clear_cycle_outcomes(f);
 
 #if defined(ENABLE_TOF_L7_ULD)
-        if (d.kind == model::l7_grid) {
+        if (grid_bound(d)) {
             tof_l7::sample grid{};
             tof_l7::operation_status grid_st{};
 
