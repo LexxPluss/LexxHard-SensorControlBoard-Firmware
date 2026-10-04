@@ -35,6 +35,12 @@ outcome map_begin_refusal(au::begin_refusal b)
         return {result::misconfigured, wire_stage::not_started, wire_detail::none};
     case au::begin_refusal::acquisition_not_idle:
         return {result::busy_chain, wire_stage::quiesce, wire_detail::chain_busy};
+    case au::begin_refusal::nonce_exhausted:
+        /* The gate can no longer produce a nonce it has not already used, and that is permanent for
+         * the rest of the boot. Same wire meaning as a used-up epoch space, for the same reason: a
+         * host that retries gains nothing until the board is restarted, and telling it `proof_failed`
+         * would send it round the loop the refusal exists to end. */
+        return {result::attempts_exhausted, wire_stage::not_started, wire_detail::none};
     }
     return {result::internal_error, wire_stage::not_started, wire_detail::none};
 }
@@ -66,6 +72,12 @@ outcome map_commit_refusal(au::commit_refusal c)
     case au::commit_refusal::epoch_install_failed:
     case au::commit_refusal::mapping_install_failed:
         return {result::proof_failed, wire_stage::commit, wire_detail::commit_refused};
+    case au::commit_refusal::wrong_issuer:
+        /* A token this authority's gate did not issue -- evidence authorised by somebody else's
+         * challenge. Deliberately NOT proof_failed, which is the group for a legitimate caller whose
+         * proof did not hold: this one says the caller was never entitled to commit at all, and an
+         * operator sent to the harness by `proof_failed` would be sent to the wrong place. */
+        return {result::not_permitted, wire_stage::commit, wire_detail::commit_refused};
     }
     return {result::internal_error, wire_stage::commit, wire_detail::none};
 }
@@ -84,8 +96,16 @@ outcome map_proof_refusal(pf::refusal p)
     case pf::refusal::challenge_consumed:
         return {result::internal_error, wire_stage::proof_evaluation, wire_detail::none};
 
+    /* Issued by a DIFFERENT gate -- nonces alone are not identities. Apart from the three above
+     * because it is not this firmware losing track of its own challenge: it is evidence that
+     * belongs to somebody else's, which is the same thing commit_refusal::wrong_issuer says one
+     * layer down and gets the same wire answer. */
+    case pf::refusal::challenge_foreign:
+        return {result::not_permitted, wire_stage::proof_evaluation, wire_detail::none};
+
     /* The chain was never asked anything; the description it would have been asked against is
      * wrong. walk_spec_rejected sits here too, even though it surfaces during a walk. */
+    case pf::refusal::spec_invalid:
     case pf::refusal::spec_not_commissioning_profile:
     case pf::refusal::spec_no_tail_l4:
     case pf::refusal::spec_no_cliff:
@@ -97,6 +117,22 @@ outcome map_proof_refusal(pf::refusal p)
     case pf::refusal::walk_position_count:
     case pf::refusal::walk1_not_complete:
     case pf::refusal::l4_retained:
+        return {result::proof_failed, wire_stage::first_walk, wire_detail::walk_mismatch};
+
+    /* A WALK THAT CANNOT SAY WHAT IT ASKED OF THE ENABLE CHAIN. Not proof_failed: nothing about the
+     * chain has been established either way, because the evidence needed to judge it was not
+     * recorded. That is this firmware failing to supply what its own proof requires, which is what
+     * internal_error is for -- and it sends the reader to the firmware rather than to the harness. */
+    case pf::refusal::walk_control_unknown:
+        return {result::internal_error, wire_stage::first_walk, wire_detail::none};
+
+    /* A POSITION THE WALK NEVER COMMANDED ENABLED, which is different again: the evidence IS
+     * complete and it says the chain was not driven the way the proof requires. The operator's
+     * question is about the enable chain, so it reads as a walk that did not hold rather than as an
+     * internal fault. There is no wire_detail for "never enabled"; walk_mismatch is the nearest
+     * truthful one and a later revision that wants to separate them must add a value, not reuse
+     * position_silent -- a position that was never enabled did not fail to answer. */
+    case pf::refusal::walk_position_not_enabled:
         return {result::proof_failed, wire_stage::first_walk, wire_detail::walk_mismatch};
     case pf::refusal::walk2_not_complete:
         return {result::proof_failed, wire_stage::second_walk, wire_detail::walk_mismatch};

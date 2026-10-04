@@ -222,6 +222,34 @@ ZTEST(tof_commission_wire, test_a_nonzero_reserved_byte_is_refused_not_ignored)
                   "ignoring it is how a later version's new field is silently discarded");
 }
 
+/* THE SAME RULE, ONE BYTE EARLIER. Byte 6 carries two flags and six reserved bits, and the decoder
+ * used to read the flags and say nothing about the rest -- in a frame whose byte 7 it already
+ * refused for being non-zero. One reserved byte enforced, the reserved bits beside it not.
+ *
+ * This is not in tension with the case below, which accepts an unrecognised stage or detail. Those
+ * are open enumerations with an honest rendering for a value this build does not know. A reserved
+ * bit has none: set, it says a field exists that this reader cannot locate, beside two flags the
+ * host's behaviour depends on. */
+ZTEST(tof_commission_wire, test_a_reserved_flag_bit_is_refused_like_the_reserved_byte)
+{
+    wire::session_status s{};
+
+    /* Every bit above the two defined flags, one at a time, so a mask that lets one through is
+     * caught rather than averaged away by a single composite value. */
+    for (unsigned bit{2}; bit < 8; ++bit) {
+        uint8_t frame[wire::kFrameLen]{0x01, 0x00, 0x04, 0x03, 0x02, 0x01, 0x01, 0x00};
+        frame[6] = static_cast<uint8_t>(frame[6] | (1U << bit));
+        zassert_equal(wire::decode_session_status(frame, sizeof frame, s),
+                      wire::decode_error::reserved_not_zero, "bit %u was ignored", bit);
+    }
+
+    /* And the two that are defined still decode, so the mask is not simply refusing the byte. */
+    const uint8_t ok[wire::kFrameLen]{0x01, 0x00, 0x04, 0x03, 0x02, 0x01, 0x03, 0x00};
+    zassert_equal(wire::decode_session_status(ok, sizeof ok, s), wire::decode_error::none);
+    zassert_true(s.profile_enabled);
+    zassert_true(s.transaction_in_progress);
+}
+
 ZTEST(tof_commission_wire, test_an_unknown_stage_or_detail_decodes_rather_than_failing)
 {
     /* The decoder must not refuse a frame from a newer firmware: refusing it drops the very frame

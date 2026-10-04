@@ -59,6 +59,8 @@ void encode_session_status(const session_status &in, uint8_t out[kFrameLen])
     out[0] = in.version;
     out[1] = static_cast<uint8_t>(status_kind::session);
     put_u32(&out[2], in.session_token);
+    /* The two flags and nothing else: the reserved bits are written zero here and refused on the way
+     * back in, so an encoder and a decoder of this version cannot disagree about them. */
     out[6] = static_cast<uint8_t>((in.profile_enabled ? 0x01U : 0U) |
                                   (in.transaction_in_progress ? 0x02U : 0U));
     out[7] = 0;
@@ -111,7 +113,11 @@ decode_error decode_session_status(const uint8_t *data, size_t len, session_stat
         return e;
     if (kind != status_kind::session)
         return decode_error::bad_kind;
+    /* Byte 7 and the six unused bits of byte 6, for the same reason and in the same breath: both are
+     * reserved and both are refused rather than ignored. See kSessionFlagsMask. */
     if (data[7] != 0)
+        return decode_error::reserved_not_zero;
+    if ((data[6] & static_cast<uint8_t>(~kSessionFlagsMask)) != 0)
         return decode_error::reserved_not_zero;
 
     out.version = data[0];

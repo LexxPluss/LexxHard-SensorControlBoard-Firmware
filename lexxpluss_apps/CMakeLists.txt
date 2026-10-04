@@ -29,6 +29,29 @@ project(lexxpluss_apps)
 FILE(GLOB app_sources src/*.cpp)
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
 target_sources(app PRIVATE ${app_sources} ${ros_sources})
+
+# LOAD-BEARING, NOT TIDY, AND -Werror=switch-enum ALONE DID NOT DO IT.
+#
+# tof_commission_map.cpp translates the firmware's internal enums into wire values. A switch that
+# does not handle an enumerator is not an error in C++; it falls through, and the wire silently
+# gains a meaning nobody wrote.
+#
+# The guard used to be -Werror=switch-enum on its own, with a comment claiming a new enumerator
+# would fail the build. It does not. GCC reports a missing enumerator in a switch with no `default`
+# under -Wswitch, and -Werror=switch-enum promotes only -Wswitch-enum -- so the diagnostic that
+# actually fires stayed a warning. Three enumerators this baseline has were unmapped underneath it
+# and fell through to internal_error: begin_refusal::nonce_exhausted, commit_refusal::wrong_issuer
+# and proof refusal::challenge_foreign.
+#
+# Both are needed, and they catch different mistakes. -Werror=switch catches the missing enumerator.
+# -Werror=switch-enum catches the next person silencing it with a `default:` label, which would make
+# -Wswitch go quiet while the fall-through came back.
+#
+# IT HAS TO BE HERE AS WELL AS IN THE SUITES. A suite can only fail for a tree it compiles, and the
+# obligation -- "a new enumerator must be mapped" -- belongs to the production image, where the
+# mapper actually ships.
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/tof_commission_map.cpp
+    PROPERTIES COMPILE_OPTIONS "-Werror=switch;-Werror=switch-enum")
 # docs/can holds the generated production half of the CAN wire contracts --
 # identifiers, field encodings and the cliff status classification table. Production
 # code includes it directly, exactly as the tests do, so there is no vendored copy to

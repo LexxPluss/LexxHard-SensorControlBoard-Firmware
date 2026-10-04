@@ -166,6 +166,31 @@ struct session_status {
     bool transaction_in_progress{false};
 };
 
+/* Byte 6 of the session status carries two flags and six RESERVED BITS, and those bits are
+ * reserved-zero rather than ignored.
+ *
+ * The decoder used to read bits 0 and 1 and say nothing about the rest, in a frame whose byte 7 it
+ * already refused for being non-zero -- so one reserved byte was enforced and the reserved bits
+ * beside it were not. The choice is made the same way the request frame's is: ignoring a reserved
+ * field is how a later version's new flag gets silently discarded by an older reader that believed
+ * it understood the frame, and a reader that cannot see the flag cannot know it is acting on a
+ * partial picture.
+ *
+ * The cost is stated rather than waved past: a newer firmware that sets bit 2 has its announcement
+ * refused by an older host instead of half-understood. That is the intended direction, and the
+ * version byte is checked first anyway, so a flag added with a version bump is refused for the
+ * version and never reaches this check.
+ *
+ * WHY THIS IS NOT THE OPPOSITE OF decode_transaction_status(), which deliberately accepts a
+ * `wire_stage` or `wire_detail` it does not recognise. Those are OPEN enumerations: they are
+ * expected to grow, each value is advisory, and an unrecognised one has an honest rendering --
+ * `unknown` -- so the frame is still worth delivering and refusing it would drop the very frame
+ * saying a newer firmware is there. A reserved bit has no such rendering. Set, it says a field
+ * exists that this reader cannot locate or name, next to two flags the host's behaviour depends on;
+ * there is nothing to render and no way to act on a partial picture knowingly. Open values are
+ * tolerated and structure is not. */
+constexpr uint8_t kSessionFlagsMask{0x03};
+
 struct transaction_status {
     uint8_t version{kProtocolVersion};
     uint8_t seq{0};

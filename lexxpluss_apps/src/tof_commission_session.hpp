@@ -119,7 +119,27 @@ enum class worker_state : uint8_t {
 
 /* Drawn once. Returns false when no token could be had, which is not a recoverable state: the
  * subsystem announces no session and answers every request `no_session`, because a board that cannot
- * tell this boot from the last one has no business acting on a request that claims to know. */
+ * tell this boot from the last one has no business acting on a request that claims to know.
+ *
+ * CALLED EXACTLY ONCE PER BOOT, BEFORE ANYTHING ELSE IN THIS HEADER, AND NEVER AGAIN.
+ *
+ * This is a precondition on the caller, not something the function defends against, and it is
+ * written down because the function looks harmless and is not. It resets the session token, the
+ * transaction table, the worker flags and the attempt budget, and it does so WITHOUT taking the
+ * lock the RX path and the worker share. So:
+ *
+ *   - it must complete before the CAN receive path, the worker thread or the periodic announcement
+ *     can run, because a concurrent init() is a data race against all three;
+ *   - it must not be called again while the subsystem is running -- a second call silently clears
+ *     the budget, which is the one thing that makes attempts bounded per boot, and hands the host a
+ *     fresh allowance it never earned;
+ *   - it must not be reached from a hook. The hooks run inside a transaction, and re-initialising
+ *     underneath one would free the entry that transaction is still writing to.
+ *
+ * A lock here would not buy the property. "Bounded per boot" is a statement about how many times
+ * the budget is created, and no amount of mutual exclusion makes a second creation correct -- it
+ * would only make the race orderly. The boot wiring is the single caller, and that is the
+ * enforcement. */
 bool init(const config &cfg, const hooks &h);
 
 bool has_session();

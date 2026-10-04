@@ -41,7 +41,23 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_commission_map.cpp
     ${APP_SRC_DIR}/tof_auto_commission.cpp
 )
+# LOAD-BEARING, NOT TIDY, AND -Werror=switch-enum ALONE DID NOT DO IT.
+#
+# tof_commission_map.cpp translates the firmware's internal enums into wire values. A switch that
+# does not handle an enumerator is not an error in C++; it falls through, and the wire silently
+# gains a meaning nobody wrote.
+#
+# The guard used to be -Werror=switch-enum on its own, with a comment claiming a new enumerator
+# would fail the build. It does not. GCC reports a missing enumerator in a switch with no `default`
+# under -Wswitch, and -Werror=switch-enum promotes only -Wswitch-enum -- so the diagnostic that
+# actually fires stayed a warning. Three enumerators this baseline has were unmapped underneath it
+# and fell through to internal_error: begin_refusal::nonce_exhausted, commit_refusal::wrong_issuer
+# and proof refusal::challenge_foreign.
+#
+# Both are needed, and they catch different mistakes. -Werror=switch catches the missing enumerator.
+# -Werror=switch-enum catches the next person silencing it with a `default:` label, which would make
+# -Wswitch go quiet while the fall-through came back.
 set_source_files_properties(${APP_SRC_DIR}/tof_commission_map.cpp
-    PROPERTIES COMPILE_OPTIONS "-Werror=switch-enum")
+    PROPERTIES COMPILE_OPTIONS "-Werror=switch;-Werror=switch-enum")
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
 target_include_directories(app PRIVATE ${APP_SRC_DIR} ${CONTRACT_DIR})
