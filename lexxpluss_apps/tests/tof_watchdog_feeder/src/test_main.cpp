@@ -151,8 +151,16 @@ ZTEST(tof_watchdog_feeder, test_the_startup_handshake_in_the_order_the_board_use
     zassert_equal(failures_returned_, 3,
                   "three refusals, not one: the success above must have reset the count");
 
+    /* PHASE AND REASON COME FROM ONE READ. current() publishes them packed into a single atomic
+     * word written by the feeder after each decision, rather than reading the feeder's own state
+     * fields -- those are plain memory that the feeder is in the middle of writing, and the torn
+     * read that matters is the one that says the board stopped and shows nothing that says why.
+     * The race itself cannot be entered deterministically on native_sim; what is pinned here is the
+     * behaviour the packing protects. */
     const feeder::status gone{feeder::current()};
     zassert_true(gone.withheld, "the phase must be stopped, not merely the reason set");
+    zassert_equal(gone.phase, static_cast<uint32_t>(lexxhard::tof_task_watchdog::phase::stopped),
+                  "the phase is published, not inferred from the reason");
     zassert_equal(gone.why, static_cast<uint32_t>(
                                 lexxhard::tof_task_watchdog::feed_api_failed));
     zassert_equal(gone.feeds, feeds_before_giving_up, "a refused feed is not a feed");

@@ -68,9 +68,33 @@ atomic_t last_fed_ms_{};
 constexpr int kFeedFailureLimit{3};
 
 /* Owned by the feeder thread and by nothing else, which is what keeps the decision single-threaded
- * while its inputs arrive from five others. */
+ * while its inputs arrive from five others. NOTHING OUTSIDE THE FEEDER MAY READ THESE: current()
+ * is called from the shell and from initialisation, and reading plain fields that the feeder is in
+ * the middle of writing is a race whose most likely symptom is the worst one -- a phase and a
+ * reason from either side of the same transition, so a reader is told the board stopped and shown
+ * nothing that says why. */
 wd::state state_{};
 wd::bounds bounds_{};
+
+/* THE DECISION, PUBLISHED IN ONE WORD, which is the point: phase and reason move together and a
+ * reader takes both or neither. Two atomics would be no better than two plain fields here -- each
+ * read would be clean and the pair still torn. The reason bits are a mask and the phase is a small
+ * enum, so both fit in one 32-bit word with room to spare. */
+constexpr unsigned kPhaseShift{24};
+static_assert(static_cast<uint32_t>(wd::feed_api_failed) < (1U << kPhaseShift),
+              "the reason mask has grown into the phase field");
+atomic_t published_{};
+
+uint32_t pack_state(wd::phase ph, uint32_t why)
+{
+    return (static_cast<uint32_t>(ph) << kPhaseShift) | (why & ((1U << kPhaseShift) - 1U));
+}
+
+/* Called by the feeder, and only by the feeder, after every decision. */
+void publish_state()
+{
+    atomic_set(&published_, static_cast<atomic_val_t>(pack_state(state_.current, state_.why)));
+}
 
 uint32_t now_ms()
 {
@@ -169,7 +193,12 @@ void feeder(void *, void *, void *)
             in.long_operation = atomic_get(&long_operation_) != 0;
             in.long_operation_began_ms = static_cast<uint32_t>(atomic_get(&long_began_ms_));
 
-            if (wd::feed_allowed(state_, bounds_, in)) {
+            const bool allowed{wd::feed_allowed(state_, bounds_, in)};
+            /* Before the feed rather than after it. feed_allowed() has already moved the phase, and
+             * a reader that arrives between the decision and the feed must not be shown the
+             * previous one. */
+            publish_state();
+            if (allowed) {
                 /* THE ONLY wdt_feed() IN THE IMAGE. */
                 if (const int rc{wdt_feed(wdt_, channel_)}; rc == 0) {
                     /* After the call, not the sample taken before it. The inputs were read at the
@@ -193,6 +222,7 @@ void feeder(void *, void *, void *)
                          * running. */
                         state_.why = wd::feed_api_failed;
                         state_.current = wd::phase::stopped;
+                        publish_state();
                         commit_tombstone(in, wd::feed_api_failed, rc);
                         LOG_ERR("giving up after %d refused feeds; this boot will reset",
                                 consecutive_failures);
@@ -292,11 +322,17 @@ void report_previous_stop()
 
 status current()
 {
+    /* ONE READ, so phase and reason cannot come from either side of a transition. `feeds` is a
+     * separate counter and deliberately not part of the word: it moves on its own schedule, it
+     * carries no consistency relationship with the decision, and a feed that lands between these
+     * two reads is not a contradiction. */
+    const uint32_t packed{static_cast<uint32_t>(atomic_get(&published_))};
+
     status s{};
-    s.phase = static_cast<uint32_t>(state_.current);
-    s.why = state_.why;
+    s.phase = packed >> kPhaseShift;
+    s.why = packed & ((1U << kPhaseShift) - 1U);
     s.feeds = static_cast<uint32_t>(atomic_get(&feeds_));
-    s.withheld = state_.current == wd::phase::stopped;
+    s.withheld = s.phase == static_cast<uint32_t>(wd::phase::stopped);
     return s;
 }
 

@@ -23,9 +23,14 @@
  * reservation writes into memory the linker is still free to allocate from -- and the earlier form
  * of this guard, which asked only whether the node existed, was satisfied by its own absence. A
  * build whose CMakeLists stopped applying overlays/forensics_dtcm.overlay would have compiled
- * silently and lost the record's durability with nothing to show for it. The board is the
- * discriminator rather than the node, because the host suites are native_sim builds with a real
- * devicetree that simply has no such node, and on them the address is never dereferenced. */
+ * silently, and the record would have been left where the linker may put something else on top of
+ * it. The board is the discriminator rather than the node, because the host suites are native_sim
+ * builds with a real devicetree that simply has no such node, and on them the address is never
+ * dereferenced.
+ *
+ * WHAT THE RESERVATION BUYS, stated narrowly: the record is not allocated over, so it is still
+ * there to be read after a reset that keeps the rail up. It says nothing about a power cut, which
+ * clears DTCM whatever the devicetree says. */
 #if defined(CONFIG_BOARD_LEXXPLUSS_SCB) && !DT_NODE_EXISTS(DT_NODELABEL(forensics_dtcm))
 #error "the watchdog tombstone needs overlays/forensics_dtcm.overlay; see lexxpluss_apps/CMakeLists.txt"
 #endif
@@ -39,6 +44,20 @@ static_assert(lexxhard::tof_watchdog_tombstone::kAddress +
                   lexxhard::tof_watchdog_tombstone::kSize <=
               DT_REG_ADDR(DT_NODELABEL(forensics_dtcm)) +
                   DT_REG_SIZE(DT_NODELABEL(forensics_dtcm)));
+#endif
+
+/* AND OUT OF REACH OF THE ALLOCATOR, which the two assertions above do not say.
+ *
+ * They place the record inside the declared region. Declaring a region does not remove it from the
+ * DTCM node the linker allocates from -- that is the second half of the overlay, the one that
+ * shrinks &dtcm to 124 KiB -- and a tree carrying only the first half satisfies both of them while
+ * leaving the record exactly where a future translation unit asking for DTCM would be placed. This
+ * is the assertion that fails on such a tree. */
+#if TOMBSTONE_BARRIER && DT_NODE_EXISTS(DT_NODELABEL(dtcm))
+static_assert(lexxhard::tof_watchdog_tombstone::kAddress >=
+                  DT_REG_ADDR(DT_NODELABEL(dtcm)) + DT_REG_SIZE(DT_NODELABEL(dtcm)),
+              "the record overlaps the DTCM the linker allocates from: the overlay's &dtcm "
+              "shrink is missing");
 #endif
 
 namespace lexxhard::tof_watchdog_tombstone {
