@@ -139,10 +139,12 @@ if(ENABLE_TOF_L7_ULD)
     # READ THAT CAREFULLY RATHER THAN AS A PASS. It is 72 B because nothing calls the driver: the
     # grid operations are still the -ENOSYS stubs in tof_acquisition.cpp, so --gc-sections drops the
     # ULD, the platform layer, the adapter and the blob machinery. Compiled, those objects are
-    # 11,531 B of text, which is the reference figure for what binding them will add -- and the
-    # publisher, the runtime monitoring and the boot recovery are each still to come. The ~4.7 KB
-    # that leaves is why those development images did not fit, and the decision is likely to be
-    # forced later.
+    # 11,531 B of text -- a reference for what binding them will add, not a prediction, since
+    # inlining and --gc-sections move it again once there are callers. The publisher, the runtime
+    # monitoring and the boot recovery are each still to come and none of them is measured here.
+    # So the headroom after wiring is an estimate of roughly 4.7 KB and no more than that: it is a
+    # reason to expect the decision to be forced later, and it is NOT an account of why the
+    # development images overflowed, which was never measured contribution by contribution.
     #
     # It is not forced by THIS change, and removing ~26 KB of product content is not something a
     # driver's build block should do on the way past. It is a change about what the image CONTAINS,

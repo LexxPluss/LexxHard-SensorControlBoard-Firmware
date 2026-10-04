@@ -37,6 +37,21 @@ enum class lifecycle : uint8_t {
   opened,
   configured,
   running,
+  /* THE DEVICE MAY BE RANGING AND WE CANNOT SAY. Entered when start() or stop()
+   * returns a failure, because neither failure proves what the device did.
+   * vl53l7cx_start_ranging() writes the start command and then polls and reads
+   * back; a failure in any of the steps after the command went out is
+   * consistent with a device that started. Treating that as "still configured"
+   * was the earlier behaviour and it had two consequences: stop() refused,
+   * because it required `running`, so nothing could ever clean up; and the
+   * sensor could be reconfigured and restarted on top of a session that may
+   * have been live.
+   *
+   * So this state is a debt, not a position. stop() accepts it and may be
+   * retried until it succeeds, and every path that would touch or trust the
+   * device -- configure(), start(), read_once() -- refuses while it is set.
+   * Only a stop() that returned 0 clears it. */
+  stop_unconfirmed,
 };
 
 struct sensor {
@@ -66,6 +81,11 @@ int open(sensor *device, uint8_t address_7bit, operation_status *status);
  * default is hidden here. */
 int configure(sensor *device, uint8_t frequency_hz, operation_status *status);
 int start(sensor *device, operation_status *status);
+
+/* The only way out of lifecycle::stop_unconfirmed, and therefore retryable: it
+ * accepts both `running` and `stop_unconfirmed`, and leaves the sensor in
+ * `stop_unconfirmed` on failure so the caller can try again rather than being
+ * refused for not being in a state it can no longer reach. */
 int stop(sensor *device, operation_status *status);
 
 /* One non-blocking readiness check and, only when ready, one complete ULD

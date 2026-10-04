@@ -18,6 +18,10 @@ target_sources(app PRIVATE
     src/test_main.cpp
     ${APP_SRC_DIR}/tof_l7_blob_record.cpp
     ${APP_SRC_DIR}/tof_l7_runtime.cpp
+    # The provider, for the one thing about it that is testable without a board: what it promises
+    # about `out` when the partition will not open at all. Its success path dereferences a
+    # memory-mapped flash address and belongs on hardware.
+    ${APP_SRC_DIR}/tof_l7_blob_provider.cpp
 )
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE

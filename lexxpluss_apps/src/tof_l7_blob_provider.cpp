@@ -96,6 +96,15 @@ report with_area(Fn &&fn)
 
 report verify_stored(const accept_list &accepted, blob_view &out)
 {
+    /* CLEARED HERE, NOT INSIDE verify(). The header promises that every status other than ok clears
+     * `out`, including a view left by an earlier successful call -- and the one path that cannot
+     * keep that promise from inside is the partition failing to open, because then with_area()
+     * returns before the callback runs and verify() is never reached. A caller that had a valid
+     * view, and whose next verification could not even open the partition, would have been left
+     * holding the old pointer and a refusal status: the exact combination the promise exists to
+     * make impossible. */
+    out = blob_view{};
+
     return with_area([&](const reader &r, report &rep) {
         /* The header first and separately, so that `stored` is populated even when the verdict is a
          * refusal. "wanted 86,016 with digest ab.., found 84,992 with digest cd.." is the sentence

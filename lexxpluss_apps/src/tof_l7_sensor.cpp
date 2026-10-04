@@ -165,8 +165,12 @@ int start(sensor *device, operation_status *status) {
   vl53l7cx_port_clear_error();
   const int rc{
       finish(*status, stage::start, vl53l7cx_start_ranging(&device->uld))};
-  if (rc == 0)
-    device->current = lifecycle::running;
+  /* A FAILURE HERE DOES NOT MEAN THE DEVICE IS NOT RANGING. The ULD writes the
+   * start command and then polls and reads back, so a failure in any step after
+   * the command went out leaves the device's state unknown. Record the debt
+   * rather than returning to `configured`, which both refused the stop that
+   * would clear it and allowed a restart on top of a possibly live session. */
+  device->current = rc == 0 ? lifecycle::running : lifecycle::stop_unconfirmed;
   return rc;
 }
 
@@ -178,14 +182,20 @@ int stop(sensor *device, operation_status *status) {
     status->failed_stage = stage::arguments;
     return -EINVAL;
   }
-  if (device->current != lifecycle::running)
+  /* Both, and that is the point: stop_unconfirmed exists so that cleanup is
+   * possible after a start whose outcome is unknown. Refusing it here is what
+   * made the earlier state machine a dead end. */
+  if (device->current != lifecycle::running &&
+      device->current != lifecycle::stop_unconfirmed)
     return state_refusal(*status);
 
   vl53l7cx_port_clear_error();
   const int rc{
       finish(*status, stage::stop, vl53l7cx_stop_ranging(&device->uld))};
-  if (rc == 0)
-    device->current = lifecycle::configured;
+  /* Only a confirmed stop clears the debt. A failed stop from `running` incurs
+   * it, for the same reason start() does: the stop command may have been sent
+   * and the device may or may not have acted on it. */
+  device->current = rc == 0 ? lifecycle::configured : lifecycle::stop_unconfirmed;
   return rc;
 }
 
@@ -227,6 +237,8 @@ int read_once(sensor *device, scratch *work, sample *out,
     status->failed_stage = stage::arguments;
     return -EINVAL;
   }
+  /* `running` only. stop_unconfirmed refuses here by construction: a device
+   * whose session we cannot account for must not have its data trusted. */
   if (device->current != lifecycle::running)
     return state_refusal(*status);
 

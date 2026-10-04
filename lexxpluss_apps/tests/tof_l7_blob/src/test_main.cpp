@@ -20,15 +20,47 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/crc.h>
 #include <zephyr/ztest.h>
 
 #include "golden_record.h"
+#include "tof_l7_blob_provider.hpp"
 #include "tof_l7_blob_record.hpp"
 #include "tof_l7_runtime.hpp"
 
 namespace blob = lexxhard::tof_l7_blob;
 namespace runtime = lexxhard::tof_l7_runtime;
+
+/* THE FLASH PARTITION API, SUBSTITUTED AT LINK TIME, so the one provider behaviour that does not
+ * need a board can be tested: what it leaves in `out` when the partition will not open.
+ *
+ * CONFIG_FLASH_MAP is deliberately not selected, so these are the only definitions in the binary.
+ * The provider's success path maps a flash address and reads through it; that belongs on hardware
+ * and no case here goes near it. */
+namespace {
+int flash_open_rc;
+struct flash_area fake_area {};
+}  // namespace
+
+extern "C" {
+
+int flash_area_open(uint8_t, const struct flash_area **fa)
+{
+    if (flash_open_rc != 0)
+        return flash_open_rc;
+    *fa = &fake_area;
+    return 0;
+}
+
+void flash_area_close(const struct flash_area *) {}
+
+int flash_area_read(const struct flash_area *, off_t, void *, size_t)
+{
+    return -EIO;
+}
+
+}  // extern "C"
 
 namespace {
 
@@ -458,4 +490,35 @@ ZTEST(tof_l7_blob, test_every_status_has_a_name)
         zassert_true(strcmp(blob::status_name(s), "?") != 0,
                      "status %d has no name", static_cast<int>(s));
     }
+}
+
+/* THE PROMISE THE EARLY RETURN BROKE.
+ *
+ * tof_l7_blob_provider.hpp says every status other than ok clears `out`, "including a view left by
+ * an earlier successful call". The one path that could not keep it was the partition failing to
+ * open: with_area() returns before the callback runs, so verify() -- which is what clears `out` --
+ * was never reached, and a caller holding a view from a previous boot-time verification kept the
+ * old pointer alongside a refusal. That is the exact combination the promise exists to make
+ * impossible, and the pointer in question is the one authorising an 84 KiB download to a sensor.
+ */
+ZTEST(tof_l7_blob, test_a_partition_that_will_not_open_clears_a_view_from_an_earlier_success)
+{
+    blob::blob_view view{};
+
+    /* A genuinely valid view first -- verify() is the only thing that can make one. */
+    zassert_equal(blob::verify(make_reader(), region_size, golden_accept_list(), view, region),
+                  blob::status::ok);
+    zassert_true(view.valid());
+    const uint8_t *const authorised{view.data()};
+    zassert_not_null(authorised);
+
+    flash_open_rc = -EIO;
+    const blob::report rep{blob::verify_stored(golden_accept_list(), view)};
+
+    zassert_equal(rep.st, blob::status::unreadable);
+    zassert_false(view.valid(), "a refusal must not leave the previous authorisation standing");
+    zassert_is_null(view.data());
+    zassert_equal(view.size(), 0U);
+
+    flash_open_rc = 0;
 }

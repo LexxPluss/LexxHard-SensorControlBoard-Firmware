@@ -171,6 +171,57 @@ uint8_t vl53l7cx_get_ranging_data(VL53L7CX_Configuration *p_dev,
 
 ZTEST_SUITE(tof_l7_sensor, nullptr, nullptr, before, nullptr, nullptr);
 
+/* A FAILED START IS A DEBT, NOT A ROLLBACK.
+ *
+ * vl53l7cx_start_ranging() writes the start command and then polls and reads back, so a failure
+ * anywhere after the command went out is consistent with a device that is ranging. The earlier
+ * state machine returned to `configured` on failure, which refused the stop that would have cleaned
+ * up -- stop() required `running` -- and allowed a reconfigure and restart on top of a session that
+ * may have been live. */
+ZTEST(tof_l7_sensor, test_a_failed_start_leaves_a_stoppable_sensor_not_a_configured_one) {
+  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
+
+  start_status = VL53L7CX_STATUS_ERROR;
+  zassert_not_equal(l7::start(&sensor_under_test, &operation), 0);
+  zassert_equal(operation.failed_stage, l7::stage::start);
+  zassert_equal(sensor_under_test.current, l7::lifecycle::stop_unconfirmed,
+                "the device may be ranging and this build cannot say otherwise");
+
+  /* Nothing may be trusted from it. */
+  zassert_equal(l7::read_once(&sensor_under_test, &work, &output, &operation), -EPERM);
+  zassert_equal(operation.failed_stage, l7::stage::state);
+  zassert_false(output.fresh);
+
+  /* And it may not be restarted or reconfigured over. */
+  zassert_equal(l7::start(&sensor_under_test, &operation), -EPERM);
+  zassert_equal(l7::configure(&sensor_under_test, 10, &operation), -EPERM);
+
+  /* Cleanup is possible, which is the whole point. */
+  const int stops_before{stop_calls};
+  zassert_ok(l7::stop(&sensor_under_test, &operation));
+  zassert_equal(stop_calls, stops_before + 1, "the stop reached the device");
+  zassert_equal(sensor_under_test.current, l7::lifecycle::configured);
+}
+
+/* And cleanup is RETRYABLE, because a stop can fail for the same reason a start can. */
+ZTEST(tof_l7_sensor, test_a_failed_stop_keeps_the_debt_and_can_be_retried) {
+  open_configure_start();
+  zassert_equal(sensor_under_test.current, l7::lifecycle::running);
+
+  stop_status = VL53L7CX_STATUS_ERROR;
+  zassert_not_equal(l7::stop(&sensor_under_test, &operation), 0);
+  zassert_equal(operation.failed_stage, l7::stage::stop);
+  zassert_equal(sensor_under_test.current, l7::lifecycle::stop_unconfirmed,
+                "a failed stop says nothing about what the device did either");
+  zassert_equal(l7::read_once(&sensor_under_test, &work, &output, &operation), -EPERM);
+
+  stop_status = VL53L7CX_STATUS_OK;
+  zassert_ok(l7::stop(&sensor_under_test, &operation));
+  zassert_equal(sensor_under_test.current, l7::lifecycle::configured,
+                "only a confirmed stop clears it");
+}
+
 ZTEST(tof_l7_sensor,
       test_open_binds_the_verified_runtime_payload_and_converts_address_once) {
   zassert_ok(l7::open(&sensor_under_test, 0x29, &operation));
@@ -273,8 +324,13 @@ ZTEST(tof_l7_sensor, test_configuration_stops_at_the_first_failed_stage) {
   zassert_equal(sensor_under_test.current, l7::lifecycle::opened);
 }
 
-ZTEST(tof_l7_sensor,
-      test_lifecycle_order_is_enforced_and_failed_stop_stays_running) {
+/* THIS CASE USED TO BE test_lifecycle_order_is_enforced_and_failed_stop_stays_running, and the
+ * second half of that name was the bug. It asserted that a failed stop left the sensor `running`,
+ * which is the mirror image of the start defect: the stop command may have reached the device, so
+ * "still running" is a guess, and it is the guess that keeps read_once() enabled on a session
+ * nobody can account for. The failed-stop behaviour now lives in
+ * test_a_failed_stop_keeps_the_debt_and_can_be_retried; what remains here is the ordering. */
+ZTEST(tof_l7_sensor, test_lifecycle_order_is_enforced) {
   zassert_equal(l7::start(&sensor_under_test, &operation), -EPERM);
   zassert_equal(operation.failed_stage, l7::stage::state);
   zassert_ok(l7::open(&sensor_under_test, 0x29, &operation));
@@ -283,10 +339,6 @@ ZTEST(tof_l7_sensor,
   zassert_ok(l7::start(&sensor_under_test, &operation));
   zassert_equal(sensor_under_test.current, l7::lifecycle::running);
 
-  stop_status = VL53L7CX_STATUS_ERROR;
-  zassert_equal(l7::stop(&sensor_under_test, &operation), -EIO);
-  zassert_equal(sensor_under_test.current, l7::lifecycle::running);
-  stop_status = VL53L7CX_STATUS_OK;
   zassert_ok(l7::stop(&sensor_under_test, &operation));
   zassert_equal(sensor_under_test.current, l7::lifecycle::configured);
 }

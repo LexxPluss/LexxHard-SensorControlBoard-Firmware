@@ -264,17 +264,21 @@ firmware_bypass_safety_lidar:
 #
 # firmware_tof_chain still carries the flag. That is pre-existing and deliberately left alone here;
 # whether a bring-up target should keep it is a separate decision from what this one ships with.
+
 # The cliff image plus the hanging-object ULD. BRING-UP, NOT A PRODUCT BUILD, and it is named here
 # rather than left to a command line so that what it carries is reviewable.
 #
-# NO SAFETY-LIDAR BYPASS, for the reason firmware_tof_cliff gives above: the development images this
+# NO SAFETY-LIDAR BYPASS, for the reason firmware_tof_cliff gives below: the development images this
 # driver comes from carried one, and inheriting it is how a bypass ships.
 #
-# IT IS EXPECTED NOT TO FIT TODAY. The filesystem stack and the L7 ULD do not both fit in the
-# 261,712 B signable image, and removing the filesystem is a separate decision about what the
-# product contains -- see lexxpluss_apps/CMakeLists.txt. Until that decision is made and verified on
-# its own, this target is for measuring and for compiling the driver, and signing reports the
-# overflow by name rather than this Makefile hiding it behind a flag.
+# IT FITS TODAY, AND THAT IS NOT A PASS. Measured at 245,504 B signed against the 261,712 B ceiling
+# with the filesystem stack still configured -- 72 B more than the same image without the L7 flag,
+# because nothing calls the driver and --gc-sections drops it. The development images this comes
+# from did not fit and dropped the filesystem; they also carried the publisher, the monitoring and
+# the recovery. Binding the grid operations adds the 11,531 B those objects compile to, before any
+# of the rest. So this target is for compiling and measuring the driver, the filesystem decision is
+# lexxpluss_apps/CMakeLists.txt's to explain and nobody's to inherit, and whoever revisits it must
+# re-measure on the configuration they are shipping.
 .PHONY: firmware_tof_l7
 firmware_tof_l7:
 	./scripts/manage_zephyr_patches.sh verify
