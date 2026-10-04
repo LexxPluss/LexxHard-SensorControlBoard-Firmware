@@ -39,7 +39,8 @@ clean:
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
 	        build-test-tof-enumerator build-tof-chain build-tof-l7 \
-	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob
+	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob \
+	        build-test-tof-l7-recovery
 
 .PHONY: distclean
 distclean: clean
@@ -182,6 +183,15 @@ test_tof_l7_blob:
 	$(RUNNER) python3 docs/can/gen_l7_blob_record.py pack lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/modules/vl53l7cx_buffers.h --c-array VL53L7CX_FIRMWARE --expect-header lexxpluss_apps/third_party/st/vl53l7cx_uld/zephyr/vl53l7cx_blob_expectation.hpp --check
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The boot-time L7 recovery pass, its ULD adapter and the boot ordering around them. Pure logic over
+# injected calls, so it links the production sources directly and needs no bus, no Zephyr device and
+# no ULD. Three suites in one binary on purpose: the ordering, the pass and the translation between
+# them are proven together rather than in two binaries that agree by assumption.
+.PHONY: test_tof_l7_recovery
+test_tof_l7_recovery:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_recovery -d build-test-tof-l7-recovery -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming
