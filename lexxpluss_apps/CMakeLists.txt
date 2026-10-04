@@ -123,9 +123,11 @@ endif()
 
 # Hanging-object ToF: the vendored VL53L7CX ULD, our Zephyr platform layer, and the blob machinery
 # that lets the 86,016-byte device firmware live in storage_partition instead of in the signed
-# image. Off by default, and nothing in this branch turns it on: the grid operations that would
-# call the adapter are still the named -ENOSYS stubs in tof_acquisition.cpp, so with the flag off
-# the image is unchanged and with it on the driver is present and unreachable.
+# image. Off by default, and nothing in this branch turns it on. The acquisition layer now has a
+# grid lifecycle -- open, configure, start, read, stop, dispatched per model -- but no production
+# descriptor binds it: build_descriptors() still hands every grid position the named -ENOSYS stub
+# in tof_acquisition.cpp. So with the flag off the image is unchanged and with it on the driver is
+# present and unreachable.
 #
 # The explicit source list compiles the ULD core and our platform only. The plugins and the STM32
 # BSP wrapper stay vendored and do not enter any image; see third_party/st/vl53l7cx_uld/UPSTREAM.md.
@@ -139,19 +141,30 @@ if(ENABLE_TOF_L7_ULD)
     # THE FILESYSTEM IS NOT REMOVED HERE, and the reason is a measurement rather than inheritance.
     #
     # The development images that carried this driver also dropped the FAT stack, on the grounds
-    # that an L7 image does not fit beside it. Measured on this branch: chain + cliff + L7 with the
-    # filesystem still configured signs at 245,504 B against the 261,712 B ceiling, 16,208 B spare,
-    # and 72 B more than the same image without the flag.
+    # that an L7 image does not fit beside it. Measured on this branch against the clean Zephyr
+    # tree, chain + cliff with the filesystem still configured, 261,712 B ceiling:
     #
-    # READ THAT CAREFULLY RATHER THAN AS A PASS. It is 72 B because nothing calls the driver: the
-    # grid operations are still the -ENOSYS stubs in tof_acquisition.cpp, so --gc-sections drops the
-    # ULD, the platform layer, the adapter and the blob machinery. Compiled, those objects are
-    # 11,531 B of text -- a reference for what binding them will add, not a prediction, since
-    # inlining and --gc-sections move it again once there are callers. The publisher, the runtime
-    # monitoring and the boot recovery are each still to come and none of them is measured here.
-    # So the headroom after wiring is an estimate of roughly 4.7 KB and no more than that: it is a
-    # reason to expect the decision to be forced later, and it is NOT an account of why the
-    # development images overflowed, which was never measured contribution by contribution.
+    #   flag off  build-pub-prod-off  245,452 B signed, 16,260 B spare
+    #   flag on   build-pub-prod-on   246,776 B signed, 14,936 B spare   (+1,324 B)
+    #
+    # READ THAT CAREFULLY RATHER THAN AS A PASS. The +1,324 B is not the driver's cost. No
+    # production table binds the L7 adapter: build_descriptors() still gives every grid position
+    # the named -ENOSYS stub and leaves grid_ops null, so the grid lifecycle is reachable only
+    # through a function-pointer table nothing fills, and --gc-sections keeps the dispatch while
+    # dropping most of what it would have called. Compiled, the ULD objects are 11,531 B of text --
+    # a reference for what binding them will add, not a prediction, since inlining and
+    # --gc-sections move it again once there are callers.
+    #
+    # The grid publisher and packer are NOT in this list and are in no product image; they are
+    # built and tested by lexxpluss_apps/tests/tof_cliff_sensor only. Their in-image cost, and the
+    # cost of an adapter that is actually bound, are both unmeasured and belong to the wiring
+    # change that creates the callers. The runtime monitoring and the boot recovery are likewise
+    # not measured here.
+    # So the headroom after wiring is an estimate and no more: 14,936 spare less 11,531 of ULD text
+    # is about 3.3 KB, before the publisher, the packer, a bound adapter or anything else that is
+    # still to come. It is a reason to expect the decision to be forced later, and it is NOT an
+    # account of why the development images overflowed, which was never measured contribution by
+    # contribution.
     #
     # It is not forced by THIS change, and removing ~26 KB of product content is not something a
     # driver's build block should do on the way past. It is a change about what the image CONTAINS,
