@@ -38,7 +38,8 @@ clean:
 	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
-	        build-test-tof-enumerator build-tof-chain
+	        build-test-tof-enumerator build-tof-chain build-tof-l7 \
+	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob
 
 .PHONY: distclean
 distclean: clean
@@ -147,6 +148,41 @@ test_tof_mapping_proof:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_proof -d build-test-tof-mapping-proof -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the hanging-object (VL53L7CX) driver and the stored device-firmware blob.
+# Three suites, separate because they fail for different reasons.
+
+# The Zephyr port, at wire level, with the vendor ULD deliberately absent: it pins our 16-bit index,
+# repeated start, the 328-byte segmentation bound and the sticky errno contract, without freezing
+# ST's internal register sequence into this repository.
+.PHONY: test_tof_l7_port
+test_tof_l7_port:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_port -d build-test-tof-l7-port -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The adapter, against fake ULD and runtime symbols. There is no test-only open path: the object
+# assignment still calls tof_l7_runtime::firmware_data(), and the link substitute only controls the
+# answer it gets.
+.PHONY: test_tof_l7_sensor
+test_tof_l7_sensor:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_sensor -d build-test-tof-l7-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The stored blob record, with the real SHA-256 and the real CRC against the GENERATOR's own output,
+# committed as the suite's golden record. A layout written once at manufacture and read at every
+# boot needs its two implementations pinned to each other.
+#
+# TWO GENERATOR CHECKS RUN FIRST, and they pin different things. The golden record proves the
+# committed fixture is still what the generator emits, so the suite cannot drift from the writer.
+# The expectation check proves the accept-list compiled INTO the image still describes the payload
+# in the vendored ULD -- a re-vendored snapshot with a different device firmware would otherwise
+# leave the two disagreeing, and the first thing to notice would be a board refusing to range.
+.PHONY: test_tof_l7_blob
+test_tof_l7_blob:
+	$(RUNNER) bash -c 'python3 docs/can/gen_l7_blob_record.py golden --out /tmp/golden_record.h && diff -u lexxpluss_apps/tests/tof_l7_blob/src/golden_record.h /tmp/golden_record.h'
+	$(RUNNER) python3 docs/can/gen_l7_blob_record.py pack lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/modules/vl53l7cx_buffers.h --c-array VL53L7CX_FIRMWARE --expect-header lexxpluss_apps/third_party/st/vl53l7cx_uld/zephyr/vl53l7cx_blob_expectation.hpp --check
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming
 # Python in the product: it fails if any .py appears outside docs/can/, or if any build
@@ -228,6 +264,23 @@ firmware_bypass_safety_lidar:
 #
 # firmware_tof_chain still carries the flag. That is pre-existing and deliberately left alone here;
 # whether a bring-up target should keep it is a separate decision from what this one ships with.
+# The cliff image plus the hanging-object ULD. BRING-UP, NOT A PRODUCT BUILD, and it is named here
+# rather than left to a command line so that what it carries is reviewable.
+#
+# NO SAFETY-LIDAR BYPASS, for the reason firmware_tof_cliff gives above: the development images this
+# driver comes from carried one, and inheriting it is how a bypass ships.
+#
+# IT IS EXPECTED NOT TO FIT TODAY. The filesystem stack and the L7 ULD do not both fit in the
+# 261,712 B signable image, and removing the filesystem is a separate decision about what the
+# product contains -- see lexxpluss_apps/CMakeLists.txt. Until that decision is made and verified on
+# its own, this target is for measuring and for compiling the driver, and signing reports the
+# overflow by name rather than this Makefile hiding it behind a flag.
+.PHONY: firmware_tof_l7
+firmware_tof_l7:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
 .PHONY: firmware_tof_cliff
 firmware_tof_cliff:
 	./scripts/manage_zephyr_patches.sh verify

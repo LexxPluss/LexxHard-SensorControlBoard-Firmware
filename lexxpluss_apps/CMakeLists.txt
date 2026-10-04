@@ -23,6 +23,14 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
+# An L7 image verifies the stored blob on the main stack at boot, which does not fit the default
+# main stack: see overlays/tof_l7.conf for the per-frame measurement. Kconfig is fixed by
+# find_package(Zephyr) below, so the fragment is added here, and only for L7 builds -- every other
+# image is configured exactly as before.
+if(ENABLE_TOF_L7_ULD)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
@@ -104,6 +112,53 @@ if(ENABLE_TOF_CLIFF_ULD)
     # ULD's include directories a chain build without the cliff sensors failed on
     # vl53l4cx.h, which is exactly what its guard prevents.
     add_definitions(-DENABLE_TOF_CLIFF_ULD)
+endif()
+
+# Hanging-object ToF: the vendored VL53L7CX ULD, our Zephyr platform layer, and the blob machinery
+# that lets the 86,016-byte device firmware live in storage_partition instead of in the signed
+# image. Off by default, and nothing in this branch turns it on: the grid operations that would
+# call the adapter are still the named -ENOSYS stubs in tof_acquisition.cpp, so with the flag off
+# the image is unchanged and with it on the driver is present and unreachable.
+#
+# The explicit source list compiles the ULD core and our platform only. The plugins and the STM32
+# BSP wrapper stay vendored and do not enter any image; see third_party/st/vl53l7cx_uld/UPSTREAM.md.
+if(ENABLE_TOF_L7_ULD)
+    # Same dependency, and for the same reason, as the cliff ULD: i2c2 belongs to the tug encoder
+    # until ENABLE_TOF_CHAIN hands it over. Refuse the combination at configure time.
+    if(NOT ENABLE_TOF_CHAIN)
+        message(FATAL_ERROR "ENABLE_TOF_L7_ULD requires ENABLE_TOF_CHAIN")
+    endif()
+
+    # THE FILESYSTEM IS NOT REMOVED HERE, and the reason is a measurement rather than inheritance.
+    #
+    # The development images that carried this driver also dropped the FAT stack, on the grounds
+    # that an L7 image does not fit beside it. Measured on this branch: chain + cliff + L7 with the
+    # filesystem still configured signs at 245,504 B against the 261,712 B ceiling, 16,208 B spare,
+    # and 72 B more than the same image without the flag.
+    #
+    # READ THAT CAREFULLY RATHER THAN AS A PASS. It is 72 B because nothing calls the driver: the
+    # grid operations are still the -ENOSYS stubs in tof_acquisition.cpp, so --gc-sections drops the
+    # ULD, the platform layer, the adapter and the blob machinery. Compiled, those objects are
+    # 11,531 B of text, which is the reference figure for what binding them will add -- and the
+    # publisher, the runtime monitoring and the boot recovery are each still to come. The ~4.7 KB
+    # that leaves is why those development images did not fit, and the decision is likely to be
+    # forced later.
+    #
+    # It is not forced by THIS change, and removing ~26 KB of product content is not something a
+    # driver's build block should do on the way past. It is a change about what the image CONTAINS,
+    # it needs its own justification and its own verification, and whoever makes it must re-measure
+    # on the configuration they are actually shipping rather than quote this comment.
+
+    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/st/vl53l7cx_uld/vl53l7cx_sources.cmake)
+    target_sources(app PRIVATE ${VL53L7CX_ULD_PRODUCTION_SOURCES})
+    # The generated expectation header names tof_l7_blob::expectation, a type owned by src/.
+    # Quoted includes otherwise search from the vendor directory and cannot find it.
+    target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                           ${VL53L7CX_ULD_INCLUDE_DIRS})
+    # Third-party code, exempted narrowly rather than by deleting files or by a global -Wno-*.
+    set_source_files_properties(${VL53L7CX_PATCHED_DIR}/vl53l7cx_api.c PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable")
+    add_definitions(-DENABLE_TOF_L7_ULD)
 endif()
 
 if(VERSION)
