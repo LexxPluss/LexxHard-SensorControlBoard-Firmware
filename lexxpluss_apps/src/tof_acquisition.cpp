@@ -444,9 +444,16 @@ int stop_grid_locked(int i, const source_desc &d, source_facts &f)
     if (rc != 0) {
         record_l7(f, rc, st);
         f.rearm_failed = true;
+        /* SET, not merely left alone. The two flags are independent claims -- `started` says the
+         * source may be read, `cleanup_pending` says it still owes a successful stop -- and an
+         * unconfirmed stop changes both. Leaving them as they were kept the common case (started,
+         * no debt) reading as a healthy readable source with nothing owed, which is the one thing
+         * a device that would not quiesce is not. */
+        f.started = false;
+        f.cleanup_pending = true;
         LOG_ERR("grid source %d stop failed at %s rc %d errno %d -- stop not confirmed", i,
                 tof_l7::stage_name(st.failed_stage), rc, st.port_errno);
-        return rc;   // both flags stay set: the stop was not confirmed
+        return rc;
     }
     f.started = false;
     f.cleanup_pending = false;
@@ -485,11 +492,15 @@ int stop_locked()
              * confirmed will not produce a trustworthy sample either, and only a complete
              * re-bring-up may clear it. */
             f.rearm_failed = true;
+            /* SET, not merely left alone -- see stop_grid_locked(). An unconfirmed stop makes the
+             * source unreadable AND leaves a stop owed, and the flags have to say both. */
+            f.started = false;
+            f.cleanup_pending = true;
             LOG_ERR("source %d stop failed at %s rc %d errno %d -- stop not confirmed", i,
                     tof_cliff_stage_name(st.stage), rc, st.port_errno);
             if (first_error == 0)
                 first_error = rc;
-            continue;   // both flags stay set: the stop was not confirmed
+            continue;
         }
         f.started = false;
         /* The obligation is discharged only by a stop that returned success. */
@@ -725,6 +736,27 @@ int init(const config &cfg)
          * here with any of them null does not fail at init -- it dereferences null on the
          * first lifecycle operation, which is a crash in the acquisition thread rather
          * than an -EINVAL to the caller who built the table. */
+        /* PER MODEL, because the two paths do not use the same table and a single check could
+         * only be wrong in one direction or the other. Requiring a complete d.ops of every source
+         * rejected a correct descriptor that carried only grid_ops, and -- worse -- accepted a
+         * grid descriptor whose grid_ops was null or half-filled, which then dereferenced null on
+         * the first lifecycle operation: a crash in the acquisition thread rather than an -EINVAL
+         * to the caller who built the table. */
+#if defined(ENABLE_TOF_L7_ULD)
+        if (d.kind == model::l7_grid) {
+            if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
+                d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
+                d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr)
+                return -EINVAL;
+            /* The adapter is handed this as its device object on every call. */
+            if (d.dev == nullptr)
+                return -EINVAL;
+            continue;
+        }
+#endif
+        /* ALL FIVE, not the two this function used to name. In a build without the grid driver an
+         * l7_grid source reaches this too, and its table is the stub -- which is complete, so the
+         * flag-off behaviour is unchanged. */
         if (d.ops == nullptr || d.ops->open == nullptr || d.ops->configure == nullptr ||
             d.ops->start == nullptr || d.ops->read_cliff_sample == nullptr ||
             d.ops->stop == nullptr)
@@ -878,15 +910,36 @@ int bring_up()
          * commissioning session re-addressed a live sensor. A re-bring-up that cannot
          * quiesce the previous device is not a re-bring-up; it is two drivers on one part. */
         if (f.started || f.cleanup_pending) {
-            op_status stop_st{};
-            const int stop_rc{d.ops->stop(d.dev, &stop_st)};
-            if (stop_rc != 0) {
-                record(f, stop_rc, stop_st);
-                f.rearm_failed = true;
-                LOG_ERR("source %d could not be stopped before re-bring-up at %s rc %d", i,
-                        tof_cliff_stage_name(stop_st.stage), stop_rc);
-                continue;   // both flags stay set: the device was never quiesced
+            /* THROUGH THE MODEL'S OWN TABLE. This used to call d.ops->stop() for every source
+             * before the dispatch below, so a grid source being restarted -- or retried while it
+             * still owed a stop -- had the cliff driver pointed at it. The dispatch a few lines
+             * down was doing the right thing for the bring-up and the wrong driver had already
+             * been called for the quiesce. */
+            int stop_rc;
+#if defined(ENABLE_TOF_L7_ULD)
+            if (d.kind == model::l7_grid) {
+                stop_rc = stop_grid_locked(i, d, f);
+            } else
+#endif
+            {
+                op_status stop_st{};
+
+                stop_rc = d.ops->stop(d.dev, &stop_st);
+                if (stop_rc != 0) {
+                    record(f, stop_rc, stop_st);
+                    f.rearm_failed = true;
+                    /* Same discipline as stop_locked(): unreadable, and a stop still owed. */
+                    f.started = false;
+                    f.cleanup_pending = true;
+                    LOG_ERR("source %d could not be stopped before re-bring-up at %s rc %d", i,
+                            tof_cliff_stage_name(stop_st.stage), stop_rc);
+                }
             }
+            /* A re-bring-up that cannot quiesce the previous device is not a re-bring-up; it is
+             * two drivers on one part. The source is left unreadable, still owing a stop, and
+             * nothing is opened. */
+            if (stop_rc != 0)
+                continue;
             f.started = false;
             f.cleanup_pending = false;
         }

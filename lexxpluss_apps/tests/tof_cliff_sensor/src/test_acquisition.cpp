@@ -67,6 +67,7 @@ struct fake_dev {
     int start_calls{0};
     int read_calls{0};
     int stop_calls{0};
+    int grid_stop_calls{0};
     /* A device that will not stop. The interesting case, because the facts must keep saying
      * it is started rather than quietly recording a quiescence that never happened. */
     int stop_rc{0};
@@ -267,7 +268,9 @@ int fake_grid_stop(void *dev, l7f::operation_status *st)
     record_caller();
     auto *const d{static_cast<fake_dev *>(dev)};
 
-    ++d->stop_calls;
+    /* ITS OWN COUNTER. Sharing stop_calls with the cliff fake is what let a mis-dispatch look
+     * like a correct one. */
+    ++d->grid_stop_calls;
     *st = l7f::operation_status{};
     if (d->stop_rc != 0) {
         st->failed_stage = l7f::stage::stop;
@@ -278,6 +281,48 @@ int fake_grid_stop(void *dev, l7f::operation_status *st)
 
 const acq::grid_source_ops kFakeGridOps{fake_grid_open, fake_grid_configure, fake_grid_start,
                                         fake_grid_read, fake_grid_stop};
+
+/* THE WRONG TABLE, AS A TRAP. The fixture used to give every descriptor both tables with one
+ * shared stop counter, which is exactly the arrangement under which a mis-dispatch is invisible:
+ * the cliff driver called on a grid source produced the same counts as the grid driver would. A
+ * grid source now carries this as its d.ops, so any call through the cliff path is recorded and
+ * fails rather than quietly succeeding. */
+bool wrong_table_called{false};
+
+int trap_open(void *, uint8_t, acq::op_status *st)
+{
+    wrong_table_called = true;
+    memset(st, 0, sizeof(*st));
+    return -EIO;
+}
+int trap_configure(void *, acq::op_status *st)
+{
+    wrong_table_called = true;
+    memset(st, 0, sizeof(*st));
+    return -EIO;
+}
+int trap_start(void *, void *, acq::op_status *st)
+{
+    wrong_table_called = true;
+    memset(st, 0, sizeof(*st));
+    return -EIO;
+}
+int trap_read(void *, void *, void *, struct tof_cliff_sample *out, acq::op_status *st)
+{
+    wrong_table_called = true;
+    memset(st, 0, sizeof(*st));
+    if (out != nullptr)
+        memset(out, 0, sizeof(*out));
+    return -EIO;
+}
+int trap_stop(void *, acq::op_status *st)
+{
+    wrong_table_called = true;
+    memset(st, 0, sizeof(*st));
+    return -EIO;
+}
+
+const acq::source_ops kTrapOps{trap_open, trap_configure, trap_start, trap_read, trap_stop};
 #endif
 
 // Recorded sink activity.
@@ -285,6 +330,8 @@ struct {
     int cycles{0};
     acq::cycle_facts last{};
     int cliff_samples{0};
+    int grid_samples{0};
+    int last_grid_index{-1};
     int last_sample_index{-1};
     int16_t last_sample_mm{0};
     int health_beats{0};
@@ -324,6 +371,17 @@ void on_cycle(const acq::cycle_facts &facts)
 
 uint32_t sample_cycles[8];
 int sample_cycle_count;
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* The grid sink. Counting it is what makes "nothing is offered to a publisher" an assertion rather
+ * than an absence nobody looked for. */
+void on_grid_sample(int index, uint32_t, const acq::source_facts &,
+                    const lexxhard::tof_l7::sample &)
+{
+    ++rec.grid_samples;
+    rec.last_grid_index = index;
+}
+#endif
 
 void on_cliff_sample(int index, uint32_t cycle_seq, const acq::source_facts &,
                      const struct tof_cliff_sample &s)
@@ -377,12 +435,19 @@ acq::config make_config(int count)
         d.dev = &devs[i];
         d.scratch = &devs[i]; /* the fake ops ignore it; only non-null matters */
         d.stream = &streams[i]; /* per source, never shared - see source_desc */
-        d.ops = &kFakeOps;
 #if defined(ENABLE_TOF_L7_ULD)
-        /* Every descriptor carries both tables; bring-up picks by kind. A grid source with no
-         * frequency is a configuration error the adapter refuses, so the fixture states one. */
-        d.grid_ops = &kFakeGridOps;
-        d.grid_frequency_hz = 10;
+        /* ONE TABLE EACH, which is what the production descriptors look like. The other one is a
+         * trap, so a call through it is a failed test rather than an indistinguishable success. */
+        if (d.kind == acq::model::l7_grid) {
+            d.ops = &kTrapOps;
+            d.grid_ops = &kFakeGridOps;
+            d.grid_frequency_hz = 10;
+        } else {
+            d.ops = &kFakeOps;
+            d.grid_ops = nullptr;
+        }
+#else
+        d.ops = &kFakeOps;
 #endif
     }
     c.sources = four_cliff_two_grid;
@@ -391,6 +456,9 @@ acq::config make_config(int count)
     c.periods.health_period_ms = kHealthPeriodMs;
     c.hooks.on_cycle = on_cycle;
     c.hooks.on_cliff_sample = on_cliff_sample;
+#if defined(ENABLE_TOF_L7_ULD)
+    c.hooks.on_grid_sample = on_grid_sample;
+#endif
     c.hooks.on_cliff_health = on_cliff_health;
     c.hooks.on_cycle_begin = on_cycle_begin;
     c.mapping_state_provider = mapping_provider;
@@ -422,6 +490,10 @@ void before(void *)
     zassert_equal(acq::teardown(), 0, "a previous case left the subsystem un-retirable");
 
     acq::stop();
+#if defined(ENABLE_TOF_L7_ULD)
+    /* A trap that stays tripped from an earlier case would make every later one look guilty. */
+    wrong_table_called = false;
+#endif
     memset(devs, 0, sizeof(devs));
     k_sem_reset(&cycle_read_seen);
     uld_call_count = 0;
@@ -732,10 +804,12 @@ ZTEST(tof_acquisition, test_a_grid_source_that_only_owes_a_stop_is_still_stopped
     acq::run_cycle();
     zassert_true(rec.last.sources[4].cleanup_pending);
 
-    const int stops_before{devs[4].stop_calls};
+    const int stops_before{devs[4].grid_stop_calls};
     zassert_equal(acq::teardown(), 0);
 
-    zassert_equal(devs[4].stop_calls, stops_before + 1, "the stop reached the device");
+    zassert_equal(devs[4].grid_stop_calls, stops_before + 1,
+                  "the stop reached the device through the GRID table");
+    zassert_false(wrong_table_called, "and never through the cliff one");
     zassert_true(acq::is_idle(), "a stop that returned success discharges the obligation");
 }
 
@@ -749,9 +823,21 @@ ZTEST(tof_acquisition, test_a_grid_stop_that_fails_keeps_the_debt_and_the_source
     devs[4].stop_rc = -EIO;
     zassert_not_equal(acq::teardown(), 0, "a stop that was not confirmed is not a success");
 
-    /* Not idle is the observable consequence: is_idle() asks whether any source is still started
-     * or still owes a stop, which is exactly the pair a failed stop leaves standing. */
+    /* is_idle() is one consequence; it is not the one that matters on the bus. A source whose
+     * stop was not confirmed must also not be read and must produce nothing for a publisher to
+     * send -- asserting only the idle predicate would pass on a firmware that kept ranging and
+     * kept publishing while reporting itself busy. */
     zassert_false(acq::is_idle(), "the subsystem is not idle while a device may be ranging");
+
+    const int reads_before{devs[4].read_calls};
+    const int samples_before{rec.grid_samples};
+
+    acq::run_cycle();
+
+    zassert_equal(devs[4].read_calls, reads_before,
+                  "a source that may still be ranging is not read");
+    zassert_equal(rec.grid_samples, samples_before, "and nothing is offered to a publisher");
+    zassert_false(rec.last.sources[4].sample_produced);
 
     devs[4].stop_rc = 0;
     zassert_equal(acq::teardown(), 0);
@@ -776,6 +862,71 @@ ZTEST(tof_acquisition, test_a_grid_failure_is_recorded_in_the_grid_domain)
 
     /* The cliff source beside it keeps its own vocabulary in the same cycle. */
     zassert_equal(rec.last.sources[0].status.domain, acq::status_domain::l4);
+}
+
+/* RE-BRING-UP QUIESCES THROUGH THE MODEL'S OWN TABLE. bring_up() stops a source that is already
+ * started before it opens it again, and that pre-stop used to be an unconditional d.ops->stop()
+ * for every source -- so a grid source was quiesced by the cliff driver while the dispatch a few
+ * lines later opened it with the right one. The fixture gives each source ONE table, so a
+ * mis-dispatch now trips the trap instead of silently working. */
+ZTEST(tof_acquisition, test_a_grid_re_bring_up_quiesces_through_the_grid_table)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    const int stops_before{devs[4].grid_stop_calls};
+    const int opens_before{devs[4].open_calls};
+    const int starts_before{devs[4].start_calls};
+
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[4].grid_stop_calls, stops_before + 1,
+                  "the previous session was closed through the grid table");
+    zassert_false(wrong_table_called, "and never through the cliff one");
+    zassert_equal(devs[4].open_calls, opens_before + 1, "then the source is opened again");
+    zassert_equal(devs[4].start_calls, starts_before + 1);
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+
+    zassert_true(f.started);
+    zassert_false(f.cleanup_pending, "a confirmed stop discharged the previous session");
+    zassert_false(f.rearm_failed, "and a complete open-configure-start is the recovery");
+}
+
+/* A PRE-STOP THAT FAILS STOPS THE RE-BRING-UP. The device may still be ranging, so opening and
+ * arming it again would be two sessions on one part. Nothing is opened, both flags stand, and the
+ * source stays out of the cycle. */
+ZTEST(tof_acquisition, test_a_grid_re_bring_up_that_cannot_quiesce_opens_nothing)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    const int opens_before{devs[4].open_calls};
+    const int starts_before{devs[4].start_calls};
+    const int cliff_opens_before{devs[0].open_calls};
+
+    devs[4].stop_rc = -EIO;
+    (void)acq::bring_up();
+
+    zassert_equal(devs[4].open_calls, opens_before,
+                  "a source that may still be ranging must not be opened again");
+    zassert_equal(devs[4].start_calls, starts_before);
+    zassert_false(wrong_table_called, "and the cliff table was never the one that tried");
+
+    /* Its neighbour is unaffected: one source's unaccounted session does not abort the others. */
+    zassert_equal(devs[0].open_calls, cliff_opens_before + 1);
+
+    const int reads_before{devs[4].read_calls};
+    const int samples_before{rec.grid_samples};
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+
+    zassert_false(f.started, "`started` means may be read");
+    zassert_true(f.cleanup_pending, "the stop is still owed");
+    zassert_true(f.rearm_failed);
+    zassert_equal(devs[4].read_calls, reads_before, "and it is not read");
+    zassert_equal(rec.grid_samples, samples_before, "nor offered to a publisher");
 }
 #endif
 
@@ -1251,6 +1402,38 @@ ZTEST(tof_acquisition, test_a_source_that_would_not_stop_leaves_the_chain_busy)
     zassert_not_equal(acq::stop(), 0, "the fixture must make the stop fail");
 
     zassert_false(acq::is_idle(), "a source still ranging is not an idle chain");
+}
+
+/* AND THE FLAGS SAY WHY. is_idle() is a chain-wide predicate; the per-source claims are what a
+ * re-bring-up and a health report read. An unconfirmed stop makes a source unreadable AND leaves a
+ * stop owed, so both flags have to move -- this used to leave them exactly as they were, which in
+ * the ordinary case (started, nothing owed) read as a healthy readable source with no debt. */
+ZTEST(tof_acquisition, test_an_unconfirmed_stop_leaves_the_source_unreadable_and_in_debt)
+{
+    zassert_equal(acq::init(make_config(3)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    acq::run_cycle();
+
+    devs[1].stop_rc = -EIO;
+    zassert_not_equal(acq::stop(), 0);
+
+    acq::cycle_facts f{};
+    acq::copy_facts(f);
+    zassert_false(f.sources[1].started, "`started` means may be read, and this one may not");
+    zassert_true(f.sources[1].cleanup_pending, "a stop that was not confirmed is still owed");
+    zassert_true(f.sources[1].rearm_failed);
+
+    /* Its neighbours stopped cleanly and owe nothing. */
+    zassert_false(f.sources[0].started);
+    zassert_false(f.sources[0].cleanup_pending);
+    zassert_false(f.sources[0].rearm_failed);
+
+    /* The debt is what gets it stopped again: with the fault cleared, the retry discharges it. */
+    devs[1].stop_rc = 0;
+    const int stops_before{devs[1].stop_calls};
+    zassert_equal(acq::stop(), 0);
+    zassert_equal(devs[1].stop_calls, stops_before + 1, "the retry reached the device");
+    zassert_true(acq::is_idle());
 }
 
 /* And the renumbering gate must refuse for the same reason: resetting the sequence while a
@@ -2692,12 +2875,19 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         d.dev = &devs[i];
         d.scratch = &devs[i];
         d.stream = &streams[i];
-        d.ops = &kFakeOps;
 #if defined(ENABLE_TOF_L7_ULD)
-        /* Every descriptor carries both tables; bring-up picks by kind. A grid source with no
-         * frequency is a configuration error the adapter refuses, so the fixture states one. */
-        d.grid_ops = &kFakeGridOps;
-        d.grid_frequency_hz = 10;
+        /* ONE TABLE EACH, which is what the production descriptors look like. The other one is a
+         * trap, so a call through it is a failed test rather than an indistinguishable success. */
+        if (d.kind == acq::model::l7_grid) {
+            d.ops = &kTrapOps;
+            d.grid_ops = &kFakeGridOps;
+            d.grid_frequency_hz = 10;
+        } else {
+            d.ops = &kFakeOps;
+            d.grid_ops = nullptr;
+        }
+#else
+        d.ops = &kFakeOps;
 #endif
     }
 
