@@ -31,6 +31,16 @@ emits a production header; the grid contract does not.
 | `tof_contract_vectors.h` | Generated C++ conformance vectors | Tests only |
 | `tof_grid_golden_vectors.json` | Language-neutral vectors for review and tooling | No |
 
+## Not a contract: the commissioning downlink
+
+| File | Role | Used by production code |
+| --- | --- | --- |
+| `commission_downlink_draft.md` | **DRAFT.** No generator reads it, no artefact is produced from it, neither repository pins anything in it, and no handler is wired against it. It exists to make one design decision reviewable | No |
+
+The only settled fact about `0x218`/`0x219` is their allocation, which is recorded in
+`tof_cliff_wire_contract.md` along with the statement that neither has a payload layout. Until the
+draft becomes a contract section with generated vectors, that remains the whole truth about them.
+
 **The grid contract has no generated production header.** Its constants live in hand-written source.
 Do not assume a change that works for one contract applies to the other.
 
