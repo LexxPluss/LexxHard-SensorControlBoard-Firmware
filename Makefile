@@ -42,6 +42,10 @@ clean:
 	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob \
 	        build-test-tof-l7-uld-stop
 
+	        build-test-tof-enumerator build-tof-chain build-test-tof-progress \
+	        build-test-tof-task-watchdog build-test-tof-watchdog-tombstone \
+	        build-test-tof-watchdog-feeder
+
 .PHONY: distclean
 distclean: clean
 	rm -rf build-mcuboot build bootloader modules tools zephyr out .west
@@ -193,6 +197,38 @@ test_tof_l7_blob:
 test_tof_l7_uld_stop:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_uld_stop -d build-test-tof-l7-uld-stop -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the runtime monitoring layer. Four suites, listed separately because they
+# fail for different reasons: the counters, the decision, the record and the wiring around them.
+
+# The six heartbeats. Needs a real kernel rather than a host stub: which of the two CAN sender slots
+# a send belongs to is decided by comparing against the system work queue's thread.
+.PHONY: test_tof_progress
+test_tof_progress:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_progress -d build-test-tof-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The decision itself: may the hardware watchdog be fed right now. Pure logic over counters and a
+# clock, so it links the production source directly and needs no board and no watchdog driver.
+.PHONY: test_tof_task_watchdog
+test_tof_task_watchdog:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_task_watchdog -d build-test-tof-task-watchdog -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The retained record. Formatting and validation over a caller-supplied region, so the suite writes
+# into an ordinary array; only the production placement knows about DTCM.
+.PHONY: test_tof_watchdog_tombstone
+test_tof_watchdog_tombstone:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_watchdog_tombstone -d build-test-tof-watchdog-tombstone -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The startup handshake against a fake watchdog, in the order the board uses it. One ordered
+# scenario on purpose: the module keeps one set of state for the life of the image, exactly as it
+# does on the board, so it cannot be set up again per test case.
+.PHONY: test_tof_watchdog_feeder
+test_tof_watchdog_feeder:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_watchdog_feeder -d build-test-tof-watchdog-feeder -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming

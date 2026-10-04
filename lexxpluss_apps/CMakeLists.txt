@@ -31,6 +31,13 @@ if(ENABLE_TOF_L7_ULD)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
 endif()
 
+# The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
+# nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
+# find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
+# carries the record must not be configurable without it. See overlays/forensics_dtcm.overlay, and
+# src/tof_watchdog_tombstone.cpp for the compile-time check that this line is what satisfies.
+list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_dtcm.overlay)
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
