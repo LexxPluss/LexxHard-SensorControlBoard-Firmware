@@ -343,6 +343,117 @@ bool any_source_unquiesced_locked()
     return false;
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* The grid adapter's status, converted for the same reason the L4 one is: the stage is a raw
+ * vendor number and means nothing without the domain that interprets it. */
+source_status from_l7(const tof_l7::operation_status &st)
+{
+    source_status out{};
+
+    out.domain = status_domain::l7;
+    out.stage = static_cast<uint8_t>(st.failed_stage);
+    out.port_errno = st.port_errno;
+    out.uld_status = st.uld_status;
+    out.sample_present = st.sample_present;
+    return out;
+}
+
+void record_l7(source_facts &f, int rc, const tof_l7::operation_status &st)
+{
+    f.status = from_l7(st);
+    if (rc == 0)
+        return;
+    if (rc == -EPROTO || rc == -EBADMSG)
+        f.protocol_error = true;
+    else if (rc == -ENOSYS)
+        f.unsupported = true;
+    else if (rc == -EINVAL || rc == -EPERM)
+        f.usage_error = true;
+    else
+        f.transport_error = true;
+}
+#endif
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* Bring one grid source up, with the SAME obligations the cliff path carries and one rule that is
+ * simpler here.
+ *
+ * A FAILED START ALWAYS OWES A STOP. The cliff adapter can sometimes say the device was left quiet,
+ * so it reports ranging_unknown and this layer only takes the obligation when it is set. The grid
+ * adapter cannot: vl53l7cx_start_ranging() writes the start command and then polls and reads back,
+ * so a failure anywhere after the command went out is consistent with a device that is ranging. So
+ * the obligation is unconditional rather than reported, and the adapter agrees -- a failed start
+ * leaves it in lifecycle::stop_unconfirmed, where it refuses to configure, start or be read until a
+ * stop returns success.
+ *
+ * `started` is deliberately not set on any failure path: it means "may be read", and a source whose
+ * session cannot be accounted for must not enter run_cycle(). */
+void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
+{
+    tof_l7::operation_status st{};
+
+    if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
+        d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
+        d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr) {
+        f.usage_error = true;
+        LOG_ERR("source %d is an l7_grid with no grid_ops table", i);
+        return;
+    }
+
+    int rc{d.grid_ops->open(d.dev, d.addr_7bit, &st)};
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        LOG_WRN("grid source %d open failed at %s rc %d errno %d", i,
+                tof_l7::stage_name(st.failed_stage), rc, st.port_errno);
+        // One sensor that will not open must not stop the others from ranging.
+        return;
+    }
+
+    rc = d.grid_ops->configure(d.dev, d.grid_frequency_hz, &st);
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        return;
+    }
+
+    rc = d.grid_ops->start(d.dev, &st);
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        f.cleanup_pending = true;
+        f.rearm_failed = true;
+        LOG_ERR("grid source %d start failed at %s rc %d -- the device may be ranging, a stop is "
+                "owed", i, tof_l7::stage_name(st.failed_stage), rc);
+        return;
+    }
+
+    f.started = true;
+    /* Same place and same reason as the cliff path: only a complete open -> configure -> start
+     * clears the sticky, so every early return above leaves it standing. */
+    f.rearm_failed = false;
+}
+
+/* Stop one grid source. The flag discipline is the cliff path's, verbatim: both obligations stay
+ * set when the stop is not confirmed, and only a stop that returned success discharges them. */
+int stop_grid_locked(int i, const source_desc &d, source_facts &f)
+{
+    tof_l7::operation_status st{};
+
+    if (d.grid_ops == nullptr || d.grid_ops->stop == nullptr)
+        return -EINVAL;
+
+    const int rc{d.grid_ops->stop(d.dev, &st)};
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        f.rearm_failed = true;
+        LOG_ERR("grid source %d stop failed at %s rc %d errno %d -- stop not confirmed", i,
+                tof_l7::stage_name(st.failed_stage), rc, st.port_errno);
+        return rc;   // both flags stay set: the stop was not confirmed
+    }
+    f.started = false;
+    f.cleanup_pending = false;
+    return 0;
+}
+#endif
+
 int stop_locked()
 {
     running_ = false;
@@ -358,6 +469,15 @@ int stop_locked()
          * iterating on started alone skipped it forever. */
         if (!f.started && !f.cleanup_pending)
             continue;
+
+#if defined(ENABLE_TOF_L7_ULD)
+        if (d.kind == model::l7_grid) {
+            if (const int grid_rc{stop_grid_locked(i, d, f)}; grid_rc != 0 && first_error == 0)
+                first_error = grid_rc;
+            continue;
+        }
+#endif
+
         const int rc{d.ops->stop(d.dev, &st)};
         if (rc != 0) {
             record(f, rc, st);
@@ -772,6 +892,13 @@ int bring_up()
         }
         clear_cycle_outcomes(f);
 
+#if defined(ENABLE_TOF_L7_ULD)
+        if (d.kind == model::l7_grid) {
+            bring_up_grid_locked(i, d, f);
+            continue;
+        }
+#endif
+
         rc = d.ops->open(d.dev, d.addr_7bit, &st);
         if (rc != 0) {
             record(f, rc, st);
@@ -888,6 +1015,27 @@ void run_cycle()
             continue;
 
         clear_cycle_outcomes(f);
+
+#if defined(ENABLE_TOF_L7_ULD)
+        if (d.kind == model::l7_grid) {
+            tof_l7::sample grid{};
+            tof_l7::operation_status grid_st{};
+
+            const int grid_rc{
+                d.grid_ops->read_grid_sample(d.dev, d.scratch, &grid, &grid_st)};
+            record_l7(f, grid_rc, grid_st);
+            /* `fresh` is the adapter's all-or-nothing answer: read_once clears the sample on entry
+             * and leaves it non-fresh on every refusal, so a fresh sample is a whole one. A cycle
+             * in which the sensor simply had nothing ready is rc 0 and not fresh -- not a failure,
+             * and not a sample. */
+            if (grid_rc == 0 && grid.fresh) {
+                f.sample_produced = true;
+                if (cfg_.hooks.on_grid_sample != nullptr)
+                    cfg_.hooks.on_grid_sample(i, facts_.cycle_seq, f, grid);
+            }
+            continue;
+        }
+#endif
 
         rc = d.ops->read_cliff_sample(d.dev, d.scratch, d.stream, &sample, &st);
         record(f, rc, st);

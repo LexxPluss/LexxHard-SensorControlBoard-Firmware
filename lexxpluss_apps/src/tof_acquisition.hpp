@@ -84,6 +84,13 @@
 #include <zephyr/kernel.h>
 
 #include "tof_cliff_sensor.h"
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* For grid_source_ops and the grid sample hook. An image without the grid driver has no grid
+ * sources to describe, and these types do not exist in it. */
+#include "tof_l7_sample.hpp"
+#include "tof_l7_status.hpp"
+#endif
 #include "tof_mapping_state.hpp"
 
 namespace lexxhard::tof_acq {
@@ -103,6 +110,7 @@ enum class model : uint8_t {
 // for "where did it fail and with which errno" costs nothing and keeps one triage
 // vocabulary. It says nothing about what the failure means.
 using op_status = struct tof_cliff_read_status;
+
 
 /* WHICH VENDOR'S VOCABULARY `stage` IS IN. The two ULDs' enums are unrelated numbers that happen
  * to share a range, so a stage is meaningless without the domain that interprets it. `none` is the
@@ -165,6 +173,27 @@ const source_ops &l7_stub_ops();
 // The cliff ops, bound to the real tof_cliff_sensor functions.
 const source_ops &l4_cliff_ops();
 
+/* THE GRID PATH'S OWN TABLE, because an 8x8 zone frame is not a tof_cliff_sample and no amount of
+ * naming makes source_ops carry one. The two tables are deliberately not unified: the status types
+ * are each vendor's own, and a common one would have to be the union of two unrelated vocabularies.
+ *
+ * There is no stream argument. The L4 adapter's replay guard compares a stream count against the
+ * previous one from the same device; the grid adapter has no such history to keep. */
+#if defined(ENABLE_TOF_L7_ULD)
+struct grid_source_ops {
+    int (*open)(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st);
+    int (*configure)(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st);
+    int (*start)(void *dev, tof_l7::operation_status *st);
+    int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
+                            tof_l7::operation_status *st);
+    int (*stop)(void *dev, tof_l7::operation_status *st);
+};
+#else
+/* An image without the grid driver still has the descriptor field, so a build that does not carry
+ * the ULD does not need a different source_desc. The table can only ever be null there. */
+struct grid_source_ops;
+#endif
+
 struct source_desc {
     model kind{model::l4_cliff};
     uint8_t addr_7bit{0};
@@ -185,6 +214,9 @@ struct source_desc {
     // cannot detect a repeat across cycles - which is the only thing it is for.
     void *stream{nullptr};
     const source_ops *ops{nullptr};
+    /* For an l7_grid source, and the only table used for one. A descriptor carrying the wrong one
+     * for its kind is a configuration error the bring-up refuses rather than works around. */
+    const grid_source_ops *grid_ops{nullptr};
 };
 
 // What happened to one source in one cycle. No classification, no reduction, no alarm.
@@ -272,6 +304,13 @@ struct sinks {
                             const struct tof_cliff_sample &sample);
     // Sent from startup, on its own timer, never from the acquisition path.
     void (*on_cliff_health)(uint32_t snapshot, mapping_state state);
+#if defined(ENABLE_TOF_L7_ULD)
+    /* The grid equivalent of on_cliff_sample, and separate for the same reason the ops tables are:
+     * an 8x8 zone frame is not a tof_cliff_sample. Fires under the chain lock, after the read and
+     * before on_cycle, so a sink sees one consistent ordering across both models. */
+    void (*on_grid_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
+                           const tof_l7::sample &sample);
+#endif
 };
 
 // Both are unresolved symbols in the cliff wire contract, so neither has a default and

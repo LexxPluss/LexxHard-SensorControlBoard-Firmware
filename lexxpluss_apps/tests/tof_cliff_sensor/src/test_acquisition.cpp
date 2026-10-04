@@ -193,6 +193,93 @@ int fake_stop(void *dev, acq::op_status *st)
 
 const acq::source_ops kFakeOps{fake_open, fake_configure, fake_start, fake_read, fake_stop};
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE GRID TABLE, DRIVEN BY THE SAME SCRIPT. Mirroring fake_dev rather than giving the grid its own
+ * fake is what makes the cross-model property a test: the same scripted failure must produce the
+ * same facts for both models, and that only means something if one script reaches both paths. */
+namespace l7f = lexxhard::tof_l7;
+
+int fake_grid_open(void *dev, uint8_t, l7f::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.open_calls;
+    record_caller();
+    *st = l7f::operation_status{};
+    if (d.open_delay_ms != 0)
+        k_msleep(d.open_delay_ms);
+    if (d.open_rc != 0)
+        st->failed_stage = l7f::stage::address;
+    return d.open_rc;
+}
+
+int fake_grid_configure(void *dev, uint8_t, l7f::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    record_caller();
+    *st = l7f::operation_status{};
+    if (d.configure_rc != 0)
+        st->failed_stage = l7f::stage::frequency;
+    return d.configure_rc;
+}
+
+int fake_grid_start(void *dev, l7f::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.start_calls;
+    record_caller();
+    *st = l7f::operation_status{};
+    if (d.start_rc != 0)
+        st->failed_stage = l7f::stage::start;
+    return d.start_rc;
+}
+
+int fake_grid_read(void *dev, void *, l7f::sample *out, l7f::operation_status *st)
+{
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    ++d.read_calls;
+    record_caller();
+    k_sem_give(&cycle_read_seen);
+    d.lock_held_in_read = lock_is_held();
+    if (d.read_delay_ms != 0)
+        k_msleep(d.read_delay_ms);
+    *st = l7f::operation_status{};
+    *out = l7f::sample{};
+    if (d.fresh) {
+        out->fresh = true;
+        for (size_t z{0}; z < l7f::kZoneCount; ++z) {
+            out->distance_mm[z] = d.mm;
+            out->target_status[z] = 5;
+            out->target_count[z] = 1;
+        }
+        st->sample_present = true;
+    }
+    if (d.read_rc != 0)
+        st->failed_stage = l7f::stage::fetch;
+    return d.read_rc;
+}
+
+int fake_grid_stop(void *dev, l7f::operation_status *st)
+{
+    record_caller();
+    auto *const d{static_cast<fake_dev *>(dev)};
+
+    ++d->stop_calls;
+    *st = l7f::operation_status{};
+    if (d->stop_rc != 0) {
+        st->failed_stage = l7f::stage::stop;
+        st->port_errno = d->stop_rc;
+    }
+    return d->stop_rc;
+}
+
+const acq::grid_source_ops kFakeGridOps{fake_grid_open, fake_grid_configure, fake_grid_start,
+                                        fake_grid_read, fake_grid_stop};
+#endif
+
 // Recorded sink activity.
 struct {
     int cycles{0};
@@ -291,6 +378,12 @@ acq::config make_config(int count)
         d.scratch = &devs[i]; /* the fake ops ignore it; only non-null matters */
         d.stream = &streams[i]; /* per source, never shared - see source_desc */
         d.ops = &kFakeOps;
+#if defined(ENABLE_TOF_L7_ULD)
+        /* Every descriptor carries both tables; bring-up picks by kind. A grid source with no
+         * frequency is a configuration error the adapter refuses, so the fixture states one. */
+        d.grid_ops = &kFakeGridOps;
+        d.grid_frequency_hz = 10;
+#endif
     }
     c.sources = four_cliff_two_grid;
     c.source_count = count;
@@ -600,6 +693,91 @@ ZTEST(tof_acquisition, test_the_four_failure_shapes_stay_distinguishable)
         zassert_equal(f.usage_error, cases[i].usage, "rc %d", cases[i].rc);
     }
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* ------------------------------------------------- the grid lifecycle, #104's rules ------ */
+
+/* A FAILED GRID START ALWAYS OWES A STOP, and it is unconditional where the cliff path's is
+ * reported. vl53l7cx_start_ranging() writes the start command and then polls and reads back, so a
+ * failure anywhere after the command went out is consistent with a device that is ranging -- there
+ * is no equivalent of the cliff adapter's ranging_unknown to consult, because nothing can say the
+ * device was left quiet. */
+ZTEST(tof_acquisition, test_a_failed_grid_start_owes_a_stop_and_may_not_be_read)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    devs[4].start_rc = -EIO;
+    (void)acq::bring_up();
+
+    /* The facts reach a test the way they reach any sink: through a cycle. run_cycle() reports
+     * every source, including the ones it did not read. */
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+
+    zassert_false(f.started, "`started` means may be read, and this one may not");
+    zassert_true(f.cleanup_pending, "the device may be ranging: a stop is owed");
+    zassert_true(f.rearm_failed, "and the sticky stands until a full re-bring-up");
+
+    /* And it was not read. A source whose session cannot be accounted for must not enter a cycle. */
+    zassert_equal(devs[4].read_calls, 0, "an unaccounted source is not read");
+}
+
+/* THE DEBT IS WHAT MAKES CLEANUP POSSIBLE. stop_locked() iterates on started OR cleanup_pending,
+ * so a source carrying only the debt is still stopped -- which is the whole reason #104 separated
+ * the two flags. */
+ZTEST(tof_acquisition, test_a_grid_source_that_only_owes_a_stop_is_still_stopped)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    devs[4].start_rc = -EIO;
+    (void)acq::bring_up();
+    acq::run_cycle();
+    zassert_true(rec.last.sources[4].cleanup_pending);
+
+    const int stops_before{devs[4].stop_calls};
+    zassert_equal(acq::teardown(), 0);
+
+    zassert_equal(devs[4].stop_calls, stops_before + 1, "the stop reached the device");
+    zassert_true(acq::is_idle(), "a stop that returned success discharges the obligation");
+}
+
+/* AN UNCONFIRMED STOP KEEPS BOTH FLAGS. A failed stop means the result is unknown, not that ranging
+ * is known to continue -- so the source stays unreadable and still owes one. */
+ZTEST(tof_acquisition, test_a_grid_stop_that_fails_keeps_the_debt_and_the_source_unreadable)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    devs[4].stop_rc = -EIO;
+    zassert_not_equal(acq::teardown(), 0, "a stop that was not confirmed is not a success");
+
+    /* Not idle is the observable consequence: is_idle() asks whether any source is still started
+     * or still owes a stop, which is exactly the pair a failed stop leaves standing. */
+    zassert_false(acq::is_idle(), "the subsystem is not idle while a device may be ranging");
+
+    devs[4].stop_rc = 0;
+    zassert_equal(acq::teardown(), 0);
+    zassert_true(acq::is_idle(), "only a confirmed stop discharges it");
+}
+
+/* A GRID SOURCE'S FAILURES CLASSIFY IN THE GRID'S VOCABULARY, and the domain is what says so. The
+ * stage numbers of the two ULDs are unrelated, so a stage recorded without its domain would be read
+ * on the wrong scale by anything that renders it. */
+ZTEST(tof_acquisition, test_a_grid_failure_is_recorded_in_the_grid_domain)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    devs[4].read_rc = -EIO;
+    acq::run_cycle();
+
+    const acq::source_facts &f{rec.last.sources[4]};
+
+    zassert_equal(f.status.domain, acq::status_domain::l7);
+    zassert_equal(f.status.stage, static_cast<uint8_t>(lexxhard::tof_l7::stage::fetch));
+    zassert_true(f.transport_error, "and the classification is the model-neutral one");
+
+    /* The cliff source beside it keeps its own vocabulary in the same cycle. */
+    zassert_equal(rec.last.sources[0].status.domain, acq::status_domain::l4);
+}
+#endif
 
 ZTEST(tof_acquisition, test_a_stubbed_model_is_not_reported_as_a_sensor_fault)
 {
@@ -2515,6 +2693,12 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         d.scratch = &devs[i];
         d.stream = &streams[i];
         d.ops = &kFakeOps;
+#if defined(ENABLE_TOF_L7_ULD)
+        /* Every descriptor carries both tables; bring-up picks by kind. A grid source with no
+         * frequency is a configuration error the adapter refuses, so the fixture states one. */
+        d.grid_ops = &kFakeGridOps;
+        d.grid_frequency_hz = 10;
+#endif
     }
 
     acq::config c{make_config(acq::kMaxSources)};
