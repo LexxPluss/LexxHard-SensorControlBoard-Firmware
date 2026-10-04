@@ -34,7 +34,11 @@
  * looks like it prevents and does not. The caller therefore supplies the digest it expects, and the
  * two refusals are separate values.
  *
- * THE RECORD, normatively specified in docs/tof_l7_blob_record.md. Little-endian, 64-byte header:
+ * THE RECORD, normatively specified in "Stored VL53L7CX device-firmware record -- storage
+ * format", under L2-L3 in the design doc:
+ *   https://app.notion.com/p/3efa91d8f61581c5b1f7f85326d13eaf
+ * That page owns the format: where this file and it disagree, this file is wrong. Little-
+ * endian, 64-byte header:
  *
  *   0   4   magic 'L','7','B','1'
  *   4   2   format_version

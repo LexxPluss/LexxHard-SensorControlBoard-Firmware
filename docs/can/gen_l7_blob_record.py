@@ -8,8 +8,11 @@
 # storage_partition, and emits the accept-list header the firmware is built against.
 #
 # Offline generation tool, so Python: it produces artefacts, it is not in the image and it is not a
-# test. The format it writes is specified in docs/tof_l7_blob_record.md and read by
-# lexxpluss_apps/src/tof_l7_blob_record.cpp.
+# test. The format it writes is specified in "Stored VL53L7CX device-firmware record -- storage
+# format", under L2-L3 in the design doc:
+#   https://app.notion.com/p/3efa91d8f61581c5b1f7f85326d13eaf
+# and is read by lexxpluss_apps/src/tof_l7_blob_record.cpp. That page owns the format; this script
+# and that reader implement it.
 #
 # Two things it emits, and the pairing is the point:
 #
