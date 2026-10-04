@@ -123,15 +123,19 @@ bool io_ok(const tof_acq::source_facts &f)
            f.status.port_errno == 0 && f.status.uld_status == 0;
 }
 
+/* Does this snapshot permit a grid to be attributed to `src`? Out of range is never permitted. */
+bool permitted(const authorisation &auth, uint8_t src)
+{
+    return src < static_cast<uint8_t>(kGridSources) && auth.source_allowed[src];
+}
+
 /* The id the data is labelled with, and the permission read for that same id, written together.
  * Out of range is a refusal rather than a default: a source id this snapshot has no permission for
  * is not a source id this publisher may attribute a grid to. */
 void attribute(gp::sensor_read &read, const authorisation &auth, uint8_t src)
 {
-    const bool representable{src < static_cast<uint8_t>(kGridSources)};
-
     read.source_id = src;
-    read.source_allowed = representable && auth.source_allowed[src];
+    read.source_allowed = permitted(auth, src);
 }
 
 uint8_t flags_for(uint8_t src, const authorisation &auth)
@@ -139,8 +143,8 @@ uint8_t flags_for(uint8_t src, const authorisation &auth)
     uint8_t flags{static_cast<uint8_t>(pending_flags_[src] & 0x03)};
 
     /* Bits 2 and 3 are chain-level and come from the mapping snapshot, so they are a statement
-     * about this cycle rather than something accumulated: the chain is either the expected
-     * length now or it is not. */
+     * about this cycle rather than something accumulated: the binding is either trustworthy now
+     * or it is not. (It said "the expected length" here, which was the pre-i reading of bit 2.) */
     /* Bit 2 under contract 2026-08-02i is "the binding cannot be trusted", NOT "the chain is a
      * different length". The old name said the latter, which co-fired with bit 3 and said nothing
      * about whether these zones belong to the source id they are labelled with. */
@@ -208,11 +212,21 @@ void accumulate_failures(const tof_acq::cycle_facts &facts)
          * miss half the cases. */
         if (f.transport_error || f.status.port_errno != 0)
             pending_flags_[src] |= 1U << 0;
-        /* Bit 1 is the data-ready timeout. In this adapter the readiness check is the only
-         * operation that can time out: read_once does ONE non-blocking check and returns, so a
-         * sensor that is merely not ready yet is not a failure and never gets here. */
+        /* Bit 1 is the data-ready TIMEOUT, and the stage alone does not say that.
+         *
+         * read_once() does one non-blocking readiness check, so a sensor that is merely not ready
+         * yet never reaches this loop at all -- it is not a failure and io_ok() has already let it
+         * through. But the check that DID fail can fail three ways: the ULD timed out, the transfer
+         * failed on the bus, or the device returned impossible metadata (-EPROTO). Reading the
+         * stage and nothing else reported all three as a timeout, which tells a consumer the sensor
+         * is slow when the bus is broken.
+         *
+         * The timeout fact is explicit: the ULD's own timeout status, or the errno it maps to. A
+         * bus error at the same stage carries neither and stays what it is -- bit 0. */
         if (f.status.domain == tof_acq::status_domain::l7 &&
-            f.status.stage == static_cast<uint8_t>(tof_l7::stage::ready_check))
+            f.status.stage == static_cast<uint8_t>(tof_l7::stage::ready_check) &&
+            f.status.port_errno == 0 &&
+            f.status.uld_status == static_cast<int>(tof_l7::kUldTimeoutStatus))
             pending_flags_[src] |= 1U << 1;
 
         if (f.status.domain == tof_acq::status_domain::l7)
@@ -458,12 +472,34 @@ void on_cycle_complete(const tof_acq::cycle_facts &facts)
         }
 
         uint32_t stale{0};
+        uint32_t unpermitted{0};
         for (int i{0}; i < queued_; ++i) {
             if (queue_[i].cycle_seq != facts.cycle_seq) {
                 ++stale;
                 continue;
             }
+            /* AND THE PER-SOURCE PERMISSION, re-read with the rest of the snapshot.
+             *
+             * The state and the epoch are chain-level and were already checked; a source's
+             * permission is not, and it can be withdrawn on its own while both of those hold. The
+             * grids were packed under the chain lock and this runs after it was dropped, so a grid
+             * admitted by a permission that no longer exists would otherwise go out -- which is the
+             * same gap the state re-read exists to close, one level down.
+             *
+             * PER SOURCE, NOT PER CYCLE, and that is the difference from the checks above. An epoch
+             * change invalidates the correlation for everything; one source losing its permission
+             * says nothing about whether the other source's grid still belongs to the id it is
+             * labelled with. Every frame of the affected source goes -- a grid is its own
+             * correlated unit, and dropping part of one is what the stale check forbids. */
+            if (!permitted(now, queue_[i].source_id)) {
+                ++unpermitted;
+                continue;
+            }
             outgoing[count++] = queue_[i];
+        }
+        if (unpermitted != 0) {
+            counters_.suppressed_permission_withdrawn += unpermitted;
+            cycle_invalid_ = true;
         }
         if (stale != 0) {
             counters_.discarded_stale_cycle += stale;

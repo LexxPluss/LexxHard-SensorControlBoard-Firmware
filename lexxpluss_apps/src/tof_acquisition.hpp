@@ -171,6 +171,11 @@ struct source_desc {
     // Opaque to this layer. The mapping owns what a role means; treating it as a number
     // here is what keeps position policy out of the scheduler.
     uint8_t role_id{0};
+    /* EXPLICIT FOR A GRID SOURCE, with no scheduler default, for the same reason the cliff
+     * cadence has none: a number invented at this level becomes the specification by being the
+     * only one available. Zero means the caller has not configured this source, and configure()
+     * refuses rather than picking something. Unused by an l4_cliff source. */
+    uint8_t grid_frequency_hz{0};
     void *dev{nullptr};      // VL53L4CX_Object_t* for l4_cliff
     void *scratch{nullptr};  // tof_cliff_scratch* for l4_cliff, deliberately SHARED
     // tof_cliff_stream_state* for l4_cliff, and deliberately NOT shared: the replay

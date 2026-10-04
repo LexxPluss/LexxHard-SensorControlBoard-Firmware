@@ -122,6 +122,11 @@ struct counters {
      * because the number a consumer sees jumping is this one, and an unexplained gap in
      * generations reads like lost frames. */
     uint32_t generations_retired{0};
+    /* Frames of a grid that was packed and then not sent, because the source's permission was
+     * withdrawn between the two. Counted apart from cycles_discarded_unauthorised: that one is the
+     * chain-level mapping going away, this one is a single source losing the right to be
+     * attributed while the mapping itself still holds. */
+    uint32_t suppressed_permission_withdrawn{0};
     /* Frames of a grid that were not offered to the bus at all, because an earlier frame of
      * the SAME grid failed. Sending the rest would be bus traffic for a grid the consumer can
      * only discard. */

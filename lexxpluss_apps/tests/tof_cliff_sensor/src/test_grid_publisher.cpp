@@ -74,9 +74,15 @@ int fake_send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
 acq::mapping_state state_value{acq::mapping_state::proven};
 uint8_t epoch_value{kEpoch};
 uint8_t boards_value{kBoards};
-bool chain_length_flag{false};
+bool binding_untrusted_flag{false};
 bool other_enum_flag{false};
 int authorise_calls{0};
+/* THE ENUMERATOR'S PER-SOURCE PERMISSION, set explicitly rather than defaulted.
+ *
+ * Both true is the ordinary proven chain, and the positive control below depends on it: a fixture
+ * that left these false would make every negative case pass by refusing everything, which is the
+ * way a suite of refusals goes green without proving a single one of them. */
+bool permit[pub::kGridSources]{true, true};
 
 struct pub::authorisation authorise()
 {
@@ -85,8 +91,10 @@ struct pub::authorisation authorise()
     a.state = state_value;
     a.epoch = epoch_value;
     a.boards_detected = boards_value;
-    a.chain_length_unexpected = chain_length_flag;
+    a.binding_untrusted = binding_untrusted_flag;
     a.other_position_enumeration_failed = other_enum_flag;
+    for (int i = 0; i < pub::kGridSources; ++i)
+        a.source_allowed[i] = permit[i];
     return a;
 }
 
@@ -171,6 +179,15 @@ acq::cycle_facts quiet_cycle(uint32_t seq)
     return cf;
 }
 
+/* The publisher hands its counters out by copy; this is just that, named for readability. */
+pub::counters counters_now()
+{
+    pub::counters c{};
+
+    pub::copy_counters(c);
+    return c;
+}
+
 void cycle_with_one(uint32_t seq, int index, uint8_t role, const uint16_t *zones)
 {
     acq::cycle_facts cf{quiet_cycle(seq)};
@@ -244,9 +261,10 @@ void before(void *)
     state_value = acq::mapping_state::proven;
     epoch_value = kEpoch;
     boards_value = kBoards;
-    chain_length_flag = false;
+    binding_untrusted_flag = false;
     other_enum_flag = false;
     authorise_calls = 0;
+    permit[0] = permit[1] = true;
     build_descs();
     build_filler();
     zassert_equal(pub::init(make_config()), 0);
@@ -656,13 +674,13 @@ ZTEST(tof_grid_publisher, test_a_failure_on_one_source_is_not_reported_by_the_ot
 
 ZTEST(tof_grid_publisher, test_the_chain_level_flags_are_restated_every_cycle)
 {
-    chain_length_flag = true;
+    binding_untrusted_flag = true;
     other_enum_flag = true;
     cycle_with_one(1, 0, 0, filler_zones);
     zassert_equal(bus.frames[16].data[3] & 0x0C, 0x0C, "bits 2 and 3 come from the mapping");
 
     bus = {};
-    chain_length_flag = false;
+    binding_untrusted_flag = false;
     other_enum_flag = false;
     cycle_with_one(2, 0, 0, filler_zones);
     /* Not accumulated and not cleared by having been reported: they are a statement about the
@@ -677,6 +695,99 @@ ZTEST(tof_grid_publisher, test_the_authorisation_is_read_once_per_cycle_and_once
     /* Once at on_cycle_begin and once at the flush -- never per sample, or the two grids of one
      * cycle could carry different epochs and the consumer correlates on exactly that. */
     zassert_equal(authorise_calls, 2);
+}
+
+/* THE POSITIVE CONTROL FOR EVERY PERMISSION CASE BELOW. With both permissions held, a proven cycle
+ * publishes -- so a later refusal is the permission doing it, and not the fixture having quietly
+ * stopped producing grids at all. A suite of negative cases with no positive control is a suite
+ * that passes when nothing works. */
+ZTEST(tof_grid_publisher, test_a_permitted_source_publishes_which_is_what_makes_the_refusals_mean_something)
+{
+    permit[0] = permit[1] = true;
+    cycle_with_one(1, 0, 0, filler_zones);
+
+    zassert_equal(bus.count, 17, "sixteen data frames and the health frame");
+    zassert_equal(counters_now().grids_sent, 1U);
+    zassert_equal(counters_now().suppressed_permission_withdrawn, 0U);
+}
+
+/* Withdrawn BEFORE the cycle: the grid is never admitted, because the permission is read in the
+ * same step that labels the data. */
+ZTEST(tof_grid_publisher, test_a_source_without_permission_is_never_admitted)
+{
+    permit[0] = false;
+    cycle_with_one(1, 0, 0, filler_zones);
+
+    zassert_equal(bus.count, 0, "nothing on the bus for a source that may not be attributed");
+    zassert_equal(counters_now().grids_sent, 0U);
+}
+
+/* WITHDRAWN BETWEEN PACKING AND SENDING, which the state and epoch re-read did not cover.
+ *
+ * The grids are packed under the chain lock and flushed after it is dropped. A source can lose its
+ * permission in that window while the mapping state and the epoch both still hold -- and until this
+ * check existed the already-packed grid went out anyway, admitted by a permission that no longer
+ * existed. */
+ZTEST(tof_grid_publisher, test_permission_withdrawn_after_packing_still_stops_the_send)
+{
+    permit[0] = permit[1] = true;
+
+    acq::cycle_facts cf{quiet_cycle(1)};
+    const acq::source_facts f{make_facts(0, descs[0].role_id, true)};
+
+    cf.sources[0] = f;
+    pub::on_cycle_begin(1);
+    pub::on_grid_sample(0, 1, f, make_sample(filler_zones));
+
+    /* State and epoch unchanged: only the permission moves, and it moves after the grid has been
+     * packed and before the flush reads the snapshot again. */
+    permit[0] = false;
+    pub::on_cycle_complete(cf);
+
+    zassert_equal(bus.count, 0, "a packed grid is not a sent grid");
+    zassert_equal(counters_now().grids_sent, 0U);
+    zassert_true(counters_now().suppressed_permission_withdrawn > 0U,
+                 "and it is counted as a permission withdrawal, not a lost mapping");
+    zassert_equal(counters_now().cycles_discarded_unauthorised, 0U,
+                  "the mapping itself never went away");
+}
+
+/* PER SOURCE, NOT PER CYCLE. One source losing its permission says nothing about whether the
+ * other's grid still belongs to the id it is labelled with. */
+ZTEST(tof_grid_publisher, test_one_source_losing_permission_does_not_take_the_others_grid)
+{
+    permit[0] = permit[1] = true;
+
+    acq::cycle_facts cf{quiet_cycle(1)};
+    const acq::source_facts f0{make_facts(0, descs[0].role_id, true)};
+    const acq::source_facts f1{make_facts(1, descs[1].role_id, true)};
+
+    cf.sources[0] = f0;
+    cf.sources[1] = f1;
+    pub::on_cycle_begin(1);
+    pub::on_grid_sample(0, 1, f0, make_sample(filler_zones));
+    pub::on_grid_sample(1, 1, f1, make_sample(filler_zones));
+
+    permit[0] = false;
+    pub::on_cycle_complete(cf);
+
+    zassert_equal(bus.count, 17, "exactly the permitted source's grid");
+    for (int i = 0; i < bus.count; ++i)
+        zassert_equal(bus.frames[i].data[0] >> 6, 1, "and every frame is source 1's");
+}
+
+/* THE PACKER CANNOT CHECK THIS AND SAYS SO, which is why the producer carries the test.
+ * Permission for one source must never admit a grid labelled as the other. */
+ZTEST(tof_grid_publisher, test_one_sources_permission_cannot_admit_the_others_grid)
+{
+    permit[0] = false;
+    permit[1] = true;
+
+    cycle_with_one(1, 0, 0, filler_zones);
+
+    zassert_equal(bus.count, 0,
+                  "source 1 holding permission must not get source 0's grid onto the bus");
+    zassert_equal(counters_now().grids_sent, 0U);
 }
 
 ZTEST(tof_grid_publisher, test_init_refuses_an_incomplete_configuration)
