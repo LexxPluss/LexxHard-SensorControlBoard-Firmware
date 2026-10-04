@@ -137,6 +137,12 @@ static void before(void *unused)
 
 ZTEST_SUITE(tof_l7_uld_stop, NULL, NULL, before, NULL, NULL);
 
+/* THE ULD'S STATUS CONSTANTS ARE NOT DISJOINT BIT FLAGS, which matters for how these cases assert.
+ * VL53L7CX_STATUS_ERROR is 0xFF and therefore contains VL53L7CX_STATUS_TIMEOUT_ERROR's 0x01, so
+ * `rc & TIMEOUT_ERROR` is true of the generic failure as well and cannot tell the two apart. The
+ * discriminators used below are the EXACT value and the poll count -- a timeout is the only outcome
+ * that spends the five-second budget, and that is a property of the run rather than of a bit. */
+
 /* THE ONE THIS SUITE EXISTS FOR. Without patch 0002 this returns VL53L7CX_STATUS_OK after five
  * seconds of polling, and a caller that believes it reports a sensor it never stopped. */
 ZTEST(tof_l7_uld_stop, test_a_stop_that_never_confirms_is_a_failure_not_a_timeout_shaped_success)
@@ -148,8 +154,9 @@ ZTEST(tof_l7_uld_stop, test_a_stop_that_never_confirms_is_a_failure_not_a_timeou
 
 	zassert_not_equal(rc, VL53L7CX_STATUS_OK,
 			  "an unconfirmed stop must not read as a stopped sensor");
-	zassert_true((rc & VL53L7CX_STATUS_TIMEOUT_ERROR) != 0,
-		     "and it must say it timed out rather than carrying some other code");
+	zassert_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR,
+		      "and it says exactly that it timed out: the device contributed 0x00, so nothing "
+		      "else is folded in");
 	zassert_true(polls_seen > 500, "the full poll budget was spent: %d", polls_seen);
 }
 
@@ -187,16 +194,60 @@ ZTEST(tof_l7_uld_stop, test_a_stop_that_confirms_late_is_still_ok)
 	zassert_true(polls_seen < 500, "but not to the budget");
 }
 
-/* A device that stops and then reports a status 1 the ULD does not recognise is a failure, and it
- * was one before this patch too. Kept so the patch is not credited with it. */
-ZTEST(tof_l7_uld_stop, test_an_unrecognised_status_1_still_fails_on_its_own)
+/* A device that stops and then reports a status 1 the ULD does not recognise is a failure. With a
+ * NON-ZERO value it was one before this patch too, and that is why testing only this value proved
+ * less than it looked -- see the case below, which is the same branch with the one value the OR
+ * could not carry. */
+ZTEST(tof_l7_uld_stop, test_an_unrecognised_nonzero_status_1_fails_and_keeps_its_own_code)
 {
 	confirm_after_polls = 1;
 	status1_value = 0x42;
 
 	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
 
-	zassert_not_equal(rc, VL53L7CX_STATUS_OK);
-	zassert_true((rc & VL53L7CX_STATUS_TIMEOUT_ERROR) == 0,
-		     "this one is not a timeout and must not be labelled as one");
+	zassert_equal(rc, 0x42,
+		      "where the device gave a code, that code is what comes back");
+	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR,
+			  "this one is not a timeout and must not be labelled as one");
+}
+
+/* THE SECOND PLACE THE SAME MISTAKE LIVED, and the one the case above walked straight past.
+ *
+ * When the device HAS stopped, the ULD reads G02 status 1 and treats anything other than 0x84 or
+ * 0x85 as wrong -- then records it with `status |= tmp`. A status 1 of 0x00 is not 0x84 and not
+ * 0x85, so it takes the failure branch, contributes nothing, and the function returns OK for a stop
+ * whose own reported state the ULD had just rejected. Testing 0x42 proved the branch was reached;
+ * it could not prove the branch reported anything. */
+ZTEST(tof_l7_uld_stop, test_a_zero_status_1_is_a_failure_and_not_a_timeout)
+{
+	confirm_after_polls = 1;
+	status1_value = 0x00;
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_not_equal(rc, VL53L7CX_STATUS_OK,
+			  "the ULD rejected the device's own reported state: that is not success");
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR,
+		      "with nothing from the device to carry, it is the generic failure");
+	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR,
+			  "and it is NOT the timeout status: the device answered promptly");
+	zassert_true(polls_seen <= 3,
+		     "which the run shows too -- it stopped, so the budget was not spent: %d",
+		     polls_seen);
+}
+
+/* Both accepted values, explicitly, so the substitution cannot creep into the success path. 0x85
+ * is already exercised by the late-confirm case; it is asserted here too because that case is about
+ * timing and this one is about the acceptance set. */
+ZTEST(tof_l7_uld_stop, test_the_two_accepted_status_1_values_are_still_success)
+{
+	confirm_after_polls = 1;
+
+	status1_value = 0x84;
+	zassert_equal(vl53l7cx_stop_ranging(&dev), VL53L7CX_STATUS_OK, "0x84");
+
+	before(NULL);
+	confirm_after_polls = 1;
+	status1_value = 0x85;
+	zassert_equal(vl53l7cx_stop_ranging(&dev), VL53L7CX_STATUS_OK, "0x85");
 }
