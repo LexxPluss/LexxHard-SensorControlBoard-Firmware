@@ -771,10 +771,18 @@ int init(const config &cfg)
                 return -EINVAL;
             continue;
         }
+        /* UNBOUND, AND THE ONLY TABLE ALLOWED IS THE NAMED STUB. Falling through to the check
+         * below would have asked only "is this table complete", and acq::l4_cliff_ops() is
+         * complete -- so a grid descriptor could name the L4 driver and be accepted, which is
+         * the chain's one unrecoverable wiring mistake: the cliff adapter talking to an L7 at
+         * an L7's address. Identity is the check, not shape. */
+        if (d.kind == model::l7_grid && d.ops != &l7_stub_ops())
+            return -EINVAL;
 #endif
         /* ALL FIVE, not the two this function used to name. In a build without the grid driver an
          * l7_grid source reaches this too, and its table is the stub -- which is complete, so the
-         * flag-off behaviour is unchanged. */
+         * flag-off behaviour is unchanged. With the driver, a grid source reaching here has
+         * already been required to BE the stub. */
         if (d.ops == nullptr || d.ops->open == nullptr || d.ops->configure == nullptr ||
             d.ops->start == nullptr || d.ops->read_cliff_sample == nullptr ||
             d.ops->stop == nullptr)

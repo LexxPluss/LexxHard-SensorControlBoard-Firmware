@@ -960,6 +960,25 @@ ZTEST(tof_acquisition, test_an_unbound_grid_source_is_accepted_and_stays_a_stub)
     zassert_equal(rec.grid_samples, 0, "an unbound source offers a publisher nothing");
     zassert_false(wrong_table_called, "and the trap was replaced, so nothing could have tripped it");
 }
+
+/* AND THE UNBOUND FORM IS THE NAMED STUB, NOT MERELY A COMPLETE TABLE. acq::l4_cliff_ops() is
+ * complete too, so a check on shape alone would accept a grid descriptor pointing at the cliff
+ * driver -- the one wiring mistake on this chain that nothing downstream can detect or recover
+ * from, because the L4 adapter would be issuing L4 transactions to an L7 at an L7's address. */
+ZTEST(tof_acquisition, test_a_grid_source_may_not_name_the_cliff_driver)
+{
+    acq::config c{make_config(acq::kMaxSources)};
+
+    four_cliff_two_grid[4].grid_ops = nullptr;
+    four_cliff_two_grid[4].ops = &kFakeOps; /* complete, and the wrong driver */
+
+    zassert_equal(acq::init(c), -EINVAL,
+                  "a complete table is not enough: an unbound grid source must BE the stub");
+
+    /* The control: the same descriptor with the stub configures. */
+    four_cliff_two_grid[4].ops = &acq::l7_stub_ops();
+    zassert_equal(acq::init(c), 0);
+}
 #endif
 
 ZTEST(tof_acquisition, test_a_stubbed_model_is_not_reported_as_a_sensor_fault)
