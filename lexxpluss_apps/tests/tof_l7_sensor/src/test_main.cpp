@@ -204,6 +204,30 @@ ZTEST(tof_l7_sensor, test_a_failed_start_leaves_a_stoppable_sensor_not_a_configu
   zassert_equal(sensor_under_test.current, l7::lifecycle::configured);
 }
 
+/* THE TWO FIXES, COMPOSED. The vendor's stop_ranging() polls for a confirmation and, on timeout,
+ * used to fold the last polled byte into its status -- a byte that is zero precisely when the stop
+ * was not confirmed, so five seconds of waiting returned OK. Patch 0002 makes that a
+ * VL53L7CX_STATUS_TIMEOUT_ERROR, which the adapter maps to -ETIMEDOUT, which is a failed stop,
+ * which now leaves the sensor in stop_unconfirmed instead of reporting it as cleanly stopped.
+ *
+ * Neither half is sufficient on its own: without the patch there is no failure to react to, and
+ * without stop_unconfirmed the failure returns the sensor to `configured` and nothing can clean it
+ * up. The patch's own behaviour is pinned against the real vendor source in tests/tof_l7_uld_stop;
+ * what is pinned here is what this layer does with it. */
+ZTEST(tof_l7_sensor, test_a_stop_that_timed_out_is_a_failed_stop_and_leaves_the_debt) {
+  open_configure_start();
+
+  stop_status = VL53L7CX_STATUS_TIMEOUT_ERROR;
+  zassert_equal(l7::stop(&sensor_under_test, &operation), -ETIMEDOUT,
+                "an unconfirmed stop is not a stopped sensor");
+  zassert_equal(operation.failed_stage, l7::stage::stop);
+  zassert_equal(operation.uld_status, VL53L7CX_STATUS_TIMEOUT_ERROR,
+                "the vendor status is carried, not flattened");
+  zassert_equal(sensor_under_test.current, l7::lifecycle::stop_unconfirmed);
+  zassert_equal(l7::read_once(&sensor_under_test, &work, &output, &operation), -EPERM,
+                "and nothing may be read from it");
+}
+
 /* And cleanup is RETRYABLE, because a stop can fail for the same reason a start can. */
 ZTEST(tof_l7_sensor, test_a_failed_stop_keeps_the_debt_and_can_be_retried) {
   open_configure_start();

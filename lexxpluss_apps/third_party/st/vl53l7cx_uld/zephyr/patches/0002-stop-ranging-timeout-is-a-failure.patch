@@ -1,0 +1,40 @@
+A stop that timed out must not report success.
+
+vl53l7cx_stop_ranging() provokes an MCU stop and then polls G02 status 0 for bit 7,
+for up to five seconds. On timeout it does `status |= tmp` and breaks -- where `tmp`
+is the last byte read, and the loop can only still be running because bit 7 was
+clear. So `tmp` is in 0x00..0x7F, and a device that keeps answering 0x00 -- the
+ordinary reading for "not stopped", and the reading a bus that is simply not
+answering also produces through a zeroing port -- leaves `status` exactly as it was.
+Five seconds of waiting then returns VL53L7CX_STATUS_OK.
+
+The check immediately below does not save it either: it re-reads 0x6 and only looks
+at register 0x7 when bit 7 IS set, so a device that never stopped is passed over in
+silence.
+
+This matters here more than it does upstream. The boot-time recovery pass exists to
+put a surviving sensor into a known state over I2C, and it decides what to report
+from this return value. "Stopped" when nothing was confirmed is the one answer it
+must not produce: it turns an unrecovered survivor into a clean boot record, and the
+next failure is attributed somewhere else.
+
+The timeout is therefore made a failure in its own right, with the status the ULD
+already defines for it. `status |= tmp` is kept rather than replaced: on the paths
+where tmp carries a device error code that code is still worth propagating.
+
+Applied to the copy in the build directory, never in place, so SHA256SUMS continues
+to answer whether upstream changed.
+diff --git a/modules/vl53l7cx_api.c b/modules/vl53l7cx_api.c
+index 9d3d3eb..271b2db 100644
+--- a/modules/vl53l7cx_api.c
++++ b/modules/vl53l7cx_api.c
+@@ -646,8 +646,9 @@ uint8_t vl53l7cx_stop_ranging(
+ 
+ 	        	if(timeout > (uint16_t)500)
+ 				{
+ 					status |= tmp;
++					status |= VL53L7CX_STATUS_TIMEOUT_ERROR;
+ 					break;
+ 				}
+         	}
+         }
