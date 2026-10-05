@@ -251,12 +251,21 @@ int bootstrap(const config &cfg)
         return -EINVAL;
 
     /* The ranging profile is checked HERE as well as in tof_acq::init(), and deliberately: this is
-     * the stage that knows it is reading a deployment's devicetree, and a bootstrap that reached
-     * the descriptors with a zero budget would be refused there as a generic -EINVAL with nothing
-     * to say which of the two layers was misconfigured. */
-    if (cfg.cliff_timing_budget_us == 0 || cfg.cliff_distance_mode < 2 ||
-        cfg.cliff_distance_mode > 3)
+     * the stage that knows it is reading a deployment's devicetree, so it can NAME the property.
+     * The same descriptor refused inside acquisition is a bare -EINVAL, and a bring-up engineer
+     * reading a console would have no way to tell it from any other malformed configuration --
+     * which is why the refusal below logs rather than only returning. */
+    if (cfg.cliff_timing_budget_us == 0) {
+        LOG_ERR("cliff-timing-budget-us is 0: the ranging profile is required and is not defaulted");
         return -EINVAL;
+    }
+    if (cfg.cliff_distance_mode < 2 || cfg.cliff_distance_mode > 3) {
+        /* 1 is SHORT, which the ULD refuses for an L4 part outright; 0 is absent. Named here
+         * because the same value refused inside the ULD surfaces as a vendor error code. */
+        LOG_ERR("cliff-distance-mode is %u: only 2 (MEDIUM) and 3 (LONG) are supported by an L4",
+                cfg.cliff_distance_mode);
+        return -EINVAL;
+    }
 
 #if DT_NODE_EXISTS(DT_PATH(tof_chain))
     stack_ = acq_stack_;

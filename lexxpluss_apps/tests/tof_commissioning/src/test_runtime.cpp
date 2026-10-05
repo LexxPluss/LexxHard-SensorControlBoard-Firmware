@@ -28,6 +28,7 @@
 #include "tof_chain_controller.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
+#include "tof_chain_spec.hpp"
 #include "tof_cliff_runtime.hpp"
 #include "tof_commissioning.hpp"
 #include "tof_mapping_authority.hpp"
@@ -154,6 +155,46 @@ cm::outcome prove_over_the_fake_chain(uint32_t epoch)
 }  // namespace
 
 ZTEST_SUITE(tof_cliff_runtime, NULL, NULL, before, NULL, NULL);
+
+/* THE MIDDLE OF THE CHAIN, which neither of the other two profile cases covers. The acquisition
+ * suite fills descriptors itself and checks what reaches the ops table; its production-table case
+ * calls configure() directly. Between them sits build_descriptors(), and nothing pinned that it
+ * copies the configuration across unchanged -- a bootstrap that dropped the values on the floor, or
+ * put them on the wrong sources, would leave both of those cases green.
+ *
+ * The values are deliberately neither the overlay's nor the ones kTiming uses elsewhere, so this
+ * cannot pass against anything baked in. */
+ZTEST(tof_cliff_runtime, test_bootstrap_copies_the_profile_onto_the_cliff_descriptors)
+{
+    rt::config c{kTiming};
+    c.cliff_timing_budget_us = 27000;
+    c.cliff_distance_mode = 2;
+
+    zassert_equal(rt::bootstrap(c), 0);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+    zassert_not_null(d);
+
+    int cliff{0};
+    int grid{0};
+    for (size_t i = 0; i < lexxhard::tof_chain::dasher_spec().positions; ++i) {
+        if (d[i].kind == acq::model::l4_cliff) {
+            ++cliff;
+            zassert_equal(d[i].cliff_timing_budget_us, 27000U,
+                          "position %zu carries budget %u", i, d[i].cliff_timing_budget_us);
+            zassert_equal(d[i].cliff_distance_mode, 2, "position %zu carries mode %u", i,
+                          d[i].cliff_distance_mode);
+        } else {
+            ++grid;
+            /* Zero on a grid descriptor, and acquisition refuses one that is not -- the grid path
+             * never reads these, so a value carried there would range as if it were absent. */
+            zassert_equal(d[i].cliff_timing_budget_us, 0U, "position %zu is a grid source", i);
+            zassert_equal(d[i].cliff_distance_mode, 0, "position %zu is a grid source", i);
+        }
+    }
+    zassert_equal(cliff, 4, "the spec has four cliff positions");
+    zassert_equal(grid, 2, "and two grid positions");
+}
 
 /* THE RANGING PROFILE IS REFUSED HERE AS WELL AS IN tof_acq::init(), and the duplication is the
  * point rather than an oversight. This is the stage that knows it is reading a deployment's
