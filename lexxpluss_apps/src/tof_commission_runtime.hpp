@@ -28,10 +28,15 @@
  * an interrupt may not do, and the host's retransmission is what recovers a dropped frame.
  *
  * `service_once()` is the worker: it runs the transaction, which takes the chain mutex and hundreds
- * of milliseconds of I2C. It already runs on a thread, so it sends directly -- which is why its
- * result booleans can still mean "it reached the bus". One thread calls it -- `start()` creates that
- * thread and refuses a second -- and the session layer's own claim makes a second caller harmless
- * rather than a defect that first appears on a bus.
+ * of milliseconds of I2C. It already runs on a thread, so it sends directly rather than queueing.
+ *
+ * EXACTLY ONE THREAD MAY CALL IT, and that is a precondition rather than something the function
+ * defends. `start()` creates that thread and refuses a second, which is how production satisfies
+ * it. The session layer's transaction claim stops two callers running two TRANSACTIONS, and that is
+ * all it stops -- the announcement bookkeeping either side of it (`last_announce_ms_`,
+ * `announced_once_`) is read and written here with no lock, so two callers would still race on it.
+ * An earlier version of this note called a second caller harmless on the strength of the session's
+ * claim; it is not, and the claim was never about this function.
  *
  * ONE INIT PER BOOT, AND IT IS A PRECONDITION RATHER THAN A LOCK. `init()` reconfigures the session
  * layer, which draws a new token and resets the attempt budgets; #116 states that as a once-per-boot
@@ -119,8 +124,12 @@ struct hooks {
 struct counters {
     uint32_t frames_in{0};        /* frames offered to on_frame() under the request identifier */
     uint32_t frames_ignored{0};   /* offered under some other identifier */
+    /* ACCEPTED BY THE TRANSPORT, not confirmed on the wire -- see `service_result` below. The
+     * binding's send returns when the driver has taken the frame, so these count frames the
+     * controller agreed to transmit. Nothing in this firmware observes whether they then did. */
     uint32_t status_sent{0};
     uint32_t sessions_sent{0};
+    /* Frames the transport would not take: a full mailbox, a controller that is bus-off. */
     uint32_t send_failures{0};
     /* Answers the receive path composed and could not hand to the transmit queue. SEPARATE from
      * send_failures, which is a transport refusal: this one is the board overrunning its own queue,
@@ -143,15 +152,23 @@ bool has_session();
 
 /* The receive path, callable from an ISR. Frames under any other identifier are ignored and
  * counted. Never blocks, never sends, never proves, never takes the chain: the answer it composes
- * is queued, and a work item puts it on the bus. */
+ * is queued, and a work item hands it to the transport. */
 void on_frame(uint32_t id, const uint8_t *data, size_t len);
 
 /* One turn of the worker: run the queued transaction if there is one, and send the periodic session
  * frame when it is due. Exposed so a test drives exactly the code the thread runs. */
 struct service_result {
-    /* TRUE MEANS IT REACHED THE BUS. A send that failed leaves these false and shows up in
-     * `counters::send_failures`; naming them for the attempt would make a caller that logs them
-     * report traffic that does not exist. */
+    /* TRUE MEANS THE TRANSPORT ACCEPTED THE FRAME FOR TRANSMISSION. It does NOT mean the frame was
+     * transmitted, and it does not mean any node acknowledged it: the binding uses the callback
+     * form of can_send(), which returns as soon as the driver has taken the frame into a mailbox.
+     * Arbitration, error frames and a bus with nobody else on it all happen afterwards and are not
+     * reported here.
+     *
+     * The distinction that IS carried: false means the transport refused to take it at all --
+     * a full mailbox, a bus-off controller -- and that shows up in `counters::send_failures`.
+     * Naming these for the attempt rather than the acceptance would make a caller that logs them
+     * report traffic the driver never agreed to carry; naming them for delivery, which an earlier
+     * version of this note did, would make it report traffic nobody can confirm arrived. */
     bool sent_status{false};
     bool sent_session{false};
     /* The worker produced a terminal status this call, whether or not it could be sent. */

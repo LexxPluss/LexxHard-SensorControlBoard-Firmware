@@ -132,17 +132,18 @@ void queue_frame(uint32_t id, const uint8_t *data, bool is_session)
 
     if (k_msgq_put(&tx_q_, &item, K_NO_WAIT) != 0) {
         /* ITS OWN COUNTER. A frame that was never queued did not fail to send -- folding it into
-         * send_failures would report a transport fault for a queue the board overran itself. */
+         * send_failures would report a transport refusal for a queue the board overran itself. */
         count(&counters::tx_dropped);
         return;
     }
     k_work_submit(&tx_work_);
 }
 
-/* The thread-context forms, used by the worker. `service_once()` already runs on a thread, and its
- * result booleans are documented as "it reached the bus" -- queueing there would turn them into
- * "it was accepted for sending", which is a different claim and the one a caller must not log as
- * traffic. */
+/* The thread-context forms, used by the worker. `service_once()` already runs on a thread, so it
+ * hands the frame to the transport itself and reports what the transport said -- accepted into a
+ * mailbox, or refused. Queueing there would push that answer one step further away, into "this
+ * board agreed with itself to try later", which is not a fact about the bus at all. Neither form
+ * learns whether the frame was actually transmitted; see service_result in the header. */
 bool send_status(const wire::transaction_status &s)
 {
     uint8_t frame[wire::kFrameLen]{};
