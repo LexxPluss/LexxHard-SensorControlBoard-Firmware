@@ -38,7 +38,7 @@
  * Wiring it to a constant `true` on a bench is a decision to write down where the bench is
  * configured, not something this file may assume.
  *
- * WHO CALLS IT: tof_chain_controller::init(), once per boot, through tof_commission_boot -- which
+ * WHO CALLS IT: tof_chain_controller::init(), once per boot, through tof_commission_wiring -- which
  * is where the order and the once-ness live, because a second can_add_rx_filter() on the request
  * identifier does not fail, it delivers every request twice. It runs after the cliff runtime's
  * bootstrap has returned, because the worker's prove and start hooks reach that runtime.

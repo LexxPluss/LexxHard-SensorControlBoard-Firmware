@@ -59,7 +59,7 @@
 #if defined(ENABLE_TOF_AUTO_COMMISSION)
 #include "tof_commission_bind.hpp"
 #endif
-#include "tof_commission_boot.hpp"
+#include "tof_commission_wiring.hpp"
 #include "tof_commissioning.hpp"
 #endif
 #include "tof_enumerator.hpp"
@@ -381,36 +381,19 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
         return -EPERM;
     }
 
-    static zephyr_chain_ops ops{};
-    tof_commissioning::config cfg{};
-    cfg.chain = &chain_mutex;
-    cfg.ops = &ops;
-    /* THE spec, not a copy of it. The authority compares every proof against this same object; a
-     * local static here would mean commissioning walked one chain description while the authority
-     * checked the result against another. */
-    cfg.spec = &tof_cliff_runtime::spec();
-    /* The tested primitive itself, with no wrapper in between.
+    /* CONFIGURED AT BOOT, NOT HERE. This command used to assemble the configuration and call
+     * tof_commissioning::init() itself, which made the transaction ready only on the path that goes
+     * through a keyboard -- so the automatic downlink, which calls prove() directly, refused every
+     * request as `misconfigured`. Observed on dasher2 on 2026-09-21: a session announced, the
+     * request accepted, and `misconfigured / not_started` answered within three frames, having
+     * touched neither I2C nor the enable chain.
      *
-     * try_stop(), not stop(): stop() takes the chain with K_FOREVER, so a wrapper around it would
-     * block right here and the session's K_NO_WAIT acquire -- the whole reason a busy chain is a
-     * refusal rather than a wait -- would never be reached. And try_stop(), not "try_stop plus a
-     * check": is_idle() also takes the chain with K_FOREVER, so verifying the quiesce that way
-     * would put the block back one line later.
-     *
-     * Pointing the hook straight at it is deliberate. A one-line wrapper here would be production
-     * glue that no host suite links, i.e. exactly where a K_FOREVER could reappear unnoticed;
-     * assigning the function under test leaves nothing to drift. It is also the right home for the
-     * bounded join once there is an acquisition thread: quiescing is acquisition's business, not
-     * the shell's. */
-    cfg.quiesce = tof_acq::try_stop;
-    /* The retime, which lets the transaction own the speed for the whole run: 100 kHz for the
-     * walks, 400 kHz before anything is published, and back to 100 kHz if it gives up. A proof must
-     * not depend on an operator having set the speed by hand -- and must not, since a previous
-     * failure can leave the bus at either one. */
-    cfg.set_bus_speed = set_bus_speed_hw;
-    if (int const rc{tof_commissioning::init(cfg)}; rc != 0) {
-        shell_error(shell, "commissioning not configurable (%d)", rc);
-        return rc;
+     * The one call site is now tof_commission_wiring::boot() in init() below, and this command
+     * reads its result rather than repeating it: two initialisations would be two chances to
+     * disagree about which spec was being proven. */
+    if (int const st{tof_commission_wiring::configure_status()}; st != 0) {
+        shell_error(shell, "commissioning transaction not configured at boot (rc=%d): refusing", st);
+        return st;
     }
 
     auto const r{tof_commissioning::prove(static_cast<uint32_t>(parsed))};
@@ -737,23 +720,35 @@ const char *commission_outcome_label(int state)
 }
 #endif  // ENABLE_TOF_AUTO_COMMISSION
 
-int boot_bootstrap_cliff(void *)
-{
-    return tof_cliff_runtime::bootstrap(tof_cliff_runtime::config_from_devicetree());
-}
+/* The image's chain ops, at file scope because tof_commissioning::init() copies the configuration
+ * and keeps this pointer: it has to outlive every proof. */
+zephyr_chain_ops chain_ops{};
 
-/* NO #if ON THE ASSIGNMENTS, for the same reason boot_steps() has none: an image that has no
- * downlink leaves that step null and the order module runs what it was given. The preprocessor
- * decides what exists, not what the sequence is. */
-tof_commission_boot::steps commission_boot_steps()
+/* What the boot sequence hands to the wiring module. Assembled here because these are the only
+ * pieces that need the Zephyr image; the ORDER they are used in belongs to tof_commission_wiring,
+ * where a host suite can link it.
+ *
+ * The quiesce is the tested primitive itself, with no wrapper in between. try_stop(), not stop():
+ * stop() takes the chain with K_FOREVER, so a wrapper around it would block and the session's
+ * K_NO_WAIT acquire -- the whole reason a busy chain is a refusal rather than a wait -- would never
+ * be reached. And try_stop(), not "try_stop plus a check": is_idle() also takes the chain with
+ * K_FOREVER, so verifying the quiesce that way would put the block back one line later.
+ *
+ * NO #if ON start_downlink BEYOND THE ONE THAT DECIDES WHETHER IT EXISTS. An image without the
+ * downlink leaves that step null and the sequence runs the half it has; the preprocessor decides
+ * what exists, not what the order is. */
+tof_commission_wiring::inputs commission_inputs()
 {
-    tof_commission_boot::steps s{};
+    tof_commission_wiring::inputs in{};
 
-    s.bootstrap_cliff = boot_bootstrap_cliff;
+    in.chain = &chain_mutex;
+    in.ops = &chain_ops;
+    in.set_bus_speed = set_bus_speed_hw;
+    in.quiesce = tof_acq::try_stop;
 #if defined(ENABLE_TOF_AUTO_COMMISSION)
-    s.start_downlink = boot_start_downlink;
+    in.start_downlink = boot_start_downlink;
 #endif
-    return s;
+    return in;
 }
 #endif  // ENABLE_TOF_CLIFF_ULD
 
@@ -804,39 +799,43 @@ void init()
             kDataSettleMs, kSensorBootMs);
 
 #if defined(ENABLE_TOF_CLIFF_ULD)
-    /* THE CLIFF BOOTSTRAP AND THE COMMISSIONING DOWNLINK, in that order and once, through the
-     * module that holds the order rather than as two statements here.
+    /* THE BOOTSTRAP, THE COMMISSIONING TRANSACTION AND THE DOWNLINK, AS ONE SEQUENCE, from the one
+     * context allowed to run it: main(), before any per-feature thread starts. tof_acq reads
+     * configured_/active_ outside the chain lock on exactly that basis, and the downlink runtime
+     * states the same once-per-boot rule for its session and its worker.
      *
-     * Both halves are a ONE-PER-BOOT operation from the ONE context allowed to run them: main(),
-     * before any per-feature thread starts. tof_acq reads configured_/active_ outside the chain
-     * lock on exactly that basis, and the downlink runtime states the same rule for its session and
-     * its worker. tof_commission_boot is where that is enforced instead of asserted, because what
-     * is held here is a bus resource: a second receive filter on the request identifier delivers
-     * every request twice.
+     * All three steps live in tof_commission_wiring so a host suite can link the order; what is
+     * left here is supplying the pieces only this image has. The transaction configuration is
+     * OUTSIDE the auto-commission guard on purpose: the shell command needs exactly the same
+     * configuration, so a cliff image without the downlink must still get it.
      *
-     * Both come after the control lines, because a subsystem whose enable lines are not
-     * configurable has nothing to acquire from -- and after zcan_main::init(), which is where can2
-     * is started (main.cpp calls it before this). */
-    const tof_commission_boot::report cb{tof_commission_boot::run(commission_boot_steps())};
+     * After the control lines, because a subsystem whose enable lines are not configurable has
+     * nothing to acquire from -- and after zcan_main::init(), which is where can2 is started
+     * (main.cpp calls it before this). */
+    const tof_commission_wiring::report wiring{
+        tof_commission_wiring::boot(tof_cliff_runtime::config_from_devicetree(),
+                                    commission_inputs())};
 
-    if (cb.already_run) {
+    if (wiring.already_run) {
         /* Reachable only from a second init(), which main() does not do. Logged rather than
-         * ignored: a boot that silently did nothing is the thing the latch exists to make visible.
-         */
+         * ignored: a boot that silently did nothing is what the latch exists to make visible. */
         LOG_ERR("tof boot sequence ran twice; the second run did nothing");
     }
-    if (cb.cliff_attempted && cb.cliff_rc != 0) {
+    if (wiring.bootstrap_rc != 0) {
         /* Logged and left in the stage: the shell command reports which step failed, and the health
-         * path is still what a consumer hears. The downlink is started regardless -- see the note
-         * in tof_commission_boot.hpp on why a board that cannot be addressed is the worse
-         * failure. */
+         * path is still what a consumer hears. */
         LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
-                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), cb.cliff_rc);
+                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()),
+                wiring.bootstrap_rc);
+    }
+    if (wiring.configure_rc != 0) {
+        LOG_ERR("commissioning transaction not configured (%d): proof refused on BOTH paths -- the "
+                "shell command and the downlink", wiring.configure_rc);
     }
 #if defined(ENABLE_TOF_AUTO_COMMISSION)
-    if (cb.downlink_attempted) {
+    if (wiring.downlink_attempted) {
         LOG_INF("commissioning downlink: %s (requests %s, enumeration %s)",
-                commission_outcome_label(cb.downlink_rc),
+                commission_outcome_label(wiring.downlink_rc),
                 kCommissionProfileEnabled ? "enabled" : "disabled",
                 kCommissionEnumerationPermitted ? "permitted" : "refused");
     }

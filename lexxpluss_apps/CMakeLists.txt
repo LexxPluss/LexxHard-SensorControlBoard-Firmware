@@ -108,7 +108,7 @@ endif()
 # image -- product, chain, cliff -- comes out byte for byte as it did before this existed.
 #
 # WHAT THIS FLAG DOES AND DOES NOT DO. It compiles the downlink runtime, the bus binding and the
-# entropy module, and tof_chain_controller::init() now starts them through tof_commission_boot: the
+# entropy module, and tof_chain_controller::init() now starts them through tof_commission_wiring: the
 # receive filter goes in, a session token is drawn and announced, and every request is answered.
 #
 # WHAT IT STILL DOES NOT DO is commission anything. The two deployment decisions that govern that --

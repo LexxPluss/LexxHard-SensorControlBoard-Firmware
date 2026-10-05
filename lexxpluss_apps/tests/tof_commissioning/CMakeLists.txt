@@ -46,10 +46,12 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_sources(app PRIVATE
     src/test_main.cpp
     src/test_runtime.cpp
+    src/test_wiring.cpp
     ${APP_SRC_DIR}/tof_acquisition.cpp
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_runtime.cpp
+    ${APP_SRC_DIR}/tof_commission_wiring.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp
