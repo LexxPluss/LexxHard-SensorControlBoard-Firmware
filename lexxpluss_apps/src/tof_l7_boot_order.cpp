@@ -11,6 +11,23 @@
 
 namespace lexxhard::tof_l7_boot_order {
 
+steps steps_for_image(const steps &requested)
+{
+    steps s{requested};
+
+#if !defined(ENABLE_TOF_L7_ULD)
+    /* DROPPED, not merely unused. A build with no grid driver has nothing to recover; leaving the
+     * speed steps in would retime the bus twice on every boot of an image that never talks to an
+     * L7, and leaving the recovery step in would call a stub for the sake of calling it. The pins
+     * are untouched -- every image reaches them, and through this module. */
+    s.set_recovery_speed = nullptr;
+    s.read_back_speed = nullptr;
+    s.recover_survivors = nullptr;
+    s.restore_product_speed = nullptr;
+#endif
+    return s;
+}
+
 report run(const steps &s)
 {
     report r{};

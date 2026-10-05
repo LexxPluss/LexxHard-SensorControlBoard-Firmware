@@ -45,7 +45,7 @@ clean:
 	        build-test-tof-watchdog-feeder build-test-tof-auto-commission build-test-tof-commission-wire \
 	        build-test-tof-commission-session build-test-tof-commission-runtime \
 	        build-test-tof-commission-bind build-test-tof-commission-worker \
-	        build-auto-commission
+	        build-auto-commission build-test-tof-l7-boot-order-no-grid
 
 .PHONY: distclean
 distclean: clean
@@ -284,6 +284,14 @@ test_tof_watchdog_feeder:
 test_tof_l7_recovery:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_recovery -d build-test-tof-l7-recovery -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# THE SAME CASES WITHOUT THE GRID DRIVER. steps_for_image() drops the recovery steps in an image
+# that has none, and the suite above -- which always builds with the flag on -- compiles that
+# branch in neither direction.
+.PHONY: test_tof_l7_boot_order_no_grid
+test_tof_l7_boot_order_no_grid:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_boot_order_no_grid -d build-test-tof-l7-boot-order-no-grid -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming

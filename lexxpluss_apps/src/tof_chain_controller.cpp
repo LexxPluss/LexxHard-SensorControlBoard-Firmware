@@ -59,6 +59,12 @@
 #include "tof_commissioning.hpp"
 #endif
 #include "tof_enumerator.hpp"
+#include "tof_l7_boot_order.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_recovery.hpp"
+#include "tof_l7_recovery_ops.hpp"
+#include "tof_l7_sensor.hpp"
+#endif
 #include "tof_readdress.hpp"
 
 namespace lexxhard::tof_chain_controller {
@@ -318,15 +324,25 @@ const char *recheck_label(tof_commissioning::recheck_fault f)
     return "?";
 }
 
-int set_bus_speed_hw(tof_commissioning::bus_speed s)
+/* The primitive, and deliberately in no feature's vocabulary. The boot order needs it in an image
+ * with the grid driver, commissioning needs it in an image with the cliff driver, and a chain-only
+ * image has neither -- so the one that takes an I2C_SPEED_* is the one both can reach. Taking
+ * commissioning's enum here made the chain-only build fail to compile, which is the build saying
+ * the dependency was the wrong way round. */
+int set_chain_bus_speed(uint32_t i2c_speed)
 {
     if (!device_is_ready(i2c2_dev))
         return -ENODEV;
-
-    const uint32_t speed{s == tof_commissioning::bus_speed::proof_100k ? I2C_SPEED_STANDARD
-                                                                      : I2C_SPEED_FAST};
-    return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed));
+    return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(i2c_speed));
 }
+
+#if defined(ENABLE_TOF_CLIFF_ULD)
+int set_bus_speed_hw(tof_commissioning::bus_speed s)
+{
+    return set_chain_bus_speed(s == tof_commissioning::bus_speed::proof_100k ? I2C_SPEED_STANDARD
+                                                                            : I2C_SPEED_FAST);
+}
+#endif
 
 int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
 {
@@ -524,6 +540,136 @@ bool glue_ready()
     return init_status.load() == 0;
 }
 
+/* ------------------------------------------------- the boot order, as a call ------------- */
+/*
+ * AN SCB-ONLY RESET DOES NOT CLEAR AN L7. The enable chain gates that board's comms rather than
+ * resetting it, and no XSHUT or power-rail control for it exists on this carrier -- so after any run
+ * that opened one, the sensor is still ranging at its programmed address when this firmware starts.
+ *
+ * It can only be reached while it is still enabled, and the FIRST gpio_pin_configure_dt() on a
+ * control line is the first thing this image does that can change that: once the lines are driven,
+ * the chain's enable state is whatever this boot decided rather than whatever the last one left.
+ * So recovery goes before both pins, and the order is a function rather than a comment --
+ * tof_l7_boot_order::run(), which a host suite links and which this is the production caller of.
+ *
+ * THE STEPS ARE NULL IN AN IMAGE WITHOUT THE GRID DRIVER. A build with no L7 ULD has no survivor to
+ * recover and nothing to recover it with; run() skips a null step rather than refusing, so such an
+ * image goes straight to its pins and the order module is still the one thing that configures them.
+ */
+
+#if defined(ENABLE_TOF_L7_ULD)
+int boot_set_recovery_speed(void *)
+{
+    /* The slower speed, not the product one. Recovery talks to a device whose state nobody knows,
+     * over a bus whose 400 kHz behaviour is the open incident on L0-L1 -- 100 kHz is the speed the
+     * chain has ever been walked at successfully. */
+    return set_chain_bus_speed(I2C_SPEED_STANDARD);
+}
+
+int boot_read_back_speed(void *, bool *matches)
+{
+    if (matches == nullptr)
+        return -EINVAL;
+    *matches = false;
+
+    /* READ BACK, NOT ASSUMED. A configure that silently did nothing would leave recovery running at
+     * whatever the devicetree left behind -- the product speed, chosen for a schedule rather than
+     * for robustness -- and nothing downstream would say so. */
+    uint32_t cfg{0};
+    if (const int rc{i2c_get_config(i2c2_dev, &cfg)}; rc != 0)
+        return rc;
+    *matches = I2C_SPEED_GET(cfg) == I2C_SPEED_STANDARD;
+    return 0;
+}
+
+int boot_restore_product_speed(void *)
+{
+    /* Everything downstream was promised the devicetree's speed. */
+    return set_chain_bus_speed(I2C_SPEED_FAST);
+}
+
+int boot_recover_survivors(void *)
+{
+    /* Not open, and never opened: uld_ops() zeroes it on every call, so a live session would be
+     * discarded. This runs before any open in the image, which is the whole reason that is safe. */
+    static tof_l7::sensor recovery_scratch{};
+
+    tof_l7_recovery::request req{};
+    for (size_t i{0}; i < tof_chain::dasher_spec().positions; ++i) {
+        const tof_enum::position_spec &ps{tof_chain::dasher_spec().at[i]};
+        if (ps.expected != tof_enum::model::l7cx)
+            continue;
+        if (req.count < tof_l7_recovery::kMaxGridSensors)
+            req.addr_7bit[req.count++] = ps.target_addr;
+    }
+
+    const tof_l7_recovery::report r{
+        tof_l7_recovery::run(tof_l7_recovery::uld_ops(&recovery_scratch), req)};
+
+    /* NOT FATAL, and not a verdict on the chain. Enumeration owns that; a second opinion from here
+     * is a mistake this project has already paid for. What is worth saying is how many were
+     * actually brought out of a session, because a non-zero count is the only direct evidence that
+     * this boot had something to recover. */
+    for (size_t i{0}; i < r.count; ++i)
+        LOG_INF("l7 recovery: 0x%02x %s", req.addr_7bit[i],
+                tof_l7_recovery::result_name(r.at[i]));
+    if (r.stopped != 0)
+        LOG_WRN("l7 recovery stopped %u live sensor(s): this was a warm reset", r.stopped);
+    return r.any_failure ? -EIO : 0;
+}
+#else
+/* A NAMED STUB RATHER THAN AN ABSENCE, so the caller below has no #if in it and the gate lives in
+ * exactly one place -- steps_for_image(), which a host suite links. It is never called: that
+ * function drops this step in a build without the grid driver. */
+int boot_recover_survivors(void *)
+{
+    return -ENOSYS;
+}
+
+int boot_set_recovery_speed(void *)
+{
+    return -ENOSYS;
+}
+
+int boot_read_back_speed(void *, bool *matches)
+{
+    if (matches != nullptr)
+        *matches = false;
+    return -ENOSYS;
+}
+
+int boot_restore_product_speed(void *)
+{
+    return -ENOSYS;
+}
+#endif  // ENABLE_TOF_L7_ULD
+
+int boot_configure_data_pin(void *)
+{
+    return gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE);
+}
+
+int boot_configure_clock_pin(void *)
+{
+    return gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE);
+}
+
+/* NO #if HERE. Everything this image can do is offered, and steps_for_image() decides what this
+ * image may actually run -- one gate, in a file a host suite links, rather than a preprocessor
+ * condition repeated at every caller. */
+tof_l7_boot_order::steps boot_steps()
+{
+    tof_l7_boot_order::steps s{};
+
+    s.set_recovery_speed = boot_set_recovery_speed;
+    s.read_back_speed = boot_read_back_speed;
+    s.recover_survivors = boot_recover_survivors;
+    s.restore_product_speed = boot_restore_product_speed;
+    s.configure_data_pin = boot_configure_data_pin;
+    s.configure_clock_pin = boot_configure_clock_pin;
+    return tof_l7_boot_order::steps_for_image(s);
+}
+
 void init()
 {
     if (!device_is_ready(i2c2_dev)) {
@@ -536,16 +682,32 @@ void init()
         init_status.store(-ENODEV);
         return;
     }
-    if (int const rc{gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
-        LOG_ERR("data pin not configurable (%d)", rc);
-        init_status.store(rc);
+    /* THROUGH THE ORDER MODULE, not inline. The two pin calls used to be here, and the recovery
+     * that has to precede them had no way in: a comment saying "recovery goes first" cannot be
+     * linked by a test, and the ordering is the whole deliverable. */
+    const tof_l7_boot_order::report boot{tof_l7_boot_order::run(boot_steps())};
+
+    if (!boot.pins_configured) {
+        LOG_ERR("chain control pin not configurable at %s (%d)",
+                tof_l7_boot_order::step_name(boot.failed_at), boot.rc);
+        init_status.store(boot.rc);
         return;
     }
-    if (int const rc{gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE)}; rc != 0) {
-        LOG_ERR("clock pin not configurable (%d)", rc);
-        init_status.store(rc);
-        return;
+
+    /* ONLY THE PINS ARE FATAL. A bus speed that would not set, a readback that disagreed, a
+     * survivor that would not stop -- each is recorded and the boot carries on to bring the chain
+     * up, because enumeration owns the verdict on whether the chain is usable and a second opinion
+     * from here is a mistake this project has already paid for. */
+    if (boot.recovery_ran) {
+        LOG_INF("l7 recovery ran before the control lines (speed set %d, readback %d, rc %d, "
+                "product speed restored %d)",
+                boot.speed_set, boot.speed_readback_ok, boot.recovery_rc,
+                boot.product_speed_restored);
+    } else {
+        LOG_INF("l7 recovery did not run (speed set %d, readback %d): the chain is brought up "
+                "regardless", boot.speed_set, boot.speed_readback_ok);
     }
+
     init_status.store(0);
     // Deliberately NO enumeration here: `tof enum` is a manual commissioning
     // step, and the acquisition thread (Phase 3) will own the boot-time

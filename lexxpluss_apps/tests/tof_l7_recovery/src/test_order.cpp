@@ -104,6 +104,56 @@ void reset_script() { sc_ = script{}; }
 ZTEST_SUITE(tof_l7_boot_order, nullptr, nullptr, nullptr, nullptr, nullptr);
 
 /* The assertion this file exists for. Everything else here protects it. */
+/* ---------------------------------- what the IMAGE feeds the module ---------------------- */
+/*
+ * The cases below prove run(). They say nothing about what the production image hands it, and that
+ * is a separate claim: tof_chain_controller::init() cannot be host-linked -- it reaches real GPIO
+ * and I2C devices -- so the part of the wiring a suite CAN hold is the gate, steps_for_image().
+ *
+ * What is still not covered by any test, stated rather than papered over: that init() calls
+ * boot_steps() and passes the result to run(). That is one line in a file no suite links, and the
+ * only thing standing behind it is that the two gpio_pin_configure_dt() calls were removed from it
+ * -- there is no second path to the pins left.
+ */
+
+ZTEST(tof_l7_boot_order, test_an_image_without_the_grid_driver_runs_no_recovery)
+{
+    reset_script();
+    const ord::steps offered{wired()};
+
+    const ord::steps allowed{ord::steps_for_image(offered)};
+
+    /* THE PINS ARE NEVER DROPPED. Every image reaches them, and through this module. */
+    zassert_true(allowed.configure_data_pin == fake_data_pin, "");
+    zassert_true(allowed.configure_clock_pin == fake_clock_pin, "");
+
+#if defined(ENABLE_TOF_L7_ULD)
+    zassert_true(allowed.set_recovery_speed == fake_set_speed, "a grid build keeps its recovery");
+    zassert_true(allowed.read_back_speed == fake_readback, "");
+    zassert_true(allowed.recover_survivors == fake_recover, "");
+    zassert_true(allowed.restore_product_speed == fake_restore, "");
+#else
+    zassert_is_null((void *)allowed.recover_survivors,
+                    "an image with no grid driver has no survivor to recover");
+    zassert_is_null((void *)allowed.set_recovery_speed,
+                    "and no reason to retime its bus on the way to its pins");
+    zassert_is_null((void *)allowed.read_back_speed, "");
+    zassert_is_null((void *)allowed.restore_product_speed, "");
+#endif
+
+    /* And the gated table, run, does what its shape says: the pins are configured either way, and
+     * recovery runs exactly when it was kept. */
+    reset_script();
+    const ord::report r{ord::run(allowed)};
+    zassert_true(r.pins_configured, "");
+#if defined(ENABLE_TOF_L7_ULD)
+    zassert_true(r.recovery_ran, "");
+#else
+    zassert_false(r.recovery_ran, "");
+    zassert_false(r.speed_set, "an image that runs no recovery must not touch the bus speed");
+#endif
+}
+
 ZTEST(tof_l7_boot_order, test_recovery_runs_strictly_before_the_first_control_line_change)
 {
     reset_script();
