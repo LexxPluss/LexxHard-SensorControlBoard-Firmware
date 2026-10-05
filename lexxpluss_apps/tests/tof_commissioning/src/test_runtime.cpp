@@ -114,6 +114,16 @@ constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5)};
  * that shipped anyway -- so the suite hands one over. */
 K_THREAD_STACK_DEFINE(runtime_acq_stack, 2048);
 
+/* This suite is about the runtime's sequence, not the bus. The transaction now requires the hook,
+ * so it gets one that always succeeds; the dual-rate behaviour itself is covered next door, where
+ * the fake chain records the order. */
+int product_speed_rc{0};
+
+int runtime_set_bus_speed(cm::bus_speed speed)
+{
+    return speed == cm::bus_speed::product_400k ? product_speed_rc : 0;
+}
+
 int quiesce_via_acquisition()
 {
     return acq::try_stop();
@@ -127,6 +137,7 @@ void before(void *)
     au::reset_epoch_history_for_test();
     chain = fake::fake_chain{};
     can_init_rc = 0;
+    product_speed_rc = 0;
     send_rc = 0;
     frames_sent = 0;
     last_can_id = 0;
@@ -144,6 +155,7 @@ cm::outcome prove_over_the_fake_chain(uint32_t epoch)
     ccfg.ops = &chain;
     ccfg.spec = &rt::spec();
     ccfg.quiesce = quiesce_via_acquisition;
+    ccfg.set_bus_speed = runtime_set_bus_speed;
     zassert_equal(cm::init(ccfg), 0);
     return cm::prove(epoch);
 }
@@ -300,6 +312,39 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_true(acq::thread_running());
     k_msleep(kTiming.cycle_period_ms * 2);
     zassert_equal(acq::try_stop(), 0, "the thread did not stop cleanly");
+}
+
+/* A RETIME THAT FAILED MUST NOT LEAVE A STARTABLE MACHINE, and that is the half the commissioning
+ * suite cannot show: it checks nothing was installed, and this checks what that means one layer up.
+ * The evidence was gathered at 100 kHz and nothing says the chain answers at the speed acquisition
+ * reads it at, so the descriptors are unkeyed, the authority is not PROVEN, and start_acquisition()
+ * refuses -- rather than ranging against a mapping nobody confirmed. */
+ZTEST(tof_cliff_runtime, test_a_failed_retime_leaves_nothing_startable)
+{
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    zassert_false(rt::mapping_applied());
+
+    product_speed_rc = -EIO;
+    const cm::outcome r{prove_over_the_fake_chain(9)};
+
+    zassert_equal(r.failed_at, cm::stage::product_speed_refused, "stage %d",
+                  static_cast<int>(r.failed_at));
+    zassert_false(rt::mapping_applied(), "no mapping may be installed");
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+    zassert_equal(rt::start_acquisition(), -EPERM, "and acquisition must refuse to start");
+    zassert_false(acq::thread_running(), "");
+
+    /* The bus was put back, so the next proof starts from a known speed rather than inheriting
+     * this failure. */
+    zassert_true(r.restore_attempted, "");
+    zassert_equal(r.final_bus, cm::bus_state::proof_100k, "");
+
+    /* And the control: with the fault cleared the same sequence proves and starts. */
+    product_speed_rc = 0;
+    const cm::outcome good{prove_over_the_fake_chain(10)};
+    zassert_true(good.proven(), "stage %d", static_cast<int>(good.failed_at));
+    zassert_equal(rt::start_acquisition(), 0);
+    zassert_equal(acq::try_stop(), 0);
 }
 
 ZTEST(tof_cliff_runtime, test_nothing_is_keyed_or_started_before_a_proof)

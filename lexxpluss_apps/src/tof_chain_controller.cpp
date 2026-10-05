@@ -278,9 +278,30 @@ const char *stage_label(tof_commissioning::stage st)
     case stage::chain_busy:         return "chain_busy";
     case stage::attempt_refused:    return "attempt_refused";
     case stage::evidence_refused:   return "evidence_refused";
+    case stage::proof_speed_refused:     return "proof_speed_refused";
+    case stage::product_speed_refused:   return "product_speed_refused";
+    case stage::identity_recheck_failed: return "identity_recheck_failed";
     case stage::commit_refused:     return "commit_refused";
     }
     return "?";
+}
+
+/* THE PRODUCTION RETIME, and the one place the two speeds become register values.
+ *
+ * It does not take the chain lock: commissioning calls it while holding it, and a lock in here
+ * would deadlock that caller.
+ *
+ * Nor does it check whether acquisition is running. That check belongs to the caller, which is in a
+ * position to know -- commissioning has already quiesced and holds the chain -- and repeating it
+ * here would be a third opinion about the same fact. */
+int set_bus_speed_hw(tof_commissioning::bus_speed s)
+{
+    if (!device_is_ready(i2c2_dev))
+        return -ENODEV;
+
+    const uint32_t speed{s == tof_commissioning::bus_speed::proof_100k ? I2C_SPEED_STANDARD
+                                                                      : I2C_SPEED_FAST};
+    return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed));
 }
 
 int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
@@ -336,6 +357,11 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
      * bounded join once there is an acquisition thread: quiescing is acquisition's business, not
      * the shell's. */
     cfg.quiesce = tof_acq::try_stop;
+    /* The retime, which lets the transaction own the speed for the whole run: 100 kHz for the
+     * walks, 400 kHz before anything is published, and back to 100 kHz if it gives up. A proof must
+     * not depend on an operator having set the speed by hand -- and must not, since a previous
+     * failure can leave the bus at either one. */
+    cfg.set_bus_speed = set_bus_speed_hw;
     if (int const rc{tof_commissioning::init(cfg)}; rc != 0) {
         shell_error(shell, "commissioning not configurable (%d)", rc);
         return rc;
