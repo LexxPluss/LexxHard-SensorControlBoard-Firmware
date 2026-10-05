@@ -141,6 +141,12 @@ test_tof_commission_runtime:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_runtime -d build-test-tof-commission-runtime -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Its own binary on purpose: it creates the worker thread, which outlives the case that made it.
+.PHONY: test_tof_commission_worker
+test_tof_commission_worker:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_worker -d build-test-tof-commission-worker -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 .PHONY: test_tof_commission_bind
 test_tof_commission_bind:
 	$(RUNNER) west zephyr-export

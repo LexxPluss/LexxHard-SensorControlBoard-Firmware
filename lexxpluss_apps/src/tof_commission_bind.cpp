@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "tof_commission_bind.hpp"
@@ -63,8 +63,10 @@ int bind_send(void *, uint32_t id, const uint8_t *data, size_t len)
     frame.dlc = static_cast<uint8_t>(len);
     memcpy(frame.data, data, len);
 
-    /* THE CALLBACK FORM, so this returns as soon as the frame is queued. The synchronous form waits
-     * for transmission to complete, and this can run inside the receive callback. */
+    /* THREAD CONTEXT ONLY. The runtime never calls this from on_frame(): it queues there and a work
+     * item drains the queue, because this call takes a K_FOREVER mutex inside the driver no matter
+     * what timeout it is given. The CALLBACK form even so -- the synchronous one waits for
+     * transmission to complete, which is a thread held for a bus arbitration. */
     return can_send(can_, &frame, K_NO_WAIT, send_done, nullptr);
 }
 

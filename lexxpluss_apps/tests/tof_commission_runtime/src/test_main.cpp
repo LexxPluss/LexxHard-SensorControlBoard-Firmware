@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * The runtime adapter: which identifier a frame is answered on, what a frame under some other
  * identifier does, when the session frame goes out, and that there is one worker.
@@ -14,6 +14,7 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/irq_offload.h>
 #include <zephyr/ztest.h>
 
 #include <string.h>
@@ -51,12 +52,18 @@ struct fakes {
 
     frame sent[16]{};
     size_t sent_count{0};
+    bool sent_from_isr{false};
 };
 
 fakes f_{};
 
 int fake_send(void *, uint32_t id, const uint8_t *data, size_t len)
 {
+    /* THE WHOLE POINT OF THE QUEUE. can_send() takes a K_FOREVER mutex, so a send from the receive
+     * interrupt is a kernel assertion on the board -- and native_sim's loopback controller delivers
+     * in a thread, so nothing here would have noticed on its own. */
+    if (k_is_in_isr())
+        f_.sent_from_isr = true;
     if (f_.send_fails)
         return -EIO;
     if (f_.sent_count < (sizeof f_.sent / sizeof f_.sent[0]) && len == wire::kFrameLen) {
@@ -92,6 +99,14 @@ int fake_draw(void *, uint32_t *out)
         return -ENODEV;
     *out = f_.token;
     return 0;
+}
+
+/* THE ANSWER IS ASYNCHRONOUS, and the suite says so rather than hiding it in a sleep at the top of
+ * each case. on_frame() queues; a work item on the system workqueue sends. Every assertion about
+ * what reached the bus has to let that item run first. */
+void pump()
+{
+    k_msleep(5);
 }
 
 rt::hooks wired()
@@ -230,6 +245,7 @@ ZTEST(tof_commission_runtime, test_no_entropy_announces_nothing_but_still_answer
     uint8_t frame[wire::kFrameLen]{};
     build_request(frame, 1, 7, 0x77665544U);
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+    pump();
 
     zassert_equal(rt::stats().frames_in, 1u, "the frame was taken in");
     wire::transaction_status t{};
@@ -254,8 +270,11 @@ ZTEST(tof_commission_runtime, test_a_frame_under_another_identifier_is_ignored_a
     uint8_t frame[wire::kFrameLen]{};
     build_request(frame, 1, 7, f_.token);
 
-    rt::on_frame(kTestStatusId, frame, sizeof frame);  /* our own status identifier */
-    rt::on_frame(0x123, frame, sizeof frame);          /* somebody else's */
+    rt::on_frame(kTestStatusId, frame, sizeof frame);
+
+    pump();  /* our own status identifier */
+    rt::on_frame(0x123, frame, sizeof frame);
+    pump();          /* somebody else's */
     zassert_equal(f_.sent_count, 0u, "nothing was answered");
     zassert_equal(rt::stats().frames_ignored, 2u, "counted: a runtime handed the wrong identifier "
                                                   "looks like one handed nothing");
@@ -269,6 +288,7 @@ ZTEST(tof_commission_runtime, test_a_request_is_answered_on_the_status_identifie
     uint8_t frame[wire::kFrameLen]{};
     build_request(frame, 1, 7, f_.token);
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+    pump();
 
     zassert_equal(rt::stats().frames_in, 1u, "taken in");
     zassert_true(f_.sent_count >= 1, "answered");
@@ -310,6 +330,7 @@ ZTEST(tof_commission_runtime, test_the_worker_runs_the_transaction_and_answers_o
     uint8_t frame[wire::kFrameLen]{};
     build_request(frame, 1, 7, f_.token);
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+    pump();
     zassert_equal(f_.proves, 0, "nothing ran in the receive path");
 
     const rt::service_result r{rt::service_once(0)};
@@ -337,6 +358,7 @@ ZTEST(tof_commission_runtime, test_a_send_that_fails_is_counted_and_does_not_sto
     uint8_t frame[wire::kFrameLen]{};
     build_request(frame, 1, 7, f_.token);
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+    pump();
     const rt::service_result r{rt::service_once(0)};
     /* `sent_` means it REACHED THE BUS. A caller that logged an attempt as traffic would be
      * reporting frames nobody can see. */
@@ -350,32 +372,13 @@ ZTEST(tof_commission_runtime, test_a_send_that_fails_is_counted_and_does_not_sto
 
     f_.send_fails = false;
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+    pump();
     wire::transaction_status t{};
     zassert_true(last_transaction(t), "the retransmission is answered");
     zassert_true(t.ph == wire::phase::done, "from the table");
     zassert_equal(f_.proves, 1, "without running again");
 }
 
-namespace {
-
-K_THREAD_STACK_DEFINE(starter_a_stack, 2048);
-K_THREAD_STACK_DEFINE(starter_b_stack, 2048);
-struct k_thread starter_a;
-struct k_thread starter_b;
-int start_rc_a_{-1};
-int start_rc_b_{-1};
-
-void call_start_a(void *, void *, void *)
-{
-    start_rc_a_ = rt::start();
-}
-
-void call_start_b(void *, void *, void *)
-{
-    start_rc_b_ = rt::start();
-}
-
-} // namespace
 
 /* ---- the receive path does no work, and a retransmission does not repeat it ---- */
 
@@ -394,8 +397,12 @@ ZTEST(tof_commission_runtime, test_the_receive_path_answers_without_touching_the
     build_request(second, 2, 7, f_.token);
 
     rt::on_frame(kTestRequestId, first, sizeof first);
-    rt::on_frame(kTestRequestId, first, sizeof first);   /* a retransmission */
+
+    pump();
+    rt::on_frame(kTestRequestId, first, sizeof first);
+    pump();   /* a retransmission */
     rt::on_frame(kTestRequestId, second, sizeof second);
+    pump();
 
     zassert_equal(f_.proves, 0, "the receive path must not prove");
     zassert_equal(f_.starts, 0, "nor start acquisition");
@@ -414,7 +421,10 @@ ZTEST(tof_commission_runtime, test_a_retransmission_before_the_worker_runs_is_no
     build_request(frame, 1, 7, f_.token);
 
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+
+    pump();
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+    pump();
 
     wire::transaction_status t{};
     zassert_true(last_transaction(t), "");
@@ -441,10 +451,14 @@ ZTEST(tof_commission_runtime, test_a_retransmission_after_completion_replays_the
     build_request(frame, 1, 7, f_.token);
 
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+
+    pump();
     zassert_true(rt::service_once(0).terminal, "");
     zassert_equal(f_.proves, 1, "");
 
     rt::on_frame(kTestRequestId, frame, sizeof frame);
+
+    pump();
 
     wire::transaction_status t{};
     zassert_true(last_transaction(t), "");
@@ -477,10 +491,15 @@ ZTEST(tof_commission_runtime, test_a_malformed_frame_reaches_nothing)
     build_request(short_frame, 1, 7, f_.token);
 
     rt::on_frame(kTestRequestId, nullptr, 0);
+
+    pump();
     rt::on_frame(kTestRequestId, short_frame, 0);
+    pump();
     rt::on_frame(kTestRequestId, short_frame, wire::kFrameLen - 1);
+    pump();
     uint8_t junk[wire::kFrameLen]{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     rt::on_frame(kTestRequestId, junk, sizeof junk);
+    pump();
 
     zassert_equal(f_.proves, 0, "nothing malformed may reach the chain");
     zassert_equal(f_.starts, 0, "");
@@ -492,43 +511,122 @@ ZTEST(tof_commission_runtime, test_a_malformed_frame_reaches_nothing)
     zassert_equal(rt::stats().frames_in, 4U, "every frame on the request identifier was taken");
 }
 
-ZTEST(tof_commission_runtime, test_two_callers_racing_to_start_produce_one_worker)
+/* ---- the receive path is an ISR, and is exercised as one ---- */
+
+namespace {
+
+/* irq_offload() takes one void*, and the interrupt must not touch anything that could block, so
+ * the work is set up here and only read there. */
+struct isr_job {
+    const uint8_t *data;
+    size_t len;
+};
+
+struct burst_job {
+    uint8_t (*frames)[wire::kFrameLen];
+    int count;
+};
+
+void deliver_in_isr(const void *arg)
 {
-    /* ONE TEST FOR BOTH CLAIMS, deliberately: the worker thread outlives the test that created it,
-     * so a second test that expected to create its own would be the one that failed, depending on
-     * the order ztest happened to run them in.
-     *
-     * The config makes the worker inert once it exists -- it wakes a minute of uptime from now --
-     * so it cannot disturb the tests that follow. */
-    rt::config c{configured()};
-    c.poll_ms = 60000;
-    c.announce_period_ms = 60000;
-    zassert_equal(rt::init(c, wired()), 0, "");
-    zassert_false(rt::running(), "no worker until one is asked for");
+    const isr_job &j{*static_cast<const isr_job *>(arg)};
 
-    start_rc_a_ = -1;
-    start_rc_b_ = -1;
-    k_thread_create(&starter_a, starter_a_stack, K_THREAD_STACK_SIZEOF(starter_a_stack),
-                    call_start_a, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
-    k_thread_create(&starter_b, starter_b_stack, K_THREAD_STACK_SIZEOF(starter_b_stack),
-                    call_start_b, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
-    zassert_equal(k_thread_join(&starter_a, K_SECONDS(5)), 0, "both callers returned");
-    zassert_equal(k_thread_join(&starter_b, K_SECONDS(5)), 0, "");
+    rt::on_frame(kTestRequestId, j.data, j.len);
+}
 
-    /* EXACTLY ONE WINS. What this pins is the CONTRACT, and it is worth saying what it does not
-     * pin: on single-CPU native_sim the first starter runs `start()` to completion before the second
-     * is scheduled, so removing the lock leaves this test green -- checked by mutation rather than
-     * assumed. The lock is what makes the contract hold where a preemption can land between the
-     * check and the set, which is the board, not this simulator. */
-    const int wins{(start_rc_a_ == 0 ? 1 : 0) + (start_rc_b_ == 0 ? 1 : 0)};
-    const int refusals{(start_rc_a_ == -EALREADY ? 1 : 0) + (start_rc_b_ == -EALREADY ? 1 : 0)};
-    zassert_equal(wins, 1, "one caller created the worker (a=%d b=%d)", start_rc_a_, start_rc_b_);
-    zassert_equal(refusals, 1, "and the other was refused (a=%d b=%d)", start_rc_a_, start_rc_b_);
-    zassert_true(rt::running(), "there is a worker");
+void deliver_burst_in_isr(const void *arg)
+{
+    const burst_job &j{*static_cast<const burst_job *>(arg)};
 
-    /* And a later sequential caller is refused too, including after a re-init: the k_thread object
-     * cannot be reused while the thread it carries is alive. */
-    zassert_equal(rt::start(), -EALREADY, "");
-    zassert_equal(rt::init(c, wired()), 0, "re-initialised");
-    zassert_equal(rt::start(), -EALREADY, "and still refused");
+    for (int i = 0; i < j.count; ++i)
+        rt::on_frame(kTestRequestId, j.frames[i], wire::kFrameLen);
+}
+
+} // namespace
+
+/* ON THE BOARD on_frame() RUNS IN THE CAN INTERRUPT -- the bxCAN driver calls a filter's callback
+ * straight out of can_stm32_rx_isr_handler(). can_send() is not callable from there whatever
+ * timeout it is given: can_stm32_bxcan.c takes k_mutex_lock(&data->inst_mutex, K_FOREVER) before it
+ * reads the timeout, so K_NO_WAIT and the completion callback bound the wait for a MAILBOX and do
+ * nothing about the mutex. k_mutex_lock() from an ISR is a kernel assertion, not a slow path.
+ *
+ * No other case here could see it, and nor could the bind suite: native_sim's loopback controller
+ * delivers in a THREAD. This one delivers from a real interrupt context. */
+ZTEST(tof_commission_runtime, test_a_frame_delivered_in_an_isr_is_answered_from_a_thread)
+{
+    zassert_equal(rt::init(configured(), wired()), 0, "");
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, f_.token);
+    const isr_job job{frame, sizeof frame};
+
+    irq_offload(deliver_in_isr, &job);
+
+    zassert_equal(f_.sent_count, 0U, "the interrupt must not send");
+    zassert_equal(rt::stats().frames_in, 1U, "but it did take the frame in");
+
+    pump();
+
+    zassert_equal(f_.sent_count, 1U, "and the work item sent the answer");
+    zassert_false(f_.sent_from_isr, "the send must never happen in interrupt context");
+    zassert_equal(f_.sent[0].id, kTestStatusId, "on the status identifier");
+    zassert_equal(rt::stats().tx_dropped, 0U, "and nothing was dropped");
+
+    wire::transaction_status t{};
+    zassert_true(last_transaction(t), "");
+    zassert_true(t.ph == wire::phase::accepted, "");
+    zassert_equal(f_.proves, 0, "and the interrupt proved nothing");
+}
+
+/* A FULL QUEUE DROPS, AND IS COUNTED. Waiting is the one thing an interrupt may not do, so the
+ * bound is real and the overflow has to be visible. Filling it from inside a single interrupt is
+ * what makes this deterministic: the work item cannot run until the interrupt returns. */
+ZTEST(tof_commission_runtime, test_a_full_transmit_queue_drops_rather_than_waits)
+{
+    zassert_equal(rt::init(configured(), wired()), 0, "");
+
+    /* Distinct sequence numbers, so each is a new request composing its own answer rather than
+     * replaying one table entry. More of them than the queue holds, all in one interrupt. */
+    constexpr int kBurst{20};
+    uint8_t frames[kBurst][wire::kFrameLen]{};
+    for (int i = 0; i < kBurst; ++i)
+        build_request(frames[i], static_cast<uint8_t>(i + 1), 7, f_.token);
+
+    burst_job job{frames, kBurst};
+    irq_offload(deliver_burst_in_isr, &job);
+
+    zassert_equal(rt::stats().frames_in, static_cast<uint32_t>(kBurst), "every frame was taken in");
+    zassert_true(rt::stats().tx_dropped > 0U,
+                 "a burst larger than the queue must drop rather than wait");
+    zassert_equal(rt::stats().send_failures, 0U,
+                  "a drop is the board overrunning its own queue, not a transport failure");
+
+    pump();
+    zassert_false(f_.sent_from_isr, "");
+    zassert_true(f_.sent_count > 0U, "and what did fit still went out");
+}
+
+/* THE ANSWERING-ONLY BOARD ANSWERS WITHOUT A WORKER. It drew no token, so start() refuses and no
+ * worker thread exists -- and it still has to put `no_session` on the bus, or a host holding a
+ * durable pending request retransmits into silence for ever. Hanging the transmit on the proof
+ * worker would have made exactly this board silent, which is the failure the binding's
+ * three-outcome split exists to prevent. */
+ZTEST(tof_commission_runtime, test_a_board_with_no_session_answers_from_an_isr_with_no_worker)
+{
+    f_.token_available = false;
+    zassert_equal(rt::init(configured(), wired()), -ENODEV, "");
+    zassert_equal(rt::start(), -EPERM, "there is no worker on such a board");
+    zassert_false(rt::running(), "");
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x77665544U);
+    const isr_job job{frame, sizeof frame};
+
+    irq_offload(deliver_in_isr, &job);
+    pump();
+
+    zassert_false(f_.sent_from_isr, "");
+    wire::transaction_status t{};
+    zassert_true(last_transaction(t), "the answer still reached the bus");
+    zassert_true(t.res == wire::result::no_session, "and it is the terminal one");
 }

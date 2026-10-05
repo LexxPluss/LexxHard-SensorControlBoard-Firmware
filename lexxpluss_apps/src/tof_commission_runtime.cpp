@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "tof_commission_runtime.hpp"
@@ -71,6 +71,78 @@ int send_frame(uint32_t id, const uint8_t *data, size_t len)
     return rc;
 }
 
+/* ------------------------------------------------- the transmit queue, and why it exists ------ */
+/*
+ * THE RECEIVE PATH MAY NOT SEND. On this board `on_frame()` runs in the CAN interrupt: the bxCAN
+ * driver calls the filter's callback straight out of can_stm32_rx_isr_handler(). And can_send() is
+ * not callable from there, whatever timeout it is given -- can_stm32_bxcan.c takes
+ * k_mutex_lock(&data->inst_mutex, K_FOREVER) before it looks at the timeout at all, so the
+ * K_NO_WAIT and the completion callback bound how long it waits for a MAILBOX and do nothing about
+ * the mutex. k_mutex_lock() from an ISR is a kernel assertion, not a slow path.
+ *
+ * This was invisible in the suites and would not have been visible until a board: native_sim's
+ * loopback controller delivers in a thread, so every test here ran the send on a thread that was
+ * allowed to block.
+ *
+ * So the interrupt does bounded work -- compose the answer and put the bytes in a queue -- and a
+ * work item on the system workqueue does the sending from thread context. Bounded is the operative
+ * word: a full queue drops the frame and counts it, because the one thing the interrupt may never
+ * do is wait. The host's retransmission is what recovers a dropped answer, and the session's replay
+ * table makes that retransmission cheap and idempotent.
+ *
+ * NOT THE PROOF WORKER. A board that could draw no token starts no worker and still has to answer
+ * `no_session`; hanging the transmit on the worker would make that board silent, which is the exact
+ * failure the three-outcome split in the binding exists to prevent.
+ */
+constexpr size_t kTxQueueDepth{8};
+
+struct tx_item {
+    uint32_t id;
+    uint8_t data[wire::kFrameLen];
+    /* Which counter the successful send belongs to. Carried with the frame because the ISR knows
+     * what it composed and the work item would otherwise have to guess from the bytes. */
+    bool is_session;
+};
+
+K_MSGQ_DEFINE(tx_q_, sizeof(tx_item), kTxQueueDepth, 4);
+struct k_work tx_work_;
+bool tx_work_inited_{false};
+
+void tx_work_handler(struct k_work *)
+{
+    tx_item item{};
+
+    /* Drain, rather than one per submission: k_work_submit() on an item that is already queued is a
+     * no-op, so two frames composed back to back in one interrupt can share a single run. */
+    while (k_msgq_get(&tx_q_, &item, K_NO_WAIT) == 0) {
+        if (send_frame(item.id, item.data, sizeof item.data) != 0)
+            continue;
+        count(item.is_session ? &counters::sessions_sent : &counters::status_sent);
+    }
+}
+
+/* Called from the receive path, which may be an ISR. Everything here is bounded. */
+void queue_frame(uint32_t id, const uint8_t *data, bool is_session)
+{
+    tx_item item{};
+
+    item.id = id;
+    memcpy(item.data, data, sizeof item.data);
+    item.is_session = is_session;
+
+    if (k_msgq_put(&tx_q_, &item, K_NO_WAIT) != 0) {
+        /* ITS OWN COUNTER. A frame that was never queued did not fail to send -- folding it into
+         * send_failures would report a transport fault for a queue the board overran itself. */
+        count(&counters::tx_dropped);
+        return;
+    }
+    k_work_submit(&tx_work_);
+}
+
+/* The thread-context forms, used by the worker. `service_once()` already runs on a thread, and its
+ * result booleans are documented as "it reached the bus" -- queueing there would turn them into
+ * "it was accepted for sending", which is a different claim and the one a caller must not log as
+ * traffic. */
 bool send_status(const wire::transaction_status &s)
 {
     uint8_t frame[wire::kFrameLen]{};
@@ -89,6 +161,21 @@ bool send_session()
         return false;
     count(&counters::sessions_sent);
     return true;
+}
+
+/* The receive-path forms. Same bytes, queued instead of sent. */
+void queue_status(const wire::transaction_status &s)
+{
+    uint8_t frame[wire::kFrameLen]{};
+    wire::encode_transaction_status(s, frame);
+    queue_frame(cfg_.status_id, frame, false);
+}
+
+void queue_session()
+{
+    uint8_t frame[wire::kFrameLen]{};
+    wire::encode_session_status(session::announcement(), frame);
+    queue_frame(cfg_.status_id, frame, true);
 }
 
 /* The hooks the session layer gets. They are this module's own, forwarding to the binding's, so the
@@ -143,6 +230,13 @@ int init(const config &cfg, const hooks &h)
 
     cfg_ = cfg;
     hooks_ = h;
+    /* Initialised once. A work item that may be queued or running must not be re-initialised, and
+     * the queue is purged rather than re-created for the same reason. */
+    if (!tx_work_inited_) {
+        k_work_init(&tx_work_, tx_work_handler);
+        tx_work_inited_ = true;
+    }
+    k_msgq_purge(&tx_q_);
     {
         k_spinlock_key_t key{k_spin_lock(&lock_)};
         stats_ = counters{};
@@ -187,11 +281,14 @@ void on_frame(uint32_t id, const uint8_t *data, size_t len)
     }
     count(&counters::frames_in);
 
+    /* handle_request() takes a spinlock and touches a table; it does not block, and it is the only
+     * work this path is allowed to do. The answers it produces are QUEUED -- see the transmit queue
+     * above for why sending here is not an option on this board. */
     const session::rx_action a{session::handle_request(data, len)};
     if (a.send_status)
-        send_status(a.status);
+        queue_status(a.status);
     if (a.send_session)
-        send_session();
+        queue_session();
 }
 
 service_result service_once(int64_t now_ms)

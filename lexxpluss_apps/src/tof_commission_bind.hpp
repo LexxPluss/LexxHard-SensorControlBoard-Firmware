@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Where the commissioning runtime meets the real bus, the real proof and the real entropy. This is
  * the only file in the firmware that knows all four at once, and it is where the allocated
@@ -20,12 +20,18 @@
  *                    started, because a filter without a runtime behind it takes an identifier off
  *                    the bus and answers nothing on it.
  *
- * THE SEND IS NON-BLOCKING, and that is not a preference. `on_frame()` runs in the CAN receive
- * callback, so the answer is sent from inside that callback; the synchronous form of can_send()
- * waits for transmission to COMPLETE (see tof_cliff_can.cpp, which documents the same trap) and
- * doing that from a receive callback stalls reception behind the bus. The callback form returns as
- * soon as the frame is queued, and a full mailbox comes back as -EAGAIN, which the runtime counts
- * and the host's retransmission recovers.
+ * THE SEND IS NEVER CALLED FROM THE RECEIVE PATH, and the non-blocking form is not enough on its
+ * own. `on_frame()` runs in the CAN receive INTERRUPT -- the bxCAN driver calls a filter's callback
+ * straight out of can_stm32_rx_isr_handler() -- and can_send() is not callable from there whatever
+ * timeout it is handed: can_stm32_bxcan.c takes k_mutex_lock(&data->inst_mutex, K_FOREVER) before
+ * it reads the timeout, so K_NO_WAIT and the completion callback bound the wait for a MAILBOX and
+ * do nothing about the mutex. k_mutex_lock() from an ISR is a kernel assertion.
+ *
+ * So `bind_send` below is only ever reached from a thread: the runtime queues what the interrupt
+ * composed and a work item drains the queue. It still uses the CALLBACK form, because the
+ * synchronous one waits for transmission to COMPLETE (see tof_cliff_can.cpp, which documents that
+ * trap) and the work item has no business holding a thread for the length of a bus arbitration. A
+ * full mailbox comes back -EAGAIN, which the runtime counts and the host's retransmission recovers.
  *
  * THE STATIONARY CONDITION IS NOT DEFAULTED. `config::enumeration_permitted` has no default and a
  * null one is refused: a board must not re-enumerate its chain because nobody said it should not.

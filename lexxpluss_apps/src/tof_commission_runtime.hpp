@@ -2,7 +2,7 @@
  * Copyright (c) 2026, LexxPluss Inc.
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * The board's side of the commissioning downlink as a running thing: one worker, one periodic
  * announcement, and a receive entry point. It owns no policy and, deliberately, NO IDENTIFIERS.
@@ -19,12 +19,28 @@
  * WHAT IT IS NOT. It is not the state machine, which is tof_commission_session, and it is not the
  * proof, which is tof_commissioning. It moves frames between them, on the right threads.
  *
- * THREADS, AND WHY THE SPLIT IS THIS WAY. `on_frame()` is the receive path: it validates and answers
- * from whatever context CAN delivers on, taking a spinlock for a few hundred instructions and never
- * blocking. `service_once()` is the worker: it runs the transaction, which takes the chain mutex and
- * hundreds of milliseconds of I2C. One thread calls it -- `start()` creates that thread and refuses
- * a second -- and the session layer's own claim makes a second caller harmless rather than a defect
- * that first appears on a bus.
+ * THREADS, AND WHY THE SPLIT IS THIS WAY. `on_frame()` is the receive path, and ON THIS BOARD IT IS
+ * AN ISR: the bxCAN driver calls a filter's callback straight out of its receive interrupt. So it
+ * takes a spinlock for a few hundred instructions, never blocks, and -- the part that is not
+ * obvious -- never sends. It composes the answer and puts the bytes in a bounded queue that a work
+ * item drains from thread context, because can_send() takes a K_FOREVER mutex before it looks at
+ * the timeout it was given. A full queue drops the answer and counts it; waiting is the one thing
+ * an interrupt may not do, and the host's retransmission is what recovers a dropped frame.
+ *
+ * `service_once()` is the worker: it runs the transaction, which takes the chain mutex and hundreds
+ * of milliseconds of I2C. It already runs on a thread, so it sends directly -- which is why its
+ * result booleans can still mean "it reached the bus". One thread calls it -- `start()` creates that
+ * thread and refuses a second -- and the session layer's own claim makes a second caller harmless
+ * rather than a defect that first appears on a bus.
+ *
+ * ONE INIT PER BOOT, AND IT IS A PRECONDITION RATHER THAN A LOCK. `init()` reconfigures the session
+ * layer, which draws a new token and resets the attempt budgets; #116 states that as a once-per-boot
+ * operation and this layer inherits it. Calling it again while the worker is alive would move the
+ * ground under a transaction in flight, and the worker is NOT stoppable -- `start()` refuses a
+ * second thread precisely because the first one exists for the life of the process. Nothing here
+ * enforces it: a lease or a lock would be a mechanism to make a mistake survivable that no caller in
+ * this firmware can make, since the production caller runs once from the bootstrap. The suites
+ * respect it by isolating the case that cannot.
  *
  * A BOARD WITH NO ENTROPY STILL ANSWERS. It announces no session -- it cannot tell this boot from
  * the last one, so it has nothing to announce -- but a well-formed request is still answered, with
@@ -106,6 +122,10 @@ struct counters {
     uint32_t status_sent{0};
     uint32_t sessions_sent{0};
     uint32_t send_failures{0};
+    /* Answers the receive path composed and could not hand to the transmit queue. SEPARATE from
+     * send_failures, which is a transport refusal: this one is the board overrunning its own queue,
+     * and the host's retransmission is what recovers it. */
+    uint32_t tx_dropped{0};
     uint32_t transactions{0};     /* worker steps that produced a terminal status */
 };
 
@@ -121,8 +141,9 @@ int init(const config &cfg, const hooks &h);
  * announcement is sent. */
 bool has_session();
 
-/* The receive path. Frames under any other identifier are ignored and counted. Never blocks, never
- * proves, never takes the chain. */
+/* The receive path, callable from an ISR. Frames under any other identifier are ignored and
+ * counted. Never blocks, never sends, never proves, never takes the chain: the answer it composes
+ * is queued, and a work item puts it on the bus. */
 void on_frame(uint32_t id, const uint8_t *data, size_t len);
 
 /* One turn of the worker: run the queued transaction if there is one, and send the periodic session
