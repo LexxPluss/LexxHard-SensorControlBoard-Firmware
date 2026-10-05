@@ -142,3 +142,72 @@ properties:
       grid is ready; at a frequency below that rate most cycles find nothing,
       which is the ordinary case and is recorded as no outcome at all rather
       than as a failed read.
+
+  commission-profile-enabled:
+    type: boolean
+    description: |
+      May this board entertain an automatic commissioning request at all.
+
+      ABSENT MEANS NO, and absence is the whole mechanism: a deployment act is
+      not something an image acquires by linking the code that could perform
+      it. With the property absent the downlink still comes up, still announces
+      a session and still ANSWERS every request -- with `disabled`. A host
+      holding a durable pending request needs a terminal answer to stop
+      retransmitting; refusing to speak and refusing to act are different
+      refusals.
+
+      Read only by an image that defines ENABLE_TOF_AUTO_COMMISSION. Every
+      other image carries the property unread, as it carries grid-frequency-hz.
+
+  commission-enumeration-permitted:
+    type: boolean
+    description: |
+      May this board re-enumerate its chain when a commissioning request
+      arrives. Separate from commission-profile-enabled because they are
+      different questions: one is whether the board listens, the other is
+      whether it is allowed to drive its sensors' enable lines and re-address
+      them in response.
+
+      ABSENT MEANS NO. There is no trustworthy stationary condition in this
+      firmware -- nothing can currently tell a parked machine from a moving one
+      -- so this answers the question from the image rather than inventing a
+      runtime signal that would be wrong. Setting it is a statement about where
+      the board is deployed, which is why it is written in an overlay and is
+      not changeable at runtime.
+
+  commission-announce-period-ms:
+    type: int
+    default: 1000
+    description: |
+      How often the session frame goes out. A host that has just come up learns
+      the session token from it, so this bounds how long an unattended machine
+      waits before it can be addressed at all.
+
+      Defaulted rather than required, unlike the acquisition timings next to
+      it, because it is not a provisional value standing in for a measurement:
+      it is a retry cadence with no hardware behind it, and an image that does
+      not commission has no answer to give. The number is still visible in the
+      binding, which is where a reader looking for it would go.
+
+  commission-poll-ms:
+    type: int
+    default: 20
+    description: |
+      How long the commissioning worker sleeps when nothing is queued. Bounds
+      how late a queued transaction starts, not how long one takes. Defaulted
+      for the same reason as the announce period.
+
+  commission-max-proof-attempts:
+    type: int
+    default: 0
+    description: |
+      How many proof attempts one session may spend. Zero -- the default -- is
+      a session that may not prove, which is the correct state for an image
+      that has not been told it is allowed to.
+
+  commission-max-start-attempts:
+    type: int
+    default: 0
+    description: |
+      How many acquisition starts one session may spend. Zero, and for the same
+      reason as the proof budget.

@@ -46,7 +46,7 @@ clean:
 	        build-test-tof-commission-session build-test-tof-commission-runtime \
 	        build-test-tof-commission-bind build-test-tof-commission-worker \
 	        build-auto-commission build-test-tof-l7-boot-order-no-grid \
-	        build-test-tof-integration-wiring \
+	        build-test-tof-integration-wiring build-test-tof-commission-boot \
 	        build-check-l7-no-cliff build-tof-integration
 
 .PHONY: distclean
@@ -295,6 +295,13 @@ test_tof_l7_boot_order_no_grid:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_boot_order_no_grid -d build-test-tof-l7-boot-order-no-grid -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# THE BOOT ORDER OF THE CLIFF SUBSYSTEM AND THE COMMISSIONING DOWNLINK. Pure logic over two
+# injected steps, so it needs neither the cliff runtime nor the CAN binding.
+.PHONY: test_tof_commission_boot
+test_tof_commission_boot:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_boot -d build-test-tof-commission-boot -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # THE WIRING, WITH THE GRID FLAG ON. Every other suite that links tof_cliff_runtime.cpp builds it
 # without ENABLE_TOF_L7_ULD, so the grid publisher's init, the two-publisher fan-out and the grid
 # authorisation are compiled in neither direction there. This target is the flag-on build of those
@@ -441,11 +448,13 @@ firmware_tof_cliff:
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
 # only things enabling that peripheral.
 #
-# NOTHING STARTS IT. No caller invokes tof_commission_bind::start() on this branch, so this image
-# installs no CAN filter, draws no token and proves nothing -- it is here so the flag-on image can
-# be built and measured, not so a board can be commissioned by it. It carries NO bypass and no
-# diagnostic flag; the bench decisions that govern what a started downlink may do arrive with the
-# caller.
+# IT IS STARTED NOW, AND IT STILL COMMISSIONS NOTHING. tof_chain_controller::init() runs the boot
+# sequence through tof_commission_boot, so this image installs the receive filter, draws a session
+# token, announces it and answers every request -- with `disabled`. The two deployment decisions
+# that would change that, commission-profile-enabled and commission-enumeration-permitted, are both
+# ABSENT from overlays/auto_commission.overlay: this image does not prove and does not touch the
+# chain's enable lines. Adding either is a bench or a deployment act and belongs in a diff of that
+# overlay. The image carries NO bypass and no diagnostic flag.
 .PHONY: firmware_auto_commission
 firmware_auto_commission:
 	./scripts/manage_zephyr_patches.sh verify

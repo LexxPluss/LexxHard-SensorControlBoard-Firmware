@@ -107,13 +107,15 @@ endif()
 # needs. A separate flag, a separate overlay and a separate Kconfig fragment, so that every other
 # image -- product, chain, cliff -- comes out byte for byte as it did before this existed.
 #
-# WHAT THIS FLAG DOES AND DOES NOT DO IN THIS BRANCH. It compiles the downlink runtime, the bus
-# binding and the entropy module. It does not start any of them: nothing calls
-# tof_commission_bind::start(), so a build with the flag on carries the code, installs no CAN
-# filter, draws no token and proves nothing. The caller, and the two deployment decisions that
-# govern what it may do -- entertain a request at all, and re-enumerate the chain when it gets one
-# -- belong to the boot-wiring change and are deliberately not here. A flag nothing reads is worse
-# than a flag that does not exist yet.
+# WHAT THIS FLAG DOES AND DOES NOT DO. It compiles the downlink runtime, the bus binding and the
+# entropy module, and tof_chain_controller::init() now starts them through tof_commission_boot: the
+# receive filter goes in, a session token is drawn and announced, and every request is answered.
+#
+# WHAT IT STILL DOES NOT DO is commission anything. The two deployment decisions that govern that --
+# entertain a request at all, and re-enumerate the chain when one arrives -- are the devicetree
+# properties commission-profile-enabled and commission-enumeration-permitted, absent by default and
+# absent from the auto-commission overlay. An image acquires neither by linking the code that could
+# perform them.
 if(ENABLE_TOF_AUTO_COMMISSION)
     if(NOT ENABLE_TOF_CLIFF_ULD)
         message(FATAL_ERROR "ENABLE_TOF_AUTO_COMMISSION requires ENABLE_TOF_CLIFF_ULD")

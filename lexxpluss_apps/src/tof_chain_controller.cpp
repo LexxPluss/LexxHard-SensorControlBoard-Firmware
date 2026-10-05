@@ -56,6 +56,10 @@
 #if defined(ENABLE_TOF_CLIFF_ULD)
 #include "tof_acquisition.hpp"
 #include "tof_cliff_runtime.hpp"
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+#include "tof_commission_bind.hpp"
+#endif
+#include "tof_commission_boot.hpp"
 #include "tof_commissioning.hpp"
 #endif
 #include "tof_enumerator.hpp"
@@ -672,6 +676,87 @@ tof_l7_boot_order::steps boot_steps()
     return tof_l7_boot_order::steps_for_image(s);
 }
 
+#if defined(ENABLE_TOF_CLIFF_ULD)
+
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+/* THE TWO DEPLOYMENT DECISIONS, read from the devicetree and constant for the life of the image.
+ *
+ * Neither may be changeable at runtime, and neither is defaulted on. The first is whether this
+ * board entertains a commissioning request at all; the second is whether it may drive its sensors'
+ * enable lines and re-address them when it gets one. Absent means no in both cases, which is how a
+ * boolean property behaves and is the whole mechanism: a deployment act is not something an image
+ * acquires by linking the code that could perform it. */
+constexpr bool kCommissionProfileEnabled{DT_PROP(DT_PATH(tof_chain), commission_profile_enabled)};
+constexpr bool kCommissionEnumerationPermitted{
+    DT_PROP(DT_PATH(tof_chain), commission_enumeration_permitted)};
+
+/* ASKED, NOT INFERRED -- and the answer comes from the image rather than from a runtime signal.
+ *
+ * The binding refuses a null hook precisely so that this question has to be answered somewhere, and
+ * the honest answer today is a constant: nothing in this firmware can tell a parked machine from a
+ * moving one, so a function that tried to work it out would be inventing a stationary condition.
+ * When a real one exists this is where it goes, and the shape of the hook already allows it. */
+bool commission_enumeration_permitted(void *)
+{
+    return kCommissionEnumerationPermitted;
+}
+
+int boot_start_downlink(void *)
+{
+    tof_commission_bind::config c{};
+
+    c.profile_enabled = kCommissionProfileEnabled;
+    c.max_proof_attempts = DT_PROP(DT_PATH(tof_chain), commission_max_proof_attempts);
+    c.max_start_attempts = DT_PROP(DT_PATH(tof_chain), commission_max_start_attempts);
+    c.announce_period_ms = DT_PROP(DT_PATH(tof_chain), commission_announce_period_ms);
+    c.poll_ms = DT_PROP(DT_PATH(tof_chain), commission_poll_ms);
+    c.enumeration_permitted = commission_enumeration_permitted;
+
+    /* can2, started by zcan_main::init(), which main() calls before this one. The binding checks
+     * readiness itself and refuses rather than installing a filter on a device that is not there. */
+    const tof_commission_bind::result r{
+        tof_commission_bind::start(DEVICE_DT_GET(DT_NODELABEL(can2)), c)};
+
+    if (r.state != tof_commission_bind::outcome::running)
+        LOG_WRN("commissioning downlink not fully up: rc %d, filter %d, worker %d", r.rc,
+                r.filter_id, static_cast<int>(r.worker_started));
+    return static_cast<int>(r.state);
+}
+
+const char *commission_outcome_label(int state)
+{
+    switch (static_cast<tof_commission_bind::outcome>(state)) {
+    case tof_commission_bind::outcome::running:
+        return "running";
+    case tof_commission_bind::outcome::answering_only:
+        return "answering only (no session token)";
+    case tof_commission_bind::outcome::refused:
+        return "refused";
+    }
+    return "unknown";
+}
+#endif  // ENABLE_TOF_AUTO_COMMISSION
+
+int boot_bootstrap_cliff(void *)
+{
+    return tof_cliff_runtime::bootstrap(tof_cliff_runtime::config_from_devicetree());
+}
+
+/* NO #if ON THE ASSIGNMENTS, for the same reason boot_steps() has none: an image that has no
+ * downlink leaves that step null and the order module runs what it was given. The preprocessor
+ * decides what exists, not what the sequence is. */
+tof_commission_boot::steps commission_boot_steps()
+{
+    tof_commission_boot::steps s{};
+
+    s.bootstrap_cliff = boot_bootstrap_cliff;
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+    s.start_downlink = boot_start_downlink;
+#endif
+    return s;
+}
+#endif  // ENABLE_TOF_CLIFF_ULD
+
 void init()
 {
     if (!device_is_ready(i2c2_dev)) {
@@ -719,18 +804,43 @@ void init()
             kDataSettleMs, kSensorBootMs);
 
 #if defined(ENABLE_TOF_CLIFF_ULD)
-    /* The cliff subsystem's ONE bootstrap, from the ONE context allowed to run it: main(), before
-     * any per-feature thread starts. tof_acq reads configured_/active_ outside the chain lock on
-     * exactly that basis, so init() and teardown() must never be called from anywhere else.
+    /* THE CLIFF BOOTSTRAP AND THE COMMISSIONING DOWNLINK, in that order and once, through the
+     * module that holds the order rather than as two statements here.
      *
-     * After the control lines, because a subsystem whose enable lines are not configurable has
-     * nothing to acquire from. A failure here is logged and left in the stage: the shell command
-     * reports which step failed, and the health path is still what a consumer hears. */
-    if (const int rc{tof_cliff_runtime::bootstrap(tof_cliff_runtime::config_from_devicetree())};
-        rc != 0) {
-        LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
-                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), rc);
+     * Both halves are a ONE-PER-BOOT operation from the ONE context allowed to run them: main(),
+     * before any per-feature thread starts. tof_acq reads configured_/active_ outside the chain
+     * lock on exactly that basis, and the downlink runtime states the same rule for its session and
+     * its worker. tof_commission_boot is where that is enforced instead of asserted, because what
+     * is held here is a bus resource: a second receive filter on the request identifier delivers
+     * every request twice.
+     *
+     * Both come after the control lines, because a subsystem whose enable lines are not
+     * configurable has nothing to acquire from -- and after zcan_main::init(), which is where can2
+     * is started (main.cpp calls it before this). */
+    const tof_commission_boot::report cb{tof_commission_boot::run(commission_boot_steps())};
+
+    if (cb.already_run) {
+        /* Reachable only from a second init(), which main() does not do. Logged rather than
+         * ignored: a boot that silently did nothing is the thing the latch exists to make visible.
+         */
+        LOG_ERR("tof boot sequence ran twice; the second run did nothing");
     }
+    if (cb.cliff_attempted && cb.cliff_rc != 0) {
+        /* Logged and left in the stage: the shell command reports which step failed, and the health
+         * path is still what a consumer hears. The downlink is started regardless -- see the note
+         * in tof_commission_boot.hpp on why a board that cannot be addressed is the worse
+         * failure. */
+        LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
+                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()), cb.cliff_rc);
+    }
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+    if (cb.downlink_attempted) {
+        LOG_INF("commissioning downlink: %s (requests %s, enumeration %s)",
+                commission_outcome_label(cb.downlink_rc),
+                kCommissionProfileEnabled ? "enabled" : "disabled",
+                kCommissionEnumerationPermitted ? "permitted" : "refused");
+    }
+#endif
 #endif
 }
 

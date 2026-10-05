@@ -24,3 +24,25 @@
 &rng {
 	status = "okay";
 };
+
+/*
+ * The downlink's cadences, written down in the image that starts one.
+ *
+ * The two DEPLOYMENT DECISIONS are deliberately NOT here: commission-profile-enabled and
+ * commission-enumeration-permitted are both absent, so this image comes up, draws a session token,
+ * announces it and answers every request with `disabled`. It does not prove and it does not touch
+ * the chain's enable lines.
+ *
+ * That is not a placeholder. One of them is a statement about where the board is deployed and the
+ * other is permission to re-address sensors on a machine that nothing in this firmware can tell is
+ * stationary. Adding either is a bench or a deployment act and belongs to whoever is making it, in
+ * a diff of this file. The wiring below is what makes that act a one-line change rather than a
+ * code change.
+ *
+ * The budgets stay at their defaulted zero for the same reason: a session that may not prove is the
+ * correct state for an image nobody has said may.
+ */
+&tof_chain {
+	commission-announce-period-ms = <1000>;
+	commission-poll-ms = <20>;
+};
