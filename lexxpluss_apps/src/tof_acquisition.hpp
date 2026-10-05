@@ -419,7 +419,9 @@ struct thread_config {
  * a deadline computed before a re-init, could produce one. It is REPAIRED rather than obeyed:
  * waiting it out would stall acquisition for however wrong the number was, silently, with the
  * heartbeat still flowing and nothing to say why the measurements stopped. It is not an overrun,
- * because nothing was late.
+ * because nothing was late -- and the deadline it rebuilds is one period after the wait it is about
+ * to perform, not one period after now, or the cycle that follows the repair would be born already
+ * due and every cycle after it would be counted late.
  *
  * `due_ms` and `now_ms` are milliseconds from a monotonic clock. A period of zero is not reachable
  * -- init() refuses one -- and is treated as an overrun rather than splitting the responsibility

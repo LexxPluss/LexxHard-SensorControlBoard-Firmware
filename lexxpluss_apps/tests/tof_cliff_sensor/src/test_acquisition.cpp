@@ -1072,7 +1072,40 @@ ZTEST(tof_acquisition, test_an_impossible_deadline_is_repaired_and_is_not_an_ove
     zassert_false(d.overran, "nothing was late, so nothing may be counted as late");
     zassert_false(d.yield_only, "");
     zassert_equal(d.wait_ms, 20U, "it waits one period, not until the impossible deadline");
-    zassert_equal(d.next_due_ms, 120, "and the deadline is rebuilt from now");
+
+    /* ONE PERIOD AFTER THE WAIT ENDS, which is now + 20 + 20. Setting it to the instant the wait
+     * ends -- 120 -- is what the first version did, and a single-call test could not see it:
+     * every field above was right. The cycle that ran after the repair was then born already due.
+     * See the continuity case below, which is the one that catches it. */
+    zassert_equal(d.next_due_ms, 140,
+                  "the deadline after the repair is one period after the repairing wait, not the "
+                  "instant that wait ends");
+}
+
+/* THE REPAIR MUST LEAVE THE LOOP ON TIME, NOT ONE PERIOD BEHIND. A decision is only correct in
+ * terms of what the decision AFTER it does, and this is the pair that proves it: repair, then an
+ * ordinary cycle doing almost no work. If the repaired deadline were the instant the wait ended,
+ * that next cycle would be past due the moment it started and every cycle after it would be
+ * counted late -- a clock glitch converted into a standing overrun, with the rate halved and the
+ * counter pointing at the wrong thing. */
+ZTEST(tof_acquisition, test_the_cycle_after_a_repair_is_not_born_late)
+{
+    const acq::schedule_decision repaired{acq::next_cycle_due(100000, 100, 20)};
+
+    zassert_false(repaired.overran, "");
+
+    /* The loop waits `wait_ms` and then runs a cycle. 5 ms of work, well inside the period. */
+    const int64_t woke_at{100 + repaired.wait_ms};
+    const acq::schedule_decision next{acq::next_cycle_due(repaired.next_due_ms, woke_at + 5, 20)};
+
+    zassert_false(next.overran,
+                  "the cycle after a repair did 5 ms of work in a 20 ms period and was counted "
+                  "late");
+    zassert_false(next.yield_only, "");
+    zassert_equal(next.wait_ms, 15U, "it has the rest of its period left");
+
+    /* And the cadence is intact from there on: one period per cycle, no catching up. */
+    zassert_equal(next.next_due_ms, repaired.next_due_ms + 20, "");
 }
 
 /* A zero period cannot be reached -- init() refuses one -- and is treated as an overrun rather than
@@ -1109,14 +1142,6 @@ ZTEST(tof_acquisition, test_the_cadence_timeout_is_never_a_busy_wait)
 
 /* The counter is cleared by init(), because it describes a cadence and init() is where the cadence
  * is chosen -- carrying it across would attribute the old period's misses to the new one. */
-ZTEST(tof_acquisition, test_the_overrun_count_belongs_to_one_configuration)
-{
-    zassert_equal(acq::init(make_config(1)), 0);
-    zassert_equal(acq::cycle_overruns(), 0U, "a fresh configuration has missed nothing");
-    zassert_equal(acq::teardown(), 0);
-    zassert_equal(acq::init(make_config(1)), 0);
-    zassert_equal(acq::cycle_overruns(), 0U, "and so does the next one");
-}
 
 ZTEST(tof_acquisition, test_a_stubbed_model_is_not_reported_as_a_sensor_fault)
 {
@@ -2577,6 +2602,30 @@ ZTEST(tof_acquisition, test_work_that_does_not_fit_the_period_is_counted_rather_
     zassert_true(overruns > 0U, "and the misses must be visible rather than silent");
     zassert_true(overruns <= static_cast<uint32_t>(cycles),
                  "one count per cycle at most (cycles %d, overruns %u)", cycles, overruns);
+}
+
+/* CLEARED BY init(), AND THE CASE HAS TO EARN THAT. Asserting zero, re-initialising and asserting
+ * zero again proves nothing: it passes against a counter that is never written at all, and it
+ * passes or fails on whether some earlier case in this binary happened to leave the count non-zero.
+ * So this one PRODUCES overruns first, confirms they are there, and only then re-initialises. */
+ZTEST(tof_acquisition, test_the_overrun_count_belongs_to_one_configuration)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;   /* longer than the 50 ms period: unschedulable by construction */
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(300);
+    zassert_equal(acq::try_stop(), 0);
+
+    const uint32_t before{acq::cycle_overruns()};
+    zassert_true(before > 0U, "the fixture must actually produce overruns, or this proves nothing");
+
+    zassert_equal(acq::teardown(), 0);
+    zassert_equal(acq::init(make_config(1)), 0);
+
+    zassert_equal(acq::cycle_overruns(), 0U,
+                  "the new configuration inherited %u misses from the old one", before);
 }
 
 ZTEST(tof_acquisition, test_a_stop_request_ends_the_cycles_and_the_thread_stops_the_devices)

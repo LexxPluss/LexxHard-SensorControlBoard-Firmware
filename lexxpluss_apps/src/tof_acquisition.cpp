@@ -1256,7 +1256,15 @@ schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period
          * obeyed, and it is not counted as an overrun: nothing was late. */
         if (remaining > static_cast<int64_t>(period_ms)) {
             out.wait_ms = period_ms;
-            out.next_due_ms = now_ms + period_ms;
+            /* TWO periods, because the invariant every branch has to satisfy is "the next deadline
+             * is one period after the instant this wait ends". This branch waits a whole period, so
+             * it ends at now + period and the deadline after it is now + 2 * period.
+             *
+             * It said now + period, which is the instant the wait ENDS -- so the cycle that ran
+             * after the repair was born already due, and the next decision called it an overrun
+             * however little work it did. A repair that leaves the loop permanently one period
+             * behind is not a repair; it converts a clock glitch into a standing overrun. */
+            out.next_due_ms = now_ms + 2 * static_cast<int64_t>(period_ms);
             return out;
         }
         out.wait_ms = static_cast<uint32_t>(remaining);
