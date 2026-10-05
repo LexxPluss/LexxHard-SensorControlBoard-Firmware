@@ -716,6 +716,67 @@ ZTEST(tof_mapping_authority, test_the_grid_permission_is_keyed_by_grid_source_no
                   "nothing has proved a grid source either");
 }
 
+/* REVOKING THE MAPPING REVOKES THE GRID PERMISSION. The enumeration masks survive both exits on
+ * purpose -- the contract defines them as the last enumeration result, an observation that stays
+ * true -- and grid_source_mask is not that. It says a committed proof verified that grid source,
+ * and both of these exits say that proof no longer stands.
+ *
+ * The state gate refuses every grid while non-PROVEN, so a stale bit here publishes nothing today.
+ * These two cases are about the field being right on its own rather than right because a second
+ * check happens to cover it. */
+ZTEST(tof_mapping_authority, test_a_lost_mapping_revokes_the_grid_permission)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 4), au::commit_refusal::none);
+    zassert_equal(au::current().grid_source_mask, 0x3, "the proof granted both grid sources");
+
+    au::note_mapping_lost();
+
+    const au::snapshot s{au::current()};
+    zassert_equal(s.state, acq::mapping_state::lost, "");
+    zassert_equal(s.grid_source_mask, 0,
+                  "a lost mapping left the grid permission standing");
+    /* And the observation it is NOT: the cliff enumeration survives, because what was enumerated
+     * was still enumerated. */
+    zassert_equal(s.enumerated_mask, 0xF,
+                  "the enumeration masks are the last enumeration result and must survive");
+}
+
+ZTEST(tof_mapping_authority, test_a_chain_fault_revokes_the_grid_permission)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 4), au::commit_refusal::none);
+    zassert_equal(au::current().grid_source_mask, 0x3, "the proof granted both grid sources");
+
+    zassert_true(au::note_chain_fault(0x1, 3), "");
+
+    const au::snapshot s{au::current()};
+    zassert_equal(s.state, acq::mapping_state::fault, "");
+    zassert_equal(s.grid_source_mask, 0,
+                  "a chain fault left the grid permission standing");
+    zassert_equal(s.enumerated_mask, 0xF,
+                  "the enumeration masks are the last enumeration result and must survive");
+}
+
+/* The same through the refused-argument branch, which publishes a generic fault rather than the
+ * caller's reason. The permission must be gone there too: the fault is real whatever the authority
+ * thought of the arguments. */
+ZTEST(tof_mapping_authority, test_a_fault_with_unusable_arguments_still_revokes_the_grid_permission)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 4), au::commit_refusal::none);
+
+    /* A named position with no reason: refused as a reason, accepted as a fault. */
+    zassert_false(au::note_chain_fault(0x0, 3), "");
+
+    const au::snapshot s{au::current()};
+    zassert_equal(s.state, acq::mapping_state::fault, "");
+    zassert_equal(s.grid_source_mask, 0, "");
+}
+
 ZTEST(tof_mapping_authority, test_the_masks_are_keyed_by_the_contracts_role_table)
 {
     /* Not the position index and not an arithmetic cast of the enum. The bit for a role is the

@@ -516,6 +516,19 @@ void note_mapping_lost()
 
     snapshot next{now};
     next.state = tof_acq::mapping_state::lost;
+    /* THE GRID PERMISSION IS REVOKED HERE, unlike the enumeration masks a few functions down.
+     *
+     * The two look alike and are not. enumerated_mask is an OBSERVATION -- the contract defines it
+     * as the last enumeration result -- so carrying it through a loss keeps a true statement true.
+     * grid_source_mask is a PERMISSION: it says the committed proof verified that grid source, and
+     * the mapping it rested on is exactly what was just lost. Copying it forward would leave the
+     * gate holding a permission issued by a proof that no longer stands.
+     *
+     * The state gate refuses every grid while non-PROVEN, so this is not a publishing hole today.
+     * It is the invariant the header states -- zero while non-PROVEN -- and a field that is only
+     * correct because a second check happens to cover it is a field that will be wrong the day
+     * that check moves. */
+    next.grid_source_mask = 0;
     publish(next);
     installed_ = kNoMapping;
 }
@@ -566,7 +579,13 @@ bool note_chain_fault(uint8_t chain_flags, uint8_t failing_position)
     /* The enumeration masks are deliberately NOT cleared, in either branch. The contract defines
      * them as the last enumeration result, so zeroing them to satisfy the encoder would report
      * "nothing enumerated" -- a different claim, and a false one. With no position named they
-     * cannot make the frame contradictory anyway. */
+     * cannot make the frame contradictory anyway.
+     *
+     * The grid permission IS cleared, for the same reason it is cleared on a loss: it is not an
+     * observation of what was seen but a statement that a committed proof verified that grid
+     * source, and this fault says the chain is not the one that proof measured. See the note in
+     * note_mapping_lost(). */
+    next.grid_source_mask = 0;
     publish(next);
     installed_ = kNoMapping;
     return acceptable;
