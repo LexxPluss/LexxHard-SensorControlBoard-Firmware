@@ -211,3 +211,19 @@ ZTEST(tof_commission_wiring, test_the_downlink_outcome_is_reported_not_interpret
     /* And it did not change the transaction's verdict. */
     zassert_equal(r.configure_rc, 0, "");
 }
+
+/* tof_cliff_runtime.cpp marks the watchdog's baseline from inside the keying commit, so linking it
+ * needs this symbol. Stubbed rather than satisfied by linking the real feeder, which would pull the
+ * task watchdog, the tombstone and its DTCM reservation into a suite about commissioning. What the
+ * feeder does with the flag is tests/tof_watchdog_feeder's business; that it is set at the commit
+ * is a property of the call site, which is one line in a file this suite already links. */
+namespace lexxhard::tof_watchdog_feeder {
+
+bool baseline_point_set{false};
+
+void set_baseline_point(bool ready)
+{
+    baseline_point_set = ready;
+}
+
+}  // namespace lexxhard::tof_watchdog_feeder

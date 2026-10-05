@@ -24,6 +24,10 @@
 #endif
 
 #include "tof_chain_controller.hpp"
+/* The watchdog's heartbeats, which this file raises from the acquisition cycle, the health work and
+ * every L7 operation -- so it is NOT under the grid guard: an image with no L7 still has a cycle and
+ * a health path to be watched. */
+#include "tof_progress.hpp"
 
 LOG_MODULE_REGISTER(tof_acq, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -204,9 +208,19 @@ const source_ops kCliffOps{
  * becomes a tof_l7::sensor. A descriptor pointing the grid table at an L4 object is prevented by
  * the TYPE of the table, not by a check here.
  */
+/* EVERY ULD OPERATION IS A HEARTBEAT, and the first open is the reason.
+ *
+ * Downloading 86 KB of device firmware over I2C is the operation most likely to hang on this board
+ * -- it is where this investigation started -- and it happens once, at bring-up, before the L7 has
+ * ever completed anything. A heartbeat that counted only successful reads would begin after the
+ * risky part was over. So `begun` goes up before the call and `ended` after it returns, which makes
+ * an open that never returns visible as the pair standing apart. */
 int l7_real_open(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st)
 {
-    return tof_l7::open(static_cast<tof_l7::sensor *>(dev), addr_7bit, st);
+    tof_progress::begin(tof_progress::activity::l7);
+    const int rc{tof_l7::open(static_cast<tof_l7::sensor *>(dev), addr_7bit, st)};
+    tof_progress::end(tof_progress::activity::l7);
+    return rc;
 }
 
 int l7_real_configure(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st)
@@ -214,12 +228,18 @@ int l7_real_configure(void *dev, uint8_t frequency_hz, tof_l7::operation_status 
     /* The frequency arrives from the descriptor, which took it from the deployment's devicetree.
      * Nothing in this file has a default for it, and the adapter refuses anything outside 1..15 on
      * its own account. */
-    return tof_l7::configure(static_cast<tof_l7::sensor *>(dev), frequency_hz, st);
+    tof_progress::begin(tof_progress::activity::l7);
+    const int rc{tof_l7::configure(static_cast<tof_l7::sensor *>(dev), frequency_hz, st)};
+    tof_progress::end(tof_progress::activity::l7);
+    return rc;
 }
 
 int l7_real_start(void *dev, tof_l7::operation_status *st)
 {
-    return tof_l7::start(static_cast<tof_l7::sensor *>(dev), st);
+    tof_progress::begin(tof_progress::activity::l7);
+    const int rc{tof_l7::start(static_cast<tof_l7::sensor *>(dev), st)};
+    tof_progress::end(tof_progress::activity::l7);
+    return rc;
 }
 
 int l7_real_read_grid_sample(void *dev, void *scratch, tof_l7::sample *out,
@@ -230,13 +250,19 @@ int l7_real_read_grid_sample(void *dev, void *scratch, tof_l7::sample *out,
      * against a 50 ms cycle, nine out of ten. That is the ordinary case and the adapter reports it
      * as rc 0 with a non-fresh sample, which records no outcome at all: counting it as an I/O
      * failure would make a working sensor look broken nine times out of ten. */
-    return tof_l7::read_once(static_cast<tof_l7::sensor *>(dev),
-                             static_cast<tof_l7::scratch *>(scratch), out, st);
+    tof_progress::begin(tof_progress::activity::l7);
+    const int rc{tof_l7::read_once(static_cast<tof_l7::sensor *>(dev),
+                                   static_cast<tof_l7::scratch *>(scratch), out, st)};
+    tof_progress::end(tof_progress::activity::l7);
+    return rc;
 }
 
 int l7_real_stop(void *dev, tof_l7::operation_status *st)
 {
-    return tof_l7::stop(static_cast<tof_l7::sensor *>(dev), st);
+    tof_progress::begin(tof_progress::activity::l7);
+    const int rc{tof_l7::stop(static_cast<tof_l7::sensor *>(dev), st)};
+    tof_progress::end(tof_progress::activity::l7);
+    return rc;
 }
 
 const grid_source_ops kL7GridOps{
@@ -316,9 +342,11 @@ void health_work_handler(k_work *)
 {
     // Reads one atomic word. Takes no lock and touches no device, so a stalled bring-up
     // cannot silence it.
+    tof_progress::begin(tof_progress::activity::health);
     if (cfg_.hooks.on_cliff_health != nullptr)
         cfg_.hooks.on_cliff_health(static_cast<uint32_t>(atomic_get(&snapshot_)),
                                    effective_mapping_state());
+    tof_progress::end(tof_progress::activity::health);
 }
 
 void health_timer_handler(k_timer *)
@@ -1163,6 +1191,7 @@ void run_cycle()
 
     facts_.cycle_seq = next_cycle_seq_;
     facts_.began_ms = now();
+    tof_progress::begin(tof_progress::activity::acquisition);
 
     /* Before the first sensor is touched. A cycle that produces no sample at all still has to be
      * announced, and this is the only point at which that is possible: every later hook is
@@ -1236,6 +1265,10 @@ void run_cycle()
 
     publish_snapshot();
     cfg_.hooks.on_cycle(facts_);
+    /* THE LAST STATEMENT, so a cycle counts as finished only once its sinks have returned. Ending
+     * at the counter increment a few lines up would call the cycle done while a hook that never
+     * returns was still holding the thread -- which is the stall this heartbeat exists to see. */
+    tof_progress::end(tof_progress::activity::acquisition);
 }
 
 int teardown()

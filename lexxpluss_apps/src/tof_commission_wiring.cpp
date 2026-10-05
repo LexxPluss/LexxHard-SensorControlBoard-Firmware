@@ -88,11 +88,13 @@ int configure_status()
     return static_cast<int>(atomic_get(&configure_status_));
 }
 
+#ifdef CONFIG_ZTEST
 void reset_for_test()
 {
     run_ = false;
     atomic_set(&configure_status_, -EAGAIN);
 }
+#endif
 
 } // namespace lexxhard::tof_commission_wiring
 

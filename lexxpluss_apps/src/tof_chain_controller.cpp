@@ -70,6 +70,7 @@
 #include "tof_l7_blob_record.hpp"
 #include "tof_l7_runtime.hpp"
 #endif
+#include "tof_watchdog_feeder.hpp"
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
 #endif
@@ -497,6 +498,31 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
     return 0;
 }
 
+/* THE MANUAL ENTRY POINTS STAY, FOR THE TRANSITION, AND THIS IS THE DECISION RATHER THAN AN
+ * OMISSION.
+ *
+ * They are the only way to commission a board today. The host side of automatic commissioning --
+ * issuing the request and persisting the epoch it issued -- does not exist yet, and it is not
+ * firmware; and `commission-profile-enabled` is absent from every image this branch builds, so a
+ * downlink that is wired up still answers `disabled`. Removing these two commands now would leave
+ * no path at all, on any image.
+ *
+ * KEEPING THEM IS SAFE BECAUSE THEY ARE NO LONGER A SECOND MECHANISM. `prove` used to assemble the
+ * commissioning configuration and call tof_commissioning::init() itself, which is exactly what made
+ * the automatic path refuse every request as `misconfigured`. It now READS the one configuration
+ * the boot established, so the shell and the downlink prove the same transaction against the same
+ * spec. Two initialisations would have been two chances to disagree about which chain was being
+ * proven.
+ *
+ * THEY ARE NOT A BYPASS. Every refusal in both commands comes from the runtime's own gates rather
+ * than from conditions re-checked here, `start` still requires a proven mapping that the authority
+ * currently reports, and neither touches the PROVEN clamp -- lifting that is a separate release
+ * decision and is not made from a console.
+ *
+ * WHEN THEY GO: when the host issues commissioning requests and persists epochs, and a deployment
+ * has turned `commission-profile-enabled` on. Until both are true, deleting them would remove the
+ * only way to bring a chain up and would not remove any capability the automatic path does not
+ * already have. */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
     SHELL_CMD(start, NULL,
               "start the acquisition thread (requires a proven, installed mapping)",
@@ -812,7 +838,15 @@ void init()
      * AN INTEGRITY FAILURE DISABLES ONLY L7. The cliff path and its health channel must still come
      * up: losing hanging-object detection is already fail-open for that hazard, and suppressing the
      * independent cliff channel would make the failure larger while hiding the diagnosis. */
-    if (const int rc{tof_l7_runtime::bootstrap()}; rc != 0) {
+    /* A DECLARED LONG OPERATION. Verifying the stored blob hashes 86 KB on the main stack, which
+     * dwarfs every per-cycle bound the watchdog feeder judges by. Declared rather than inferred,
+     * and bounded -- see tof_task_watchdog.hpp for what a declaration does and does not excuse.
+     * set_l7_expected tells the feeder this image has an L7 to watch at all. */
+    tof_watchdog_feeder::set_l7_expected(true);
+    tof_watchdog_feeder::long_operation_begin();
+    const int blob_rc{tof_l7_runtime::bootstrap()};
+    tof_watchdog_feeder::long_operation_end();
+    if (const int rc{blob_rc}; rc != 0) {
         const tof_l7_runtime::snapshot state{tof_l7_runtime::current()};
 
         LOG_ERR("L7 runtime bootstrap failed at %s (%s, %d); L7 remains unavailable",

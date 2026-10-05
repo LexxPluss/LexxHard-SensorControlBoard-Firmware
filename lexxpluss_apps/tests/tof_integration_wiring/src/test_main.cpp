@@ -223,3 +223,14 @@ ZTEST(tof_integration_wiring, test_the_live_grid_gate_is_never_proven)
     zassert_not_equal(can::grid_production_authorisation().state, acq::mapping_state::proven,
                       "the live gate must not be PROVEN either");
 }
+
+/* Same reason as the commissioning suite: tof_cliff_runtime.cpp marks the watchdog's baseline from
+ * inside the keying commit, and linking the real feeder would pull the task watchdog, the tombstone
+ * and its DTCM reservation into a suite about which modules are connected to which. */
+namespace lexxhard::tof_watchdog_feeder {
+
+void set_baseline_point(bool)
+{
+}
+
+}  // namespace lexxhard::tof_watchdog_feeder

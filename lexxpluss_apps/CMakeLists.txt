@@ -38,6 +38,35 @@ endif()
 # src/tof_watchdog_tombstone.cpp for the compile-time check that this line is what satisfies.
 list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_dtcm.overlay)
 
+# THE HARDWARE WATCHDOG HAS EXACTLY ONE FEEDER, AND THIS IS WHAT KEEPS IT THAT WAY.
+#
+# The property is not checkable in the binary: wdt_feed() is a Zephyr syscall that, without
+# userspace, inlines into an indirect call through the driver's API table, so there is no symbol to
+# count call sites of. What IS checkable is the source, and this is where a second call site would
+# be introduced -- most plausibly by somebody restoring the old one-second timer feed while chasing
+# an unrelated reset, which is exactly the change that would silently undo all of this.
+file(GLOB_RECURSE wdt_feed_sources ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp ${CMAKE_CURRENT_LIST_DIR}/src/*.hpp)
+set(wdt_feed_callers "")
+foreach(f ${wdt_feed_sources})
+    file(READ ${f} contents)
+    # A real call, not the name in prose. Every actual call passes a device, so it opens with an
+    # identifier or an address-of; the comments that discuss this rule write `wdt_feed()` with
+    # nothing between the parentheses. That difference is what separates them.
+    if(contents MATCHES "[^a-zA-Z_]wdt_feed[ \t]*\\([ \t]*[A-Za-z_&]")
+        get_filename_component(base ${f} NAME)
+        if(NOT base STREQUAL "tof_watchdog_feeder.cpp")
+            list(APPEND wdt_feed_callers ${base})
+        endif()
+    endif()
+endforeach()
+if(wdt_feed_callers)
+    message(FATAL_ERROR
+        "wdt_feed() is called outside tof_watchdog_feeder.cpp: ${wdt_feed_callers}. "
+        "The hardware watchdog has exactly one feeder, it is a thread, and it feeds only while the "
+        "watched work keeps finishing. A second call site -- especially one reachable from an "
+        "interrupt -- restores the failure this was built to end. See tof_watchdog_feeder.hpp.")
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 

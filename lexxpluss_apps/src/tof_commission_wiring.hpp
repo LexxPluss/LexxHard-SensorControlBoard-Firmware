@@ -91,9 +91,12 @@ report boot(const tof_cliff_runtime::config &cfg, const inputs &in);
  * boot() has run: an image that never reached the call site must not read as configured. */
 int configure_status();
 
-/* Clears the once-per-boot latch and the status. For tests only: there is no production path that
- * unboots a board, and a production caller wanting this would be the mistake the latch exists for. */
+#ifdef CONFIG_ZTEST
+/* Clears the once-per-boot latch and the status. For tests only, and compiled out of a product
+ * image rather than merely documented as such: there is no production path that unboots a board,
+ * and an entry point that clears the latch IS the mistake the latch exists for. */
 void reset_for_test();
+#endif
 
 } // namespace lexxhard::tof_commission_wiring
 
