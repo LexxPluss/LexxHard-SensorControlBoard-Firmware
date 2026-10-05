@@ -1,0 +1,30 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * A node called can2, because tof_cliff_can.cpp names it at compile time. The board has a real
+ * bxCAN there; here it is the loopback controller, and that difference does not matter to what is
+ * under test: the grid authorisation gate refuses every grid before any send is reached, so no
+ * frame is produced on either.
+ */
+
+/ {
+	/* The VL53L4CX port resolves its bus with DT_NODELABEL(i2c2), so the node has to exist.
+	 * An emulated controller, with the label matching production exactly -- a test that renamed
+	 * it would stop covering the production lookup. */
+	i2c2: i2c@11112222 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "zephyr,i2c-emul-controller";
+		reg = <0x11112222 0x1000>;
+		status = "okay";
+		clock-frequency = <400000>;
+	};
+
+	can2: can_loopback0 {
+		compatible = "zephyr,can-loopback";
+		status = "okay";
+	};
+};

@@ -46,6 +46,7 @@ clean:
 	        build-test-tof-commission-session build-test-tof-commission-runtime \
 	        build-test-tof-commission-bind build-test-tof-commission-worker \
 	        build-auto-commission build-test-tof-l7-boot-order-no-grid \
+	        build-test-tof-integration-wiring \
 	        build-check-l7-no-cliff build-tof-integration
 
 .PHONY: distclean
@@ -293,6 +294,15 @@ test_tof_l7_recovery:
 test_tof_l7_boot_order_no_grid:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_boot_order_no_grid -d build-test-tof-l7-boot-order-no-grid -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# THE WIRING, WITH THE GRID FLAG ON. Every other suite that links tof_cliff_runtime.cpp builds it
+# without ENABLE_TOF_L7_ULD, so the grid publisher's init, the two-publisher fan-out and the grid
+# authorisation are compiled in neither direction there. This target is the flag-on build of those
+# same production sources, with the vendor ULDs stubbed.
+.PHONY: test_tof_integration_wiring
+test_tof_integration_wiring:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_integration_wiring -d build-test-tof-integration-wiring -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming
