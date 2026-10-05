@@ -249,7 +249,7 @@ int src_open(void *, uint8_t, acq::op_status *st)
     *st = acq::op_status{};
     return 0;
 }
-int src_configure(void *, acq::op_status *st)
+int src_configure(void *, uint32_t, uint8_t, acq::op_status *st)
 {
     *st = acq::op_status{};
     return 0;
@@ -310,6 +310,12 @@ void arrange_running_acquisition()
         descs[i].scratch = &sources[i].scratch;
         descs[i].stream = &sources[i].stream;
         descs[i].ops = &kFakeSourceOps;
+        /* The ranging profile is required on a cliff descriptor. This suite is about the
+         * commissioning transaction, not the profile, so any valid pair will do -- and the
+         * deployment's own values are deliberately not used, so nothing here can pass by
+         * matching them. */
+        descs[i].cliff_timing_budget_us = 21000;
+        descs[i].cliff_distance_mode = 3;
     }
 
     acq::config c{};

@@ -748,7 +748,7 @@ int16_t canned_mm{1234};
 bool start_fails{false};
 
 int op_open(void *, uint8_t, acq::op_status *) { return 0; }
-int op_configure(void *, acq::op_status *) { return 0; }
+int op_configure(void *, uint32_t, uint8_t, acq::op_status *) { return 0; }
 int op_start(void *, void *, acq::op_status *st)
 {
     if (start_fails) {
@@ -814,7 +814,11 @@ const acq::grid_source_ops kGridOps{grid_open, grid_configure, grid_start, grid_
  * mis-dispatch pass as a correct run. */
 bool wrong_table_called{false};
 int trap_open(void *, uint8_t, acq::op_status *) { wrong_table_called = true; return -EIO; }
-int trap_configure(void *, acq::op_status *) { wrong_table_called = true; return -EIO; }
+int trap_configure(void *, uint32_t, uint8_t, acq::op_status *)
+{
+    wrong_table_called = true;
+    return -EIO;
+}
 int trap_start(void *, void *, acq::op_status *) { wrong_table_called = true; return -EIO; }
 int trap_stop(void *, acq::op_status *) { wrong_table_called = true; return -EIO; }
 int trap_read(void *, void *, void *, struct tof_cliff_sample *, acq::op_status *)
@@ -846,6 +850,10 @@ acq::config make_acq_config()
         descs[i].grid_ops = nullptr;
 #endif
         descs[i].ops = &kOps;
+        /* The ranging profile is required on a cliff descriptor now; the values are the suite's
+         * own, not the overlay's. */
+        descs[i].cliff_timing_budget_us = 21000;
+        descs[i].cliff_distance_mode = 3;
     }
     c.sources = descs;
     c.source_count = acq::kMaxSources;

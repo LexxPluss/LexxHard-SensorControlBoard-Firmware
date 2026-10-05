@@ -107,7 +107,10 @@ namespace {
 
 /* Injected, as production injects it from the devicetree: cadence, health period, join timeout,
  * thread priority. Nothing here has a default anywhere in the module. */
-constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5)};
+/* The last two are the cliff ranging profile, which bootstrap() now requires. Deliberately not the
+ * overlay's 15000/2: this suite is about the runtime's sequence, and values matching the deployment
+ * would let a bootstrap that ignored its argument pass. */
+constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5), 21000, 3};
 
 /* The acquisition thread's stack. The runtime sizes its own from a devicetree property; there is no
  * devicetree here, and a fallback compiled into the module for tests would be a size nobody chose
@@ -151,6 +154,35 @@ cm::outcome prove_over_the_fake_chain(uint32_t epoch)
 }  // namespace
 
 ZTEST_SUITE(tof_cliff_runtime, NULL, NULL, before, NULL, NULL);
+
+/* THE RANGING PROFILE IS REFUSED HERE AS WELL AS IN tof_acq::init(), and the duplication is the
+ * point rather than an oversight. This is the stage that knows it is reading a deployment's
+ * devicetree; the same descriptor reaching acquisition is refused there as a generic -EINVAL with
+ * nothing to say which of the two layers was misconfigured. */
+ZTEST(tof_cliff_runtime, test_a_bootstrap_without_a_ranging_profile_is_refused)
+{
+    rt::config no_budget{kTiming};
+    no_budget.cliff_timing_budget_us = 0;
+    zassert_equal(rt::bootstrap(no_budget), -EINVAL, "a zero budget must not be defaulted");
+
+    const struct {
+        uint8_t mode;
+        int expected;
+    } modes[]{
+        {0, -EINVAL},   /* absent */
+        {1, -EINVAL},   /* SHORT: the ULD refuses it for an L4 part */
+        {4, -EINVAL},   /* beyond the enumeration */
+    };
+
+    for (const auto &k : modes) {
+        rt::config bad{kTiming};
+        bad.cliff_distance_mode = k.mode;
+        zassert_equal(rt::bootstrap(bad), k.expected, "distance mode %u", k.mode);
+    }
+
+    /* The control: nothing above left the runtime bootstrapped, and a valid profile still works. */
+    zassert_equal(rt::bootstrap(kTiming), 0, "a valid profile must still bootstrap");
+}
 
 ZTEST(tof_cliff_runtime, test_one_call_brings_the_whole_subsystem_up)
 {

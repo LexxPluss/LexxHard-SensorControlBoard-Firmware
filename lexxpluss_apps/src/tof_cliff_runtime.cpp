@@ -104,7 +104,7 @@ uint32_t now_ms()
  *
  * role_id is deliberately NOT set here. It is the key the contract's source_id and per-cycle masks
  * are built from, and the only legitimate source for it is a mapping a proof installed. */
-void build_descriptors()
+void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode)
 {
     int cliff_index{0};
 
@@ -122,6 +122,10 @@ void build_descriptors()
             d.scratch = &scratch_;
             d.stream = &streams_[cliff_index];
             d.ops = &acq::l4_cliff_ops();
+            /* Carried per source rather than read from a global, so a descriptor is a complete
+             * description of what one sensor will do. */
+            d.cliff_timing_budget_us = cliff_timing_budget_us;
+            d.cliff_distance_mode = cliff_distance_mode;
             ++cliff_index;
         } else {
             /* The grid path, and the explicit stub rather than a null table or a copy of the cliff
@@ -228,7 +232,9 @@ config config_from_devicetree()
     return config{DT_PROP(DT_PATH(tof_chain), cycle_period_ms),
                   DT_PROP(DT_PATH(tof_chain), health_period_ms),
                   DT_PROP(DT_PATH(tof_chain), stop_join_timeout_ms),
-                  DT_PROP(DT_PATH(tof_chain), acq_thread_priority)};
+                  DT_PROP(DT_PATH(tof_chain), acq_thread_priority),
+                  DT_PROP(DT_PATH(tof_chain), cliff_timing_budget_us),
+                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode)};
 }
 #endif
 
@@ -242,6 +248,14 @@ int bootstrap(const config &cfg)
         return -EALREADY;
 
     if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0 || cfg.stop_join_timeout_ms == 0)
+        return -EINVAL;
+
+    /* The ranging profile is checked HERE as well as in tof_acq::init(), and deliberately: this is
+     * the stage that knows it is reading a deployment's devicetree, and a bootstrap that reached
+     * the descriptors with a zero budget would be refused there as a generic -EINVAL with nothing
+     * to say which of the two layers was misconfigured. */
+    if (cfg.cliff_timing_budget_us == 0 || cfg.cliff_distance_mode < 2 ||
+        cfg.cliff_distance_mode > 3)
         return -EINVAL;
 
 #if DT_NODE_EXISTS(DT_PATH(tof_chain))
@@ -262,7 +276,7 @@ int bootstrap(const config &cfg)
         return -ENODEV;
     }
 
-    build_descriptors();
+    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode);
 
     if (const int rc{init_authority()}; rc != 0) {
         stage_ = stage::authority_failed;
@@ -395,7 +409,7 @@ const acq::source_desc *descriptors_for_test()
 
 int force_rebuild_descriptors_for_test()
 {
-    build_descriptors();
+    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode);
     keyed_ = false;
     return 0;
 }
