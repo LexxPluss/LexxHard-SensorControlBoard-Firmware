@@ -397,6 +397,67 @@ struct thread_config {
     uint32_t join_timeout_ms{0};
 };
 
+/* ----------------------------------------------------------------- the cadence ------ */
+/*
+ * WHAT THE LOOP USED TO DO, AND WHY IT WAS NOT A PERIOD. It ran a cycle and then waited a whole
+ * `cycle_period_ms`, so the interval between two cycles was the work PLUS the period: at a 20 ms
+ * setting and 6 ms of work the real cadence was 26 ms, and it moved with whatever each cycle
+ * happened to cost -- a bus retry, a sensor that answered slowly. The configured period was
+ * therefore not the rate, and no number anywhere said what the rate was.
+ *
+ * The rule now is a deadline rather than a delay: each cycle is due one period after the deadline
+ * the previous one met, not one period after it finished, so the work happens INSIDE the cadence.
+ *
+ * A deadline that has already passed is not waited out and is not slept off for a further period
+ * either -- at a 20 ms target a cycle taking 20.1 ms would then run at 40.1 ms, about 25 Hz, which
+ * is a rate thrown away over a fraction of a millisecond. It yields and re-bases on now, so a late
+ * cycle owes no backlog, and it is COUNTED: when the work is longer than the period the best
+ * achievable cadence is the work itself, and nothing else in the firmware would say so.
+ *
+ * A deadline further ahead than one period is not reachable -- each is the previous plus a period,
+ * and the loop does not return until it has waited for it -- but a clock that stepped backwards, or
+ * a deadline computed before a re-init, could produce one. It is REPAIRED rather than obeyed:
+ * waiting it out would stall acquisition for however wrong the number was, silently, with the
+ * heartbeat still flowing and nothing to say why the measurements stopped. It is not an overrun,
+ * because nothing was late.
+ *
+ * `due_ms` and `now_ms` are milliseconds from a monotonic clock. A period of zero is not reachable
+ * -- init() refuses one -- and is treated as an overrun rather than splitting the responsibility
+ * for that check between two places.
+ */
+struct schedule_decision {
+    /* Meaningful only when yield_only is false, and never zero then. */
+    uint32_t wait_ms{0};
+    /* Wait the shortest interval the kernel can express instead of wait_ms. Set exactly when the
+     * deadline had already passed -- see the overrun rule above. */
+    bool yield_only{false};
+    int64_t next_due_ms{0};
+    bool overran{false};
+};
+
+/* Pure, and separated from the loop for that reason: the rule above is the part that can be wrong,
+ * and a thread with a sleep in it is not where a rule gets tested. */
+schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period_ms);
+
+/* The decision turned into the timeout the loop passes to the kernel.
+ *
+ * Its own function because the interesting property lives here and nowhere else: it must never
+ * return K_NO_WAIT. A `yield_only` decision carries no millisecond figure -- a tick is 0.1 ms on
+ * this board, and every millisecond value standing for "briefly" rounds to zero -- so a loop that
+ * read wait_ms regardless would turn every missed deadline into a spin, and every test of
+ * next_cycle_due() would still pass. The loop's own line is then a pass-through with nothing left
+ * to get wrong. */
+k_timeout_t cadence_timeout(const schedule_decision &step);
+
+/* Cycles that were already past due when they finished.
+ *
+ * NOT performance telemetry, and deliberately the only number this change adds. A cadence that
+ * cannot be met is not an error -- no sensor failed and no frame was lost -- so it is counted
+ * rather than logged per cycle. But it is the ONE fact that distinguishes "running at the
+ * configured rate" from "running as fast as the work allows", and without it a period set too short
+ * for the work degrades silently while every other indicator stays healthy. Cleared by init(). */
+uint32_t cycle_overruns();
+
 /* Starts the acquisition thread: bring-up, then one cycle per cadence period until asked to stop.
  *
  * Returns -EINVAL before init() or for a config with no stack or a zero join timeout, -EALREADY if

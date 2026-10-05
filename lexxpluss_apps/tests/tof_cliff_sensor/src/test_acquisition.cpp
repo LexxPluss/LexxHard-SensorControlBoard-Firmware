@@ -981,6 +981,143 @@ ZTEST(tof_acquisition, test_a_grid_source_may_not_name_the_cliff_driver)
 }
 #endif
 
+/* ------------------------------------------------------------------ the cadence ---- */
+/*
+ * The loop used to run a cycle and then wait a WHOLE period, so the interval between two cycles was
+ * the work plus the period and moved with whatever each cycle cost. next_cycle_due() is the rule
+ * that replaced it, and it is pure precisely so the rule can be tested without a thread and a
+ * sleep -- a loop that drifts and a loop that does not look identical from the outside until you
+ * measure them.
+ */
+
+ZTEST(tof_acquisition, test_a_cycle_that_finished_early_waits_only_the_remainder)
+{
+    /* Due at 100, finished at 94: six milliseconds of the period are left, not twenty. */
+    const acq::schedule_decision d{acq::next_cycle_due(100, 94, 20)};
+
+    zassert_false(d.overran, "nothing was late");
+    zassert_false(d.yield_only, "");
+    zassert_equal(d.wait_ms, 6U, "the remainder of the period, not the whole of it");
+    zassert_equal(d.next_due_ms, 120, "and the next deadline is one period from the one just met");
+}
+
+/* THE NEXT DEADLINE COMES FROM THE DEADLINE, NOT FROM NOW. This is the whole difference between a
+ * cadence and a delay: measuring from `now` would add each cycle's duration to every period that
+ * follows it, which is exactly what the old loop did. */
+ZTEST(tof_acquisition, test_the_cadence_does_not_drift_with_the_work)
+{
+    int64_t due{100};
+
+    /* Ten cycles, each taking a different amount of time, every one of them finishing early. */
+    const int64_t work[]{1, 7, 3, 11, 2, 9, 4, 6, 8, 5};
+    int64_t now{80};
+
+    for (size_t i = 0; i < ARRAY_SIZE(work); ++i) {
+        now = due - 20 + work[i];   /* the cycle started at the previous deadline and took work[i] */
+        const acq::schedule_decision d{acq::next_cycle_due(due, now, 20)};
+
+        zassert_false(d.overran, "cycle %zu was not late", i);
+        zassert_equal(d.wait_ms, static_cast<uint32_t>(20 - work[i]),
+                      "cycle %zu waits the remainder", i);
+        due = d.next_due_ms;
+    }
+
+    /* Ten periods after the first deadline, to the millisecond, whatever the work did. */
+    zassert_equal(due, 100 + 10 * 20,
+                  "the deadlines drifted: a cadence measured from `now` rather than from the "
+                  "deadline accumulates every cycle's duration");
+}
+
+/* A DEADLINE ALREADY PASSED IS NOT SLEPT OFF FOR ANOTHER PERIOD. At a 20 ms target, a cycle taking
+ * 20.1 ms would then run at 40.1 ms -- about 25 Hz, a rate thrown away over a fraction of a
+ * millisecond. */
+ZTEST(tof_acquisition, test_a_late_cycle_yields_instead_of_waiting_a_whole_period)
+{
+    const acq::schedule_decision d{acq::next_cycle_due(100, 101, 20)};
+
+    zassert_true(d.overran, "it was late, and that is the one thing that must be visible");
+    zassert_true(d.yield_only, "it yields rather than sleeping the period away");
+    zassert_equal(d.next_due_ms, 121, "re-based on now, so a late cycle owes no backlog");
+}
+
+/* Exactly due is late enough: there is no remainder left to wait. */
+ZTEST(tof_acquisition, test_a_cycle_that_lands_exactly_on_its_deadline_yields)
+{
+    const acq::schedule_decision d{acq::next_cycle_due(100, 100, 20)};
+
+    zassert_true(d.overran, "");
+    zassert_true(d.yield_only, "");
+    zassert_equal(d.next_due_ms, 120, "");
+}
+
+/* NO BACKLOG. A cycle that ran long does not owe the periods it missed -- repaying them would run
+ * a burst of cycles back to back against a chain that has just shown it cannot keep up. */
+ZTEST(tof_acquisition, test_a_very_late_cycle_owes_nothing)
+{
+    const acq::schedule_decision d{acq::next_cycle_due(100, 1000, 20)};
+
+    zassert_true(d.overran, "");
+    zassert_true(d.yield_only, "");
+    zassert_equal(d.next_due_ms, 1020, "one period from now, not from the deadline it missed");
+}
+
+/* A DEADLINE FURTHER AHEAD THAN ONE PERIOD IS REPAIRED, NOT OBEYED, and is NOT an overrun. The loop
+ * cannot produce one, but a clock that stepped backwards can -- and waiting it out would stall
+ * acquisition for however wrong the number was, with the heartbeat still flowing and nothing to say
+ * why the measurements stopped. */
+ZTEST(tof_acquisition, test_an_impossible_deadline_is_repaired_and_is_not_an_overrun)
+{
+    const acq::schedule_decision d{acq::next_cycle_due(100000, 100, 20)};
+
+    zassert_false(d.overran, "nothing was late, so nothing may be counted as late");
+    zassert_false(d.yield_only, "");
+    zassert_equal(d.wait_ms, 20U, "it waits one period, not until the impossible deadline");
+    zassert_equal(d.next_due_ms, 120, "and the deadline is rebuilt from now");
+}
+
+/* A zero period cannot be reached -- init() refuses one -- and is treated as an overrun rather than
+ * splitting responsibility for that check between two places. What it must not do is produce a
+ * decision the loop would wait on for ever. */
+ZTEST(tof_acquisition, test_a_zero_period_is_an_overrun_rather_than_an_infinite_wait)
+{
+    const acq::schedule_decision d{acq::next_cycle_due(100, 50, 0)};
+
+    zassert_true(d.overran, "");
+    zassert_true(d.yield_only, "");
+}
+
+/* THE TIMEOUT MUST NEVER BE K_NO_WAIT. A `yield_only` decision carries no millisecond figure, and a
+ * tick is 0.1 ms on this board -- so a loop that read wait_ms regardless would turn every missed
+ * deadline into a spin, and every test above would still pass. This is the only place that can
+ * catch it. */
+ZTEST(tof_acquisition, test_the_cadence_timeout_is_never_a_busy_wait)
+{
+    acq::schedule_decision d{};
+
+    d.yield_only = true;
+    d.wait_ms = 0;
+    const k_timeout_t yielding{acq::cadence_timeout(d)};
+    zassert_true(K_TIMEOUT_EQ(yielding, K_TICKS(1)),
+                 "a yield must be the kernel's shortest expressible wait, not no wait at all");
+    zassert_false(K_TIMEOUT_EQ(yielding, K_NO_WAIT), "");
+
+    d.yield_only = false;
+    d.wait_ms = 6;
+    zassert_true(K_TIMEOUT_EQ(acq::cadence_timeout(d), K_MSEC(6)),
+                 "and an ordinary decision passes its remainder straight through");
+}
+
+/* The counter is cleared by init(), because it describes a cadence and init() is where the cadence
+ * is chosen -- carrying it across would attribute the old period's misses to the new one. */
+ZTEST(tof_acquisition, test_the_overrun_count_belongs_to_one_configuration)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::cycle_overruns(), 0U, "a fresh configuration has missed nothing");
+    zassert_equal(acq::teardown(), 0);
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::cycle_overruns(), 0U, "and so does the next one");
+}
+
 ZTEST(tof_acquisition, test_a_stubbed_model_is_not_reported_as_a_sensor_fault)
 {
     zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
@@ -2376,6 +2513,70 @@ ZTEST(tof_acquisition, test_the_thread_brings_up_and_then_cycles_at_the_cadence)
     zassert_equal(devs[0].start_calls, 1, "bring-up did not happen exactly once");
     zassert_equal(acq::try_stop(), 0);
     zassert_false(acq::thread_running());
+}
+
+/* THE LOOP ACTUALLY USES THE RULE, which the pure tests above cannot show. Reverting the loop to
+ * `k_sem_take(&stop_sem_, K_MSEC(period))` leaves every next_cycle_due() case green, because the
+ * rule would still be correct and simply not consulted.
+ *
+ * So this one measures. One source, a 50 ms period, 30 ms of work per cycle: against the deadline
+ * the interval is the period, and against the old wait-a-whole-period loop it is 80 ms. Over a
+ * second that is 17 cycles measured here versus about 12.
+ *
+ * WHY 17 AND NOT 20. This host's tick is 10 ms (CONFIG_SYS_CLOCK_TICKS_PER_SEC=100), so both the
+ * 30 ms of fake work and the 20 ms remainder round up to a tick boundary and each cycle costs about
+ * a tick more than the arithmetic says. That quantisation is the host's, not the scheduler's, and
+ * it is why this asserts a band rather than a figure -- what it separates is two behaviours, 80 ms
+ * per cycle against something near the period, and the band sits between them with room on both
+ * sides. */
+ZTEST(tof_acquisition, test_the_thread_holds_the_period_while_the_work_grows)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 30;
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(1000);
+    const int cycles{rec.cycles};
+    zassert_equal(acq::try_stop(), 0);
+
+    zassert_true(cycles >= 15,
+                 "only %d cycles in a second: at a 50 ms period with 30 ms of work the cadence is "
+                 "the period, and work-plus-period would be 80 ms (about 12 cycles)",
+                 cycles);
+}
+
+/* THE OVERRUN COUNT IS KEPT, AND THIS HOST CANNOT SHOW WHAT IT IS FOR. Say that rather than write a
+ * case that looks like it does.
+ *
+ * On the board the counter separates "running at the configured rate" from "running as fast as the
+ * work allows", which is the whole reason it exists: a period set too short degrades silently while
+ * every other indicator stays healthy. On native_sim it cannot, because the 10 ms tick makes a
+ * configuration that comfortably fits -- 30 ms of work in a 50 ms period -- overrun on nearly every
+ * cycle anyway (measured: 16 of 17). Asserting a rate here would be asserting the simulator's timer
+ * resolution.
+ *
+ * What is testable, and is what this pins: the counter moves when the work cannot fit, it is
+ * attributed per cycle rather than free-running, and init() clears it. The discriminating
+ * observation belongs to a robot. */
+ZTEST(tof_acquisition, test_work_that_does_not_fit_the_period_is_counted_rather_than_hidden)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::cycle_overruns(), 0U, "a fresh configuration has missed nothing");
+
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;   /* longer than the 50 ms period: unschedulable by construction */
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(700);
+    const int cycles{rec.cycles};
+    const uint32_t overruns{acq::cycle_overruns()};
+    zassert_equal(acq::try_stop(), 0);
+
+    zassert_true(cycles >= 5, "it still runs, as fast as the work allows: %d cycles", cycles);
+    zassert_true(overruns > 0U, "and the misses must be visible rather than silent");
+    zassert_true(overruns <= static_cast<uint32_t>(cycles),
+                 "one count per cycle at most (cycles %d, overruns %u)", cycles, overruns);
 }
 
 ZTEST(tof_acquisition, test_a_stop_request_ends_the_cycles_and_the_thread_stops_the_devices)

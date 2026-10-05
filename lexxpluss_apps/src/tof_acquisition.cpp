@@ -92,6 +92,11 @@ atomic_t foreign_calls_{ATOMIC_INIT(0)};
  * that was still ranging. */
 atomic_t thread_stop_rc_{ATOMIC_INIT(0)};
 
+/* Cycles that were already past due when they finished. Atomic because the loop writes it and any
+ * thread may read it; see cycle_overruns() in the header for why this one number is here and no
+ * others are. */
+atomic_t tally_overruns_{ATOMIC_INIT(0)};
+
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
  * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed.
@@ -802,6 +807,9 @@ int init(const config &cfg)
     in_cycle_ = false;
 
     facts_ = cycle_facts{};
+    /* The overrun count describes a cadence, and init() is where the cadence is chosen. Carrying it
+     * across would attribute the old period's misses to the new one. */
+    atomic_clear(&tally_overruns_);
     /* A fresh start is a fresh epoch, so the first cycle must carry 0. */
     next_cycle_seq_ = 0;
     facts_.source_count = cfg.source_count;
@@ -1233,6 +1241,56 @@ int stop()
     return rc;
 }
 
+schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period_ms)
+{
+    schedule_decision out{};
+
+    if (period_ms != 0U && now_ms < due_ms) {
+        const int64_t remaining{due_ms - now_ms};
+
+        /* A deadline more than one period away is not a state the loop can reach: each one is the
+         * previous deadline plus a period, and the loop does not return until it has waited for
+         * that deadline. If it happens anyway -- a clock that stepped backwards, a deadline
+         * computed before a re-init -- waiting it out would stall acquisition for however wrong the
+         * number was, silently, with the heartbeat still flowing. So it is REPAIRED rather than
+         * obeyed, and it is not counted as an overrun: nothing was late. */
+        if (remaining > static_cast<int64_t>(period_ms)) {
+            out.wait_ms = period_ms;
+            out.next_due_ms = now_ms + period_ms;
+            return out;
+        }
+        out.wait_ms = static_cast<uint32_t>(remaining);
+        /* Advanced by one period from the deadline it just met, NOT from now. That is what keeps
+         * the cadence fixed instead of drifting by however long each cycle happened to take. */
+        out.next_due_ms = due_ms + period_ms;
+        return out;
+    }
+
+    /* Past due, or exactly due. The shortest wait the kernel can express -- not zero, which is the
+     * spin, and not a period, which would throw the rate away over a fraction of a millisecond: at
+     * a 20 ms target a cycle taking 20.1 ms would then run at 40.1 ms, or about 25 Hz. When the
+     * work is longer than the period the best achievable cadence is the work itself.
+     *
+     * Re-based on now rather than advanced, so a late cycle owes no backlog. */
+    out.overran = true;
+    out.yield_only = true;
+    out.next_due_ms = now_ms + period_ms;
+    return out;
+}
+
+k_timeout_t cadence_timeout(const schedule_decision &step)
+{
+    /* K_TICKS(1) rather than a millisecond figure: a tick is 0.1 ms on this board and every
+     * millisecond value that could stand for "briefly" would round to zero, which is the spin. It
+     * is the kernel's own floor for a wait, not a number chosen here. */
+    return step.yield_only ? K_TICKS(1) : K_MSEC(step.wait_ms);
+}
+
+uint32_t cycle_overruns()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_overruns_));
+}
+
 static void thread_entry(void *, void *, void *)
 {
     /* The whole ULD lifecycle, on one thread, in one place.
@@ -1253,12 +1311,35 @@ static void thread_entry(void *, void *, void *)
     if (int const rc{bring_up()}; rc != 0)
         LOG_ERR("acquisition bring-up refused before source bring-up: rc %d", rc);
 
+    /* The first cycle is due one period from now; every later one is due a period after the
+     * deadline the one before it MET, which is what keeps the cadence fixed instead of drifting by
+     * however long each cycle happened to take.
+     *
+     * k_uptime_get() rather than cfg_.now_ms(), because this is the clock the kernel will actually
+     * sleep against and the two must not be allowed to disagree -- a test clock that stands still
+     * would otherwise make every cycle look permanently overdue. The decision itself is
+     * next_cycle_due(), which is pure and is where the rule is tested. */
+    int64_t due_ms{k_uptime_get() + cfg_.periods.cycle_period_ms};
+
     while (atomic_get(&stop_requested_) == 0) {
         run_cycle();
+
+        const schedule_decision step{
+            next_cycle_due(due_ms, k_uptime_get(), cfg_.periods.cycle_period_ms)};
+
+        due_ms = step.next_due_ms;
+        if (step.overran)
+            atomic_inc(&tally_overruns_);
+
         /* The cadence, and the stop signal, in one wait. Sleeping for the period and checking the
          * flag afterwards would make every stop request cost up to a full period before it was even
-         * noticed -- and that period is what a caller's join timeout would then have to cover. */
-        (void)k_sem_take(&stop_sem_, K_MSEC(cfg_.periods.cycle_period_ms));
+         * noticed -- and that period is what a caller's join timeout would then have to cover.
+         *
+         * The timeout is now the REMAINDER of the period rather than a whole one, so the work and
+         * the sends happen inside the cadence instead of being added to it. What that is not is a
+         * guarantee: if the remainder is regularly small, or cycle_overruns() is moving, the period
+         * is too short for the work and no schedule can repair that. */
+        (void)k_sem_take(&stop_sem_, cadence_timeout(step));
     }
 
     /* At a cycle boundary, from the thread that owns the devices. This is the reason try_stop() no
