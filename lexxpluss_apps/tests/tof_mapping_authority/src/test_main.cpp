@@ -680,6 +680,42 @@ ZTEST(tof_mapping_authority, test_a_committed_proof_fills_both_enumeration_masks
     zassert_equal(s.model_verified_mask, 0xF);
 }
 
+/* THE GRID PERMISSION IS NOT THE CLIFF MASK, and this is the case that says so.
+ *
+ * enumerated_mask is built from source_id_of(l4_role) -- bit 0 is front_left, bit 1 is rear_left.
+ * Both are CLIFF sensors. Reading its low bits as the grid pair's permission is right only by
+ * coincidence of the chain profile, and under the PROVEN clamp nothing would ever have noticed:
+ * every grid source is refused anyway, so a wrong permission and a right one look identical on the
+ * bus. grid_source_mask is the authority's separate statement, keyed by the grid source id the SPEC
+ * assigns, and published in the same snapshot as the state it belongs to. */
+ZTEST(tof_mapping_authority, test_the_grid_permission_is_keyed_by_grid_source_not_by_cliff_role)
+{
+    fresh_authority();
+    const transaction t;
+    zassert_equal(prove(t, 4), au::commit_refusal::none);
+
+    const au::snapshot s{au::current()};
+
+    /* Four cliff roles, so the cliff mask is 0xF. */
+    zassert_equal(s.enumerated_mask, 0xF, "the cliff mask is the four roles");
+
+    /* Two grid sources, 0 and 1, so the grid mask is 0x3 -- and the two masks are deliberately
+     * compared, because the bug was reading one as the other. */
+    /* AND IT SURVIVES THE SNAPSHOT. The authority publishes one 32-bit atomic, so a field that is
+     * computed and not packed reads back as zero -- which is what this field did at first, and
+     * which under the clamp would have looked exactly like a correct always-deny. */
+    zassert_equal(s.grid_source_mask, 0x3, "the grid mask is the two grid sources");
+    zassert_not_equal(s.grid_source_mask, s.enumerated_mask,
+                      "the two masks must not be the same number: one keys on l4_role, the other "
+                      "on grid source_id, and a reader that confuses them is right by accident");
+
+    /* And it is zero while nothing is proven, like every other mask: a consumer reading it with
+     * `state` reads a pair that existed. */
+    fresh_authority();
+    zassert_equal(au::current().grid_source_mask, 0,
+                  "nothing has proved a grid source either");
+}
+
 ZTEST(tof_mapping_authority, test_the_masks_are_keyed_by_the_contracts_role_table)
 {
     /* Not the position index and not an arithmetic cast of the enum. The bit for a role is the

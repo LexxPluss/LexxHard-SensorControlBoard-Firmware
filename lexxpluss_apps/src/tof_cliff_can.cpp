@@ -101,10 +101,13 @@ struct tof_cliff_pub::can_sink sink()
 }
 
 #if defined(ENABLE_TOF_L7_ULD)
-/* THE GRID PAIR SHARE THIS BUS AND THIS SENDER. Same device, same 1 ms timeout, same mailbox
- * exhaustion behaviour -- and deliberately the same function, because two senders would be two
- * places for the timeout and the device handle to drift apart. The identifiers differ and that is
- * the publisher's business, not this layer's. */
+/* THE GRID PAIR SHARE THIS BUS AND THIS SENDER. Same device, same behaviour -- and deliberately
+ * the same function, because two senders would be two places for the device handle and the timeout
+ * to drift apart. The identifiers differ and that is the publisher's business, not this layer's.
+ *
+ * THE 1 ms BOUNDS THE WAIT FOR A FREE MAILBOX, NOT THE SEND. can_send()'s synchronous form returns
+ * when transmission COMPLETES, and nothing here bounds that; what the timeout covers is how long a
+ * caller waits when all three mailboxes are busy, after which the frame is dropped with -EAGAIN. */
 struct tof_grid_pub::can_sink grid_sink()
 {
     struct tof_grid_pub::can_sink s{};
@@ -116,14 +119,18 @@ struct tof_grid_pub::authorisation grid_production_authorisation()
 {
     /* ONE read of the authority, then the clamp applied to that snapshot -- the same rule and for
      * the same reason as the cliff gate above: reading twice can yield a pair that never existed,
-     * and the publisher latches this per cycle.
+     * and the publisher latches this per cycle. The single read is this line; everything derived
+     * from it is derived from this one value.
      *
      * THE CLAMP IS WHY NOTHING IS PUBLISHED. clamp_mapping_state() makes PROVEN unreachable by
      * construction, the packer refuses anything that is not PROVEN, and so wiring this sender
      * changes what the board CAN do and not what it does. Lifting the clamp is a release decision
      * and is not made by connecting a function pointer. */
-    const tof_authority::snapshot now{tof_authority::current()};
+    return grid_authorisation_from(tof_authority::current());
+}
 
+struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::snapshot &now)
+{
     struct tof_grid_pub::authorisation a{};
     a.state = tof_acq::clamp_mapping_state(now.state);
     a.epoch = now.epoch;
@@ -137,10 +144,13 @@ struct tof_grid_pub::authorisation grid_production_authorisation()
      * id it is labelled with as one step -- the obligation tof_grid_packer states on the producer.
      * Taking them from two reads is exactly what that rule forbids.
      *
-     * enumerated_mask is keyed by source_id and is zero while non-PROVEN, so under the clamp every
-     * source is refused anyway; this is what the mask will say once a proof can be seen. */
+     * FROM grid_source_mask AND NOT enumerated_mask. The latter is keyed by source_id_of(l4_role),
+     * so its bits 0 and 1 are the front_left and rear_left CLIFF sensors; they agree with the grid
+     * pair's permission only by coincidence of the current chain profile, and under the clamp that
+     * coincidence would never have been noticed. grid_source_mask is the authority's statement
+     * about grid sources, published in this same snapshot. */
     for (int i{0}; i < tof_grid_pub::kGridSources; ++i)
-        a.source_allowed[i] = (now.enumerated_mask & (1U << i)) != 0U;
+        a.source_allowed[i] = (now.grid_source_mask & (1U << i)) != 0U;
 
     /* Bit 2 is "the chain_position -> source_id binding cannot be trusted", which contract
      * 2026-08-02i deliberately separated from chain length. Nothing in this snapshot establishes
