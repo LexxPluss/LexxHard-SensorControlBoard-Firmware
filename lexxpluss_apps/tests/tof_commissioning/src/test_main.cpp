@@ -108,6 +108,34 @@ int fake_quiesce()
     return quiesce_rc;
 }
 
+/* THE BUS SPEED, RECORDED AS A SEQUENCE AND NOT A COUNT. What the dual-rate transaction has to get
+ * right is the ORDER -- 100 kHz before the walks, 400 kHz before the re-check, and neither after
+ * the commit -- and a call count cannot tell a correct order from a reversed one. The letters are
+ * appended to the same log the chain ops write to, so the speed changes and the walks interleave in
+ * one readable string. */
+int proof_speed_rc{0};
+int product_speed_rc{0};
+int restore_speed_rc{0};
+int product_speed_calls{0};
+
+int fake_set_bus_speed(cm::bus_speed speed)
+{
+    if (speed == cm::bus_speed::product_400k) {
+        ++product_speed_calls;
+        chain.note('4');
+        if (product_speed_rc != 0)
+            return product_speed_rc;
+        chain.retimed = true;
+        return 0;
+    }
+    chain.note('1');
+    chain.retimed = false;
+    /* The first 100 kHz call is the entry; any later one is a restore after a failure, and the two
+     * are allowed to answer differently -- a bus that would not go back is the case the restore
+     * obligation exists for. */
+    return product_speed_calls == 0 ? proof_speed_rc : restore_speed_rc;
+}
+
 bool fake_is_idle()
 {
     return acquisition_idle;
@@ -133,6 +161,10 @@ void arrange(const enm::chain_spec &spec)
     chain = fake_chain{};
     quiesce_rc = 0;
     quiesce_calls = 0;
+    proof_speed_rc = 0;
+    product_speed_rc = 0;
+    restore_speed_rc = 0;
+    product_speed_calls = 0;
     acquisition_idle = true;
     install_rc = 0;
     install_calls = 0;
@@ -150,6 +182,7 @@ void arrange(const enm::chain_spec &spec)
     ccfg.ops = &chain;
     ccfg.spec = &runtime_spec;
     ccfg.quiesce = fake_quiesce;
+    ccfg.set_bus_speed = fake_set_bus_speed;
     zassert_equal(cm::init(ccfg), 0);
 }
 
@@ -341,6 +374,7 @@ void use_the_real_quiesce()
     ccfg.ops = &chain;
     ccfg.spec = &runtime_spec;
     ccfg.quiesce = acq::try_stop;   // the production wiring, not a stand-in
+    ccfg.set_bus_speed = fake_set_bus_speed;
     zassert_equal(cm::init(ccfg), 0);
 }
 
@@ -369,6 +403,251 @@ ZTEST(tof_commissioning, test_a_healthy_chain_with_frozen_roles_is_proven)
     zassert_equal(au::current().enumerated_mask, 0xF);
     zassert_equal(quiesce_calls, 1, "acquisition must be stopped exactly once, first");
     zassert_true(another_thread_can_take_the_chain(), "the session did not release the chain");
+}
+
+/* ------------------------------------------- the dual-rate transaction ------------------ */
+/*
+ * The walks complete at 100 kHz and never at 400 kHz; the acquisition schedule fits only at
+ * 400 kHz. So the transaction owns both: it sets the proof speed, walks, retimes, and makes every
+ * position answer as itself at the new speed BEFORE the authority is told anything.
+ *
+ * The ordering is the design. Committing first and re-checking afterwards would publish PROVEN and
+ * then withdraw it, and the health timer runs on its own cadence -- a consumer can sample that
+ * window and act on a PROVEN it was never meant to see.
+ *
+ * These cases assert ORDER, not call counts: the fake chain records a letter per kind of bus
+ * activity, consecutive repeats collapsed. 1 = 100 kHz, 4 = 400 kHz, p = probe, r = read_id,
+ * d = readdress.
+ */
+
+/* Where in the trace the retime happened, or -1. */
+int index_of(char c)
+{
+    for (size_t i = 0; i < chain.trace_len; ++i) {
+        if (chain.trace[i] == c)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+ZTEST(tof_commissioning, test_the_proof_walks_at_100k_and_rechecks_at_400k_in_that_order)
+{
+    arrange(provable_spec());
+
+    const cm::outcome r{cm::prove(7)};
+
+    zassert_true(r.proven(), "stage %d", static_cast<int>(r.failed_at));
+    zassert_equal(r.final_bus, cm::bus_state::product_400k,
+                  "a proven chain is left at the speed it will be read at");
+    zassert_false(r.restore_attempted, "nothing failed, so nothing was restored");
+
+    /* The speed is set before ANY chain activity: a walk at an uncharacterised speed produces a
+     * mapping whose evidence means nothing. */
+    zassert_equal(chain.trace[0], '1', "trace %s", chain.trace);
+
+    const int retime{index_of('4')};
+    zassert_true(retime > 0, "the bus was never retimed: trace %s", chain.trace);
+
+    /* THE WALKS ARE BEFORE IT AND THE RE-CHECK IS AFTER IT. A walk re-addresses; the re-check only
+     * probes and reads ids. So a `d` after the retime would mean the chain was being rebuilt at the
+     * product speed, and a trace with no `r` after it would mean nothing was re-checked at all. */
+    bool readdress_after_retime{false};
+    bool read_after_retime{false};
+    for (size_t i = static_cast<size_t>(retime) + 1; i < chain.trace_len; ++i) {
+        if (chain.trace[i] == 'd')
+            readdress_after_retime = true;
+        if (chain.trace[i] == 'r')
+            read_after_retime = true;
+    }
+    zassert_false(readdress_after_retime,
+                  "the chain was re-addressed after the retime: trace %s", chain.trace);
+    zassert_true(read_after_retime, "nothing was re-checked after the retime: trace %s",
+                 chain.trace);
+
+    /* And the speed is not touched again: no second 1 after the retime. */
+    for (size_t i = static_cast<size_t>(retime) + 1; i < chain.trace_len; ++i)
+        zassert_not_equal(chain.trace[i], '1', "the bus was put back on a successful proof: %s",
+                          chain.trace);
+}
+
+/* THE PROOF SPEED IS SET, NOT ASSUMED. The bus can be at 400 kHz for reasons that have nothing to
+ * do with a previous proof succeeding -- an earlier run may have retimed, failed its re-check and
+ * failed again putting it back. A transaction that depended on that restore would inherit one
+ * earlier failure for ever. */
+ZTEST(tof_commissioning, test_a_refused_proof_speed_walks_nothing_and_commits_nothing)
+{
+    arrange(provable_spec());
+    proof_speed_rc = -EIO;
+
+    const cm::outcome r{cm::prove(7)};
+
+    zassert_equal(r.failed_at, cm::stage::proof_speed_refused, "");
+    zassert_equal(r.speed_rc, -EIO, "");
+    zassert_equal(r.final_bus, cm::bus_state::unknown,
+                  "a driver that refused a speed change may have left the bus anywhere");
+    zassert_false(r.restore_attempted,
+                  "retrying the call that just failed would turn a known unknown into a guess");
+
+    /* NOT WALKED. Everything after the first letter would be chain activity. */
+    zassert_equal(chain.trace_len, 1U, "the chain was touched after the speed was refused: %s",
+                  chain.trace);
+    zassert_equal(chain.trace[0], '1', "");
+
+    /* NOT COMMITTED, AND NOT STARTABLE. */
+    zassert_equal(install_calls, 0, "nothing may be installed");
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+}
+
+/* THE RETIME FAILED AFTER A GOOD PROOF. The evidence is sound and worthless: it was gathered at a
+ * speed the product never uses, and nothing says the chain answers at the one it does. */
+ZTEST(tof_commissioning, test_a_refused_product_speed_commits_nothing_and_restores)
+{
+    arrange(provable_spec());
+    product_speed_rc = -EIO;
+
+    const cm::outcome r{cm::prove(7)};
+
+    zassert_equal(r.failed_at, cm::stage::product_speed_refused, "");
+    zassert_equal(r.speed_rc, -EIO, "");
+    zassert_true(r.restore_attempted, "a failure after the retime owes the bus a restore");
+    zassert_equal(r.restore_rc, 0, "");
+    zassert_equal(r.final_bus, cm::bus_state::proof_100k, "and it succeeded");
+
+    zassert_equal(install_calls, 0, "nothing may be installed");
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+}
+
+/* EVERY POSITION, NOT THE FIRST ONE. The re-check loops over the spec, and a test that only
+ * asserted "something was read after the retime" would pass against a loop that checked one sensor
+ * and returned. The fake records the address of each position it was asked about, in order. */
+ZTEST(tof_commissioning, test_the_recheck_visits_every_position_at_its_own_address)
+{
+    arrange(provable_spec());
+
+    const cm::outcome r{cm::prove(7)};
+    zassert_true(r.proven(), "stage %d", static_cast<int>(r.failed_at));
+
+    zassert_equal(chain.rechecked_count, runtime_spec.positions,
+                  "%zu of %zu positions were re-checked", chain.rechecked_count,
+                  static_cast<size_t>(runtime_spec.positions));
+    for (size_t i = 0; i < runtime_spec.positions; ++i)
+        zassert_equal(chain.rechecked_addr[i], runtime_spec.at[i].target_addr,
+                      "position %zu was re-checked at 0x%02x, not its own 0x%02x", i + 1,
+                      chain.rechecked_addr[i], runtime_spec.at[i].target_addr);
+}
+
+/* THE FOUR WAYS A POSITION CAN FAIL, AND THEY ARE NOT THE SAME FAULT. Collapsing any of the first
+ * three into "identity disagreed" tells an operator the part is wrong when the evidence does not
+ * support that, and sends them to replace a sensor over a bus fault.
+ *
+ * Each is injected at position 3, not position 1: a fault that always lands on the first position
+ * cannot tell a loop that checks every position from one that checks only the first. */
+ZTEST(tof_commissioning, test_each_recheck_fault_is_reported_as_itself)
+{
+    struct row {
+        const char *what;
+        bool nack;
+        bool probe_err;
+        bool read_err;
+        bool wrong_id;
+        cm::recheck_fault fault;
+        bool nothing_came_back;
+    };
+    static const row rows[]{
+        {"a clean NACK", true, false, false, false, cm::recheck_fault::no_answer, true},
+        {"a probe that did not complete", false, true, false, false,
+         cm::recheck_fault::probe_failed, true},
+        {"an ACK then a failed read", false, false, true, false, cm::recheck_fault::read_failed,
+         true},
+        {"a complete answer from the wrong part", false, false, false, true,
+         cm::recheck_fault::wrong_identity, false},
+    };
+
+    for (const auto &k : rows) {
+        arrange(provable_spec());
+        chain.fault_position = 3;
+        chain.silence_after_retime = k.nack;
+        chain.probe_error_after_retime = k.probe_err;
+        chain.read_error_after_retime = k.read_err;
+        chain.wrong_id_after_retime = k.wrong_id;
+
+        const cm::outcome r{cm::prove(7)};
+
+        zassert_equal(r.failed_at, cm::stage::identity_recheck_failed, "%s", k.what);
+        zassert_equal(r.recheck.fault, k.fault, "%s was reported as fault %d", k.what,
+                      static_cast<int>(r.recheck.fault));
+        zassert_equal(r.recheck.answered_nothing(), k.nothing_came_back, "%s", k.what);
+
+        /* THE POSITION IS NAMED, and it is the one that failed -- not the first one looked at. */
+        zassert_equal(r.recheck.position, 3, "%s: position %u", k.what, r.recheck.position);
+        zassert_equal(r.recheck.address, runtime_spec.at[2].target_addr, "%s", k.what);
+
+        /* AND THE TRANSPORT'S OWN ERRNO SURVIVES, which it did not: the probe's was discarded. */
+        if (k.fault == cm::recheck_fault::probe_failed)
+            zassert_equal(r.recheck.probe_rc, -ETIMEDOUT, "the probe's errno was dropped");
+        if (k.fault == cm::recheck_fault::read_failed)
+            zassert_equal(r.recheck.read_rc, -EIO, "the read's errno was dropped");
+
+        /* NOT COMMITTED, whichever fault it was, and whichever position. */
+        zassert_equal(install_calls, 0, "%s installed a mapping", k.what);
+        zassert_not_equal(au::current().state, acq::mapping_state::proven, "%s", k.what);
+        zassert_true(r.restore_attempted, "%s", k.what);
+
+        /* It got as far as position 3 before giving up, which is the other half of "every
+         * position": a loop that stopped at the first would never have reached it. */
+        zassert_equal(chain.rechecked_count, 3U, "%s: re-checked %zu positions", k.what,
+                      chain.rechecked_count);
+    }
+}
+
+/* THE RESTORE IS AN OBLIGATION, AND A FAILED ONE IS REPORTED RATHER THAN SWALLOWED. It also must
+ * not change WHICH failure is reported: the re-check is what went wrong. */
+ZTEST(tof_commissioning, test_a_restore_that_fails_is_reported_without_masking_the_real_failure)
+{
+    arrange(provable_spec());
+    chain.fault_position = 4;
+    chain.wrong_id_after_retime = true;
+    restore_speed_rc = -EIO;
+
+    const cm::outcome r{cm::prove(7)};
+
+    zassert_equal(r.failed_at, cm::stage::identity_recheck_failed,
+                  "the restore must not become the reported failure");
+    zassert_true(r.restore_attempted, "");
+    zassert_equal(r.restore_rc, -EIO, "and its own error is carried");
+    zassert_equal(r.final_bus, cm::bus_state::unknown,
+                  "a restore that failed leaves the bus where nobody knows");
+    zassert_equal(install_calls, 0, "");
+}
+
+/* A COMMIT REFUSAL IS THE ONE PATH THAT USED TO END AT 400 kHz WITH NOBODY TOLD. A reused epoch is
+ * the ordinary way to reach it. */
+ZTEST(tof_commissioning, test_a_refused_commit_still_puts_the_bus_back)
+{
+    arrange(provable_spec());
+    install_rc = -EIO;
+
+    const cm::outcome r{cm::prove(7)};
+
+    zassert_equal(r.failed_at, cm::stage::commit_refused, "");
+    zassert_true(r.restore_attempted, "");
+    zassert_equal(r.final_bus, cm::bus_state::proof_100k, "");
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+}
+
+/* THE HOOK IS REQUIRED. A transaction that silently skipped the retime would walk at whatever the
+ * bus was left at and commit on evidence from a speed the product never uses -- while reporting
+ * success, which is the failure this whole step exists to prevent. */
+ZTEST(tof_commissioning, test_a_configuration_without_a_speed_hook_is_refused)
+{
+    arrange(provable_spec());
+
+    cm::config no_speed{};
+    no_speed.chain = &lexxhard::tof_chain_controller::chain_lock();
+    no_speed.ops = &chain;
+    no_speed.spec = &runtime_spec;
+    no_speed.quiesce = fake_quiesce;
+    zassert_equal(cm::init(no_speed), -EINVAL, "set_bus_speed has no default");
 }
 
 /* ------------------------- the chain is held FOR the transaction, not just around it ----- */

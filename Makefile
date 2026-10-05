@@ -34,16 +34,18 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer \
-	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
+	rm -rf build-mcuboot build build-bypass-safety-lidar \
+	        build-test-tof-packer build-test-tof-cliff-packer build-test-tof-mapping-authority \
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
-	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
-	        build-test-tof-enumerator build-tof-chain build-tof-l7 \
-	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob \
-	        build-test-tof-l7-uld-stop build-test-tof-l7-recovery \
-	        build-test-tof-progress \
-	        build-test-tof-task-watchdog build-test-tof-watchdog-tombstone \
-	        build-test-tof-watchdog-feeder
+	        build-tof-cliff twister-out* build-test-tof-cliff-sensor \
+	        build-test-tof-uld-status build-test-tof-enumerator build-tof-chain \
+	        build-tof-l7 build-test-tof-l7-port build-test-tof-l7-sensor \
+	        build-test-tof-l7-blob build-test-tof-l7-uld-stop build-test-tof-l7-recovery \
+	        build-test-tof-progress build-test-tof-task-watchdog build-test-tof-watchdog-tombstone \
+	        build-test-tof-watchdog-feeder build-test-tof-auto-commission build-test-tof-commission-wire \
+	        build-test-tof-commission-session build-test-tof-commission-runtime \
+	        build-test-tof-commission-bind build-test-tof-commission-worker \
+	        build-auto-commission
 
 .PHONY: distclean
 distclean: clean
@@ -139,6 +141,51 @@ test_tof_mapping_authority:
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+.PHONY: test_tof_commission_runtime
+test_tof_commission_runtime:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_runtime -d build-test-tof-commission-runtime -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Its own binary on purpose: it creates the worker thread, which outlives the case that made it.
+.PHONY: test_tof_commission_worker
+test_tof_commission_worker:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_worker -d build-test-tof-commission-worker -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+.PHONY: test_tof_commission_bind
+test_tof_commission_bind:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind -d build-test-tof-commission-bind -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the prove-then-start sequencer: every path that must NOT reach start(), the
+# bounded retry, and the hooks that refuse before anything is attempted. No device, no bus, no proof.
+.PHONY: test_tof_auto_commission
+test_tof_auto_commission:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the automatic-commissioning downlink. Two suites, and the split is the point:
+# one is about bytes and the other about transactions, and a PR that only proved the byte layout
+# would have proved nothing about what a second request does.
+
+# The codec and the internal-to-wire mapper, against fixed byte vectors. GOLDEN MEANS BYTE-EXACT:
+# every positive case asserts the actual eight bytes rather than round-tripping through the encoder,
+# which would agree with whatever layout the encoder chose. The mapper is compiled with
+# -Werror=switch-enum by its own CMakeLists, so adding an enumerator to any mapped enum fails the
+# build until it is given a wire meaning.
+.PHONY: test_tof_commission_wire
+test_tof_commission_wire:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_wire -d build-test-tof-commission-wire -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The protocol state machine: sessions, duplicate requests, retransmission, sequence and epoch
+# checks, and the attempt budget. It links the real sequencer from the prove-then-start PR, so what
+# it drives is the production call order rather than a stand-in for it.
+.PHONY: test_tof_commission_session
+test_tof_commission_session:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_session -d build-test-tof-commission-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
 .PHONY: test_tof_tail_isolation
@@ -349,6 +396,21 @@ firmware_tof_cliff:
 	mv build-tof-cliff/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_cliff.signed.confirmed.bin
 	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
 	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
+
+# The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
+# hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
+# only things enabling that peripheral.
+#
+# NOTHING STARTS IT. No caller invokes tof_commission_bind::start() on this branch, so this image
+# installs no CAN filter, draws no token and proves nothing -- it is here so the flag-on image can
+# be built and measured, not so a board can be commissioned by it. It carries NO bypass and no
+# diagnostic flag; the bench decisions that govern what a started downlink may do arrive with the
+# caller.
+.PHONY: firmware_auto_commission
+firmware_auto_commission:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
 #
 # The `tof enum` command is present but is NOT expected to complete on this

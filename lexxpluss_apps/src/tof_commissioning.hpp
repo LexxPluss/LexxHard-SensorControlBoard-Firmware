@@ -88,7 +88,75 @@ enum class stage : uint8_t {
     chain_busy,       // the lock was held: another enumeration, or acquisition still on the chain
     attempt_refused,  // the authority would not open an attempt
     evidence_refused, // the transaction was carried out and the proof refused it
+    /* The bus would not go to 100 kHz for the walks. Refused rather than proceeding at whatever the
+     * bus happened to be left at: a walk at an uncharacterised speed produces a mapping whose
+     * evidence means nothing, while reporting success. */
+    proof_speed_refused,
+    // The proof held, but the bus would not go to 400 kHz afterwards.
+    product_speed_refused,
+    // The proof held and the bus retimed, but a position did not answer as itself at 400 kHz.
+    identity_recheck_failed,
     commit_refused,   // the proof held and the authority refused to install it
+};
+
+/* The two speeds this transaction uses, and there are exactly two. 100 kHz is the only speed the
+ * commissioning walk has ever completed at; 400 kHz is the only speed the acquisition schedule fits
+ * in. Naming them rather than passing a frequency keeps the pair a decision somebody made once. */
+enum class bus_speed : uint8_t {
+    proof_100k,
+    product_400k,
+};
+
+enum class bus_state : uint8_t {
+    // A set_bus_speed call failed and nothing is known about what the driver left behind.
+    unknown,
+    proof_100k,
+    product_400k,
+};
+
+/* HOW A POSITION FAILED ITS RE-CHECK, and these are four different things that send an operator to
+ * four different places. Collapsing any of them into "identity disagreed" says the part is wrong
+ * when the evidence does not support that:
+ *
+ *   no_answer        a clean NACK. Nothing is at that address at the product speed -- a part that
+ *                    dropped off, or an enable line that did not hold.
+ *   probe_failed     the probe did not complete at all. The bus itself stopped working at 400 kHz;
+ *                    nothing is known about whether a part is there. The errno is carried.
+ *   read_failed      it ACKED and then the id read failed. Something IS there and the transport to
+ *                    it did not survive the retime. NOT a wrong part.
+ *   wrong_identity   it answered, completely, as something else. This is the only one that means
+ *                    the part is wrong.
+ */
+enum class recheck_fault : uint8_t {
+    none,
+    no_answer,
+    probe_failed,
+    read_failed,
+    wrong_identity,
+};
+
+/* Which position failed its re-check, and how. Populated only for identity_recheck_failed. */
+struct identity_recheck {
+    // 1-based, as the operator counts them. 0 when nothing failed.
+    uint8_t position{0};
+    uint8_t address{0};
+    recheck_fault fault{recheck_fault::none};
+    /* The transport's own errno, for probe_failed and read_failed. Kept because "the bus failed" and
+     * "the bus failed with EIO after a retime" are different amounts of help, and the probe's was
+     * being discarded. */
+    int probe_rc{0};
+    int read_rc{0};
+    // What it answered with, for wrong_identity.
+    tof_enum::id_bytes seen{};
+
+    /* Nothing usable came back from the position, whichever way. The wire says `position_silent` for
+     * all three, because none of them is an identity disagreement and the contract has no finer
+     * value -- the specific fault is in this struct and in the log. */
+    bool answered_nothing() const
+    {
+        return fault == recheck_fault::no_answer || fault == recheck_fault::probe_failed ||
+               fault == recheck_fault::read_failed;
+    }
 };
 
 struct outcome {
@@ -108,6 +176,22 @@ struct outcome {
     pf::isolation_observation isolation{};
     int isolation_rc{0};
 
+    /* What either set_bus_speed() call returned, for proof_speed_refused and
+     * product_speed_refused. */
+    int speed_rc{0};
+    /* WHERE THE BUS WAS LEFT, which matters most on the paths that failed. `unknown` is a real
+     * answer and not a missing one: a driver that refused a speed change may have left the
+     * peripheral anywhere, and claiming otherwise would send the next proof -- or an operator --
+     * off a guess. */
+    bus_state final_bus{bus_state::unknown};
+    /* Whether a failure after the retime tried to put the bus back, and what that attempt said.
+     * Best effort by design: the restore does not change WHICH failure is reported, so a proof that
+     * failed its identity re-check and then failed to restore still reports the re-check. */
+    bool restore_attempted{false};
+    int restore_rc{0};
+    // Populated only for identity_recheck_failed.
+    identity_recheck recheck{};
+
     bool proven() const { return failed_at == stage::none; }
 };
 
@@ -123,6 +207,10 @@ struct config {
     // Stops acquisition and does not return until it has stopped. Production: stop the thread and
     // join it. Must NOT tear the subsystem down -- the heartbeat has to keep running.
     int (*quiesce)(){nullptr};
+    /* Sets the I2C bitrate and does not return until it has. Production drives the chain
+     * controller's runtime reconfigure; the tests inject one so the ORDER of the two speed changes
+     * against the walks is observable, which is the whole point of the dual-rate transaction. */
+    int (*set_bus_speed)(bus_speed speed){nullptr};
 };
 
 int init(const config &cfg);
