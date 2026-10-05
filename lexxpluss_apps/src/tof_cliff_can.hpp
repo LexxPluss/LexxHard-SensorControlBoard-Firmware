@@ -44,6 +44,9 @@
 #include <cstdint>
 
 #include "tof_cliff_publisher.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_grid_publisher.hpp"
+#endif
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
 
@@ -67,6 +70,14 @@ struct tof_cliff_pub::can_sink sink();
  * nothing may act on that belief. Reading the state from the authority here would bypass the
  * clamp, which is exactly the shape of the safety backdoor this project deleted once. */
 struct tof_cliff_pub::authorisation production_authorisation();
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* The grid pair's sender and gate. The sender is the same function the cliff frames use -- one bus,
+ * one device, one timeout. The gate applies the same clamp, which is what keeps a wired publisher
+ * from publishing. */
+struct tof_grid_pub::can_sink grid_sink();
+struct tof_grid_pub::authorisation grid_production_authorisation();
+#endif
 
 }  // namespace lexxhard::tof_cliff_can
 

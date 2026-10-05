@@ -24,6 +24,9 @@
 #include "tof_chain_spec.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_grid_publisher.hpp"
+#endif
 #include "tof_mapping_authority.hpp"
 #include "tof_mapping_proof.hpp"
 
@@ -39,6 +42,9 @@ namespace can = lexxhard::tof_cliff_can;
 namespace enm = lexxhard::tof_enum;
 namespace pf = lexxhard::tof_proof;
 namespace pub = lexxhard::tof_cliff_pub;
+#if defined(ENABLE_TOF_L7_ULD)
+namespace gpub = lexxhard::tof_grid_pub;
+#endif
 
 /* ALL of the subsystem's saved state lives here, at file scope.
  *
@@ -232,6 +238,26 @@ int init_authority()
     return au::init(cfg);
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+int init_grid_publisher()
+{
+    gpub::config cfg{};
+
+    cfg.sink = can::grid_sink();
+    cfg.sources = descs_;
+    cfg.source_count = static_cast<int>(spec_.positions);
+    /* THE SAME STRUCTURALLY SHUT GATE as the cliff path, and that is what makes wiring this safe:
+     * the clamp inside it makes PROVEN unreachable, and the packer refuses anything that is not
+     * PROVEN. So this connects the path without opening it. */
+    cfg.authorise = can::grid_production_authorisation;
+    /* NO DEFAULT INVENTED HERE. VL53L7CX target_status 6 and 9 are the low-confidence verdicts, and
+     * whether a hanging-object detector should trust them is a product decision nobody has taken.
+     * False is the conservative reading and is stated rather than assumed. */
+    cfg.accept_low_confidence = false;
+    return gpub::init(cfg);
+}
+#endif
+
 int init_publisher()
 {
     pub::config cfg{};
@@ -245,6 +271,24 @@ int init_publisher()
     return pub::init(cfg);
 }
 
+/* The fan-out. Deliberately not a loop over a table: there are two publishers, both known at
+ * compile time, and a registry would be a mechanism for a variability that does not exist. */
+void on_cycle_begin_all(uint32_t cycle_seq)
+{
+    pub::on_cycle_begin(cycle_seq);
+#if defined(ENABLE_TOF_L7_ULD)
+    gpub::on_cycle_begin(cycle_seq);
+#endif
+}
+
+void on_cycle_complete_all(const acq::cycle_facts &facts)
+{
+    pub::on_cycle_complete(facts);
+#if defined(ENABLE_TOF_L7_ULD)
+    gpub::on_cycle_complete(facts);
+#endif
+}
+
 int init_acquisition(const config &cfg)
 {
     acq::config c{};
@@ -253,10 +297,19 @@ int init_acquisition(const config &cfg)
     c.source_count = static_cast<int>(spec_.positions);
     c.periods.cycle_period_ms = cfg.cycle_period_ms;
     c.periods.health_period_ms = cfg.health_period_ms;
-    c.hooks.on_cycle_begin = pub::on_cycle_begin;
-    c.hooks.on_cycle = pub::on_cycle_complete;
+    /* TWO CONSUMERS, ONE HOOK. Acquisition has one on_cycle_begin and one on_cycle, and both
+     * publishers need both: each latches its authorisation at the start of a cycle and flushes at
+     * the end, and a publisher that missed either would send under a stale snapshot or hold a
+     * packed frame past the cycle it belongs to. The fan-out lives here rather than in acquisition
+     * because which publishers an image has is this layer's business. */
+    c.hooks.on_cycle_begin = on_cycle_begin_all;
+    c.hooks.on_cycle = on_cycle_complete_all;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
     c.hooks.on_cliff_health = pub::on_cliff_health;
+#if defined(ENABLE_TOF_L7_ULD)
+    /* The grid sink, which until now went nowhere: acquisition fired it only in a test. */
+    c.hooks.on_grid_sample = gpub::on_grid_sample;
+#endif
     c.mapping_state_provider = au::state_provider;
     c.now_ms = now_ms;
     return acq::init(c);
@@ -354,6 +407,16 @@ int bootstrap(const config &cfg)
      * frames plus the presence of the board -- and the publisher counts every failed send. */
     if (const int rc{can::init()}; rc != 0)
         LOG_WRN("CAN glue not available (%d): frames will be counted as send failures", rc);
+
+#if defined(ENABLE_TOF_L7_ULD)
+    /* Before the cliff publisher only because one of them has to be first; neither depends on the
+     * other, and acquisition is not configured until after both. */
+    if (const int rc{init_grid_publisher()}; rc != 0) {
+        stage_ = stage::publisher_failed;
+        LOG_ERR("grid publisher init failed (%d)", rc);
+        return rc;
+    }
+#endif
 
     if (const int rc{init_publisher()}; rc != 0) {
         stage_ = stage::publisher_failed;

@@ -100,6 +100,59 @@ struct tof_cliff_pub::can_sink sink()
     return s;
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE GRID PAIR SHARE THIS BUS AND THIS SENDER. Same device, same 1 ms timeout, same mailbox
+ * exhaustion behaviour -- and deliberately the same function, because two senders would be two
+ * places for the timeout and the device handle to drift apart. The identifiers differ and that is
+ * the publisher's business, not this layer's. */
+struct tof_grid_pub::can_sink grid_sink()
+{
+    struct tof_grid_pub::can_sink s{};
+    s.send = send;
+    return s;
+}
+
+struct tof_grid_pub::authorisation grid_production_authorisation()
+{
+    /* ONE read of the authority, then the clamp applied to that snapshot -- the same rule and for
+     * the same reason as the cliff gate above: reading twice can yield a pair that never existed,
+     * and the publisher latches this per cycle.
+     *
+     * THE CLAMP IS WHY NOTHING IS PUBLISHED. clamp_mapping_state() makes PROVEN unreachable by
+     * construction, the packer refuses anything that is not PROVEN, and so wiring this sender
+     * changes what the board CAN do and not what it does. Lifting the clamp is a release decision
+     * and is not made by connecting a function pointer. */
+    const tof_authority::snapshot now{tof_authority::current()};
+
+    struct tof_grid_pub::authorisation a{};
+    a.state = tof_acq::clamp_mapping_state(now.state);
+    a.epoch = now.epoch;
+    /* DIAGNOSTICS ONLY, and the authority does not carry it. There is no boards_detected in the
+     * snapshot, so it is left at zero rather than derived from something that is not it: the
+     * contract says this nibble is for diagnostics, and a plausible-looking wrong number is worse
+     * for a diagnostic than an honest zero. Whatever eventually owns it is its own change. */
+    a.boards_detected = 0;
+
+    /* PER SOURCE, from THIS snapshot, so a grid is admitted by the permission read for the source
+     * id it is labelled with as one step -- the obligation tof_grid_packer states on the producer.
+     * Taking them from two reads is exactly what that rule forbids.
+     *
+     * enumerated_mask is keyed by source_id and is zero while non-PROVEN, so under the clamp every
+     * source is refused anyway; this is what the mask will say once a proof can be seen. */
+    for (int i{0}; i < tof_grid_pub::kGridSources; ++i)
+        a.source_allowed[i] = (now.enumerated_mask & (1U << i)) != 0U;
+
+    /* Bit 2 is "the chain_position -> source_id binding cannot be trusted", which contract
+     * 2026-08-02i deliberately separated from chain length. Nothing in this snapshot establishes
+     * it, so it stays false rather than being derived from something that is not it. */
+    a.binding_untrusted = false;
+    /* kNoFailingPosition is 0xFF, not 0. Comparing against zero would have reported a failure on
+     * every healthy chain -- the default IS the no-failure value. */
+    a.other_position_enumeration_failed = now.failing_position != tof_authority::kNoFailingPosition;
+    return a;
+}
+#endif
+
 struct tof_cliff_pub::authorisation production_authorisation()
 {
     /* ONE read of the authority, then the clamp applied to that snapshot.
