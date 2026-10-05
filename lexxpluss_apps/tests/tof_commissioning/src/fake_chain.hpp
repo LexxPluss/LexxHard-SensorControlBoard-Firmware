@@ -111,7 +111,33 @@ struct fake_chain final : enm::chain_ops {
      * worked at 100 kHz and does not answer, or answers as something else, at the product speed. */
     bool silence_after_retime{false};
     bool wrong_id_after_retime{false};
+    bool probe_error_after_retime{false};
+    bool read_error_after_retime{false};
+    /* WHICH POSITION, 1-based, or 0 for "the first one reached". A fault that always lands on
+     * position 1 cannot tell a loop that checks every position from one that checks only the
+     * first. */
+    uint8_t fault_position{0};
     bool retimed{false};
+
+    /* What the re-check looked at, in order. The whole claim is PER POSITION, and a test that only
+     * counts reads cannot tell six checks from one. */
+    uint8_t rechecked_addr[kStages]{};
+    size_t rechecked_count{0};
+
+    void note_recheck(uint8_t addr7)
+    {
+        if (rechecked_count < kStages)
+            rechecked_addr[rechecked_count++] = addr7;
+    }
+
+    /* 1-based index of the position this address occupies, for the fault selector. */
+    bool is_fault_position(uint8_t addr7) const
+    {
+        if (fault_position == 0)
+            return true;
+        const int i{answerer(addr7)};
+        return i >= 0 && static_cast<uint8_t>(i + 1) == fault_position;
+    }
 
     void note(char c)
     {
@@ -135,8 +161,15 @@ struct fake_chain final : enm::chain_ops {
     enm::probe_result probe(uint8_t addr7) override
     {
         note('p');
-        if (retimed && silence_after_retime)
-            return {enm::probe_state::nack, 0};
+        if (retimed) {
+            note_recheck(addr7);
+            if (is_fault_position(addr7)) {
+                if (probe_error_after_retime)
+                    return {enm::probe_state::transport_error, -ETIMEDOUT};
+                if (silence_after_retime)
+                    return {enm::probe_state::nack, 0};
+            }
+        }
         if (error_probes_at_pulse_count >= 0 && pulses_seen == error_probes_at_pulse_count)
             return {enm::probe_state::transport_error, -EIO};
         return answerer(addr7) >= 0 ? enm::probe_result{enm::probe_state::ack, 0}
@@ -149,9 +182,14 @@ struct fake_chain final : enm::chain_ops {
         const int i{answerer(addr7)};
         if (i < 0)
             return -ENXIO;
+        /* IT ANSWERED AND THEN THE READ FAILED. Something is there; the transport to it did not
+         * survive the retime. Not a wrong part. */
+        if (retimed && read_error_after_retime && is_fault_position(addr7))
+            return -EIO;
+
         /* Answered, as the wrong thing. The read SUCCEEDS -- that is what separates this from a
          * transport failure, and what makes it an identity disagreement rather than silence. */
-        if (retimed && wrong_id_after_retime) {
+        if (retimed && wrong_id_after_retime && is_fault_position(addr7)) {
             out = l7[i] ? kL4Id : kL7Id;
             return 0;
         }

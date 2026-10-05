@@ -114,17 +114,49 @@ enum class bus_state : uint8_t {
     product_400k,
 };
 
-/* Which position disagreed, and how. Populated only for identity_recheck_failed. */
+/* HOW A POSITION FAILED ITS RE-CHECK, and these are four different things that send an operator to
+ * four different places. Collapsing any of them into "identity disagreed" says the part is wrong
+ * when the evidence does not support that:
+ *
+ *   no_answer        a clean NACK. Nothing is at that address at the product speed -- a part that
+ *                    dropped off, or an enable line that did not hold.
+ *   probe_failed     the probe did not complete at all. The bus itself stopped working at 400 kHz;
+ *                    nothing is known about whether a part is there. The errno is carried.
+ *   read_failed      it ACKED and then the id read failed. Something IS there and the transport to
+ *                    it did not survive the retime. NOT a wrong part.
+ *   wrong_identity   it answered, completely, as something else. This is the only one that means
+ *                    the part is wrong.
+ */
+enum class recheck_fault : uint8_t {
+    none,
+    no_answer,
+    probe_failed,
+    read_failed,
+    wrong_identity,
+};
+
+/* Which position failed its re-check, and how. Populated only for identity_recheck_failed. */
 struct identity_recheck {
     // 1-based, as the operator counts them. 0 when nothing failed.
     uint8_t position{0};
     uint8_t address{0};
-    /* The probe did not cleanly ACK. Distinguished from an identity mismatch because the two send an
-     * operator to different places: silence is a bus or a part, a wrong id is the WRONG part. The
-     * wire carries the distinction too -- position_silent against identity_disagreed. */
-    bool silent{false};
+    recheck_fault fault{recheck_fault::none};
+    /* The transport's own errno, for probe_failed and read_failed. Kept because "the bus failed" and
+     * "the bus failed with EIO after a retime" are different amounts of help, and the probe's was
+     * being discarded. */
+    int probe_rc{0};
     int read_rc{0};
+    // What it answered with, for wrong_identity.
     tof_enum::id_bytes seen{};
+
+    /* Nothing usable came back from the position, whichever way. The wire says `position_silent` for
+     * all three, because none of them is an identity disagreement and the contract has no finer
+     * value -- the specific fault is in this struct and in the log. */
+    bool answered_nothing() const
+    {
+        return fault == recheck_fault::no_answer || fault == recheck_fault::probe_failed ||
+               fault == recheck_fault::read_failed;
+    }
 };
 
 struct outcome {

@@ -121,7 +121,15 @@ int product_speed_rc{0};
 
 int runtime_set_bus_speed(cm::bus_speed speed)
 {
-    return speed == cm::bus_speed::product_400k ? product_speed_rc : 0;
+    if (speed != cm::bus_speed::product_400k) {
+        chain.retimed = false;
+        return 0;
+    }
+    if (product_speed_rc != 0)
+        return product_speed_rc;
+    /* Arms the fake's post-retime faults, so this suite can reach the identity re-check too. */
+    chain.retimed = true;
+    return 0;
 }
 
 int quiesce_via_acquisition()
@@ -312,6 +320,37 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_true(acq::thread_running());
     k_msleep(kTiming.cycle_period_ms * 2);
     zassert_equal(acq::try_stop(), 0, "the thread did not stop cleanly");
+}
+
+/* A RE-CHECK THAT FAILED AT A LATER POSITION MUST NOT LEAVE A STARTABLE MACHINE EITHER. Position 4,
+ * deliberately: a transaction that gave up after the first position would never reach it, and every
+ * "nothing was committed" assertion would still pass. */
+ZTEST(tof_cliff_runtime, test_a_recheck_failure_at_a_later_position_leaves_nothing_startable)
+{
+    zassert_equal(rt::bootstrap(kTiming), 0);
+
+    chain.fault_position = 4;
+    chain.wrong_id_after_retime = true;
+
+    const cm::outcome r{prove_over_the_fake_chain(11)};
+
+    zassert_equal(r.failed_at, cm::stage::identity_recheck_failed, "stage %d",
+                  static_cast<int>(r.failed_at));
+    zassert_equal(r.recheck.position, 4, "it stopped at position %u", r.recheck.position);
+    zassert_equal(r.recheck.fault, cm::recheck_fault::wrong_identity, "");
+
+    zassert_false(rt::mapping_applied(), "no mapping may be installed");
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+    zassert_equal(rt::start_acquisition(), -EPERM, "and acquisition must refuse to start");
+    zassert_false(acq::thread_running(), "");
+    zassert_true(r.restore_attempted, "");
+
+    /* The control: with the fault cleared the same sequence proves and starts. */
+    chain = fake::fake_chain{};
+    const cm::outcome good{prove_over_the_fake_chain(12)};
+    zassert_true(good.proven(), "stage %d", static_cast<int>(good.failed_at));
+    zassert_equal(rt::start_acquisition(), 0);
+    zassert_equal(acq::try_stop(), 0);
 }
 
 /* A RETIME THAT FAILED MUST NOT LEAVE A STARTABLE MACHINE, and that is the half the commissioning

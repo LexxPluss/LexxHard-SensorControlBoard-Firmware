@@ -294,6 +294,30 @@ const char *stage_label(tof_commissioning::stage st)
  * Nor does it check whether acquisition is running. That check belongs to the caller, which is in a
  * position to know -- commissioning has already quiesced and holds the chain -- and repeating it
  * here would be a third opinion about the same fact. */
+const char *bus_label(tof_commissioning::bus_state b)
+{
+    switch (b) {
+    case tof_commissioning::bus_state::proof_100k:   return "100kHz";
+    case tof_commissioning::bus_state::product_400k: return "400kHz";
+    case tof_commissioning::bus_state::unknown:      break;
+    }
+    /* Printed as what it is. An operator told "unknown" knows to set the speed before the next
+     * attempt; one told a number that was guessed does not. */
+    return "unknown";
+}
+
+const char *recheck_label(tof_commissioning::recheck_fault f)
+{
+    switch (f) {
+    case tof_commissioning::recheck_fault::none:           return "none";
+    case tof_commissioning::recheck_fault::no_answer:      return "no_answer";
+    case tof_commissioning::recheck_fault::probe_failed:   return "probe_failed";
+    case tof_commissioning::recheck_fault::read_failed:    return "read_failed";
+    case tof_commissioning::recheck_fault::wrong_identity: return "wrong_identity";
+    }
+    return "?";
+}
+
 int set_bus_speed_hw(tof_commissioning::bus_speed s)
 {
     if (!device_is_ready(i2c2_dev))
@@ -378,6 +402,24 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
     shell_print(shell, "isolation: attempted=%d answered=0x%02x prev=0x%02x id=%02x/%02x",
                 r.isolation.attempted, r.isolation.answering_addr, r.isolation.prev_addr,
                 r.isolation.seen.first, r.isolation.seen.second);
+
+    /* WHERE THE BUS WAS LEFT, on every path including the successful one. An operator who is not
+     * told this has been told the wrong thing about the machine: a run that gave up after the
+     * retime may have put the bus back, may have failed to, and the next attempt behaves
+     * differently in each case. */
+    shell_print(shell, "bus: %s  restore=%s rc=%d  speed_rc=%d", bus_label(r.final_bus),
+                r.restore_attempted ? "attempted" : "not-needed", r.restore_rc, r.speed_rc);
+
+    /* And which position refused, and how. Only when there is one -- printing a cleared struct on
+     * every run would make the fields look like readings rather than a fault report. */
+    if (r.failed_at == tof_commissioning::stage::identity_recheck_failed) {
+        shell_print(shell,
+                    "identity re-check: position %u (addr 0x%02x) %s  probe_rc=%d read_rc=%d "
+                    "id=%02x/%02x",
+                    r.recheck.position, r.recheck.address, recheck_label(r.recheck.fault),
+                    r.recheck.probe_rc, r.recheck.read_rc, r.recheck.seen.first,
+                    r.recheck.seen.second);
+    }
 
     if (!r.proven())
         return -EIO;

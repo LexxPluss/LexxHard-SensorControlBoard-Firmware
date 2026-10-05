@@ -511,48 +511,87 @@ ZTEST(tof_commissioning, test_a_refused_product_speed_commits_nothing_and_restor
     zassert_not_equal(au::current().state, acq::mapping_state::proven);
 }
 
-/* A POSITION THAT DOES NOT ANSWER AT 400 kHz. Silence is a bus or a missing part, and it is
- * reported as its own thing -- the wire has position_silent as well as identity_disagreed. */
-ZTEST(tof_commissioning, test_a_position_silent_at_the_product_speed_commits_nothing)
+/* EVERY POSITION, NOT THE FIRST ONE. The re-check loops over the spec, and a test that only
+ * asserted "something was read after the retime" would pass against a loop that checked one sensor
+ * and returned. The fake records the address of each position it was asked about, in order. */
+ZTEST(tof_commissioning, test_the_recheck_visits_every_position_at_its_own_address)
 {
     arrange(provable_spec());
-    /* The re-check is the only chain activity after the retime, so failing probes from here on
-     * fails exactly it. */
-    chain.error_probes_at_pulse_count = -1;
 
     const cm::outcome r{cm::prove(7)};
-    zassert_true(r.proven(), "the control must pass before the fault is injected");
+    zassert_true(r.proven(), "stage %d", static_cast<int>(r.failed_at));
 
-    /* Now with one position gone at the product speed. */
-    arrange(provable_spec());
-    chain.silence_after_retime = true;
-
-    const cm::outcome bad{cm::prove(8)};
-
-    zassert_equal(bad.failed_at, cm::stage::identity_recheck_failed, "");
-    zassert_true(bad.recheck.silent, "silence and disagreement are different faults");
-    zassert_true(bad.recheck.position >= 1, "the position is named: %u", bad.recheck.position);
-    zassert_true(bad.restore_attempted, "");
-    zassert_equal(bad.final_bus, cm::bus_state::proof_100k, "");
-    zassert_equal(install_calls, 0, "nothing may be installed");
-    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+    zassert_equal(chain.rechecked_count, runtime_spec.positions,
+                  "%zu of %zu positions were re-checked", chain.rechecked_count,
+                  static_cast<size_t>(runtime_spec.positions));
+    for (size_t i = 0; i < runtime_spec.positions; ++i)
+        zassert_equal(chain.rechecked_addr[i], runtime_spec.at[i].target_addr,
+                      "position %zu was re-checked at 0x%02x, not its own 0x%02x", i + 1,
+                      chain.rechecked_addr[i], runtime_spec.at[i].target_addr);
 }
 
-/* AND A POSITION THAT ANSWERS AS SOMETHING ELSE. Same refusal, different fault: a wrong id is the
- * wrong part, and it sends an operator somewhere else entirely. */
-ZTEST(tof_commissioning, test_a_position_that_answers_as_another_model_commits_nothing)
+/* THE FOUR WAYS A POSITION CAN FAIL, AND THEY ARE NOT THE SAME FAULT. Collapsing any of the first
+ * three into "identity disagreed" tells an operator the part is wrong when the evidence does not
+ * support that, and sends them to replace a sensor over a bus fault.
+ *
+ * Each is injected at position 3, not position 1: a fault that always lands on the first position
+ * cannot tell a loop that checks every position from one that checks only the first. */
+ZTEST(tof_commissioning, test_each_recheck_fault_is_reported_as_itself)
 {
-    arrange(provable_spec());
-    chain.wrong_id_after_retime = true;
+    struct row {
+        const char *what;
+        bool nack;
+        bool probe_err;
+        bool read_err;
+        bool wrong_id;
+        cm::recheck_fault fault;
+        bool nothing_came_back;
+    };
+    static const row rows[]{
+        {"a clean NACK", true, false, false, false, cm::recheck_fault::no_answer, true},
+        {"a probe that did not complete", false, true, false, false,
+         cm::recheck_fault::probe_failed, true},
+        {"an ACK then a failed read", false, false, true, false, cm::recheck_fault::read_failed,
+         true},
+        {"a complete answer from the wrong part", false, false, false, true,
+         cm::recheck_fault::wrong_identity, false},
+    };
 
-    const cm::outcome r{cm::prove(7)};
+    for (const auto &k : rows) {
+        arrange(provable_spec());
+        chain.fault_position = 3;
+        chain.silence_after_retime = k.nack;
+        chain.probe_error_after_retime = k.probe_err;
+        chain.read_error_after_retime = k.read_err;
+        chain.wrong_id_after_retime = k.wrong_id;
 
-    zassert_equal(r.failed_at, cm::stage::identity_recheck_failed, "");
-    zassert_false(r.recheck.silent, "it answered -- as the wrong thing");
-    zassert_equal(r.recheck.read_rc, 0, "the read itself succeeded");
-    zassert_true(r.restore_attempted, "");
-    zassert_equal(install_calls, 0, "nothing may be installed");
-    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+        const cm::outcome r{cm::prove(7)};
+
+        zassert_equal(r.failed_at, cm::stage::identity_recheck_failed, "%s", k.what);
+        zassert_equal(r.recheck.fault, k.fault, "%s was reported as fault %d", k.what,
+                      static_cast<int>(r.recheck.fault));
+        zassert_equal(r.recheck.answered_nothing(), k.nothing_came_back, "%s", k.what);
+
+        /* THE POSITION IS NAMED, and it is the one that failed -- not the first one looked at. */
+        zassert_equal(r.recheck.position, 3, "%s: position %u", k.what, r.recheck.position);
+        zassert_equal(r.recheck.address, runtime_spec.at[2].target_addr, "%s", k.what);
+
+        /* AND THE TRANSPORT'S OWN ERRNO SURVIVES, which it did not: the probe's was discarded. */
+        if (k.fault == cm::recheck_fault::probe_failed)
+            zassert_equal(r.recheck.probe_rc, -ETIMEDOUT, "the probe's errno was dropped");
+        if (k.fault == cm::recheck_fault::read_failed)
+            zassert_equal(r.recheck.read_rc, -EIO, "the read's errno was dropped");
+
+        /* NOT COMMITTED, whichever fault it was, and whichever position. */
+        zassert_equal(install_calls, 0, "%s installed a mapping", k.what);
+        zassert_not_equal(au::current().state, acq::mapping_state::proven, "%s", k.what);
+        zassert_true(r.restore_attempted, "%s", k.what);
+
+        /* It got as far as position 3 before giving up, which is the other half of "every
+         * position": a loop that stopped at the first would never have reached it. */
+        zassert_equal(chain.rechecked_count, 3U, "%s: re-checked %zu positions", k.what,
+                      chain.rechecked_count);
+    }
 }
 
 /* THE RESTORE IS AN OBLIGATION, AND A FAILED ONE IS REPORTED RATHER THAN SWALLOWED. It also must
@@ -560,6 +599,7 @@ ZTEST(tof_commissioning, test_a_position_that_answers_as_another_model_commits_n
 ZTEST(tof_commissioning, test_a_restore_that_fails_is_reported_without_masking_the_real_failure)
 {
     arrange(provable_spec());
+    chain.fault_position = 4;
     chain.wrong_id_after_retime = true;
     restore_speed_rc = -EIO;
 

@@ -405,20 +405,33 @@ ZTEST(tof_commission_wire, test_a_silent_position_and_a_wrong_one_do_not_map_to_
     cm::outcome r{};
     r.failed_at = cm::stage::identity_recheck_failed;
 
-    r.recheck.silent = true;
-    const map::outcome silent{map::map_result(r)};
-    zassert_true(silent.res == wire::result::proof_failed, "");
-    zassert_true(silent.stage == wire::wire_stage::identity_recheck, "");
-    zassert_true(silent.detail == wire::wire_detail::position_silent,
-                 "a position that did not answer is not an identity disagreement");
+    /* THREE WAYS NOTHING USABLE CAME BACK, and none of them is an identity disagreement. The read
+     * failure is the one the mapper got wrong: an ACK followed by a failed id read was being sent
+     * as identity_disagreed, which tells an operator the sensor is the wrong model when what
+     * actually happened is that the bus to it stopped working after the retime. */
+    const cm::recheck_fault nothing_useful[]{
+        cm::recheck_fault::no_answer,
+        cm::recheck_fault::probe_failed,
+        cm::recheck_fault::read_failed,
+    };
+    for (const cm::recheck_fault f : nothing_useful) {
+        r.recheck.fault = f;
+        const map::outcome o{map::map_result(r)};
+        zassert_true(o.res == wire::result::proof_failed, "fault %d", static_cast<int>(f));
+        zassert_true(o.stage == wire::wire_stage::identity_recheck, "fault %d",
+                     static_cast<int>(f));
+        zassert_true(o.detail == wire::wire_detail::position_silent,
+                     "fault %d was sent as an identity disagreement", static_cast<int>(f));
+        zassert_false(o.detail == wire::wire_detail::identity_disagreed, "fault %d",
+                      static_cast<int>(f));
+    }
 
-    r.recheck.silent = false;
+    /* And the only one that means the part is wrong. */
+    r.recheck.fault = cm::recheck_fault::wrong_identity;
     const map::outcome wrong{map::map_result(r)};
     zassert_true(wrong.stage == wire::wire_stage::identity_recheck, "");
     zassert_true(wrong.detail == wire::wire_detail::identity_disagreed,
-                 "a position that answered as something else is");
-
-    zassert_false(silent.detail == wrong.detail, "and the two must not collapse");
+                 "a position that answered, completely, as something else");
 }
 
 /* The two speed refusals carry their own details, and they are not the same step: one happened

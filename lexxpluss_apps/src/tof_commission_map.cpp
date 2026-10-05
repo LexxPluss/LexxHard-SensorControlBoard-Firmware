@@ -232,8 +232,14 @@ outcome map_result(const cm::outcome &r)
          * A position that did not ACK is a bus or a missing part; one that answered with the wrong
          * id is the WRONG part. tof_commissioning says so in its own header, and collapsing them
          * here would send an operator to the wrong place with no way to tell. */
+        /* identity_disagreed ONLY when the position answered, completely, as something else. A
+         * NACK, a probe that did not complete and a read that failed after an ACK are all "nothing
+         * usable came back" -- the contract has one value for that, and saying the part is wrong
+         * instead would send an operator to replace a sensor over a bus fault. Which of the three
+         * it was is in the outcome and in the log. */
         return {result::proof_failed, wire_stage::identity_recheck,
-                r.recheck.silent ? wire_detail::position_silent : wire_detail::identity_disagreed};
+                r.recheck.answered_nothing() ? wire_detail::position_silent
+                                             : wire_detail::identity_disagreed};
     }
     return {result::internal_error, wire_stage::not_started, wire_detail::none};
 }

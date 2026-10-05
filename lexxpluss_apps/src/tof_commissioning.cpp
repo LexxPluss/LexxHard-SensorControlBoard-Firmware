@@ -100,23 +100,34 @@ bool recheck_identities(outcome &r)
         r.recheck.position = static_cast<uint8_t>(i + 1);
         r.recheck.address = ps.target_addr;
 
-        /* Only a clean ACK counts. A transport error is not an answer, and treating it as one would
-         * let a bus that has stopped working at 400 kHz read as a chain that is present. */
+        /* Only a clean ACK counts, and the two ways of not getting one are kept apart. A NACK is a
+         * part that is not answering; a transport error is the bus itself failing, and nothing is
+         * known from it about whether a part is there. Treating either as an answer would let a bus
+         * that has stopped working at 400 kHz read as a chain that is present. */
         if (const enm::probe_result pr{cfg_.ops->probe(ps.target_addr)};
             pr.state != enm::probe_state::ack) {
-            r.recheck.silent = true;
+            r.recheck.fault = pr.state == enm::probe_state::transport_error
+                                  ? recheck_fault::probe_failed
+                                  : recheck_fault::no_answer;
+            r.recheck.probe_rc = pr.rc;
             return false;
         }
 
+        /* IT ANSWERED AND THEN THE READ FAILED. Something is there and the transport to it did not
+         * survive the retime -- which is not the same as the wrong part being there, and must not be
+         * reported as one. */
         enm::id_bytes seen{};
         if (const int rc{cfg_.ops->read_id(ps.expected, ps.target_addr, seen)}; rc != 0) {
+            r.recheck.fault = recheck_fault::read_failed;
             r.recheck.read_rc = rc;
             return false;
         }
 
         r.recheck.seen = seen;
-        if (!enm::id_matches(ps.expected, seen))
+        if (!enm::id_matches(ps.expected, seen)) {
+            r.recheck.fault = recheck_fault::wrong_identity;
             return false;
+        }
     }
 
     /* Cleared on success, so a caller reading `recheck` cannot mistake the last position inspected
