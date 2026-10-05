@@ -66,6 +66,10 @@
 #include "tof_l7_boot_order.hpp"
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_recovery.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_blob_record.hpp"
+#include "tof_l7_runtime.hpp"
+#endif
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
 #endif
@@ -797,6 +801,25 @@ void init()
     LOG_INF("tof chain glue ready (data settle %u ms, sensor boot %u ms; "
             "DS20001 provisional timing)",
             kDataSettleMs, kSensorBootMs);
+
+#if defined(ENABLE_TOF_L7_ULD)
+    /* THE DEVICE FIRMWARE, VERIFIED ONCE, BEFORE ANYTHING ASKS AN L7 FOR A GRID.
+     *
+     * This had no caller. The grid adapter reads tof_l7_runtime::firmware_data(), which answers
+     * empty until a completed bootstrap publishes stage::available -- so every grid position would
+     * have failed at the firmware stage on a board, with the image otherwise looking healthy.
+     *
+     * AN INTEGRITY FAILURE DISABLES ONLY L7. The cliff path and its health channel must still come
+     * up: losing hanging-object detection is already fail-open for that hazard, and suppressing the
+     * independent cliff channel would make the failure larger while hiding the diagnosis. */
+    if (const int rc{tof_l7_runtime::bootstrap()}; rc != 0) {
+        const tof_l7_runtime::snapshot state{tof_l7_runtime::current()};
+
+        LOG_ERR("L7 runtime bootstrap failed at %s (%s, %d); L7 remains unavailable",
+                tof_l7_runtime::stage_name(state.current_stage),
+                tof_l7_blob::status_name(state.verification.st), rc);
+    }
+#endif
 
 #if defined(ENABLE_TOF_CLIFF_ULD)
     /* THE BOOTSTRAP, THE COMMISSIONING TRANSACTION AND THE DOWNLINK, AS ONE SEQUENCE, from the one
