@@ -46,7 +46,7 @@ clean:
 	        build-test-tof-commission-session build-test-tof-commission-runtime \
 	        build-test-tof-commission-bind build-test-tof-commission-worker \
 	        build-auto-commission build-test-tof-l7-boot-order-no-grid \
-	        build-check-l7-no-cliff
+	        build-check-l7-no-cliff build-tof-integration
 
 .PHONY: distclean
 distclean: clean
@@ -395,6 +395,18 @@ firmware_tof_l7:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
+# THE INTEGRATION IMAGE: the L7 build with everything wired, slimmed so it fits.
+#
+# overlays/tof_integration_slim.conf removes the SD/FAT filesystem and its shell -- and only from
+# this image. Every other target above keeps what prj.conf gives it. The fragment says what that
+# costs and why it is acceptable here; the short version is that nothing in the application calls
+# the filesystem API, and firmware update and the L7 blob both go through flash_area_*.
+.PHONY: firmware_tof_integration
+firmware_tof_integration:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-integration -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
 # A CONFIGURATION CHECK, NOT A SHIPPED IMAGE. CMake permits the grid driver without the cliff one,
 # and that combination is the one the boot recovery most needs -- it was also the one nobody built,
