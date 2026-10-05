@@ -7,6 +7,10 @@
 
 #include "tof_cliff_runtime.hpp"
 
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_sensor.hpp"
+#endif
+
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
 
 #include <errno.h>
@@ -59,6 +63,21 @@ struct tof_cliff_scratch scratch_;
  * lives here, beside the device objects, for the same reason they do: acquisition keeps the pointer
  * and the storage has to outlive every cycle. */
 struct tof_cliff_stream_state streams_[kCliffSensors];
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* The grid pair's device objects and their shared scratch.
+ *
+ * SHARED, like the cliff scratch and for the same reason: it holds one in-flight transfer, and the
+ * acquisition thread is the only thing that reads a sensor. A second reader would be a second
+ * caller inside the ULD, whose port keeps one transport record -- which is what the chain lock and
+ * the single-thread rule exist to prevent, not something a second buffer would fix.
+ *
+ * NOT the object the boot recovery uses. That one runs before any open and is zeroed on every
+ * call; these hold live sessions from bring-up onwards. */
+constexpr int kGridSensors{2};
+tof_l7::sensor grid_objs_[kGridSensors];
+tof_l7::scratch grid_scratch_;
+#endif
 /* The acquisition thread's stack, sized from the devicetree.
  *
  * It lives here rather than in tof_acquisition because a Zephyr thread stack is a compile-time sized
@@ -104,9 +123,14 @@ uint32_t now_ms()
  *
  * role_id is deliberately NOT set here. It is the key the contract's source_id and per-cycle masks
  * are built from, and the only legitimate source for it is a mapping a proof installed. */
-void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode)
+void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode,
+                       uint8_t grid_frequency_hz)
 {
     int cliff_index{0};
+    int grid_index{0};
+
+    ARG_UNUSED(grid_frequency_hz);
+    ARG_UNUSED(grid_index);
 
     for (size_t i{0}; i < spec_.positions; ++i) {
         const enm::position_spec &ps{spec_.at[i]};
@@ -128,9 +152,29 @@ void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_m
             d.cliff_distance_mode = cliff_distance_mode;
             ++cliff_index;
         } else {
-            /* The grid path, and the explicit stub rather than a null table or a copy of the cliff
-             * ops: wiring L7 to the L4 driver has to be a deliberate act, not an oversight. */
+#if defined(ENABLE_TOF_L7_ULD)
+            /* THE REAL TABLE. Until now every grid position carried the -ENOSYS stub, so the grid
+             * lifecycle the acquisition layer gained was reachable only from a test. This is the
+             * binding, and it is why the flag-on image's capacity moves. */
+            if (grid_index < kGridSensors) {
+                d.dev = &grid_objs_[grid_index];
+                d.scratch = &grid_scratch_;
+                d.grid_ops = &acq::l7_grid_ops();
+                d.grid_frequency_hz = grid_frequency_hz;
+                ++grid_index;
+            } else {
+                /* More grid positions than objects. The spec and the storage disagree, which is a
+                 * build-time mistake; leaving the stub makes it visible as "unsupported" rather
+                 * than as a sensor fault, and init() refuses an l7_grid source whose table is
+                 * neither bound nor the named stub. */
+                d.ops = &acq::l7_stub_ops();
+            }
+#else
+            /* The grid path in an image without the driver, and the explicit stub rather than a
+             * null table or a copy of the cliff ops: wiring L7 to the L4 driver has to be a
+             * deliberate act, not an oversight. */
             d.ops = &acq::l7_stub_ops();
+#endif
         }
     }
 }
@@ -234,7 +278,8 @@ config config_from_devicetree()
                   DT_PROP(DT_PATH(tof_chain), stop_join_timeout_ms),
                   DT_PROP(DT_PATH(tof_chain), acq_thread_priority),
                   DT_PROP(DT_PATH(tof_chain), cliff_timing_budget_us),
-                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode)};
+                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode),
+                  DT_PROP(DT_PATH(tof_chain), grid_frequency_hz)};
 }
 #endif
 
@@ -257,6 +302,16 @@ int bootstrap(const config &cfg)
      * which is why the refusal below logs rather than only returning. */
     if (cfg.cliff_timing_budget_us == 0) {
         LOG_ERR("cliff-timing-budget-us is 0: the ranging profile is required and is not defaulted");
+        return -EINVAL;
+    }
+    /* The grid rate, checked here for the same reason as the cliff profile: this is the stage that
+     * knows it is reading a deployment's devicetree and can name the property. Refused rather than
+     * clamped -- a rate silently moved to the nearest legal value is a rate nobody chose, and the
+     * one place it is written down would stop being the one in force. Required of every image, so
+     * the deployment states it once and does not have to know which drivers this build carries. */
+    if (cfg.grid_frequency_hz == 0 || cfg.grid_frequency_hz > 15) {
+        LOG_ERR("grid-frequency-hz is %u: 1..15, and the ULD's ceiling at 8x8 is 15",
+                cfg.grid_frequency_hz);
         return -EINVAL;
     }
     if (cfg.cliff_distance_mode < 2 || cfg.cliff_distance_mode > 3) {
@@ -285,7 +340,8 @@ int bootstrap(const config &cfg)
         return -ENODEV;
     }
 
-    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode);
+    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode,
+                      cfg.grid_frequency_hz);
 
     if (const int rc{init_authority()}; rc != 0) {
         stage_ = stage::authority_failed;
@@ -418,7 +474,8 @@ const acq::source_desc *descriptors_for_test()
 
 int force_rebuild_descriptors_for_test()
 {
-    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode);
+    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode,
+                      cfg_.grid_frequency_hz);
     keyed_ = false;
     return 0;
 }

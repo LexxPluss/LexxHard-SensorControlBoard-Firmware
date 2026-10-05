@@ -57,6 +57,12 @@
 		 * carries the properties and reads neither. */
 		cliff-timing-budget-us = <15000>;
 		cliff-distance-mode = <2>;	/* MEDIUM */
+		/* THE GRID PAIR'S RATE, and provisional in the strong sense: the
+		 * sustainable rate has never been measured on this chain. 5 Hz is
+		 * below the 20 Hz cycle on purpose -- most cycles then find nothing
+		 * ready, which is the ordinary case and costs one non-blocking check.
+		 * Read only by an image that enables ENABLE_TOF_L7_ULD. */
+		grid-frequency-hz = <5>;
 	};
 };
 
