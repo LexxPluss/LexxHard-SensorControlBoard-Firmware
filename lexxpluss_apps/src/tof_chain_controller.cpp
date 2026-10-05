@@ -271,6 +271,19 @@ int cmd_enum(const struct shell *shell, size_t, char **)
     return r.status == tof_enum::chain_status::degraded ? -ENODATA : -EIO;
 }
 
+/* THE PRIMITIVE, AND OUTSIDE EVERY FEATURE GUARD. It takes an I2C_SPEED_* and knows nothing else.
+ *
+ * It lived inside the cliff guard, which compiled in the three configurations I had built and not
+ * in the fourth: CMake permits chain + L7 WITHOUT the cliff driver, and the boot recovery calls
+ * this. So the combination the grid path most needs was the one that would not build. The feature
+ * that owns a vocabulary keeps its own wrapper; the register write belongs to neither. */
+int set_chain_bus_speed(uint32_t i2c_speed)
+{
+    if (!device_is_ready(i2c2_dev))
+        return -ENODEV;
+    return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(i2c_speed));
+}
+
 #if defined(ENABLE_TOF_CLIFF_ULD)
 
 const char *stage_label(tof_commissioning::stage st)
@@ -324,18 +337,7 @@ const char *recheck_label(tof_commissioning::recheck_fault f)
     return "?";
 }
 
-/* The primitive, and deliberately in no feature's vocabulary. The boot order needs it in an image
- * with the grid driver, commissioning needs it in an image with the cliff driver, and a chain-only
- * image has neither -- so the one that takes an I2C_SPEED_* is the one both can reach. Taking
- * commissioning's enum here made the chain-only build fail to compile, which is the build saying
- * the dependency was the wrong way round. */
-int set_chain_bus_speed(uint32_t i2c_speed)
-{
-    if (!device_is_ready(i2c2_dev))
-        return -ENODEV;
-    return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(i2c_speed));
-}
-
+/* Commissioning's vocabulary, and it stays behind the cliff guard because the type does. */
 #if defined(ENABLE_TOF_CLIFF_ULD)
 int set_bus_speed_hw(tof_commissioning::bus_speed s)
 {
