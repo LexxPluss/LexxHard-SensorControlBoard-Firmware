@@ -1261,9 +1261,11 @@ schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period
              * it ends at now + period and the deadline after it is now + 2 * period.
              *
              * It said now + period, which is the instant the wait ENDS -- so the cycle that ran
-             * after the repair was born already due, and the next decision called it an overrun
-             * however little work it did. A repair that leaves the loop permanently one period
-             * behind is not a repair; it converts a clock glitch into a standing overrun. */
+             * after the repair was born already due and was counted as an overrun however little
+             * work it did. ONE cycle: that decision re-bases on now, so the cadence is correct
+             * again from the cycle after it. The cost is therefore a miscount rather than a stall,
+             * and it still matters, because the overrun count is the one signal that says the
+             * period is too short for the work -- a clock glitch must not be able to spend it. */
             out.next_due_ms = now_ms + 2 * static_cast<int64_t>(period_ms);
             return out;
         }

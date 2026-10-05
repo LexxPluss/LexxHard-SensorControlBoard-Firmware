@@ -1082,12 +1082,15 @@ ZTEST(tof_acquisition, test_an_impossible_deadline_is_repaired_and_is_not_an_ove
                   "instant that wait ends");
 }
 
-/* THE REPAIR MUST LEAVE THE LOOP ON TIME, NOT ONE PERIOD BEHIND. A decision is only correct in
- * terms of what the decision AFTER it does, and this is the pair that proves it: repair, then an
- * ordinary cycle doing almost no work. If the repaired deadline were the instant the wait ended,
- * that next cycle would be past due the moment it started and every cycle after it would be
- * counted late -- a clock glitch converted into a standing overrun, with the rate halved and the
- * counter pointing at the wrong thing. */
+/* THE REPAIR MUST LEAVE THE LOOP ON TIME. A decision is only correct in terms of what the decision
+ * AFTER it does, and this is the pair that proves it: repair, then an ordinary cycle doing almost
+ * no work. If the repaired deadline were the instant the wait ended, that next cycle would be past
+ * due the moment it started and would be counted late.
+ *
+ * ONE cycle, not every cycle after it: the overrun branch re-bases on now, so the cadence is right
+ * again immediately. The defect is a miscounted overrun rather than a stalled loop -- which is
+ * still worth a case, because that count is the one signal that says the period is too short for
+ * the work, and a clock glitch must not be able to spend it. */
 ZTEST(tof_acquisition, test_the_cycle_after_a_repair_is_not_born_late)
 {
     const acq::schedule_decision repaired{acq::next_cycle_due(100000, 100, 20)};

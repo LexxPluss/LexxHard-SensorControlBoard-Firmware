@@ -421,7 +421,9 @@ struct thread_config {
  * heartbeat still flowing and nothing to say why the measurements stopped. It is not an overrun,
  * because nothing was late -- and the deadline it rebuilds is one period after the wait it is about
  * to perform, not one period after now, or the cycle that follows the repair would be born already
- * due and every cycle after it would be counted late.
+ * due and counted late. That miscount is bounded to one cycle, since the overrun branch re-bases on
+ * now; it is still worth getting right, because the overrun count is the one signal that says the
+ * period is too short for the work.
  *
  * `due_ms` and `now_ms` are milliseconds from a monotonic clock. A period of zero is not reachable
  * -- init() refuses one -- and is treated as an overrun rather than splitting the responsibility
