@@ -39,8 +39,14 @@
  * verifying the stored L7 blob, which hashes 86 KB on the main stack before any baseline exists.
  * The other two candidates do not need declaring and are named here so nobody adds them by reflex.
  * The ULD download at open() takes about two seconds per sensor and is covered by the L7 in-flight
- * bound, which is longer than that. Commissioning runs over CAN with the host and blocks no thread,
- * so the periodic work continues throughout it.
+ * bound, which is longer than that.
+ *
+ * Commissioning is NOT one of them, and an earlier version of this header said it was harmless on
+ * the grounds that it "blocks no thread, so the periodic work continues". That was wrong:
+ * commissioning stops acquisition, and acquisition is the thread that sends 0x214-0x216 and the
+ * cycle health frame. It is handled by `acquisition_expected` instead of by a declaration, because
+ * a proof that fails leaves acquisition stopped by design and a declaration has no end to wait
+ * for.
  *
  * A declaration suspends a FIXED, NAMED set of activities and nothing else -- this is the part an
  * earlier version got wrong. Hashing a blob says nothing about whether the CAN heartbeat is still
@@ -118,6 +124,19 @@ struct progress {
  * constant means no call site can widen it. */
 inline constexpr uint32_t kLongOperationSuspends{stuck_cycle | silent_cycle | stuck_l7 | silent_l7};
 
+/* What an absent host suspends: both senders and the zcan loop, and nothing else. The cycle, the
+ * health work and the L7 do not go through the host, so a hang in any of them is still a hang while
+ * the host is away. */
+inline constexpr uint32_t kHostAbsentSuspends{stuck_send_acq | silent_send_acq | stuck_send_workq |
+                                              silent_send_workq | silent_zcan};
+
+/* What a stopped acquisition suspends. send_acq is in here because it IS the acquisition thread:
+ * tof_progress attributes 0x214-0x216 and the cycle health frame to that slot, so an acquisition
+ * that is not running cannot be sending. The workqueue heartbeat is not, and neither is the health
+ * work, so both stay judged. */
+inline constexpr uint32_t kAcquisitionStoppedSuspends{stuck_cycle | silent_cycle | stuck_send_acq |
+                                                      silent_send_acq};
+
 struct bounds {
     /* After the baseline, before anything is judged. Covers the first cycle of each activity. */
     uint32_t grace_ms{2000};
@@ -146,6 +165,45 @@ struct input {
     /* Does this image expect an L7 at all? False for a build without the ULD or with no grid
      * position, and then no L7 progress is ever required or judged. */
     bool l7_expected{false};
+
+    /* IS THE HOST ON THE BUS? The two CAN senders and the zcan loop are judged only while it is,
+     * and the reason is that a frame with nobody to ACK it does not fail -- it never returns.
+     *
+     * tof_cliff_can.cpp spells out why: the send timeout bounds only the wait for a free TX
+     * mailbox, because z_impl_can_send() implements the callback == NULL form as api->send()
+     * followed by k_sem_take(&ctx.done, K_FOREVER). With no host the controller retransmits
+     * indefinitely, the mailbox never completes, and the sender sits in that semaphore. So `ended`
+     * stops moving and `stuck_send_*` latches after two seconds; the zcan loop's sends are the same
+     * form with a longer mailbox timeout, so its tick stops and `silent_zcan` latches too. About
+     * ten seconds later the IWDG resets the board.
+     *
+     * That made every host restart cost one SCB reset, on a product whose other half treats host
+     * loss as an ordinary state -- see ros_heartbeat_timeout in board_controller.cpp. The baseline
+     * was not enough: baseline_ready() keeps a BOOTING board off the reset path, once, and nothing
+     * re-checked the host afterwards.
+     *
+     * THIS IS THE CONTAINED HALF OF THE FIX. The other half is senders that return instead of
+     * blocking when no ACK arrives -- the callback form of can_send() -- which is the better answer
+     * and is a change to the send path in tof_cliff_can.cpp and the ten zcan_* senders, i.e. the
+     * product's whole CAN telemetry. Until that is done, this gate is what keeps the watchdog from
+     * resetting a healthy board that is waiting for its host.
+     *
+     * NOT CAPPED, deliberately. An absent host is an indefinite normal state, not a fault with a
+     * deadline, so there is no bound after which the watchdog starts judging the senders anyway. */
+    bool host_present{false};
+
+    /* IS ACQUISITION SUPPOSED TO BE RUNNING? Same shape as l7_expected, and for a sharper reason.
+     *
+     * Commissioning STOPS acquisition: `tof cliff prove` quiesces it and tof_acq::try_stop() joins
+     * that thread, which is also the thread that sends 0x214-0x216 and the cycle health frame. So a
+     * commissioning pass silences `acquisition` AND `send_acq`, and the header used to claim that
+     * commissioning "blocks no thread, so the periodic work continues", which is wrong.
+     *
+     * Declaring the pass as a long operation does not cover it either: a proof that FAILS leaves
+     * acquisition stopped by design, and then the silence never ends -- there is no end-of-operation
+     * to wait for. The question the watchdog has to ask is not "has acquisition progressed" but "is
+     * acquisition supposed to be progressing", which only the caller knows. */
+    bool acquisition_expected{false};
     progress acquisition{};
     /* The two senders, watched separately. `send_acq` carries 0x214/0x215/0x216 and the cycle
      * health frame from the acquisition slot; `send_workq` carries the 0x217 heartbeat from the

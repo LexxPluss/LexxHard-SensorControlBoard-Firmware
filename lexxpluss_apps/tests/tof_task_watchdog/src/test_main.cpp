@@ -47,9 +47,18 @@ struct harness {
     wd::input in{};
 
     /* Everything finished, nothing in flight: a board between cycles. The L7 is deliberately at
-     * zero, because the baseline happens before the first open. */
+     * zero, because the baseline happens before the first open.
+     *
+     * THE HOST IS PRESENT AND ACQUISITION IS EXPECTED, set here rather than per case, because an
+     * ordinary board has both. Both default to FALSE in the struct, which suppresses the send and
+     * cycle reasons -- the safe direction for a watchdog, since the failure that matters is
+     * resetting a healthy board. The cost is that a wiring which forgets either flag silently
+     * stops judging half of what this layer watches, so the cases that are ABOUT the gates set
+     * them explicitly and say which one they are exercising. */
     void healthy_pre_l7()
     {
+        in.host_present = true;
+        in.acquisition_expected = true;
         in.acquisition = {10, 10};
         in.send_acq = {20, 20};
         in.send_workq = {7, 7};
@@ -425,4 +434,110 @@ ZTEST(tof_task_watchdog, test_every_reason_has_its_own_name)
     zassert_true(strcmp(wd::reason_name(wd::silent_zcan), "silent_zcan") == 0);
     zassert_true(strcmp(wd::reason_name(wd::long_operation_over), "long_operation_over") == 0);
     zassert_true(strcmp(wd::reason_name(wd::feed_api_failed), "feed_api_failed") == 0);
+}
+
+/* ---- the host goes away after the baseline ---- */
+
+/* KOKO'S CASE, AND IT WAS A RESET PER HOST RESTART. The senders do not fail when no host ACKs
+ * them -- they never return, because the send timeout bounds only the wait for a free mailbox and
+ * the wait for completion is K_FOREVER. So `ended` stops moving, `stuck_send_*` latches at two
+ * seconds, the zcan tick stops with its sender, and the IWDG resets about ten seconds later. The
+ * rest of the product treats host loss as ordinary (ros_heartbeat_timeout). */
+ZTEST(tof_task_watchdog, test_a_host_that_goes_away_after_the_baseline_does_not_reset_the_board)
+{
+    harness h;
+    h.arm();
+
+    h.in.host_present = false;
+    /* Both senders stuck inside a send, and the zcan loop stuck in one of its own. Nothing else
+     * changes: the cycle, the health work and the L7 keep going, because they do not go through
+     * the host. */
+    ++h.in.send_acq.begun;
+    ++h.in.send_workq.begun;
+
+    for (int i = 0; i < 60; ++i) {
+        zassert_true(h.tick(500, advance{.send_acq = false, .send_workq = false, .zcan = false}),
+                     "reset at %u ms with the host away", h.in.now_ms);
+    }
+    zassert_equal(h.st.current, wd::phase::armed, "");
+    zassert_equal(h.st.why, 0U, "");
+}
+
+/* AND IT IS WATCHED AGAIN THE MOMENT THE HOST IS BACK. The gate is on the host, not a grace period
+ * that expires: a sender still wedged once the host returns is a fault again. */
+ZTEST(tof_task_watchdog, test_a_sender_still_wedged_when_the_host_returns_is_caught)
+{
+    harness h;
+    h.arm();
+
+    h.in.host_present = false;
+    ++h.in.send_acq.begun;
+    for (int i = 0; i < 20; ++i)
+        (void)h.tick(500, advance{.send_acq = false});
+
+    h.in.host_present = true;
+    /* The in-flight bound is measured from the last completion, so one tick past it is enough. */
+    const bool fed = h.tick(h.b.send_ms + 1, advance{.send_acq = false});
+    zassert_false(fed, "a wedged sender with the host back on the bus must be caught");
+    zassert_true((h.st.why & wd::stuck_send_acq) != 0, "why 0x%08x", h.st.why);
+}
+
+/* THE HOST GATE SUSPENDS THE SENDERS AND NOTHING ELSE. A cycle that stops while the host is away
+ * is still a hang: it does not go through the host. */
+ZTEST(tof_task_watchdog, test_an_absent_host_does_not_excuse_a_dead_cycle)
+{
+    harness h;
+    h.arm();
+
+    h.in.host_present = false;
+    const bool fed = h.tick(h.b.cycle_silence_ms + 1, advance{.acq = false});
+    zassert_false(fed, "an absent host excused a dead acquisition cycle");
+    zassert_true((h.st.why & wd::silent_cycle) != 0, "why 0x%08x", h.st.why);
+}
+
+/* ---- commissioning stops acquisition ---- */
+
+/* KOKO'S SECOND CASE. Commissioning quiesces acquisition, and that thread is also what sends
+ * 0x214-0x216 and the cycle health frame, so a pass silences `acquisition` AND `send_acq`. The
+ * header used to claim commissioning blocks no thread. */
+ZTEST(tof_task_watchdog, test_a_commissioning_pass_that_stops_acquisition_does_not_reset_the_board)
+{
+    harness h;
+    h.arm();
+
+    h.in.acquisition_expected = false;
+    for (int i = 0; i < 60; ++i) {
+        zassert_true(h.tick(500, advance{.acq = false, .send_acq = false}),
+                     "reset at %u ms during commissioning", h.in.now_ms);
+    }
+    zassert_equal(h.st.why, 0U, "");
+}
+
+/* AND A PROOF THAT FAILS LEAVES ACQUISITION STOPPED BY DESIGN, with no end-of-operation to wait
+ * for. That is why this is a state input rather than a declared long operation: a declaration would
+ * expire and reset a board that is behaving exactly as specified. */
+ZTEST(tof_task_watchdog, test_acquisition_left_stopped_by_a_failed_proof_never_times_out)
+{
+    harness h;
+    h.arm();
+
+    h.in.acquisition_expected = false;
+    for (int i = 0; i < 400; ++i)  // 200 s, far past every bound including long_operation_ms
+        zassert_true(h.tick(500, advance{.acq = false, .send_acq = false}), "at %u ms", h.in.now_ms);
+    zassert_equal(h.st.current, wd::phase::armed, "");
+}
+
+/* THE WORKQUEUE HEARTBEAT IS NOT THE ACQUISITION THREAD, so stopping acquisition does not excuse
+ * it. One summed suspend set would have hidden a dead 0x217 for the length of every commissioning
+ * pass. */
+ZTEST(tof_task_watchdog, test_a_stopped_acquisition_does_not_excuse_the_workqueue_heartbeat)
+{
+    harness h;
+    h.arm();
+
+    h.in.acquisition_expected = false;
+    const bool fed = h.tick(h.b.send_silence_ms + 1,
+                            advance{.acq = false, .send_acq = false, .send_workq = false});
+    zassert_false(fed, "a stopped acquisition excused the 0x217 heartbeat");
+    zassert_true((h.st.why & wd::silent_send_workq) != 0, "why 0x%08x", h.st.why);
 }

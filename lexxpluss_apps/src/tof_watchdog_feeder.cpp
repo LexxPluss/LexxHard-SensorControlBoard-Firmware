@@ -15,6 +15,9 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/watchdog.h>
+#if defined(CONFIG_HWINFO)
+#include <zephyr/drivers/hwinfo.h>
+#endif
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
@@ -40,10 +43,21 @@ constexpr int32_t kFeedPeriodMs{500};
  * that expiring here leaves time for the log line to be read before the reset it implies. */
 constexpr int32_t kFirstFeedWaitMs{2000};
 
-/* Above the acquisition thread (7 in the devicetree) so a loaded but healthy board cannot starve
- * the feeder into resetting itself, and preemptible and mostly asleep so it cannot be why a watched
- * thread does not run. */
-constexpr int kPriority{5};
+/* ABOVE EVERY THREAD IT MIGHT HAVE TO OUTLIVE, which is all of them.
+ *
+ * An earlier value of 5 was justified against the acquisition thread (7) alone, and that was the
+ * wrong comparison: in Zephyr a smaller number is HIGHER priority, and main.cpp starts thirteen
+ * threads above 5 -- led, pgv and shutter at 1, actuator, actuator_service, adc, imu, uss, gpio and
+ * tug at 2, bmu, can, board and runaway at 4 -- with zcan_main equal at 5. Any one of them
+ * spinning, or an interrupt storm keeping them runnable, starves the feeder. The feeder then never
+ * runs, commit_tombstone() is never called, and the IWDG resets the board with no record: once the
+ * wiring removes the unconditional timer feed, that is exactly the "first trip leaves nothing" this
+ * layer exists to end.
+ *
+ * So it is the highest preemptible priority. The cost is one wdt_feed() every 500 ms from a thread
+ * that is otherwise asleep, which cannot be why a watched thread fails to run; the alternative is a
+ * forensics layer that is absent in the cases it was built for. */
+constexpr int kPriority{K_HIGHEST_APPLICATION_THREAD_PRIO};
 constexpr size_t kStackSize{1024};
 
 K_THREAD_STACK_DEFINE(stack_, kStackSize);
@@ -292,14 +306,60 @@ tomb::status read_record(tomb::record &out)
     return tomb::read(tombstone_region(), out);
 }
 
+namespace {
+
+/* WHY THIS BOOT HAPPENED, so a watchdog reset with no record can be told from a clean start.
+ *
+ * It is the question the record cannot answer when the record is missing or stale: "no retained
+ * record" reads identically on a board that has never tripped and on one that tripped and lost its
+ * record. The reset cause distinguishes them, and it comes from the hardware rather than from
+ * anything this subsystem wrote.
+ *
+ * Reported rather than acted on. Nothing here decides anything from it; a reset cause that drove
+ * behaviour would be a second, weaker copy of the record. */
+void report_reset_cause()
+{
+#if defined(CONFIG_HWINFO)
+    uint32_t cause{0};
+    if (hwinfo_get_reset_cause(&cause) != 0) {
+        LOG_WRN("  reset cause unavailable");
+        return;
+    }
+    if ((cause & RESET_WATCHDOG) != 0)
+        LOG_ERR("  reset cause 0x%08x INCLUDES THE WATCHDOG", static_cast<unsigned>(cause));
+    else
+        LOG_INF("  reset cause 0x%08x (not the watchdog)", static_cast<unsigned>(cause));
+#else
+    /* Said once rather than left silent: a reader looking for the cause should learn that this
+     * image cannot tell them, not that the cause was benign. */
+    LOG_INF("  reset cause not available (CONFIG_HWINFO is off)");
+#endif
+}
+
+}  // namespace
+
 void report_previous_stop()
 {
     tomb::record r{};
     const tomb::status st{read_record(r)};
-    if (st != tomb::status::valid) {
-        /* Not a warning. A board that has never tripped the watchdog reads exactly like this, and
-         * so does one whose battery was pulled, and neither is news. */
+
+    if (st == tomb::status::not_committed) {
+        /* THE ONLY ONE THAT IS NOT NEWS. No commit magic means either nothing was ever written or a
+         * reset landed mid-write: a board that has never tripped the watchdog reads exactly like
+         * this, and so does one whose battery was pulled. */
         LOG_INF("no retained watchdog record (%s)", tomb::status_name(st));
+        return;
+    }
+    if (st != tomb::status::valid) {
+        /* WRITTEN AND NOW UNREADABLE, WHICH IS A DIFFERENT THING. wrong_version, wrong_size,
+         * bad_end_magic and bad_checksum are only reachable with the commit magic PRESENT, so they
+         * all mean "a stop was recorded and cannot be read back": the overwrite the DTCM
+         * reservation exists to prevent, or an MCUboot revert leaving an old image reading a newer
+         * record. They used to go out as the same LOG_INF as not_committed, under a comment about
+         * boards that never tripped -- which describes only that one case and buried these. */
+        LOG_ERR("RETAINED WATCHDOG RECORD IS UNREADABLE (%s): a stop WAS recorded and cannot be "
+                "read back", tomb::status_name(st));
+        report_reset_cause();
         return;
     }
     /* RETAINED, not necessarily the previous boot. Nothing clears this record after reporting it,
@@ -313,6 +373,7 @@ void report_previous_stop()
             static_cast<unsigned>(r.send_workq_ended));
     LOG_ERR("  last fed at %u ms, feed rc %d", static_cast<unsigned>(r.last_fed_ms),
             static_cast<int>(r.feed_rc));
+    report_reset_cause();
     LOG_ERR("  health %u/%u  l7 %u/%u  zcan %u  long %u since %u ms",
             static_cast<unsigned>(r.health_begun), static_cast<unsigned>(r.health_ended),
             static_cast<unsigned>(r.l7_begun), static_cast<unsigned>(r.l7_ended),
