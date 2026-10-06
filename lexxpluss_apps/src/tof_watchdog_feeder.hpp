@@ -71,6 +71,14 @@ int wait_first_feed(void);
 void set_baseline_point(bool ready);
 void set_l7_expected(bool expected);
 
+/* IS ACQUISITION SUPPOSED TO BE RUNNING? False while commissioning holds it stopped, and false
+ * after a proof that failed and left it stopped by design.
+ *
+ * DEFAULTS TO TRUE, so a wiring that never calls this produces a false reset during the first
+ * commissioning pass rather than a watchdog that silently stops judging the cycle and the
+ * acquisition sender. The loud failure is the intended one. */
+void set_acquisition_expected(bool expected);
+
 /* A declared long operation -- an ULD download, a commissioning pass. Suspends the bounds of the
  * chain work it holds and nothing else, and is itself bounded. */
 void long_operation_begin();

@@ -34,6 +34,27 @@
  * requires every watched activity to have actually finished once on this boot. Before that the
  * answer is always feed.
  *
+ * THAT COVERS BOOT AND NOT A HOST THAT LEAVES LATER, AND THIS LAYER CANNOT COVER IT. The baseline
+ * is a one-time arming condition; after it, a host that goes away blocks the senders again and the
+ * board resets about ten seconds later, once per host restart, on a product whose other half
+ * treats host loss as ordinary (ros_heartbeat_timeout in board_controller.cpp).
+ *
+ * It is not fixable here, and an earlier version of this file tried. The reason is the shape of the
+ * call chain rather than a missing condition: tof_progress::end(acquisition) is the LAST statement
+ * of run_cycle(), after the hook that sends, and end(health) is after the send in the health work.
+ * So a sender blocked in k_sem_take(&ctx.done, K_FOREVER) -- which is what can_send()'s
+ * callback == NULL form does, with the timeout bounding only the wait for a free mailbox -- freezes
+ * the CYCLE and HEALTH counters too, not just the send ones. Suspending the send reasons while the
+ * host is away therefore changes nothing: stuck_cycle and stuck_health latch anyway. Widening the
+ * suspension to cover them would hide a genuinely broken acquisition, which is most of what this
+ * layer is for.
+ *
+ * THE FIX IS A BOUNDED SEND, in the send path: the callback form of can_send(), or any completion
+ * wait that can expire. With that, a vanished host makes every send FAIL quickly, every counter
+ * keeps moving, and none of this arises -- no gate needed anywhere. It is a change to
+ * tof_cliff_can.cpp and the ten zcan_* senders, so it is not made here, and this layer must not be
+ * read as surviving an unbounded sender. It does not.
+ *
  * The second is bring-up work that legitimately takes far longer than a cycle. Exactly ONE such
  * operation is declared today and the comment says which rather than gesturing at a category:
  * verifying the stored L7 blob, which hashes 86 KB on the main stack before any baseline exists.
@@ -124,18 +145,20 @@ struct progress {
  * constant means no call site can widen it. */
 inline constexpr uint32_t kLongOperationSuspends{stuck_cycle | silent_cycle | stuck_l7 | silent_l7};
 
-/* What an absent host suspends: both senders and the zcan loop, and nothing else. The cycle, the
- * health work and the L7 do not go through the host, so a hang in any of them is still a hang while
- * the host is away. */
-inline constexpr uint32_t kHostAbsentSuspends{stuck_send_acq | silent_send_acq | stuck_send_workq |
-                                              silent_send_workq | silent_zcan};
-
-/* What a stopped acquisition suspends. send_acq is in here because it IS the acquisition thread:
- * tof_progress attributes 0x214-0x216 and the cycle health frame to that slot, so an acquisition
- * that is not running cannot be sending. The workqueue heartbeat is not, and neither is the health
- * work, so both stay judged. */
+/* What a stopped acquisition suspends.
+ *
+ * send_acq is in here because it IS the acquisition thread: tof_progress attributes 0x214-0x216 and
+ * the cycle health frame to that slot, so an acquisition that is not running cannot be sending.
+ *
+ * silent_l7 is in here because a stopped acquisition is also what stops asking the L7 for grids, so
+ * "it has completed nothing lately" is the expected state rather than a fault. stuck_l7 is NOT:
+ * an operation that was already in flight when acquisition stopped is still in flight, and that is
+ * a hang whoever asked for it. The two halves of the L7 judgement answer different questions and
+ * only one of them is suspended.
+ *
+ * The workqueue heartbeat and the health work are NOT in here: different threads, still judged. */
 inline constexpr uint32_t kAcquisitionStoppedSuspends{stuck_cycle | silent_cycle | stuck_send_acq |
-                                                      silent_send_acq};
+                                                      silent_send_acq | silent_l7};
 
 struct bounds {
     /* After the baseline, before anything is judged. Covers the first cycle of each activity. */
@@ -165,32 +188,6 @@ struct input {
     /* Does this image expect an L7 at all? False for a build without the ULD or with no grid
      * position, and then no L7 progress is ever required or judged. */
     bool l7_expected{false};
-
-    /* IS THE HOST ON THE BUS? The two CAN senders and the zcan loop are judged only while it is,
-     * and the reason is that a frame with nobody to ACK it does not fail -- it never returns.
-     *
-     * tof_cliff_can.cpp spells out why: the send timeout bounds only the wait for a free TX
-     * mailbox, because z_impl_can_send() implements the callback == NULL form as api->send()
-     * followed by k_sem_take(&ctx.done, K_FOREVER). With no host the controller retransmits
-     * indefinitely, the mailbox never completes, and the sender sits in that semaphore. So `ended`
-     * stops moving and `stuck_send_*` latches after two seconds; the zcan loop's sends are the same
-     * form with a longer mailbox timeout, so its tick stops and `silent_zcan` latches too. About
-     * ten seconds later the IWDG resets the board.
-     *
-     * That made every host restart cost one SCB reset, on a product whose other half treats host
-     * loss as an ordinary state -- see ros_heartbeat_timeout in board_controller.cpp. The baseline
-     * was not enough: baseline_ready() keeps a BOOTING board off the reset path, once, and nothing
-     * re-checked the host afterwards.
-     *
-     * THIS IS THE CONTAINED HALF OF THE FIX. The other half is senders that return instead of
-     * blocking when no ACK arrives -- the callback form of can_send() -- which is the better answer
-     * and is a change to the send path in tof_cliff_can.cpp and the ten zcan_* senders, i.e. the
-     * product's whole CAN telemetry. Until that is done, this gate is what keeps the watchdog from
-     * resetting a healthy board that is waiting for its host.
-     *
-     * NOT CAPPED, deliberately. An absent host is an indefinite normal state, not a fault with a
-     * deadline, so there is no bound after which the watchdog starts judging the senders anyway. */
-    bool host_present{false};
 
     /* IS ACQUISITION SUPPOSED TO BE RUNNING? Same shape as l7_expected, and for a sharper reason.
      *

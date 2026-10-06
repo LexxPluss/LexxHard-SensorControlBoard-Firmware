@@ -43,21 +43,27 @@ constexpr int32_t kFeedPeriodMs{500};
  * that expiring here leaves time for the log line to be read before the reset it implies. */
 constexpr int32_t kFirstFeedWaitMs{2000};
 
-/* ABOVE EVERY THREAD IT MIGHT HAVE TO OUTLIVE, which is all of them.
+/* COOPERATIVE, AT THE TOP, AND THAT IS A CHOICE WITH A STATED LIMIT.
  *
  * An earlier value of 5 was justified against the acquisition thread (7) alone, and that was the
  * wrong comparison: in Zephyr a smaller number is HIGHER priority, and main.cpp starts thirteen
  * threads above 5 -- led, pgv and shutter at 1, actuator, actuator_service, adc, imu, uss, gpio and
- * tug at 2, bmu, can, board and runaway at 4 -- with zcan_main equal at 5. Any one of them
- * spinning, or an interrupt storm keeping them runnable, starves the feeder. The feeder then never
- * runs, commit_tombstone() is never called, and the IWDG resets the board with no record: once the
- * wiring removes the unconditional timer feed, that is exactly the "first trip leaves nothing" this
- * layer exists to end.
+ * tug at 2, bmu, can, board and runaway at 4 -- with zcan_main equal at 5. Any one of them spinning
+ * starves the feeder, commit_tombstone() is never called, and the IWDG resets with no record: once
+ * the wiring removes the unconditional timer feed, that is exactly the "first trip leaves nothing"
+ * this layer exists to end.
  *
- * So it is the highest preemptible priority. The cost is one wdt_feed() every 500 ms from a thread
- * that is otherwise asleep, which cannot be why a watched thread fails to run; the alternative is a
- * forensics layer that is absent in the cases it was built for. */
-constexpr int kPriority{K_HIGHEST_APPLICATION_THREAD_PRIO};
+ * K_PRIO_COOP(0) is -CONFIG_NUM_COOP_PRIORITIES, which is -16 in this build: COOPERATIVE, not
+ * preemptible. A previous comment here said "the highest preemptible priority" while using
+ * K_HIGHEST_APPLICATION_THREAD_PRIO, which is the same negative value -- the description was simply
+ * wrong. Cooperative is what is wanted: no preemptible thread can starve it, and this one yields on
+ * its own every pass by sleeping, so it cannot hold the CPU either.
+ *
+ * WHAT IT STILL CANNOT SURVIVE, said here rather than left to be discovered: a sustained interrupt
+ * storm, or a long region with interrupts locked. Thread priority does not order a thread against
+ * an ISR, so neither of those leaves a record. That is the limit of this layer, and the reset cause
+ * reported at boot is what remains when it is reached. */
+constexpr int kPriority{K_PRIO_COOP(0)};
 constexpr size_t kStackSize{1024};
 
 K_THREAD_STACK_DEFINE(stack_, kStackSize);
@@ -71,6 +77,18 @@ int channel_{0};
 
 atomic_t baseline_point_{};
 atomic_t l7_expected_{};
+
+/* DEFAULTS TO EXPECTED, and the default is the decision rather than an accident.
+ *
+ * If this defaulted to "not expected" a wiring that never calls the setter would leave the
+ * production feeder permanently suspending the cycle reasons and send_acq -- a watchdog that is
+ * silently blind to most of what it watches, which is the failure this layer exists to prevent and
+ * the one nobody would ever find. Defaulting to expected makes the same omission produce a false
+ * reset during the first commissioning pass: loud, reproducible on a bench, and found immediately.
+ *
+ * An earlier version of this file added the input and did not wire it at all, which is exactly the
+ * first failure. */
+atomic_t acquisition_expected_{ATOMIC_INIT(1)};
 atomic_t long_operation_{};
 atomic_t long_began_ms_{};
 atomic_t feeds_{};
@@ -193,6 +211,7 @@ void feeder(void *, void *, void *)
             in.now_ms = now_ms();
             in.baseline_point = atomic_get(&baseline_point_) != 0;
             in.l7_expected = atomic_get(&l7_expected_) != 0;
+            in.acquisition_expected = atomic_get(&acquisition_expected_) != 0;
             in.acquisition = {p.at[static_cast<size_t>(tof_progress::activity::acquisition)].begun,
                               p.at[static_cast<size_t>(tof_progress::activity::acquisition)].ended};
             in.send_acq = {p.at[static_cast<size_t>(tof_progress::activity::send_acq)].begun,
@@ -290,6 +309,11 @@ void set_l7_expected(bool expected)
     atomic_set(&l7_expected_, expected ? 1 : 0);
 }
 
+void set_acquisition_expected(bool expected)
+{
+    atomic_set(&acquisition_expected_, expected ? 1 : 0);
+}
+
 void long_operation_begin()
 {
     atomic_set(&long_began_ms_, static_cast<atomic_val_t>(now_ms()));
@@ -348,6 +372,11 @@ void report_previous_stop()
          * reset landed mid-write: a board that has never tripped the watchdog reads exactly like
          * this, and so does one whose battery was pulled. */
         LOG_INF("no retained watchdog record (%s)", tomb::status_name(st));
+        /* REPORTED HERE TOO, and this is the branch that needs it most: "no retained record" reads
+         * identically on a board that has never tripped and on one that tripped and lost its
+         * record. The cause is the only thing that tells those apart, and an earlier version
+         * returned before reaching it. */
+        report_reset_cause();
         return;
     }
     if (st != tomb::status::valid) {

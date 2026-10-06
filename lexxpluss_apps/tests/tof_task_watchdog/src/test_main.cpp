@@ -49,15 +49,11 @@ struct harness {
     /* Everything finished, nothing in flight: a board between cycles. The L7 is deliberately at
      * zero, because the baseline happens before the first open.
      *
-     * THE HOST IS PRESENT AND ACQUISITION IS EXPECTED, set here rather than per case, because an
-     * ordinary board has both. Both default to FALSE in the struct, which suppresses the send and
-     * cycle reasons -- the safe direction for a watchdog, since the failure that matters is
-     * resetting a healthy board. The cost is that a wiring which forgets either flag silently
-     * stops judging half of what this layer watches, so the cases that are ABOUT the gates set
-     * them explicitly and say which one they are exercising. */
+     * ACQUISITION IS EXPECTED, set here rather than per case, because an ordinary board is
+     * acquiring. The production feeder's atomic defaults to expected for the same reason, and the
+     * cases that are ABOUT the suspension clear it explicitly. */
     void healthy_pre_l7()
     {
-        in.host_present = true;
         in.acquisition_expected = true;
         in.acquisition = {10, 10};
         in.send_acq = {20, 20};
@@ -436,65 +432,6 @@ ZTEST(tof_task_watchdog, test_every_reason_has_its_own_name)
     zassert_true(strcmp(wd::reason_name(wd::feed_api_failed), "feed_api_failed") == 0);
 }
 
-/* ---- the host goes away after the baseline ---- */
-
-/* KOKO'S CASE, AND IT WAS A RESET PER HOST RESTART. The senders do not fail when no host ACKs
- * them -- they never return, because the send timeout bounds only the wait for a free mailbox and
- * the wait for completion is K_FOREVER. So `ended` stops moving, `stuck_send_*` latches at two
- * seconds, the zcan tick stops with its sender, and the IWDG resets about ten seconds later. The
- * rest of the product treats host loss as ordinary (ros_heartbeat_timeout). */
-ZTEST(tof_task_watchdog, test_a_host_that_goes_away_after_the_baseline_does_not_reset_the_board)
-{
-    harness h;
-    h.arm();
-
-    h.in.host_present = false;
-    /* Both senders stuck inside a send, and the zcan loop stuck in one of its own. Nothing else
-     * changes: the cycle, the health work and the L7 keep going, because they do not go through
-     * the host. */
-    ++h.in.send_acq.begun;
-    ++h.in.send_workq.begun;
-
-    for (int i = 0; i < 60; ++i) {
-        zassert_true(h.tick(500, advance{.send_acq = false, .send_workq = false, .zcan = false}),
-                     "reset at %u ms with the host away", h.in.now_ms);
-    }
-    zassert_equal(h.st.current, wd::phase::armed, "");
-    zassert_equal(h.st.why, 0U, "");
-}
-
-/* AND IT IS WATCHED AGAIN THE MOMENT THE HOST IS BACK. The gate is on the host, not a grace period
- * that expires: a sender still wedged once the host returns is a fault again. */
-ZTEST(tof_task_watchdog, test_a_sender_still_wedged_when_the_host_returns_is_caught)
-{
-    harness h;
-    h.arm();
-
-    h.in.host_present = false;
-    ++h.in.send_acq.begun;
-    for (int i = 0; i < 20; ++i)
-        (void)h.tick(500, advance{.send_acq = false});
-
-    h.in.host_present = true;
-    /* The in-flight bound is measured from the last completion, so one tick past it is enough. */
-    const bool fed = h.tick(h.b.send_ms + 1, advance{.send_acq = false});
-    zassert_false(fed, "a wedged sender with the host back on the bus must be caught");
-    zassert_true((h.st.why & wd::stuck_send_acq) != 0, "why 0x%08x", h.st.why);
-}
-
-/* THE HOST GATE SUSPENDS THE SENDERS AND NOTHING ELSE. A cycle that stops while the host is away
- * is still a hang: it does not go through the host. */
-ZTEST(tof_task_watchdog, test_an_absent_host_does_not_excuse_a_dead_cycle)
-{
-    harness h;
-    h.arm();
-
-    h.in.host_present = false;
-    const bool fed = h.tick(h.b.cycle_silence_ms + 1, advance{.acq = false});
-    zassert_false(fed, "an absent host excused a dead acquisition cycle");
-    zassert_true((h.st.why & wd::silent_cycle) != 0, "why 0x%08x", h.st.why);
-}
-
 /* ---- commissioning stops acquisition ---- */
 
 /* KOKO'S SECOND CASE. Commissioning quiesces acquisition, and that thread is also what sends
@@ -540,4 +477,107 @@ ZTEST(tof_task_watchdog, test_a_stopped_acquisition_does_not_excuse_the_workqueu
                             advance{.acq = false, .send_acq = false, .send_workq = false});
     zassert_false(fed, "a stopped acquisition excused the 0x217 heartbeat");
     zassert_true((h.st.why & wd::silent_send_workq) != 0, "why 0x%08x", h.st.why);
+}
+
+/* A STOPPED ACQUISITION ALSO STOPS ASKING THE L7 FOR GRIDS, so "it has completed nothing lately" is
+ * the expected state. An earlier version left silent_l7 out of the suspend set and refused to feed
+ * about ten seconds into a perfectly ordinary commissioning pass on a board whose L7 had run. */
+ZTEST(tof_task_watchdog, test_a_stopped_acquisition_does_not_reset_on_l7_silence)
+{
+    harness h;
+    h.arm();
+    /* The L7 has run, so it is being watched: this is the case the suspension is for. */
+    (void)h.tick(10);
+    zassert_true(h.st.l7_watching, "the L7 monitor must be running for this case to mean anything");
+
+    h.in.acquisition_expected = false;
+    for (int i = 0; i < 60; ++i) {
+        zassert_true(h.tick(500, advance{.acq = false, .send_acq = false, .l7 = false}),
+                     "reset at %u ms on L7 silence during a commissioning pass", h.in.now_ms);
+    }
+}
+
+/* BUT AN L7 OPERATION THAT WAS ALREADY IN FLIGHT IS STILL A HANG. Acquisition stopping does not
+ * un-start an operation that had begun, and that is whose thread is sitting in the ULD. Only the
+ * silence half is suspended; the in-flight half is not. */
+ZTEST(tof_task_watchdog, test_a_stopped_acquisition_does_not_excuse_an_l7_operation_in_flight)
+{
+    harness h;
+    h.arm();
+    (void)h.tick(10);
+
+    h.in.acquisition_expected = false;
+    ++h.in.l7.begun;  // went in, never came out
+    const bool fed = h.tick(h.b.l7_ms + 1, advance{.acq = false, .send_acq = false, .l7 = false});
+    zassert_false(fed, "a stopped acquisition excused an L7 operation stuck in flight");
+    zassert_true((h.st.why & wd::stuck_l7) != 0, "why 0x%08x", h.st.why);
+}
+
+/* ---- the sender is nested inside the things that would have excused it ---- */
+
+/* WHY THERE IS NO "THE HOST IS AWAY" EXEMPTION, demonstrated instead of asserted.
+ *
+ * An earlier version of this module took a host_present input and suspended the send reasons while
+ * it was false, on the stated premise that the cycle, the health work and the L7 "do not go through
+ * the host". That premise is false, and this case is the proof. In tof_acquisition, progress::end
+ * for the cycle is the LAST statement of run_cycle(), after the hook that sends; end for the health
+ * activity is after the hook that sends the cliff health frame. A sender blocked in can_send()'s
+ * K_FOREVER completion wait therefore freezes the OUTER counters as well: the cycle and the health
+ * work are both in flight, under their own bounds, and they latch on their own.
+ *
+ * So the exemption could not have saved the board. It only removed the one reason word that would
+ * have named the sender -- the single most useful thing in the tombstone. */
+ZTEST(tof_task_watchdog, test_a_wedged_sender_latches_the_cycle_and_health_that_enclose_it)
+{
+    harness h;
+    h.arm();
+
+    /* One pass enters the cycle, enters the send, and nothing comes out of any of it again. The
+     * zcan loop and the workqueue keep running: they are other threads, and their liveness is
+     * exactly why this does not look like a dead board from the outside. */
+    ++h.in.acquisition.begun;
+    ++h.in.send_acq.begun;
+    ++h.in.health.begun;
+
+    const bool stopped = h.run_until_stopped(
+        40, 250, advance{.acq = false, .send_acq = false, .health = false, .l7 = false});
+    zassert_true(stopped, "a sender wedged forever never stopped the feed");
+
+    /* BOTH of the enclosing counters, from one blocked call. The sender is the proximate cause and
+     * the cycle is in flight only because it is waiting on the sender -- the tombstone says so, and
+     * that pairing is what tells a reader to look at the send path rather than at acquisition.
+     *
+     * The health work is wedged in the same place but is NOT in this word, and the reason is worth
+     * knowing: the latch records the reasons true at the moment feeding stopped, health_ms is 3000
+     * against cycle_ms and send_ms at 2000, so the tighter pair trips a second earlier and the
+     * phase goes to stopped before health is ever judged. A tombstone naming fewer activities than
+     * are actually stuck is therefore normal; it names the fastest, not all of them. */
+    zassert_true((h.st.why & wd::stuck_send_acq) != 0, "why 0x%08x", h.st.why);
+    zassert_true((h.st.why & wd::stuck_cycle) != 0,
+                 "the cycle encloses the send, so it is in flight too: why 0x%08x", h.st.why);
+    zassert_equal(h.st.why & wd::stuck_health, 0U,
+                  "health has the looser bound and must not have been reached: why 0x%08x",
+                  h.st.why);
+}
+
+/* AND SUSPENDING THE ACQUISITION DOES NOT BUY SILENCE EITHER, which is the other half of the reason
+ * this is not fixable by widening a suspension set. A commissioning pass legitimately clears
+ * acquisition_expected, and that does hide the cycle and the sender -- but the health work is a
+ * different thread, is not suspended, and its own send is wedged in the same place. Whatever is
+ * widened next, the reset still happens, because the fault is an unbounded wait and not a
+ * misjudgement here. The fix belongs in the senders. */
+ZTEST(tof_task_watchdog, test_suspending_acquisition_does_not_hide_a_wedged_sender_elsewhere)
+{
+    harness h;
+    h.arm();
+
+    h.in.acquisition_expected = false;
+    ++h.in.health.begun;
+
+    const bool stopped = h.run_until_stopped(
+        40, 250, advance{.acq = false, .send_acq = false, .health = false, .l7 = false});
+    zassert_true(stopped, "a wedged health send was excused by an unrelated suspension");
+    zassert_true((h.st.why & wd::stuck_health) != 0, "why 0x%08x", h.st.why);
+    zassert_equal(h.st.why & (wd::stuck_cycle | wd::stuck_send_acq), 0U,
+                  "the suspension must still cover what it covers: why 0x%08x", h.st.why);
 }

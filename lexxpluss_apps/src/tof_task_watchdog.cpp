@@ -172,14 +172,10 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
     if (longer_than(in.now_ms, st.zcan_seen_ms, b.zcan_silence_ms))
         why |= silent_zcan;
 
-    /* THE HOST GATE, applied to the reasons rather than to the judgements, so the bookkeeping in
-     * note_progress() keeps running and a sender that recovers is seen to recover. An absent host
-     * is an indefinite normal state and there is no cap after which these come back. */
-    if (!in.host_present)
-        why &= ~kHostAbsentSuspends;
-
-    /* AND THE SAME FOR A STOPPED ACQUISITION, which is what a commissioning pass produces -- and
-     * what a FAILED proof leaves behind, with no end-of-operation to wait for. */
+    /* A STOPPED ACQUISITION, which is what a commissioning pass produces -- and what a FAILED proof
+     * leaves behind, with no end-of-operation to wait for. Applied to the reasons rather than to
+     * the judgements, so note_progress() keeps its bookkeeping and an activity that resumes is
+     * seen to resume. */
     if (!in.acquisition_expected)
         why &= ~kAcquisitionStoppedSuspends;
 
