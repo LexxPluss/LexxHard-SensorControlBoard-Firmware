@@ -198,9 +198,7 @@ ZTEST(zcan_bounded_send, test_a_missing_device_or_frame_never_reaches_the_driver
 }
 
 /* Counters accumulate across calls rather than reporting only the last one, which is what makes
- * them readable as a rate. Saturation at UINT32_MAX is NOT covered here: reaching it needs four
- * billion sends, and a test that slow would be skipped and then rot. It is a three-line loop in
- * the implementation, reviewed rather than exercised. */
+ * them readable as a rate. */
 ZTEST(zcan_bounded_send, test_counters_accumulate_across_calls)
 {
     const can_frame f{a_frame()};
@@ -214,4 +212,100 @@ ZTEST(zcan_bounded_send, test_counters_accumulate_across_calls)
     zassert_equal(c.queued, 2U);
     zassert_equal(c.completed, 2U);
     zassert_equal(c.refused, 1U);
+}
+
+/* ---- the ceiling, at the boundary rather than by sending two billion frames ---- */
+
+/* WHY THIS IS TESTED AT ALL. The first version of the counter did its arithmetic in atomic_t, which
+ * is `long` -- 32 bits and SIGNED here -- and compared against static_cast<atomic_val_t>(UINT32_MAX),
+ * which narrows to -1. So the ceiling it named was unreachable and signed overflow at INT32_MAX was
+ * the only exit: undefined behaviour, reachable by a board that simply stayed up long enough. The
+ * increment is exposed for exactly this reason, because a test that had to send two billion frames
+ * would have been skipped and the bug would have shipped.
+ *
+ * WHAT THIS CASE DOES AND DOES NOT PROVE. `long` is 64-bit on the host that runs this suite, so the
+ * signed overflow itself is not reproducible here -- it needs the 32-bit target, or a same-width
+ * expression under UBSan, which is how it was found. What this proves on any machine is the part
+ * that was actually wrong: the ceiling. The old comparison narrowed UINT32_MAX to -1 on the target
+ * and to 4294967295 on the host, so under the old code the counter sails past INT32_MAX on both and
+ * this case fails on both. */
+ZTEST(zcan_bounded_send, test_the_counter_stops_at_the_ceiling_instead_of_overflowing)
+{
+    atomic_t c{};
+
+    atomic_set(&c, static_cast<atomic_val_t>(bs::detail::kCountCeiling - 1U));
+    bs::detail::saturating_bump(c);
+    zassert_equal(static_cast<uint32_t>(atomic_get(&c)), bs::detail::kCountCeiling,
+                  "the last step below the ceiling must still count");
+
+    /* At the ceiling, and then well past where anyone would keep trying. Each of these would have
+     * been a signed overflow in the previous version. */
+    for (int i{0}; i < 1000; ++i)
+        bs::detail::saturating_bump(c);
+    zassert_equal(static_cast<uint32_t>(atomic_get(&c)), bs::detail::kCountCeiling,
+                  "the counter moved past its ceiling");
+    zassert_true(atomic_get(&c) > 0, "the counter went negative, which is the overflow");
+}
+
+/* The ceiling must be a value the atomic can actually hold. If someone raises it to UINT32_MAX
+ * again, this fails instead of the arithmetic going undefined at runtime. */
+ZTEST(zcan_bounded_send, test_the_ceiling_fits_in_the_atomic_that_holds_it)
+{
+    zassert_true(bs::detail::kCountCeiling <= static_cast<uint32_t>(INT32_MAX),
+                 "the ceiling does not fit in a signed 32-bit atomic");
+    atomic_t c{};
+    atomic_set(&c, static_cast<atomic_val_t>(bs::detail::kCountCeiling));
+    zassert_equal(static_cast<uint32_t>(atomic_get(&c)), bs::detail::kCountCeiling,
+                  "the ceiling did not survive a round trip through atomic_t");
+}
+
+/* ---- what a caller may NOT conclude from a zero ---- */
+
+/* THE HAZARD THE RETURN VALUE NOW CARRIES, written as a test so the next caller meets it here.
+ * send() returns 0, the caller commits whatever state it keys on success, and only afterwards does
+ * the controller report that the frame failed. Nothing in the return value said so, and the
+ * counters are global: they cannot say which frame, which source or which generation it was.
+ *
+ * This is not hypothetical. tof_grid_publisher clears a source's pending recovery flags and its
+ * last_error exactly on "every frame of this grid returned 0", which under the blocking form meant
+ * acknowledged. On the production wiring branch that is now a place where recovery information can
+ * be dropped, and integrating the two branches has to fix it. */
+ZTEST(zcan_bounded_send, test_a_zero_is_not_delivery_so_a_later_failure_is_invisible_to_the_caller)
+{
+    const can_frame f{a_frame()};
+
+    const int rc{bs::send(&stub_dev, &f, K_MSEC(100))};
+    zassert_equal(rc, 0, "the caller sees success here");
+
+    /* Everything a caller keys on rc == 0 has already happened by now. */
+    zassert_not_null(held_callback);
+    held_callback(&stub_dev, -EIO, held_user_data);
+
+    const bs::counts c{bs::snapshot()};
+    zassert_equal(c.queued, 1U, "the frame was accepted");
+    zassert_equal(c.failed, 1U, "and then it failed, after the caller was told it succeeded");
+    zassert_equal(c.completed, 0U);
+}
+
+/* AND WHAT A BUS WITH NOBODY LISTENING ACTUALLY LOOKS LIKE, which is not a rising `failed`. The
+ * mailboxes fill with frames that are still being retransmitted, so no completion runs at all:
+ * `queued` freezes and `refused` climbs. A reader watching `failed` would call this healthy. */
+ZTEST(zcan_bounded_send, test_a_bus_with_nobody_listening_shows_refused_rising_and_queued_frozen)
+{
+    const can_frame f{a_frame()};
+
+    /* Three mailboxes accept, and nothing ever completes. */
+    for (int i{0}; i < 3; ++i)
+        zassert_equal(bs::send(&stub_dev, &f, K_MSEC(1)), 0);
+
+    /* After that there is no room, and every further attempt is refused promptly. */
+    stub_rc = -EAGAIN;
+    for (int i{0}; i < 20; ++i)
+        zassert_equal(bs::send(&stub_dev, &f, K_MSEC(1)), -EAGAIN);
+
+    const bs::counts c{bs::snapshot()};
+    zassert_equal(c.queued, 3U, "queued must freeze at the mailbox count");
+    zassert_equal(c.refused, 20U, "refused is the signal, not failed");
+    zassert_equal(c.failed, 0U, "nothing completed, so nothing can have failed");
+    zassert_equal(c.completed, 0U);
 }

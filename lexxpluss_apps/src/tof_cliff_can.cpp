@@ -85,7 +85,9 @@ int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
      * refused, so the withholding starts three frames later than it used to; the alternative
      * was the previous behaviour, where that bus blocked this thread forever and the
      * withholding never happened at all. Delivery evidence lives in
-     * zcan_bounded_send::snapshot(), whose `failed` counter is what a silent bus raises. */
+     * zcan_bounded_send::snapshot(), where a silent bus reads as `refused` rising while
+     * `queued` is frozen -- NOT as a rising `failed`, since frames still being
+     * retransmitted into silence never complete at all. */
     return zcan_bounded_send::send(dev_, &frame, kSendTimeout);
 }
 
