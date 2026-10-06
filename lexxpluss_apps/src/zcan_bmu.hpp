@@ -30,6 +30,7 @@
 #include <zephyr/logging/log.h>
 #include <cstdio>
 #include "bmu_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 namespace lexxhard::zcan_bmu {
 
@@ -50,7 +51,7 @@ public:
         can_frame message;
 
         while (k_msgq_get(&bmu_controller::msgq_rawframe_bmu, &message, K_NO_WAIT) == 0) {
-            can_send(dev, &message, K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &message, K_MSEC(100));
         }
     }
 private:

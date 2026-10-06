@@ -33,6 +33,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "actuator_service_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_ACTUATOR_SERVICE_REQUEST 0x20b // based on CAN ID assignment
 #define CAN_ID_ACTUATOR_SERVICE_RESPONSE 0x213 // based on CAN ID assignment
@@ -93,7 +94,7 @@ private:
                 .dlc = CAN_DATALENGTH_ACTUATOR_SERVICE_RESPONSE,
             };
             msg.into(can_frame.data);
-            can_send(dev, &can_frame, K_MSEC(100), nullptr, nullptr);    //accel
+            zcan_bounded_send::send(dev, &can_frame, K_MSEC(100));    //accel
         }
     }
 

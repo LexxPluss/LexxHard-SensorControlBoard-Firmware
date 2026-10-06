@@ -29,6 +29,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "uss_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_USS 0x204
 #define CAN_DATA_LENGTH_USS 8
@@ -78,7 +79,7 @@ public:
             // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_USS);
 
-            can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
         }
     }
 private:

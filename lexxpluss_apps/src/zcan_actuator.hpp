@@ -31,6 +31,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "actuator_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_ACTUATOR_CONTROL 0x208 // based on CAN ID assignment
 #define CAN_ID_ACTUATOR_ENCODER 0x209 // based on CAN ID assignment
@@ -83,8 +84,8 @@ public:
             actuator_controller::can_format_current tmp_cur = actuator_controller::can_format_current(message.current[0], message.current[1], message.current[2], message.connect);
             tmp_cur.into(can_frame_actuator_current.data);
 
-            can_send(dev, &can_frame_actuator_encoder, K_MSEC(100), nullptr, nullptr);
-            can_send(dev, &can_frame_actuator_current, K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &can_frame_actuator_encoder, K_MSEC(100));
+            zcan_bounded_send::send(dev, &can_frame_actuator_current, K_MSEC(100));
         }
 
         {

@@ -29,6 +29,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "tug_encoder_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_TUG_ENCODER 0x210
 #define CAN_DATA_LENGTH_TUG_ENCODER 2
@@ -64,7 +65,7 @@ public:
             // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_TUG_ENCODER);
 
-            can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
         }
     }
 private:
