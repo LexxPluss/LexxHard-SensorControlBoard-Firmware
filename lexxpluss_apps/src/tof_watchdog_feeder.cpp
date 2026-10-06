@@ -57,29 +57,36 @@ constexpr int32_t kFirstFeedWaitMs{2000};
  * preemptible. A previous comment here said "the highest preemptible priority" while using
  * K_HIGHEST_APPLICATION_THREAD_PRIO, which is the same negative value -- the description was simply
  * wrong. Cooperative is wanted because every application thread in main.cpp is preemptible, so none
- * of them can starve this one, and this one yields every pass by sleeping, so it cannot hold the CPU
- * either.
+ * of them can hold the CPU against this one, and this one yields every pass by sleeping, so it
+ * cannot hold the CPU either.
  *
- * WHAT COOPERATIVE DOES NOT BUY, because the word invites the wrong conclusion: it orders this
- * thread against OTHER THREADS ONLY, and only against ones below it. Another cooperative thread at
- * or above this priority that spins without yielding starves the feeder exactly as a preemptible one
- * would, and the IWDG then resets with no record. There is exactly one other cooperative thread in
- * this build -- the system workqueue at CONFIG_SYSTEM_WORKQUEUE_PRIORITY -- and it sits below, which
- * is an accident of configuration rather than a property, so the two assertions below fail the build
- * if it stops being true. They cover the one competitor that exists; they cannot cover a thread
- * added later with an explicit K_PRIO_COOP, and no priority covers a sustained interrupt storm or a
- * region with interrupts locked, because priority does not order a thread against an ISR. So the
- * honest claim is narrow: this makes a record LIKELY, not guaranteed, and the reset cause reported
- * at boot is what remains when it is not. */
+ * WHAT COOPERATIVE DOES NOT BUY, stated carefully because two earlier versions of this comment got
+ * it wrong in two different directions. Zephyr's rule is that a cooperative thread, once it becomes
+ * the current thread, REMAINS the current thread until it does something that makes itself unready
+ * (doc/kernel/services/threads/index.rst). Priority decides who is selected among threads that are
+ * READY; it does not let anyone interrupt a cooperative thread that is already running. So a
+ * cooperative thread that spins without yielding starves this feeder whatever its priority is --
+ * ABOVE OR BELOW. The system workqueue sits at CONFIG_SYSTEM_WORKQUEUE_PRIORITY = -1, numerically
+ * below -16, and a work item there that loops without yielding starves the feeder anyway; the
+ * assertions below cannot prevent that and are not claimed to. What they do is narrower and still
+ * worth having: they keep the feeder the first cooperative thread SELECTED when several are ready,
+ * and they fail the build if someone moves either priority, which is the kind of change that should
+ * be noticed deliberately rather than measured later in resets.
+ *
+ * Nor does any priority cover a sustained interrupt storm or a region with interrupts locked,
+ * because priority does not order a thread against an ISR. So the honest claim is narrow: this
+ * makes a record LIKELY, not guaranteed, and the reset cause reported at boot is what remains when
+ * it is not. */
 constexpr int kPriority{K_PRIO_COOP(0)};
 
 /* The top cooperative slot: nothing can be created above it without raising NUM_COOP_PRIORITIES,
  * which would move this one and should be noticed here. */
 BUILD_ASSERT(kPriority == -CONFIG_NUM_COOP_PRIORITIES,
              "the feeder must hold the highest cooperative priority");
-/* A smaller number is higher priority, so the workqueue must stay numerically greater. If someone
- * raises the system workqueue into this thread's band, a work item that loops without yielding can
- * starve the feeder into a recordless reset, and that is a decision to make deliberately. */
+/* A smaller number is higher priority, so the workqueue must stay numerically greater. This does
+ * NOT prevent a workqueue item from starving the feeder -- a running cooperative thread cannot be
+ * preempted at all, see above -- it only keeps the feeder ahead of it in the selection order and
+ * makes a change to either priority a deliberate one. */
 BUILD_ASSERT(CONFIG_SYSTEM_WORKQUEUE_PRIORITY > kPriority,
              "the system workqueue would outrank the watchdog feeder");
 constexpr size_t kStackSize{1024};

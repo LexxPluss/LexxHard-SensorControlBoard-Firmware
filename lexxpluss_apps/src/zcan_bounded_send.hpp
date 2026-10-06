@@ -27,12 +27,16 @@
  * instead of blocking. What is removed is the UNBOUNDED WAIT FOR ACKNOWLEDGEMENT, and that is the
  * whole claim.
  *
- * It is NOT "the call cannot exceed the timeout". can_stm32_bxcan.c takes its own
- * k_mutex_lock(&data->inst_mutex, K_FOREVER) inside send, so a caller can still wait on another
- * sender holding that mutex, with no timeout of its own. The difference is that every holder of
- * that mutex is now itself bounded, so the wait ends; before, one sender parked forever on the wire
- * while the rest piled up behind it. Anyone needing a hard upper bound on the call must look at
- * that mutex, not at this timeout.
+ * It is NOT "the call cannot exceed the timeout", and the reason is NOT the one first written here.
+ * can_stm32_bxcan.c takes its own k_mutex_lock(&data->inst_mutex, K_FOREVER) inside send, so a
+ * caller can wait on that mutex with no timeout of its own -- but a sender waiting for
+ * acknowledgement never held it: the driver unlocks it immediately before returning, and the ACK
+ * wait happens above the driver, in can_common.c. An earlier version of this comment claimed the
+ * mutex holders used to park forever and are now bounded. They never parked; the mutex is a
+ * separate unbounded wait that this change neither causes nor removes, and holds across it are
+ * short. The claim this commit is entitled to is exactly one sentence long: THE UNBOUNDED WAIT FOR
+ * ACKNOWLEDGEMENT IS GONE. Anyone needing a hard upper bound on the whole call still has that mutex
+ * to account for.
  *
  * WHAT IT COSTS, stated rather than discovered later. The return value changes meaning: it was "the
  * frame was acknowledged by some node", it is now "the frame was accepted by the controller". A
