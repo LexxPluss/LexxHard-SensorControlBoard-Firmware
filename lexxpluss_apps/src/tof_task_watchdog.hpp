@@ -55,6 +55,13 @@
  * tof_cliff_can.cpp and the ten zcan_* senders, so it is not made here, and this layer must not be
  * read as surviving an unbounded sender. It does not.
  *
+ * SO THIS IS AN OPEN DEFECT AND NOT A CLOSED ONE. Removing the exemption that an earlier version of
+ * this file added was a withdrawal of a wrong fix, which is worth doing on its own -- it restores
+ * the reason word that names the sender -- but it repairs nothing about the reset. A host that
+ * leaves still resets the board, once per host restart. Whoever turns the production wiring on owes
+ * the bounded send first: with the unconditional timer feed removed and the senders still unbounded,
+ * this layer converts an ordinary host restart into a power-on reset of a vehicle controller.
+ *
  * The second is bring-up work that legitimately takes far longer than a cycle. Exactly ONE such
  * operation is declared today and the comment says which rather than gesturing at a category:
  * verifying the stored L7 blob, which hashes 86 KB on the main stack before any baseline exists.
