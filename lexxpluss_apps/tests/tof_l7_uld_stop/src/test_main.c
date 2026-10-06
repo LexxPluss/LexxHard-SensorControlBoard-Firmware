@@ -194,21 +194,73 @@ ZTEST(tof_l7_uld_stop, test_a_stop_that_confirms_late_is_still_ok)
 	zassert_true(polls_seen < 500, "but not to the budget");
 }
 
-/* A device that stops and then reports a status 1 the ULD does not recognise is a failure. With a
- * NON-ZERO value it was one before this patch too, and that is why testing only this value proved
- * less than it looked -- see the case below, which is the same branch with the one value the OR
- * could not carry. */
-ZTEST(tof_l7_uld_stop, test_an_unrecognised_nonzero_status_1_fails_and_keeps_its_own_code)
+/* THE DEVICE BYTE IS NOT CARRIED, and this case is where that was decided.
+ *
+ * It used to assert `rc == 0x42` -- "where the device gave a code, that code is what comes back".
+ * That promise cannot be kept, because the caller classifies this value by EXACT MATCH and the
+ * ULD's own codes share the 8 bits with the device byte: 0x42 is also VL53L7CX_MCU_ERROR, which is
+ * precisely why testing this value proved nothing about whether a device code survived. A status 1
+ * of 0x01 would have come back as 0x01 and been classified as a TIMEOUT by a branch whose own
+ * comment says it must not be. So the classification wins and the device byte is dropped. */
+ZTEST(tof_l7_uld_stop, test_an_unrecognised_status_1_reports_the_generic_failure_not_its_own_byte)
 {
 	confirm_after_polls = 1;
 	status1_value = 0x42;
 
 	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
 
-	zassert_equal(rc, 0x42,
-		      "where the device gave a code, that code is what comes back");
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR,
+		      "an unaccepted status 1 is the generic failure, whatever byte carried it");
 	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR,
 			  "this one is not a timeout and must not be labelled as one");
+}
+
+/* THE THREE VALUES THAT COLLIDE WITH ULD CODES, which the suite had no case for and which are the
+ * whole reason the OR had to go. Each of these, folded into the status, would have been classified
+ * as something it is not: 0x01 as a timeout, 0x02 as a corrupted frame, 0x7F as caller misuse. */
+ZTEST(tof_l7_uld_stop, test_a_status_1_that_collides_with_a_uld_code_is_not_classified_as_that_code)
+{
+	const uint8_t colliding[] = {
+		VL53L7CX_STATUS_TIMEOUT_ERROR,   /* 0x01 -- answered promptly, not a timeout */
+		VL53L7CX_STATUS_CORRUPTED_FRAME, /* 0x02 */
+		VL53L7CX_STATUS_INVALID_PARAM,   /* 0x7F -- would read as caller misuse */
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(colliding); ++i) {
+		before(NULL);
+		confirm_after_polls = 1;
+		status1_value = colliding[i];
+
+		const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+		zassert_equal(rc, VL53L7CX_STATUS_ERROR,
+			      "status 1 0x%02x came back as 0x%02x instead of the generic failure",
+			      colliding[i], rc);
+		zassert_true(polls_seen <= 3,
+			     "the device stopped promptly, so no timeout budget was spent: %d",
+			     polls_seen);
+	}
+}
+
+/* And the same collision on the timeout path. A device still answering 0x02 when the budget runs
+ * out timed out; before this it came back as 0x03 and was classified as a generic I/O error, with
+ * the one fact the caller needed -- that five seconds were spent -- lost. */
+ZTEST(tof_l7_uld_stop, test_a_timeout_is_a_timeout_whatever_the_device_was_last_answering)
+{
+	const uint8_t last_byte[] = {0x00, 0x01, 0x02, 0x7F};
+
+	for (size_t i = 0; i < ARRAY_SIZE(last_byte); ++i) {
+		before(NULL);
+		confirm_after_polls = -1;
+		status0_before = last_byte[i];
+
+		const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+		zassert_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR,
+			      "last status 0 byte 0x%02x gave 0x%02x instead of the timeout status",
+			      last_byte[i], rc);
+		zassert_true(polls_seen > 500, "the full poll budget was spent: %d", polls_seen);
+	}
 }
 
 /* THE SECOND PLACE THE SAME MISTAKE LIVED, and the one the case above walked straight past.

@@ -88,6 +88,28 @@ int start(sensor *device, operation_status *status);
  * refused for not being in a state it can no longer reach. */
 int stop(sensor *device, operation_status *status);
 
+/* Return a sensor to `empty` so it can be opened again.
+ *
+ * WITHOUT THIS THE LIFECYCLE IS A ONE-WAY TRIP, and that was the state of this
+ * file until review caught it: nothing wrote `empty` after construction, and
+ * open() requires it. A sensor could be opened exactly once per boot. Two
+ * ordinary paths ran into it -- the re-bring-up after a clean stop, which
+ * leaves the sensor `configured`, and the re-bring-up after a failed
+ * configure(), which leaves it `opened` with no debt, so a caller that skips
+ * the pre-stop on the strength of "nothing is running" then met -EPERM from
+ * open() on every later attempt.
+ *
+ * The only workaround available to a caller was `*sensor = {}`, which also
+ * erases a stop_unconfirmed debt -- the one piece of state this header says
+ * only a successful stop() may clear. So the refusal here is the whole point:
+ * `running` and `stop_unconfirmed` are REFUSED, because closing either would
+ * forget a device that may still be ranging. Those states have exactly one way
+ * out and it is stop(). From `empty` this succeeds and does nothing, so a
+ * caller may close unconditionally before giving up on a sensor.
+ *
+ * Does no transport I/O: it cannot fail for any reason but state. */
+int close(sensor *device, operation_status *status);
+
 /* One non-blocking readiness check and, only when ready, one complete ULD
  * result fetch. No polling loop and no partial publication. `sample` is cleared
  * on entry and stays non-fresh on every refusal. */

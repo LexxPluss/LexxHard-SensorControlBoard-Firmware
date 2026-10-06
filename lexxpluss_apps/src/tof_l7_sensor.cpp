@@ -199,6 +199,31 @@ int stop(sensor *device, operation_status *status) {
   return rc;
 }
 
+int close(sensor *device, operation_status *status) {
+  if (status == nullptr)
+    return -EINVAL;
+  reset(*status);
+  if (device == nullptr) {
+    status->failed_stage = stage::arguments;
+    return -EINVAL;
+  }
+  /* A device that may be ranging is not closeable at any price. stop() is the
+   * only exit from either of these, and it is retryable for exactly that
+   * reason. */
+  if (device->current == lifecycle::running ||
+      device->current == lifecycle::stop_unconfirmed)
+    return state_refusal(*status);
+
+  /* open() memsets this too, so clearing it here is not what makes the next
+   * open() correct. It is here so that "closed" means nothing is retained --
+   * in particular not the firmware pointer, which is the one field production
+   * assigns from the verified runtime and which should not outlive the session
+   * it was verified for. */
+  memset(&device->uld, 0, sizeof(device->uld));
+  device->current = lifecycle::empty;
+  return 0;
+}
+
 int copy_raw(const VL53L7CX_ResultsData *input, sample *out) {
   if (out == nullptr)
     return -EINVAL;
