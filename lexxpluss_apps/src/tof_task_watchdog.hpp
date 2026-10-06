@@ -51,16 +51,17 @@
  *
  * THE FIX IS A BOUNDED SEND, in the send path: the callback form of can_send(), or any completion
  * wait that can expire. With that, a vanished host makes every send FAIL quickly, every counter
- * keeps moving, and none of this arises -- no gate needed anywhere. It is a change to
- * tof_cliff_can.cpp and the ten zcan_* senders, so it is not made here, and this layer must not be
- * read as surviving an unbounded sender. It does not.
+ * keeps moving, and none of this arises -- no gate needed anywhere. That change is now in this same
+ * branch, as zcan_bounded_send::send() with all fifteen senders converted to it, because the
+ * alternative was shipping a watchdog whose own header explained why it would reset a healthy
+ * board.
  *
- * SO THIS IS AN OPEN DEFECT AND NOT A CLOSED ONE. Removing the exemption that an earlier version of
- * this file added was a withdrawal of a wrong fix, which is worth doing on its own -- it restores
- * the reason word that names the sender -- but it repairs nothing about the reset. A host that
- * leaves still resets the board, once per host restart. Whoever turns the production wiring on owes
- * the bounded send first: with the unconditional timer feed removed and the senders still unbounded,
- * this layer converts an ordinary host restart into a power-on reset of a vehicle controller.
+ * WHAT IS STILL TRUE REGARDLESS: this layer does not survive an unbounded sender, and nothing here
+ * makes it do so. It judges progress; a thread parked forever inside its own work cycle has no
+ * progress to judge, and no suspension set can tell that apart from a dead one. If a sender is ever
+ * added that waits on completion without a timeout, the reset comes back, and it comes back as a
+ * watchdog bug rather than as the send bug it is. The CMake gate in lexxpluss_apps/CMakeLists.txt
+ * exists to stop that at configure time rather than on a vehicle.
  *
  * The second is bring-up work that legitimately takes far longer than a cycle. Exactly ONE such
  * operation is declared today and the comment says which rather than gesturing at a category:
