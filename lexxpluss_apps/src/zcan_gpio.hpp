@@ -29,6 +29,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "gpio_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_GPIO_OUT 0x211
 #define CAN_ID_GPIO_IN 0x212
@@ -75,7 +76,7 @@ public:
             // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_GPIO_IN);
 
-            can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
         }
 
         struct can_frame frame;

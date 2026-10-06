@@ -31,6 +31,7 @@
 #include <cstdio>
 #include "common.hpp"
 #include "pgv_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_PGV_1 0x200
 #define CAN_ID_PGV_2 0x201
@@ -78,9 +79,9 @@ public:
             memcpy(frame_pgv[2].data,message.rawdata + 14 ,7);
             frame_pgv[2].data[7] = ring_counter;
 
-            can_send(dev, &frame_pgv[0], K_MSEC(100), nullptr, nullptr);
-            can_send(dev, &frame_pgv[1], K_MSEC(100), nullptr, nullptr);
-            can_send(dev, &frame_pgv[2], K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &frame_pgv[0], K_MSEC(100));
+            zcan_bounded_send::send(dev, &frame_pgv[1], K_MSEC(100));
+            zcan_bounded_send::send(dev, &frame_pgv[2], K_MSEC(100));
 
             ring_counter++;
         }

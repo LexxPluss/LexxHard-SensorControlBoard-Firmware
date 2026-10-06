@@ -29,6 +29,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "imu_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_ACCL 0x206
 #define CAN_ID_GYRO 0x207
@@ -82,8 +83,8 @@ public:
                 }
             };
 
-            can_send(dev, &frame_imu[0], K_MSEC(100), nullptr, nullptr);    //accel
-            can_send(dev, &frame_imu[1], K_MSEC(100), nullptr, nullptr);    //gyro
+            zcan_bounded_send::send(dev, &frame_imu[0], K_MSEC(100));    //accel
+            zcan_bounded_send::send(dev, &frame_imu[1], K_MSEC(100));    //gyro
         }
     }
 private:

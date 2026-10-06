@@ -30,6 +30,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include "firmware_updater.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_DFU_DATA 0x20d
 #define CAN_ID_DFU_RESP 0x20e
@@ -77,7 +78,7 @@ public:
     	        .dlc{sizeof response}
     	    };
     	    std::copy_n(reinterpret_cast<uint8_t*>(&response), sizeof response, frame.data);
-    	    can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+    	    zcan_bounded_send::send(dev, &frame, K_MSEC(100));
     	}
     }
 private:

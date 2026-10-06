@@ -28,6 +28,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include "can_controller.hpp"
+#include "zcan_bounded_send.hpp"
 
 #define CAN_ID_BOARD_TX 0x20C
 #define CAN_ID_BOARD_RX 0x20F
@@ -105,7 +106,7 @@ public:
             packedData[5] = (uint8_t)(scaled_voltage & 0xFF); // Lower Byte
 
             memcpy(frame.data, packedData, CAN_TX_DATA_LENGTH_BOARD);
-            can_send(dev, &frame, K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
         }
 
         can_frame frame;
