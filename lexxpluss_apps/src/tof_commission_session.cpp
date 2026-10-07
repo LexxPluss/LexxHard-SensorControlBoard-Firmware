@@ -24,11 +24,28 @@ namespace map = tof_commission_map;
 
 namespace {
 
-/* Bounded, and refusing when full rather than evicting. Evicting an entry re-opens replay of exactly
- * the request it described, and wrapping the sequence would make two different requests share an
- * identity -- so a full table ends commissioning for this boot, which a boot clears anyway because a
- * boot changes the session. Sized for far more attempts than a healthy machine makes. */
-constexpr uint8_t kTableSize{16};
+/* ONE SLOT PER SEQUENCE NUMBER, AND THE TABLE IS INDEXED BY IT.
+ *
+ * Still bounded, still never evicting -- evicting an entry re-opens replay of exactly the request it
+ * described, and reusing a sequence would make two different requests share an identity. What
+ * changed is the bound. It was 16, justified as "far more attempts than a healthy machine makes",
+ * and that justification counted the wrong thing: the table is consumed by REQUESTS, not by
+ * attempts, and a request that never ran consumes a slot too. A `busy_chain` refusal has to be
+ * recorded -- see the claim-before-refuse comment in handle_request() for the retransmission that
+ * ran when it was not -- so sixteen retries against a machine that is not quiescent exhausted the
+ * table and ended commissioning for the boot without a single proof having run.
+ *
+ * Sizing it from a request rate would have been another guess. The sequence number is eight bits, so
+ * 256 is the whole space a host can address in one session, and at that size the table cannot fill
+ * before the host has used every identity available to it. "Table full" and "sequence space
+ * exhausted" become the same condition, which is what the wire's result code already called it.
+ *
+ * It also lets the table be indexed by the sequence number instead of searched, which removes two
+ * linear scans from a CAN receive callback holding a spinlock. At 12 bytes an entry this is 3,072 B
+ * of bss against 192 B before; the chain image measures 54.8% of its RAM region in use. */
+constexpr uint16_t kTableSize{256};
+static_assert(kTableSize == 1U << (8U * sizeof(wire::request::seq)),
+              "the table is indexed by the wire's sequence number and must cover all of it");
 
 struct entry {
     bool used{false};
@@ -59,12 +76,12 @@ bool has_proven_{false};
 uint8_t proven_epoch_{0};
 
 entry table_[kTableSize]{};
-uint8_t used_entries_{0};
+uint16_t used_entries_{0};
 
 /* One slot. A second request while one is in flight is `busy_chain`, and an exact retransmission of
  * the in-flight one is answered with its current phase. */
 bool running_{false};
-uint8_t running_index_{0};
+uint16_t running_index_{0};
 
 /* WHETHER A WORKER HAS TAKEN THE JOB, which is not the same fact as `running_` and is the reason
  * this exists. `running_` says a request is queued; it stays true for the whole transaction, so two
@@ -83,26 +100,25 @@ tof_commissioning::outcome last_outcome_{};
 
 entry *find(uint8_t seq)
 {
-    for (auto &e : table_)
-        if (e.used && e.seq == seq)
-            return &e;
-    return nullptr;
+    entry &e{table_[seq]};
+    return e.used ? &e : nullptr;
 }
 
 entry *claim(uint8_t seq, wire::opcode op, uint8_t epoch)
 {
-    for (auto &e : table_) {
-        if (e.used)
-            continue;
-        e = entry{};
-        e.used = true;
-        e.seq = seq;
-        e.op = op;
-        e.wire_epoch = epoch;
-        ++used_entries_;
-        return &e;
-    }
-    return nullptr;
+    entry &e{table_[seq]};
+    /* Unreachable: every caller runs find() first and returns on a hit, and this is the only slot
+     * this sequence number can occupy. Kept as a refusal rather than an assertion because the
+     * alternative to refusing would be overwriting a record somebody may still retransmit. */
+    if (e.used)
+        return nullptr;
+    e = entry{};
+    e.used = true;
+    e.seq = seq;
+    e.op = op;
+    e.wire_epoch = epoch;
+    ++used_entries_;
+    return &e;
 }
 
 wire::transaction_status refusal(uint8_t seq, uint8_t epoch, wire::result res)
@@ -167,8 +183,23 @@ bool init(const config &cfg, const hooks &h)
     /* Zero is reserved as "no token", so a draw that yields it is retried once before the subsystem
      * gives up -- a single zero from a healthy generator is an ordinary sample, not a fault. Two in
      * a row is treated as no entropy at all. */
+    /* EVERY HOOK IS CHECKED HERE, not where it is called, because #112's own wiring check cannot
+     * see them. The sequencer is handed ac_permitted/ac_acquire_epoch/ac_prove/ac_start, which are
+     * this file's adapters and are never null, so ac::wired() is satisfied by construction however
+     * little is actually bound underneath. What each missing hook produced instead was a plausible
+     * operational answer rather than a fault: a missing enumeration_permitted made ac_permitted
+     * return false and the host read `not_permitted` forever, which is indistinguishable from a
+     * machine that is simply never quiescent; a missing prove spent an attempt from the proof budget
+     * before returning -ENODEV, because the sequencer increments the counter before the call; and a
+     * missing start was found only after a real proof had run, installed a mapping and spent the
+     * epoch, which is exactly the expensive discovery #112's budget comment exists to avoid.
+     *
+     * Refusing the session instead leaves ac::state::misconfigured, which the wire already has a
+     * result for, and costs a configuration mistake nothing but a clear answer. */
     uint32_t drawn{0};
-    if (hooks_.draw_token == nullptr)
+    if (hooks_.draw_token == nullptr || hooks_.enumeration_permitted == nullptr ||
+        hooks_.prove == nullptr || hooks_.start == nullptr ||
+        hooks_.installed_mapping == nullptr)
         return false;
     if (hooks_.draw_token(hooks_.ctx, &drawn) != 0 || drawn == 0) {
         drawn = 0;
@@ -338,7 +369,7 @@ rx_action handle_request(const uint8_t *data, size_t len)
 
     pending_epoch_ = req.wire_epoch;
     running_ = true;
-    running_index_ = static_cast<uint8_t>(e - table_);
+    running_index_ = static_cast<uint16_t>(e - table_);
     ++stats_.accepted;
 
     out.queued = true;
@@ -372,7 +403,7 @@ worker_result worker_step()
         return out;
     }
     worker_active_ = true;
-    const uint8_t index{running_index_};
+    const uint16_t index{running_index_};
     const wire::opcode op{table_[index].op};
     const uint8_t req_epoch{table_[index].wire_epoch};
     k_spin_unlock(&lock_, key);
@@ -387,11 +418,44 @@ worker_result worker_step()
     };
     verdict v{};
 
-    /* `has_proven_`/`proven_epoch_` are written by ac_prove() and read here, both on this thread and
-     * nowhere else, so they need no lock -- and they are read BEFORE ac::step(), because the whole
-     * point is to decide whether the sequencer may be stepped at all. */
+    /* THE AUTHORITY IS ASKED, NOT THIS FILE'S MEMORY OF IT, and that is a correction.
+     *
+     * The gate used to compare the request's epoch against has_proven_/proven_epoch_, which only
+     * ac_prove() writes. Anything that installed or lost a mapping outside this session was
+     * therefore invisible to it: `tof cliff prove <epoch>` from the shell goes straight to
+     * tof_commissioning::prove() and installs a different epoch, and a mapping can go LOST on its
+     * own. A later request naming the OLD epoch then passed the gate, ac::step() answered
+     * `already_started`, and the host was told done/ok while something else -- or nothing -- was
+     * installed. That is the exact lie the paragraph below says this gate exists to prevent, so the
+     * gate has to read the one place that knows.
+     *
+     * has_proven_/proven_epoch_ are kept, but only as the sequencer's own account of what IT proved;
+     * they no longer decide anything on their own.
+     *
+     * Asked through a hook rather than by calling tof_authority::current() directly, for the reason
+     * every other dependency here is injected: this module is tested on the host, where the
+     * authority is not linked, and the cases worth testing are exactly the ones a real authority
+     * makes hard to produce -- somebody else's epoch installed, or a mapping that went LOST. */
     const ac::state st{ac::current()};
     const bool holds_proof{st == ac::state::proven || st == ac::state::started};
+    uint8_t in_force_epoch{0};
+    const bool authority_proven{hooks_.installed_mapping(hooks_.ctx, &in_force_epoch)};
+    const bool authority_holds_this_epoch{authority_proven && in_force_epoch == req_epoch};
+
+    /* AND THE TWO VIEWS MUST AGREE WITH EACH OTHER, which asking the authority alone does not get.
+     *
+     * The first version of this fix gated on "the authority holds this request's epoch" and nothing
+     * else, and that left a path open. Session proves and starts epoch 7, so the sequencer sits in
+     * `started`. The shell then proves epoch 9 outside the session, which silences acquisition on
+     * its way through. The host asks for epoch 9: the authority does hold 9, so the gate let it
+     * past -- and ac::step() answered `already_started` from a state that belongs to epoch 7, with
+     * nothing re-started. The host was told done/ok for a mapping that was never started.
+     *
+     * So the authority's mapping must not be allowed to endorse a `started` that predates it. The
+     * sequencer's own record of what IT proved is the link: when the epoch in force is not the one
+     * this session proved, the sequencer's state says nothing about what is installed, and the
+     * request is refused rather than answered from it. */
+    const bool views_agree{authority_proven && has_proven_ && proven_epoch_ == in_force_epoch};
 
     /* THE OPCODE BOUNDARY, AND IT IS ENFORCED HERE RATHER THAN INSIDE THE SEQUENCER.
      *
@@ -409,7 +473,28 @@ worker_result worker_step()
      * a different ordinal is installed, which is the one lie the host's `accepted` field cannot
      * recover from. `epoch_mismatch` is terminal on the host side and asks for no retry. */
     bool gated{false};
-    if (holds_proof && (!has_proven_ || proven_epoch_ != req_epoch)) {
+    if (holds_proof && !(authority_holds_this_epoch && views_agree)) {
+        /* The sequencer will not prove anything else this boot, so whatever is installed is what
+         * this request would be answered about. If that is not this request's epoch -- a different
+         * epoch, or no mapping at all because it went LOST -- or if it is not the epoch this
+         * session proved, then the request cannot be answered with done/ok. It is reported as a
+         * disagreement about the epoch because that is what it is from the host's side: the ordinal
+         * it named is not the one the running sequence belongs to.
+         *
+         * WHAT THIS STILL DOES NOT CHECK, so that nobody reads more into it: that the acquisition
+         * thread is actually running. The sequencer's `started` is taken at its word once the two
+         * views agree, and a mapping that is in force under the right epoch with acquisition
+         * stopped underneath it would still be answered done. Detecting that needs the acquisition
+         * state, which this module is not given and which the wiring branch should supply.
+         *
+         * AND THAT GAP HAS A REAL PATH, which an earlier version of this comment denied by claiming
+         * the shell could not stop acquisition without moving the epoch. It can.
+         * tof_commissioning::prove() quiesces at STEP 1 and only then takes the chain at STEP 2, so
+         * a run that refuses there -- `chain_busy`, and the early refusals after it share the shape
+         * -- returns with acquisition STOPPED, no mapping revoked and the epoch unchanged. Both
+         * views then still agree, this gate passes, ac::step() answers already_started, and the
+         * host is told done for a chain that is not acquiring. Nothing here can see it. The
+         * regression belongs with the branch that can ask about acquisition. */
         gated = true;
     } else if (op == wire::opcode::start_only && !holds_proof &&
                st != ac::state::disabled && st != ac::state::misconfigured) {
@@ -425,7 +510,26 @@ worker_result worker_step()
         v.stage = wire::wire_stage::not_started;
         v.detail = wire::wire_detail::none;
     } else {
-        switch (const ac::step_result step{ac::step()}; step) {
+        /* WHETHER THIS TRANSACTION RAN ANYTHING, measured rather than inferred from the result.
+         *
+         * The wire says `done` carries the outcome and `refused` carries why it never ran, and the
+         * phase used to be left at its `refused` default for everything except started and
+         * already_started -- so proof_failed, start_failed, attempts_exhausted and the
+         * busy_at_commit that map_result() produces all went out as "never ran". A host written
+         * against the header read those as costing it nothing, when busy_at_commit's own comment
+         * says the host owes a new ordinal for it.
+         *
+         * The result code alone cannot answer the question, which is why this is a measurement:
+         * attempts_exhausted comes back BOTH from a proof that just failed as the last of its
+         * budget and from a step that found the budget already spent and did nothing. The
+         * sequencer's counters tell those apart, and nothing else here can. */
+        const uint8_t attempts_before{ac::attempts_used()};
+        const uint8_t starts_before{ac::start_attempts_used()};
+        const ac::step_result step{ac::step()};
+        const bool proof_ran{ac::attempts_used() != attempts_before};
+        const bool ran{proof_ran || ac::start_attempts_used() != starts_before};
+
+        switch (step) {
         case ac::step_result::started:
         case ac::step_result::already_started: {
             /* The desired end state holds, AND it holds for this request's epoch -- the gate above is
@@ -451,6 +555,18 @@ worker_result worker_step()
         }
         case ac::step_result::attempts_exhausted:
             v.res = wire::result::attempts_exhausted;
+            /* THE REASON THE LAST PROOF FAILED, which used to be dropped. #112 returns
+             * attempts_exhausted rather than proof_failed when the proof that just failed was the
+             * last in the budget, and this branch did not read last_outcome_ -- so the host got
+             * not_started/none for a transaction that had run a whole walk. With
+             * max_proof_attempts = 1 that was every proof failure there is. The result stays
+             * attempts_exhausted, because the budget is the fact the host must act on; the stage
+             * and detail now say what went wrong while spending it. */
+            if (proof_ran) {
+                const map::outcome o{map::map_result(last_outcome_)};
+                v.stage = o.stage;
+                v.detail = o.detail;
+            }
             break;
         case ac::step_result::start_failed:
             v.res = wire::result::start_failed;
@@ -478,6 +594,17 @@ worker_result worker_step()
             v.res = wire::result::misconfigured;
             break;
         }
+
+        /* Set once, from the measurement, rather than per case. `started` and `already_started`
+         * have already said `done` for themselves: the first ran, and the second is the one result
+         * that is `done` without running anything, because the end state the host asked for holds.
+         *
+         * Everything else is `done` exactly when this step consumed an attempt. That includes the
+         * failures -- a proof that ran and failed is an outcome, not a refusal -- and excludes the
+         * cases that never reached a hook: not_permitted, disabled, misconfigured, no_epoch, a
+         * budget found already spent, and a start budget with nothing left to attempt. */
+        if (v.ph != wire::phase::done)
+            v.ph = ran ? wire::phase::done : wire::phase::refused;
     }
 
     key = k_spin_lock(&lock_);
