@@ -359,41 +359,80 @@ ZTEST(tof_commission_session, test_an_earlier_request_is_still_replayable_later)
     zassert_equal(f_.proves, 2, "and it did not run again");
 }
 
-ZTEST(tof_commission_session, test_the_table_refuses_when_full_rather_than_evicting)
+/* THE TABLE COVERS THE WHOLE SEQUENCE SPACE, so it cannot fill before the host has used every
+ * identity available to it. What this case still pins is the part that was always the point: no
+ * entry is ever evicted, because evicting one re-opens replay of exactly the request it described.
+ *
+ * It used to assert that the table filled after a few dozen requests. That was the defect rather
+ * than the design -- the table was consumed by requests while its size was justified against
+ * attempts -- so the assertion is replaced rather than relaxed. */
+ZTEST(tof_commission_session, test_every_sequence_number_has_a_slot_and_none_is_ever_evicted)
 {
     zassert_true(enable(255, 255), "");
     uint8_t frame[wire::kFrameLen]{};
-    int accepted{0};
-    for (int i = 0; i < 40; ++i) {
-        build_request(frame, static_cast<uint8_t>(i + 1), static_cast<uint8_t>(i + 1), 0x11223344U);
+
+    /* Every sequence number a host can address, each one a distinct request. The proof budget runs
+     * out partway through and the later ones come back attempts_exhausted; they still take their own
+     * slot, which is the behaviour under test. */
+    for (int i = 0; i < 256; ++i) {
+        build_request(frame, static_cast<uint8_t>(i), static_cast<uint8_t>(i), 0x11223344U);
         const cs::rx_action a{cs::handle_request(frame, sizeof frame)};
-        if (a.status.res == wire::result::seq_space_exhausted)
-            break;
-        zassert_true(a.queued, "accepted while there is room");
-        ++accepted;
-        (void)run_to_terminal();
+        zassert_not_equal(a.status.res, wire::result::seq_space_exhausted,
+                          "seq %d was refused for want of a slot", i);
+        if (a.queued)
+            (void)run_to_terminal();
     }
-    zassert_true(accepted > 0 && accepted < 40, "it filled up");
 
-    /* And it stays refused: evicting would re-open replay of exactly the request evicted. */
-    build_request(frame, 99, 99, 0x11223344U);
-    zassert_true(cs::handle_request(frame, sizeof frame).status.res ==
-                     wire::result::seq_space_exhausted,
-                 "still refused");
-
-    /* The earliest entry is still replayable, which is what eviction would have destroyed. Asserted
-     * on the CONTENT, not merely that something came back: a refusal also sets send_status, so a
-     * weaker check here passed against a store that had evicted entry 1 -- found by mutating the
-     * eviction rule and watching this test stay green. */
+    /* The first one is still replayable, which is what eviction would have destroyed. Asserted on
+     * the CONTENT: a refusal also sets send_status, so a weaker check here passed against a store
+     * that had evicted entry 0 -- found by mutating the eviction rule and watching it stay green. */
     const uint32_t replays_before{cs::stats().replayed_from_table};
-    build_request(frame, 1, 1, 0x11223344U);
+    build_request(frame, 0, 0, 0x11223344U);
     const cs::rx_action survivor{cs::handle_request(frame, sizeof frame)};
     zassert_true(survivor.send_status, "answered");
-    zassert_equal(survivor.status.seq, 1, "it is request 1's own status");
-    zassert_equal(survivor.status.wire_epoch, 1, "with request 1's epoch");
-    zassert_true(survivor.status.ph == wire::phase::done, "replayed, not refused");
+    zassert_equal(survivor.status.seq, 0, "it is request 0's own status");
+    zassert_equal(survivor.status.wire_epoch, 0, "with request 0's epoch");
     zassert_equal(cs::stats().replayed_from_table, replays_before + 1,
                   "and counted as a replay rather than a fresh refusal");
+
+    /* A host that has used every identity and wants another distinct request has nowhere to go, and
+     * the answer it gets is that the sequence is taken -- not an eviction, and not the board
+     * declaring itself finished. */
+    build_request(frame, 0, 99, 0x11223344U);
+    zassert_equal(cs::handle_request(frame, sizeof frame).status.res, wire::result::seq_conflict,
+                  "reusing a sequence for a different request is a conflict");
+}
+
+/* THE DEFECT THE SIZING CHANGE IS FOR. Refusals that never ran take slots too -- a `busy_chain`
+ * entry has to be recorded, or the identical frame retransmitted after the in-flight transaction
+ * finishes is treated as new and RUNS. With sixteen slots, sixteen retries against a machine that
+ * is not quiescent ended commissioning for the boot with no proof having been attempted. */
+ZTEST(tof_commission_session, test_many_busy_refusals_do_not_end_commissioning_for_the_boot)
+{
+    zassert_true(enable(), "");
+    uint8_t frame[wire::kFrameLen]{};
+
+    /* One request queued and deliberately not run: running_ is set by handle_request(), so every
+     * further request is busy_chain while this one sits there. */
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+
+    for (int i = 2; i <= 60; ++i) {
+        build_request(frame, static_cast<uint8_t>(i), 7, 0x11223344U);
+        const cs::rx_action a{cs::handle_request(frame, sizeof frame)};
+        zassert_equal(a.status.res, wire::result::busy_chain,
+                      "retry %d answered %d instead of busy", i, static_cast<int>(a.status.res));
+    }
+
+    /* Now let the queued one finish, and commission on a fresh sequence. Before the change this
+     * request was refused seq_space_exhausted until reboot. */
+    zassert_true(run_to_terminal().res == wire::result::ok, "the queued transaction still runs");
+    zassert_equal(f_.proves, 1, "exactly one proof ran through all of that");
+
+    build_request(frame, 200, 7, 0x11223344U);
+    const cs::rx_action after{cs::handle_request(frame, sizeof frame)};
+    zassert_not_equal(after.status.res, wire::result::seq_space_exhausted,
+                      "sixty refusals ended commissioning for the boot");
 }
 
 /* ---- the RX path does no work ---- */

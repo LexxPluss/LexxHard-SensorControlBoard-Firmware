@@ -24,11 +24,28 @@ namespace map = tof_commission_map;
 
 namespace {
 
-/* Bounded, and refusing when full rather than evicting. Evicting an entry re-opens replay of exactly
- * the request it described, and wrapping the sequence would make two different requests share an
- * identity -- so a full table ends commissioning for this boot, which a boot clears anyway because a
- * boot changes the session. Sized for far more attempts than a healthy machine makes. */
-constexpr uint8_t kTableSize{16};
+/* ONE SLOT PER SEQUENCE NUMBER, AND THE TABLE IS INDEXED BY IT.
+ *
+ * Still bounded, still never evicting -- evicting an entry re-opens replay of exactly the request it
+ * described, and reusing a sequence would make two different requests share an identity. What
+ * changed is the bound. It was 16, justified as "far more attempts than a healthy machine makes",
+ * and that justification counted the wrong thing: the table is consumed by REQUESTS, not by
+ * attempts, and a request that never ran consumes a slot too. A `busy_chain` refusal has to be
+ * recorded -- see the claim-before-refuse comment in handle_request() for the retransmission that
+ * ran when it was not -- so sixteen retries against a machine that is not quiescent exhausted the
+ * table and ended commissioning for the boot without a single proof having run.
+ *
+ * Sizing it from a request rate would have been another guess. The sequence number is eight bits, so
+ * 256 is the whole space a host can address in one session, and at that size the table cannot fill
+ * before the host has used every identity available to it. "Table full" and "sequence space
+ * exhausted" become the same condition, which is what the wire's result code already called it.
+ *
+ * It also lets the table be indexed by the sequence number instead of searched, which removes two
+ * linear scans from a CAN receive callback holding a spinlock. At 12 bytes an entry this is 3,072 B
+ * of bss against 192 B before; the chain image measures 54.8% of its RAM region in use. */
+constexpr uint16_t kTableSize{256};
+static_assert(kTableSize == 1U << (8U * sizeof(wire::request::seq)),
+              "the table is indexed by the wire's sequence number and must cover all of it");
 
 struct entry {
     bool used{false};
@@ -59,12 +76,12 @@ bool has_proven_{false};
 uint8_t proven_epoch_{0};
 
 entry table_[kTableSize]{};
-uint8_t used_entries_{0};
+uint16_t used_entries_{0};
 
 /* One slot. A second request while one is in flight is `busy_chain`, and an exact retransmission of
  * the in-flight one is answered with its current phase. */
 bool running_{false};
-uint8_t running_index_{0};
+uint16_t running_index_{0};
 
 /* WHETHER A WORKER HAS TAKEN THE JOB, which is not the same fact as `running_` and is the reason
  * this exists. `running_` says a request is queued; it stays true for the whole transaction, so two
@@ -83,26 +100,25 @@ tof_commissioning::outcome last_outcome_{};
 
 entry *find(uint8_t seq)
 {
-    for (auto &e : table_)
-        if (e.used && e.seq == seq)
-            return &e;
-    return nullptr;
+    entry &e{table_[seq]};
+    return e.used ? &e : nullptr;
 }
 
 entry *claim(uint8_t seq, wire::opcode op, uint8_t epoch)
 {
-    for (auto &e : table_) {
-        if (e.used)
-            continue;
-        e = entry{};
-        e.used = true;
-        e.seq = seq;
-        e.op = op;
-        e.wire_epoch = epoch;
-        ++used_entries_;
-        return &e;
-    }
-    return nullptr;
+    entry &e{table_[seq]};
+    /* Unreachable: every caller runs find() first and returns on a hit, and this is the only slot
+     * this sequence number can occupy. Kept as a refusal rather than an assertion because the
+     * alternative to refusing would be overwriting a record somebody may still retransmit. */
+    if (e.used)
+        return nullptr;
+    e = entry{};
+    e.used = true;
+    e.seq = seq;
+    e.op = op;
+    e.wire_epoch = epoch;
+    ++used_entries_;
+    return &e;
 }
 
 wire::transaction_status refusal(uint8_t seq, uint8_t epoch, wire::result res)
@@ -353,7 +369,7 @@ rx_action handle_request(const uint8_t *data, size_t len)
 
     pending_epoch_ = req.wire_epoch;
     running_ = true;
-    running_index_ = static_cast<uint8_t>(e - table_);
+    running_index_ = static_cast<uint16_t>(e - table_);
     ++stats_.accepted;
 
     out.queued = true;
@@ -387,7 +403,7 @@ worker_result worker_step()
         return out;
     }
     worker_active_ = true;
-    const uint8_t index{running_index_};
+    const uint16_t index{running_index_};
     const wire::opcode op{table_[index].op};
     const uint8_t req_epoch{table_[index].wire_epoch};
     k_spin_unlock(&lock_, key);
