@@ -146,6 +146,13 @@ int stop_ranging(void *ctx, uint8_t addr_7bit)
 
     vl53l7cx_port_clear_error(dev->platform.port);
     const uint8_t uld_status{vl53l7cx_stop_ranging(dev)};
+    /* IMAGE FAULT FIRST, the same order is_alive() and finish() use. Easy to miss here because
+     * this path already has a transport errno and a status byte to report, and neither of them
+     * sees a SwapBuffer argument fault: the latch is image-wide, so one raised while another
+     * context was being driven would otherwise let this stop return success. A stop that reports
+     * success is the one answer the enumeration above it acts on. */
+    if (const int fault{vl53l7cx_port_argument_fault()}; fault != 0)
+        return fault;
     if (const int port_errno{vl53l7cx_port_error(dev->platform.port)}; port_errno != 0)
         return port_errno;
 

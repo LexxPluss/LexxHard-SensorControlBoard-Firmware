@@ -499,3 +499,21 @@ ZTEST(tof_l7_recovery_ops, test_an_argument_fault_is_not_reported_as_an_empty_ad
 
     sticky_argument_fault_ = 0;
 }
+
+/* THE STOP PATH OBEYS THE SAME ORDER. A stop that returns success is what the enumeration above
+ * acts on, so an image-wide fault must not be reportable as a completed stop -- and this path is
+ * the easiest of the three to leave out, because it already has a transport errno and a status
+ * byte of its own to report. */
+ZTEST(tof_l7_recovery_ops, test_an_argument_fault_is_not_reported_as_a_completed_stop)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    spy_.stop_status = VL53L7CX_STATUS_OK;   /* the device would have said it stopped */
+    sticky_argument_fault_ = -EINVAL;
+
+    const rec::ops o{ops_under_test()};
+    zassert_equal(o.stop_ranging(o.ctx, 0x29U), -EINVAL,
+                  "not 0, which the enumeration would read as a stopped survivor");
+
+    sticky_argument_fault_ = 0;
+}
