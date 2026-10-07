@@ -988,3 +988,39 @@ ZTEST(tof_commission_session, test_a_machine_that_is_not_quiescent_never_ran_and
     zassert_equal(t.res, wire::result::not_permitted, "");
     zassert_equal(t.ph, wire::phase::refused, "and the phase says so");
 }
+
+/* EVERY HOOK IS REQUIRED, and the reason is that #112's own wiring check cannot see them: the
+ * sequencer is handed this file's adapters, which are never null, so ac::wired() is satisfied
+ * however little is bound underneath. Each missing hook used to produce a plausible operational
+ * answer instead of a fault -- not_permitted forever, an attempt spent on -ENODEV, or a start
+ * failure discovered only after a real proof had installed a mapping and spent the epoch. */
+ZTEST(tof_commission_session, test_a_session_refuses_to_start_with_any_hook_missing)
+{
+    cs::config c{};
+    c.profile_enabled = true;
+    c.max_proof_attempts = 3;
+    c.max_start_attempts = 3;
+
+    {
+        cs::hooks h{wired()};
+        h.enumeration_permitted = nullptr;
+        zassert_false(cs::init(c, h), "a missing quiescence hook read as not_permitted forever");
+    }
+    {
+        cs::hooks h{wired()};
+        h.prove = nullptr;
+        zassert_false(cs::init(c, h), "a missing prove spent an attempt on a wiring bug");
+    }
+    {
+        cs::hooks h{wired()};
+        h.start = nullptr;
+        zassert_false(cs::init(c, h), "a missing start was found only after the epoch was spent");
+    }
+    {
+        cs::hooks h{wired()};
+        h.draw_token = nullptr;
+        zassert_false(cs::init(c, h), "");
+    }
+    /* And the fully wired one still starts, so this is not just asserting that init() fails. */
+    zassert_true(cs::init(c, wired()), "a complete wiring must still produce a session");
+}
