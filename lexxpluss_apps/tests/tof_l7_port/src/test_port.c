@@ -354,3 +354,44 @@ ZTEST(tof_l7_port, test_swap_buffer_argument_fault_is_not_a_device_error)
 	vl53l7cx_port_clear_argument_fault();
 	zassert_equal(vl53l7cx_port_argument_fault(), 0);
 }
+
+/* THE TRANSFER GOES TO THE CONTROLLER THE CONTEXT NAMES, which the two-context test above does
+ * NOT show: both of its contexts sit on the same bus, so a port that validated the context and
+ * then drove a compiled-in i2c2 would have passed it. Two controllers and the recorded bus are
+ * what separate those two implementations. */
+ZTEST(tof_l7_port, test_each_context_drives_its_own_controller)
+{
+	const struct device *const bus_a = DEVICE_DT_GET(DT_NODELABEL(i2c2));
+	const struct device *const bus_b = DEVICE_DT_GET(DT_NODELABEL(i2c4));
+	struct vl53l7cx_port_context ctx_b = {.bus = bus_b};
+	VL53L7CX_Platform platform_b = {.address = TEST_ADDR7 << 1, .port = &ctx_b};
+	uint8_t byte = 0;
+
+	zassert_not_equal(bus_a, bus_b, "the overlay must give two distinct controllers");
+	zassert_true(device_is_ready(bus_b), "the second controller is usable");
+
+	zassert_equal(VL53L7CX_RdByte(&platform, 0x0010, &byte), VL53L7CX_STATUS_OK);
+	zassert_equal(VL53L7CX_RdByte(&platform_b, 0x0010, &byte), VL53L7CX_STATUS_OK);
+
+	zassert_equal(fake_i2c_count, 2);
+	zassert_equal(fake_i2c_log[0].bus, bus_a, "the first context's bus carried the first read");
+	zassert_equal(fake_i2c_log[1].bus, bus_b, "and the second context's bus the second");
+}
+
+/* And the counters follow the controller, not the order of calls. */
+ZTEST(tof_l7_port, test_a_failure_on_one_controller_leaves_the_other_countable)
+{
+	struct vl53l7cx_port_context ctx_b = {.bus = DEVICE_DT_GET(DT_NODELABEL(i2c4))};
+	VL53L7CX_Platform platform_b = {.address = TEST_ADDR7 << 1, .port = &ctx_b};
+	uint8_t byte = 0;
+
+	fake_i2c_fail_on(1, -EIO);
+	zassert_equal(VL53L7CX_RdByte(&platform, 0x0010, &byte), VL53L7CX_STATUS_ERROR);
+	fake_i2c_fail_on(0, 0);
+	zassert_equal(VL53L7CX_RdByte(&platform_b, 0x0010, &byte), VL53L7CX_STATUS_OK);
+
+	zassert_equal(vl53l7cx_port_error(&ctx), -EIO);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 0U);
+	zassert_equal(vl53l7cx_port_error(&ctx_b), 0);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx_b), 1U);
+}

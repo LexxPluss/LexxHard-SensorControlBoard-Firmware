@@ -71,6 +71,12 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     vl53l7cx_port_clear_error(dev->platform.port);
     uint8_t answered{0};
     const uint8_t uld_status{vl53l7cx_is_alive(dev, &answered)};
+    /* An image-wide argument fault outranks the classification below. It means this port or the
+     * ULD was handed a buffer it cannot process, so nothing about what the bus did is worth
+     * interpreting -- and reading it as "nobody there" would be the worst available answer. Not
+     * cleared here: a programming error does not stop being true because the next probe started. */
+    if (const int fault{vl53l7cx_port_argument_fault()}; fault != 0)
+        return fault;
     const int port_errno{vl53l7cx_port_error(dev->platform.port)};
 
     /* A CLEAN NACK WITH NOTHING ACKNOWLEDGED is the cold boot, and on a cold boot it is the answer
@@ -158,7 +164,13 @@ ops uld_ops(tof_l7::sensor *scratch, vl53l7cx_port_context *port)
     o.is_alive = is_alive;
     o.stop_ranging = stop_ranging;
     o.ctx = scratch;
-    if (scratch != nullptr)
+    /* REFUSED WITHOUT MODIFYING THE OBJECT, which is the whole point of checking here as well as
+     * in addressed(). Installing first and relying on the later lifecycle refusal would already
+     * have repointed a live session's bus by the time the call was rejected: the probe would be
+     * turned away, and the running sensor would be left talking to a controller nobody chose for
+     * it. The call-time check stays -- the lifecycle can change between binding and calling -- but
+     * it is no longer the only thing standing between a live session and a silent re-bus. */
+    if (scratch != nullptr && scratch->current == tof_l7::lifecycle::empty)
         scratch->uld.platform.port = port;
     return o;
 }

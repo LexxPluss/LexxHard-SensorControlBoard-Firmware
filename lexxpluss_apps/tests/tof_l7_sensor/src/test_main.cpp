@@ -77,7 +77,10 @@ vl53l7cx_port_context test_ctx{};
 const vl53l7cx_port_context *last_clear_ctx{nullptr};
 const vl53l7cx_port_context *last_error_ctx{nullptr};
 
+int sticky_argument_fault{0};
+
 void reset_fakes() {
+  sticky_argument_fault = 0;
   test_ctx = vl53l7cx_port_context{};
   test_ctx.bus = &test_bus;
   last_clear_ctx = nullptr;
@@ -130,6 +133,10 @@ int vl53l7cx_port_error(const vl53l7cx_port_context *port) {
   last_error_ctx = port;
   return sticky_port_error;
 }
+
+int vl53l7cx_port_argument_fault(void) { return sticky_argument_fault; }
+
+void vl53l7cx_port_clear_argument_fault(void) { sticky_argument_fault = 0; }
 
 uint8_t vl53l7cx_init(VL53L7CX_Configuration *p_dev) {
   ++init_calls;
@@ -644,4 +651,35 @@ ZTEST(tof_l7_sensor, test_open_refuses_a_missing_or_busless_context) {
 
   zassert_equal(init_calls, inits_before, "neither attempt reached the ULD");
   zassert_equal(sensor_under_test.current, l7::lifecycle::empty, "and the sensor is untouched");
+}
+
+/* ---- the image-wide argument fault is handled, not merely recorded ------------------------ */
+
+/* VL53L7CX_SwapBuffer() has no platform pointer, so its argument faults cannot be attributed to a
+ * device and live in their own latch. That latch must still FAIL the operation: before the port
+ * carried per-device state the same fault landed in the one global errno and propagated on its
+ * own, and moving it without handling it would have turned those operations into silent
+ * successes. */
+ZTEST(tof_l7_sensor, test_an_argument_fault_fails_the_operation_it_is_seen_in) {
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation));
+
+  sticky_argument_fault = -EINVAL;
+  zassert_equal(l7::configure(&sensor_under_test, 10, &operation), -EINVAL,
+                "an operation may not succeed while the build is mis-calling the port");
+  zassert_equal(operation.argument_fault, -EINVAL, "reported in its own field");
+  zassert_equal(operation.port_errno, 0, "and not filed as something a device did");
+  zassert_equal(operation.failed_stage, l7::stage::resolution);
+}
+
+/* STICKY ON PURPOSE. A device operation must not clear a shared latch: that would let each
+ * operation hide the previous one's fault, and clearing image-wide state from a per-device path is
+ * the cross-device coupling the context split exists to remove. */
+ZTEST(tof_l7_sensor, test_a_device_operation_does_not_clear_the_shared_latch) {
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation));
+  sticky_argument_fault = -EINVAL;
+
+  zassert_equal(l7::configure(&sensor_under_test, 10, &operation), -EINVAL);
+  zassert_equal(sticky_argument_fault, -EINVAL, "still set after one operation");
+  zassert_equal(l7::configure(&sensor_under_test, 10, &operation), -EINVAL,
+                "and the next operation fails too rather than appearing clean");
 }

@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <zephyr/device.h>
+
 #define FAKE_I2C_MAX_XFERS 16
 #define FAKE_I2C_MAX_SEGS  4
 #define FAKE_I2C_MAX_BYTES 8
@@ -31,6 +33,11 @@ struct fake_i2c_seg {
 struct fake_i2c_xfer {
 	uint16_t addr; /* the 7-bit address the driver passed down */
 	uint8_t num_segs;
+	/* WHICH CONTROLLER carried it. Needed to tell a port that uses the bus it was given from
+	 * one that validates the bus and then drives a compiled-in default anyway: both address
+	 * the same target, and only this field separates them. Registered on a second node too
+	 * when the test's overlay declares one. */
+	const struct device *bus;
 	struct fake_i2c_seg segs[FAKE_I2C_MAX_SEGS];
 };
 

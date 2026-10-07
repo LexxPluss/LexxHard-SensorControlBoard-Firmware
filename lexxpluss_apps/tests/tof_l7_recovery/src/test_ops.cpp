@@ -94,6 +94,9 @@ uint32_t vl53l7cx_port_completed_transfers(const vl53l7cx_port_context *port)
     last_port_ctx_ = port;
     return port_completed_;
 }
+int sticky_argument_fault_{0};
+int vl53l7cx_port_argument_fault(void) { return sticky_argument_fault_; }
+void vl53l7cx_port_clear_argument_fault(void) { sticky_argument_fault_ = 0; }
 
 uint8_t vl53l7cx_is_alive(VL53L7CX_Configuration *p_dev, uint8_t *p_is_alive)
 {
@@ -449,4 +452,50 @@ ZTEST(tof_l7_recovery_ops, test_a_context_without_a_bus_refuses_the_probe)
     zassert_equal(spy_.alive_calls, 0, "the ULD was not asked");
 
     ctx_.bus = &test_bus_;
+}
+
+/* BINDING MUST NOT TOUCH A SENSOR IT IS NOT ALLOWED TO USE. Installing the context first and
+ * leaning on the call-time lifecycle refusal would already have repointed a live session's bus by
+ * the time the probe was turned away: refused call, re-bussed sensor. */
+ZTEST(tof_l7_recovery_ops, test_binding_refuses_a_live_sensor_without_modifying_it)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+
+    vl53l7cx_port_context original{};
+    original.bus = &test_bus_;
+    scratch_.uld.platform.port = &original;
+    scratch_.current = lexxhard::tof_l7::lifecycle::running;
+
+    vl53l7cx_port_context intruder{};
+    intruder.bus = &test_bus_;
+    const rec::ops o{rec::uld_ops(&scratch_, &intruder)};
+
+    zassert_equal(scratch_.uld.platform.port, &original,
+                  "the live session still points at the context it was opened with");
+
+    bool alive{true};
+    zassert_equal(o.is_alive(o.ctx, 0x29U, &alive), -EINVAL, "and the probe is refused");
+    zassert_equal(spy_.alive_calls, 0, "with nothing issued");
+    zassert_equal(scratch_.uld.platform.port, &original, "still unmodified after the refusal");
+
+    scratch_ = lexxhard::tof_l7::sensor{};
+}
+
+/* An argument fault outranks the cold-boot classification: "nobody there" is the worst answer to
+ * give when the reason nothing was heard is that this build called the port wrongly. */
+ZTEST(tof_l7_recovery_ops, test_an_argument_fault_is_not_reported_as_an_empty_address)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    spy_.alive_port_error = -ENXIO;
+    spy_.alive_completed = 0U;
+    sticky_argument_fault_ = -EINVAL;
+
+    bool alive{true};
+    const rec::ops o{ops_under_test()};
+    zassert_equal(o.is_alive(o.ctx, 0x29U, &alive), -EINVAL,
+                  "not 0, which is how this pass reports a cold address");
+
+    sticky_argument_fault_ = 0;
 }
