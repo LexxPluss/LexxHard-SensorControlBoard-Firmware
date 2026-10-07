@@ -4,7 +4,7 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * The binding WITHOUT a session, over a REAL CAN controller.
+ * The binding WITH A SESSION, over a REAL CAN controller, as ONE ordered scenario.
  *
  * native_sim's loopback driver is a real Zephyr CAN device: filters are installed through the real
  * API, frames go through the real send path, and what comes back comes back through the real
@@ -17,16 +17,27 @@
  * draw -- all three are hardware, and the binding's job with them is to pass them along. The CAN
  * path is not supplied: it is the thing under test.
  *
- * NO CASE HERE DRAWS A SESSION, which is a structural choice rather than a gap. bind::start()
- * calls rt::init() every time, and tof_commission_runtime.hpp states ONE INIT PER BOOT as a
- * precondition that nothing enforces -- init() reconfigures the session layer under a worker that
- * cannot be stopped. With no session no worker is ever started here, so the repeated init() has
- * nothing to move the ground under. The cases that do draw one are in tof_commission_bind_session,
- * as a single ordered scenario, for exactly that reason.
- *
  * THE IDENTIFIERS ARE THE ALLOCATED ONES HERE, unlike the runtime suite, and for the opposite
  * reason: this is the file that is supposed to know them, so the test's job is to check that what
  * goes on the bus matches what the contract says.
+ *
+ * WHY THIS IS A SEPARATE BINARY FROM tof_commission_bind, AND ONE CASE INSIDE IT.
+ *
+ * bind::start() calls rt::init() every time, and tof_commission_runtime.hpp states ONE INIT PER
+ * BOOT as a precondition: init() reconfigures the session layer, drawing a new token and resetting
+ * the budgets, and the worker is not stoppable because start() refuses a second thread precisely
+ * so the first one can live for the process. Nothing enforces it -- the header says the suites
+ * respect it by isolating the case that cannot -- and this suite did not: three of its cases drew a
+ * session, so every one after the first re-initialised the session layer underneath a live worker.
+ * It passed on the poll period and the order ztest happened to run them in.
+ *
+ * So the cases that draw a session live here, in one binary, as ONE case. They were three; what
+ * they asserted is unchanged and now runs in sequence against a single session. The sibling binary
+ * keeps the cases that draw none, where a repeated init() has no worker to move the ground under.
+ *
+ * AND THE WORKER DOES ITS OWN WORK. The old version called rt::service_once() from the test thread
+ * and justified it with a claim the runtime header takes back. The poll period here is short enough
+ * that the worker services the transaction itself, and the test waits for the frame.
  */
 
 #include <zephyr/kernel.h>
@@ -148,8 +159,10 @@ bind::config configured()
     c.profile_enabled = true;
     c.max_proof_attempts = 3;
     c.max_start_attempts = 3;
-    c.announce_period_ms = 60000;  /* inert: this suite drives what it wants to observe */
-    c.poll_ms = 60000;
+    c.announce_period_ms = 60000;  /* inert: the announcement is not what this suite observes */
+    /* SHORT ENOUGH THAT THE WORKER SERVICES THE TRANSACTION, which is what removes the old
+     * cross-thread rt::service_once() call. The test waits for the answer frame instead. */
+    c.poll_ms = 5;
     c.enumeration_permitted = test_permitted;
     c.installed_mapping = test_installed;
     return c;
@@ -243,60 +256,87 @@ static void before(void *)
     drain();
 }
 
-ZTEST_SUITE(tof_commission_bind, NULL, suite_setup, before, NULL, NULL);
+ZTEST_SUITE(tof_commission_bind_session, NULL, suite_setup, before, NULL, NULL);
 
-ZTEST(tof_commission_bind, test_no_session_still_installs_the_filter_and_answers)
+/* ONE SESSION, ONE WORKER, EVERYTHING THAT NEEDS THEM -- in order. Three cases before, each of
+ * which re-initialised the session layer under the live worker of the one before it.
+ *
+ * THE RELEASE CONDITION IS DENIED FOR THE WHOLE SCENARIO, which is not a convenience: it is the
+ * default every image but the bench one has, and it is what makes one session enough. Merging the
+ * old cases with permission HELD would have let the first request prove and install epoch 7, and
+ * the later request naming another epoch would then be refused by #116's epoch gate rather than by
+ * the condition -- a different refusal, asserted as if it were this one. The proof path has its own
+ * binaries in tof_commission_runtime and tof_commission_worker.
+ *
+ * What the board must still do with permission denied is everything this file is about: install the
+ * filter, accept the frame in the receive path, answer on the status identifier, transmit on
+ * nothing else, and refuse the transaction without touching the chain. */
+ZTEST(tof_commission_bind_session, test_a_session_serves_requests_on_the_allocated_identifiers)
 {
-    entropy_ok_ = false;
-    const bind::result r{bind::start(can_dev(), configured())};
-    zassert_equal(r.rc, -ENODEV, "no session could be drawn");
-    zassert_true(r.state == bind::outcome::answering_only, "answering, not commissioning");
-    zassert_true(r.filter_installed,
-                 "THE FILTER IS STILL IN: a host holding a durable pending request needs a "
-                 "terminal answer, and silence is not one");
-    zassert_false(r.worker_started, "and no worker, because there is nothing for it to do");
+    permitted_ = false;
 
-    zassert_equal(send_request(ctr::kCommissionRequestId, 4, 9, 0x12345678U), 0, "");
+    const bind::result r{bind::start(can_dev(), configured())};
+    zassert_equal(r.rc, 0, "a session was drawn");
+    zassert_true(r.state == bind::outcome::running, "so the board is commissionable");
+    zassert_true(r.filter_installed, "the request filter is installed");
+    /* ASSERTED ON ITS OWN, not `|| rt::running()`. That disjunction is what hid the defect: from
+     * the second start onwards rt::start() returned -EALREADY, worker_started was false, and the
+     * running() of the FIRST case's worker let the assertion through. */
+    zassert_true(r.worker_started, "and this call is the one that started the worker");
+
+    /* --- a real frame, through the real driver, on the allocated identifier --- */
+    zassert_equal(send_request(ctr::kCommissionRequestId, 1, 7, token_), 0, "the request goes out");
+
     struct can_frame answer {};
-    zassert_true(next_transaction(answer), "answered");
-    zassert_equal(answer.id, ctr::kCommissionStatusId, "on the status identifier");
+    zassert_true(next_transaction(answer), "the board answered");
+    zassert_equal(answer.id, ctr::kCommissionStatusId, "on 0x219, the status identifier");
+    zassert_equal(answer.dlc, wire::kFrameLen, "eight bytes");
 
     wire::transaction_status t{};
     zassert_equal(wire::decode_transaction_status(answer.data, answer.dlc, t),
-                  wire::decode_error::none, "");
-    zassert_true(t.res == wire::result::no_session, "with no_session");
-    zassert_equal(proves_, 0, "and nothing was proved");
+                  wire::decode_error::none, "and it decodes");
+    zassert_true(t.ph == wire::phase::accepted, "accepted: the receive path does no work");
+    zassert_equal(t.seq, 1, "for the request that asked");
 
-    /* No announcement either: there is no session to announce. This board has none, so the queue
-     * must be empty of EVERYTHING, not only of transaction statuses. */
-    zassert_equal(k_msgq_get(&status_msgq, &answer, K_MSEC(200)), -EAGAIN, "nothing else was sent");
+    /* --- and the worker's own tick refuses it, with no cross-thread service_once() here --- */
+    zassert_true(next_transaction(answer, K_MSEC(500)), "and then answered, by the worker");
+    zassert_equal(wire::decode_transaction_status(answer.data, answer.dlc, t),
+                  wire::decode_error::none, "");
+    zassert_true(t.ph == wire::phase::refused, "refused");
+    zassert_true(t.res == wire::result::not_permitted, "because the condition said no");
+    zassert_equal(t.seq, 1, "for that same request");
+    zassert_true(permitted_calls_ >= 1, "and it was ASKED, not assumed");
+    zassert_equal(proves_, 0, "NOT ONE PROOF RAN");
+    zassert_equal(starts_, 0, "and acquisition was never started");
+
+    /* NOTHING OF OURS EVER APPEARS ON THE REQUEST IDENTIFIER. The observer on 0x218 sees the
+     * test's own frame and must see nothing else. */
+    struct can_frame echoed {};
+    zassert_equal(k_msgq_get(&request_msgq, &echoed, K_MSEC(50)), 0, "the request itself");
+    zassert_equal(k_msgq_get(&request_msgq, &echoed, K_MSEC(200)), -EAGAIN,
+                  "and the board transmitted nothing on it");
+
+    /* --- only the request identifier is received --- */
+    const uint32_t before_in{rt::stats().frames_in};
+    zassert_equal(send_request(ctr::kCommissionStatusId, 2, 7, token_), 0, "on the status id");
+    zassert_equal(send_request(ctr::kCommissionRequestId + 2, 3, 7, token_), 0, "and a neighbour");
+    k_msleep(50);
+    zassert_equal(rt::stats().frames_in, before_in,
+                  "neither reached the receive path, so neither was answered");
+
+    /* --- AND WHAT A SECOND START REPORTS, deliberately last ---
+     *
+     * This does the thing tof_commission_runtime.hpp forbids: a second rt::init() while the worker
+     * is alive. It is here, at the end of the only case in this binary, with nothing after it to be
+     * affected, because the question is what the RESULT says when a caller makes that mistake. It
+     * used to say `running` with worker_started false, and the old assertion's `|| rt::running()`
+     * read the first worker and agreed. `answering_only` is what the state means now. */
+    const bind::result again{bind::start(can_dev(), configured())};
+    zassert_false(again.worker_started, "rt::start() refuses a second worker");
+    zassert_true(again.state == bind::outcome::answering_only,
+                 "so the state must not claim the board is commissioning");
+    zassert_true(again.filter_installed, "the receive path is still up and still answers");
+    teardown(again);
 
     teardown(r);
 }
-
-ZTEST(tof_commission_bind, test_a_refused_configuration_installs_nothing)
-{
-    bind::config c{configured()};
-    c.enumeration_permitted = nullptr;  /* the stationary condition is not defaulted */
-
-    const bind::result r{bind::start(can_dev(), c)};
-    zassert_equal(r.rc, -EINVAL, "refused");
-    zassert_true(r.state == bind::outcome::refused, "");
-    zassert_false(r.filter_installed,
-                  "NOTHING is installed: a filter with no runtime behind it takes an identifier off "
-                  "the bus and answers nothing on it");
-    zassert_false(r.worker_started, "");
-
-    zassert_equal(send_request(ctr::kCommissionRequestId, 5, 9, token_), 0, "a request is sent");
-    zassert_true(no_transaction_within(), "and nothing answers it");
-    zassert_equal(proves_, 0, "nothing ran");
-}
-
-ZTEST(tof_commission_bind, test_a_device_that_is_not_ready_installs_nothing)
-{
-    const bind::result r{bind::start(nullptr, configured())};
-    zassert_equal(r.rc, -ENODEV, "refused");
-    zassert_true(r.state == bind::outcome::refused, "");
-    zassert_false(r.filter_installed, "");
-}
-

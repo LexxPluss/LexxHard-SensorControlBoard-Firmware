@@ -171,8 +171,17 @@ result start(const struct device *can_dev, const config &cfg)
         return out;
     }
 
+    /* `running` MEANS A WORKER IS RUNNING, which it did not. This used to set `running`
+     * unconditionally and leave worker_started as the only trace, so a caller reading the state --
+     * and the suite, which read `worker_started || rt::running()` -- could not tell a board that
+     * commissions from one that merely answers. `answering_only` already describes exactly this:
+     * the filter is in, the receive path replies, and no transaction will ever be executed.
+     *
+     * Not reachable from a conforming caller: rt::start() refuses a second thread with -EALREADY,
+     * and production calls this once from the bootstrap. The branch exists so that the state never
+     * overstates what is running, whoever calls it. */
     out.worker_started = rt::start() == 0;
-    out.state = outcome::running;
+    out.state = out.worker_started ? outcome::running : outcome::answering_only;
     return out;
 }
 
