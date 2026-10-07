@@ -485,10 +485,16 @@ worker_result worker_step()
          * thread is actually running. The sequencer's `started` is taken at its word once the two
          * views agree, and a mapping that is in force under the right epoch with acquisition
          * stopped underneath it would still be answered done. Detecting that needs the acquisition
-         * state, which this module is not given and which the wiring branch should supply. The
-         * shell path is covered because proving always takes a new epoch -- the authority refuses a
-         * reused one -- so it cannot silence acquisition without moving the epoch this gate
-         * compares. */
+         * state, which this module is not given and which the wiring branch should supply.
+         *
+         * AND THAT GAP HAS A REAL PATH, which an earlier version of this comment denied by claiming
+         * the shell could not stop acquisition without moving the epoch. It can.
+         * tof_commissioning::prove() quiesces at STEP 1 and only then takes the chain at STEP 2, so
+         * a run that refuses there -- `chain_busy`, and the early refusals after it share the shape
+         * -- returns with acquisition STOPPED, no mapping revoked and the epoch unchanged. Both
+         * views then still agree, this gate passes, ac::step() answers already_started, and the
+         * host is told done for a chain that is not acquiring. Nothing here can see it. The
+         * regression belongs with the branch that can ask about acquisition. */
         gated = true;
     } else if (op == wire::opcode::start_only && !holds_proof &&
                st != ac::state::disabled && st != ac::state::misconfigured) {
