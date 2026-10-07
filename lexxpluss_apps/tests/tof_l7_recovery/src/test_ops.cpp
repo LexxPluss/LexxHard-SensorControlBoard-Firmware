@@ -29,6 +29,7 @@
 #include "tof_l7_recovery.hpp"
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
+#include "vl53l7cx_port.h"
 
 namespace
 {
@@ -73,9 +74,26 @@ void reset_spy()
 
 extern "C" {
 
-void vl53l7cx_port_clear_error(void) { sticky_port_error = 0; port_completed_ = 0; }
-int vl53l7cx_port_error(void) { return sticky_port_error; }
-uint32_t vl53l7cx_port_completed_transfers(void) { return port_completed_; }
+/* The stubs record the context they were given, so a build that went back to one process-global
+ * record would fail here rather than quietly passing every behavioural test below. */
+const vl53l7cx_port_context *last_port_ctx_{nullptr};
+
+void vl53l7cx_port_clear_error(vl53l7cx_port_context *port)
+{
+    last_port_ctx_ = port;
+    sticky_port_error = 0;
+    port_completed_ = 0;
+}
+int vl53l7cx_port_error(const vl53l7cx_port_context *port)
+{
+    last_port_ctx_ = port;
+    return sticky_port_error;
+}
+uint32_t vl53l7cx_port_completed_transfers(const vl53l7cx_port_context *port)
+{
+    last_port_ctx_ = port;
+    return port_completed_;
+}
 
 uint8_t vl53l7cx_is_alive(VL53L7CX_Configuration *p_dev, uint8_t *p_is_alive)
 {
@@ -106,9 +124,17 @@ namespace
 
 lexxhard::tof_l7::sensor scratch_{};
 
+/* A non-null stand-in. This suite never reaches a driver, but the probe refuses a context that
+ * names no controller, so the pointer has to exist and be distinguishable. */
+const device test_bus_{};
+vl53l7cx_port_context ctx_{};
+
 rec::ops ops_under_test()
 {
-    return rec::uld_ops(&scratch_);
+    /* Set here rather than once at startup: several tests reset `scratch_` wholesale, and binding
+     * is the single place that installs the context on it. */
+    ctx_.bus = &test_bus_;
+    return rec::uld_ops(&scratch_, &ctx_);
 }
 
 }  // namespace
@@ -288,7 +314,7 @@ ZTEST(tof_l7_recovery_ops, test_a_transport_error_during_the_stop_keeps_its_errn
 ZTEST(tof_l7_recovery_ops, test_a_missing_scratch_refuses_both_calls_and_issues_nothing)
 {
     reset_spy();
-    const rec::ops o{rec::uld_ops(nullptr)};
+    const rec::ops o{rec::uld_ops(nullptr, &ctx_)};
     bool alive{true};
 
     zassert_equal(o.is_alive(o.ctx, 0x2AU, &alive), -EINVAL);
@@ -386,4 +412,41 @@ ZTEST(tof_l7_recovery_ops, test_an_empty_scratch_is_accepted)
     zassert_equal(spy_.alive_address, 0x2AU << 1, "and it was addressed for this probe");
 
     scratch_ = lexxhard::tof_l7::sensor{};
+}
+
+/* ---- the probe talks through the context it was bound with -------------------------------- */
+
+/* The recovery pass must use ITS OWN context: a second bus means a second scratch sensor with a
+ * second context, and the two must not share an errno or a completed-transfer count. Nothing else
+ * in this file would notice a return to one process-global record. */
+ZTEST(tof_l7_recovery_ops, test_the_probe_uses_the_context_it_was_bound_with)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    last_port_ctx_ = nullptr;
+
+    bool alive{false};
+    const rec::ops o{ops_under_test()};
+    zassert_ok(o.is_alive(o.ctx, 0x29U, &alive));
+
+    zassert_equal(last_port_ctx_, &ctx_, "the port was asked about the bound context");
+    zassert_equal(scratch_.uld.platform.port, &ctx_,
+                  "and the zeroing inside the probe did not drop it");
+}
+
+/* A scratch sensor whose context names no controller is refused like any other bad argument, and
+ * nothing is driven. Without the check the probe would reach the port, be told -ENODEV, and that
+ * reads exactly like a cold address -- the conclusion this pass exists not to reach by accident. */
+ZTEST(tof_l7_recovery_ops, test_a_context_without_a_bus_refuses_the_probe)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    const rec::ops o{ops_under_test()};
+    ctx_.bus = nullptr;
+
+    bool alive{true};
+    zassert_equal(o.is_alive(o.ctx, 0x29U, &alive), -EINVAL);
+    zassert_equal(spy_.alive_calls, 0, "the ULD was not asked");
+
+    ctx_.bus = &test_bus_;
 }

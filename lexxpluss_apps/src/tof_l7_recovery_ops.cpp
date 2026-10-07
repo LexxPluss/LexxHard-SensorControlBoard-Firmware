@@ -46,7 +46,14 @@ VL53L7CX_Configuration *addressed(void *ctx, uint8_t addr_7bit)
         return nullptr;
     if (s->current != tof_l7::lifecycle::empty)
         return nullptr;
+    /* Carried across the zeroing by hand. The context is the one field here the caller owns, and
+     * a probe with no bus to name would refuse every transfer with -ENODEV -- which reads exactly
+     * like a cold address, the conclusion this pass exists to avoid drawing by accident. */
+    vl53l7cx_port_context *const port{s->uld.platform.port};
+    if (port == nullptr || port->bus == nullptr)
+        return nullptr;
     memset(&s->uld, 0, sizeof(s->uld));
+    s->uld.platform.port = port;
     s->uld.platform.address = static_cast<uint16_t>(addr_7bit) << 1;
     return &s->uld;
 }
@@ -61,10 +68,10 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     if (dev == nullptr)
         return -EINVAL;
 
-    vl53l7cx_port_clear_error();
+    vl53l7cx_port_clear_error(dev->platform.port);
     uint8_t answered{0};
     const uint8_t uld_status{vl53l7cx_is_alive(dev, &answered)};
-    const int port_errno{vl53l7cx_port_error()};
+    const int port_errno{vl53l7cx_port_error(dev->platform.port)};
 
     /* A CLEAN NACK WITH NOTHING ACKNOWLEDGED is the cold boot, and on a cold boot it is the answer
      * every address gives. Reported as a completed probe with nobody there rather than as a
@@ -94,7 +101,7 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
      * NACKs mid-sequence on hardware is unverified; the classification does not depend on it,
      * because the early return was discarding evidence either way. */
     if (port_errno == -ENXIO)
-        return vl53l7cx_port_completed_transfers() != 0U ? -EIO : 0;
+        return vl53l7cx_port_completed_transfers(dev->platform.port) != 0U ? -EIO : 0;
 
     /* -EIO or -ETIMEDOUT. The question did not reach the bus, so no answer was heard, and the
      * caller must not treat this as an empty address. */
@@ -131,9 +138,9 @@ int stop_ranging(void *ctx, uint8_t addr_7bit)
     if (dev == nullptr)
         return -EINVAL;
 
-    vl53l7cx_port_clear_error();
+    vl53l7cx_port_clear_error(dev->platform.port);
     const uint8_t uld_status{vl53l7cx_stop_ranging(dev)};
-    if (const int port_errno{vl53l7cx_port_error()}; port_errno != 0)
+    if (const int port_errno{vl53l7cx_port_error(dev->platform.port)}; port_errno != 0)
         return port_errno;
 
     /* The ULD collapses its own failures into one status byte, and the interesting one here has no
@@ -145,12 +152,14 @@ int stop_ranging(void *ctx, uint8_t addr_7bit)
 
 }  // namespace
 
-ops uld_ops(tof_l7::sensor *scratch)
+ops uld_ops(tof_l7::sensor *scratch, vl53l7cx_port_context *port)
 {
     ops o{};
     o.is_alive = is_alive;
     o.stop_ranging = stop_ranging;
     o.ctx = scratch;
+    if (scratch != nullptr)
+        scratch->uld.platform.port = port;
     return o;
 }
 

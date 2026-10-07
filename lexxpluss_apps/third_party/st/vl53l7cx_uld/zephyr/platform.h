@@ -5,8 +5,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Platform surface consumed by the ST VL53L7CX ULD. This is intentionally smaller than the
- * upstream callback example: every L7 is on immutable i2c2, and the verified device-firmware
- * pointer is per configuration object rather than a process-global array.
+ * upstream callback example: the verified device-firmware pointer is per configuration object
+ * rather than a process-global array, and the bus is named by the caller rather than compiled in.
+ *
+ * ST passes this structure to every transfer callback, so everything that belongs to one device
+ * belongs here. An earlier revision put the bus and the transport evidence in file-scope statics
+ * and justified it with "the ST platform callback carries no context" -- which is true only of
+ * VL53L7CX_SwapBuffer(). It made a second L7 on a second bus impossible to add without the two
+ * sharing an errno.
  */
 
 #ifndef LEXXPLUSS_VL53L7CX_PLATFORM_H_
@@ -36,6 +42,12 @@
 #define VL53L7CX_DISABLE_REFLECTANCE_PERCENT
 #define VL53L7CX_DISABLE_MOTION_INDICATOR
 
+/* Per-device port state: which controller this device is on, and the transport evidence gathered
+ * while talking to it. Defined in vl53l7cx_port.h, which the vendor sources never include, so this
+ * header stays free of Zephyr types. The caller owns the object and its lifetime must cover every
+ * ULD call made through this platform. */
+struct vl53l7cx_port_context;
+
 typedef struct {
     /* ST stores the 8-bit wire address here (default 0x52). The Zephyr port validates it and
      * converts exactly once to the 7-bit controller address. */
@@ -46,6 +58,10 @@ typedef struct {
     /* Kept with the pointer so the patched ULD can prove that all three fixed ranges fit before the
      * first I2C operation. A valid pointer without its bound is not an authorised buffer. */
     size_t firmware_size;
+    /* The bus this device is on, and where its errno and completed-transfer count accumulate.
+     * A null context is a programming error rather than a recoverable condition: without it the
+     * port has no controller to address, so every transfer is refused with -ENODEV. */
+    struct vl53l7cx_port_context *port;
 } VL53L7CX_Platform;
 
 enum { VL53L7CX_FIRMWARE_DOWNLOAD_SIZE = 0x15000U };

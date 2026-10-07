@@ -12,6 +12,7 @@
 
 #include "tof_l7_runtime.hpp"
 #include "tof_l7_sensor.hpp"
+#include "vl53l7cx_port.h"
 
 namespace l7 = lexxhard::tof_l7;
 
@@ -65,7 +66,22 @@ void good_results() {
   }
 }
 
+/* A non-null stand-in: open() refuses a context that names no controller, and this suite never
+ * reaches a driver, so the pointer only has to be distinguishable. */
+const device test_bus{};
+vl53l7cx_port_context test_ctx{};
+
+/* The stubs record WHICH context they were handed, not merely that they were called. That is the
+ * only thing proving the plumbing: a build that kept one process-global would still pass every
+ * other test in this file. */
+const vl53l7cx_port_context *last_clear_ctx{nullptr};
+const vl53l7cx_port_context *last_error_ctx{nullptr};
+
 void reset_fakes() {
+  test_ctx = vl53l7cx_port_context{};
+  test_ctx.bus = &test_bus;
+  last_clear_ctx = nullptr;
+  last_error_ctx = nullptr;
   runtime_firmware = &firmware_byte;
   runtime_firmware_size = VL53L7CX_FIRMWARE_DOWNLOAD_SIZE;
   init_status = resolution_status = frequency_status = start_status =
@@ -88,7 +104,7 @@ void reset_fakes() {
 void before(void *) { reset_fakes(); }
 
 void open_configure_start() {
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
   zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
   zassert_ok(l7::start(&sensor_under_test, &operation));
 }
@@ -105,9 +121,15 @@ size_t firmware_size() { return runtime_firmware_size; }
 
 extern "C" {
 
-void vl53l7cx_port_clear_error(void) { sticky_port_error = 0; }
+void vl53l7cx_port_clear_error(vl53l7cx_port_context *port) {
+  last_clear_ctx = port;
+  sticky_port_error = 0;
+}
 
-int vl53l7cx_port_error(void) { return sticky_port_error; }
+int vl53l7cx_port_error(const vl53l7cx_port_context *port) {
+  last_error_ctx = port;
+  return sticky_port_error;
+}
 
 uint8_t vl53l7cx_init(VL53L7CX_Configuration *p_dev) {
   ++init_calls;
@@ -179,7 +201,7 @@ ZTEST_SUITE(tof_l7_sensor, nullptr, nullptr, before, nullptr, nullptr);
  * up -- stop() required `running` -- and allowed a reconfigure and restart on top of a session that
  * may have been live. */
 ZTEST(tof_l7_sensor, test_a_failed_start_leaves_a_stoppable_sensor_not_a_configured_one) {
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
   zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
 
   start_status = VL53L7CX_STATUS_ERROR;
@@ -248,7 +270,7 @@ ZTEST(tof_l7_sensor, test_a_failed_stop_keeps_the_debt_and_can_be_retried) {
 
 ZTEST(tof_l7_sensor,
       test_open_binds_the_verified_runtime_payload_and_converts_address_once) {
-  zassert_ok(l7::open(&sensor_under_test, 0x29, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation));
   zassert_equal(init_calls, 1);
   zassert_equal(last_device, &sensor_under_test.uld);
   zassert_equal(sensor_under_test.uld.platform.address, 0x52);
@@ -262,31 +284,31 @@ ZTEST(tof_l7_sensor,
       test_invalid_addresses_are_rejected_before_the_runtime_or_uld) {
   static constexpr uint8_t invalid[]{0x00, 0x07, 0x78, 0x7F, 0xFF};
   for (const uint8_t address : invalid) {
-    zassert_equal(l7::open(&sensor_under_test, address, &operation), -EINVAL);
+    zassert_equal(l7::open(&sensor_under_test, &test_ctx, address, &operation), -EINVAL);
     zassert_equal(operation.failed_stage, l7::stage::address);
     zassert_equal(init_calls, 0);
   }
-  zassert_ok(l7::open(&sensor_under_test, 0x08, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x08, &operation));
   reset_fakes();
-  zassert_ok(l7::open(&sensor_under_test, 0x77, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x77, &operation));
 }
 
 ZTEST(tof_l7_sensor, test_missing_or_short_firmware_is_rejected_before_init) {
   runtime_firmware = nullptr;
-  zassert_equal(l7::open(&sensor_under_test, 0x29, &operation), -ENODATA);
+  zassert_equal(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation), -ENODATA);
   zassert_equal(operation.failed_stage, l7::stage::firmware);
   zassert_equal(init_calls, 0);
 
   runtime_firmware = &firmware_byte;
   runtime_firmware_size = VL53L7CX_FIRMWARE_DOWNLOAD_SIZE - 1U;
-  zassert_equal(l7::open(&sensor_under_test, 0x29, &operation), -EPROTO);
+  zassert_equal(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation), -EPROTO);
   zassert_equal(operation.failed_stage, l7::stage::firmware);
   zassert_equal(init_calls, 0);
 }
 
 ZTEST(tof_l7_sensor, test_transport_errno_wins_even_when_init_claims_success) {
   injected_port_error = -ETIMEDOUT;
-  zassert_equal(l7::open(&sensor_under_test, 0x29, &operation), -ETIMEDOUT);
+  zassert_equal(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation), -ETIMEDOUT);
   zassert_equal(operation.failed_stage, l7::stage::initialise);
   zassert_equal(operation.port_errno, -ETIMEDOUT);
   zassert_equal(operation.uld_status, VL53L7CX_STATUS_OK);
@@ -309,7 +331,7 @@ ZTEST(tof_l7_sensor,
 
   for (const auto &test : cases) {
     init_status = test.uld;
-    zassert_equal(l7::open(&sensor_under_test, 0x29, &operation),
+    zassert_equal(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation),
                   test.expected);
     zassert_equal(operation.failed_stage, l7::stage::initialise);
     zassert_equal(operation.uld_status, test.uld);
@@ -319,7 +341,7 @@ ZTEST(tof_l7_sensor,
 
 ZTEST(tof_l7_sensor,
       test_configuration_is_8x8_and_frequency_has_no_hidden_default) {
-  zassert_ok(l7::open(&sensor_under_test, 0x29, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation));
   zassert_equal(l7::configure(&sensor_under_test, 0, &operation), -EINVAL);
   zassert_equal(l7::configure(&sensor_under_test, 16, &operation), -EINVAL);
   zassert_equal(resolution_calls, 0);
@@ -334,7 +356,7 @@ ZTEST(tof_l7_sensor,
 }
 
 ZTEST(tof_l7_sensor, test_configuration_stops_at_the_first_failed_stage) {
-  zassert_ok(l7::open(&sensor_under_test, 0x29, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation));
   resolution_status = VL53L7CX_STATUS_ERROR;
   zassert_equal(l7::configure(&sensor_under_test, 10, &operation), -EIO);
   zassert_equal(operation.failed_stage, l7::stage::resolution);
@@ -357,8 +379,8 @@ ZTEST(tof_l7_sensor, test_configuration_stops_at_the_first_failed_stage) {
 ZTEST(tof_l7_sensor, test_lifecycle_order_is_enforced) {
   zassert_equal(l7::start(&sensor_under_test, &operation), -EPERM);
   zassert_equal(operation.failed_stage, l7::stage::state);
-  zassert_ok(l7::open(&sensor_under_test, 0x29, &operation));
-  zassert_equal(l7::open(&sensor_under_test, 0x29, &operation), -EPERM);
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation));
+  zassert_equal(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation), -EPERM);
   zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
   zassert_ok(l7::start(&sensor_under_test, &operation));
   zassert_equal(sensor_under_test.current, l7::lifecycle::running);
@@ -504,26 +526,26 @@ ZTEST(tof_l7_sensor, test_stage_names_are_pairwise_distinct) {
  * are the two ordinary paths that ran into that, and they are separate because the second one is
  * not reachable from the first: they leave the sensor in different states. */
 ZTEST(tof_l7_sensor, test_a_sensor_can_be_opened_again_after_a_clean_stop) {
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
   zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
   zassert_ok(l7::start(&sensor_under_test, &operation));
   zassert_ok(l7::stop(&sensor_under_test, &operation));
   zassert_equal(sensor_under_test.current, l7::lifecycle::configured,
                 "a clean stop lands on configured, which open() refuses");
 
-  zassert_equal(l7::open(&sensor_under_test, 0x30, &operation), -EPERM,
+  zassert_equal(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation), -EPERM,
                 "and that refusal is correct: close() is the way out, not a weaker open()");
 
   zassert_ok(l7::close(&sensor_under_test, &operation));
   zassert_equal(sensor_under_test.current, l7::lifecycle::empty);
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
 }
 
 /* THE PATH A FIX AT `configured` WOULD HAVE MISSED. A configure() that fails leaves the sensor
  * `opened`, started == false and with no debt -- so a caller that skips the pre-stop because
  * nothing is running went straight to open() and met -EPERM on every later attempt. */
 ZTEST(tof_l7_sensor, test_a_sensor_can_be_opened_again_after_a_failed_configure) {
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
 
   resolution_status = VL53L7CX_STATUS_ERROR;
   zassert_not_equal(l7::configure(&sensor_under_test, 10, &operation), 0);
@@ -531,10 +553,10 @@ ZTEST(tof_l7_sensor, test_a_sensor_can_be_opened_again_after_a_failed_configure)
                 "a failed configure leaves no debt and does not roll back to empty");
   resolution_status = VL53L7CX_STATUS_OK;
 
-  zassert_equal(l7::open(&sensor_under_test, 0x30, &operation), -EPERM);
+  zassert_equal(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation), -EPERM);
 
   zassert_ok(l7::close(&sensor_under_test, &operation));
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
   zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
 }
 
@@ -542,7 +564,7 @@ ZTEST(tof_l7_sensor, test_a_sensor_can_be_opened_again_after_a_failed_configure)
  * exists as a function rather than as `*sensor = {}` at the call site: that assignment also erases
  * a stop_unconfirmed debt, which only a successful stop() may clear. */
 ZTEST(tof_l7_sensor, test_close_refuses_a_sensor_that_may_still_be_ranging) {
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
   zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
   zassert_ok(l7::start(&sensor_under_test, &operation));
 
@@ -584,7 +606,7 @@ ZTEST(tof_l7_sensor, test_closing_an_empty_sensor_succeeds_and_does_nothing) {
  * assigns only from the verified runtime and which should not outlive the session it was verified
  * for. */
 ZTEST(tof_l7_sensor, test_close_leaves_no_configuration_behind) {
-  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x30, &operation));
   zassert_not_null(sensor_under_test.uld.platform.firmware);
 
   zassert_ok(l7::close(&sensor_under_test, &operation));
@@ -592,4 +614,34 @@ ZTEST(tof_l7_sensor, test_close_leaves_no_configuration_behind) {
   zassert_is_null(sensor_under_test.uld.platform.firmware);
   zassert_equal(sensor_under_test.uld.platform.firmware_size, 0U);
   zassert_equal(sensor_under_test.uld.platform.address, 0U);
+}
+
+/* ---- the per-device context reaches the port ---------------------------------------------- */
+
+/* open() must INSTALL the caller's context on the ULD object and the port calls must receive THAT
+ * one. Without this, a build that reverted to a process-global errno would pass every other test
+ * here, because nothing else in this file can tell one context from none. */
+ZTEST(tof_l7_sensor, test_open_installs_the_callers_context_and_the_port_sees_it) {
+  zassert_ok(l7::open(&sensor_under_test, &test_ctx, 0x29, &operation));
+
+  zassert_equal(sensor_under_test.uld.platform.port, &test_ctx,
+                "the ULD object carries the caller's context");
+  zassert_equal(last_clear_ctx, &test_ctx, "and the port was cleared against it");
+  zassert_equal(last_error_ctx, &test_ctx, "and read back against it");
+}
+
+/* A context is as much an argument as the address, and a missing one is refused in the same place
+ * -- before the runtime is asked for firmware and before the ULD is touched. */
+ZTEST(tof_l7_sensor, test_open_refuses_a_missing_or_busless_context) {
+  const int inits_before{init_calls};
+
+  zassert_equal(l7::open(&sensor_under_test, nullptr, 0x29, &operation), -EINVAL);
+  zassert_equal(operation.failed_stage, l7::stage::arguments);
+
+  vl53l7cx_port_context busless{};
+  zassert_equal(l7::open(&sensor_under_test, &busless, 0x29, &operation), -EINVAL);
+  zassert_equal(operation.failed_stage, l7::stage::arguments);
+
+  zassert_equal(init_calls, inits_before, "neither attempt reached the ULD");
+  zassert_equal(sensor_under_test.current, l7::lifecycle::empty, "and the sensor is untouched");
 }
