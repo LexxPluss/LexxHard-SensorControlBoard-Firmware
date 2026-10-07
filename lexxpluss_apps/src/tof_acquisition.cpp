@@ -394,7 +394,8 @@ void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
 
     if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
         d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
-        d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr) {
+        d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr ||
+        d.grid_ops->close == nullptr) {
         f.usage_error = true;
         LOG_ERR("source %d is an l7_grid with no grid_ops table", i);
         return;
@@ -412,6 +413,20 @@ void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
     rc = d.grid_ops->configure(d.dev, d.grid_frequency_hz, &st);
     if (rc != 0) {
         record_l7(f, rc, st);
+        /* CLOSED, OR THIS SOURCE IS GONE UNTIL REBOOT. The sensor is open and unconfigured:
+         * nothing is ranging, so no stop is owed and cleanup_pending stays clear -- and that is
+         * exactly what made this unrecoverable. With nothing owed the next bring-up skips the
+         * pre-stop and calls open() on a sensor that is already open, which refuses, every time,
+         * for the rest of the boot. One configure failure cost the source permanently.
+         *
+         * A close that itself fails is reported and nothing else: it can only fail on state, this
+         * state is closeable, and inventing a second recovery for it would be inventing a path
+         * that cannot be reached. */
+        tof_l7::operation_status cst{};
+        const int crc{d.grid_ops->close(d.dev, &cst)};
+        LOG_WRN("grid source %d configure failed at %s rc %d errno %d (freq %u); close rc %d", i,
+                tof_l7::stage_name(st.failed_stage), rc, st.port_errno,
+                static_cast<unsigned>(d.grid_frequency_hz), crc);
         return;
     }
 
@@ -766,8 +781,17 @@ int init(const config &cfg)
                 d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
                 d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr)
                 return -EINVAL;
+            if (d.grid_ops->close == nullptr)
+                return -EINVAL;
             /* The adapter is handed this as its device object on every call. */
             if (d.dev == nullptr)
+                return -EINVAL;
+            /* ZERO IS NOT A FREQUENCY, and the descriptor comment already says configure()
+             * refuses rather than picking something. Refused HERE as well, because a descriptor
+             * that cannot be configured reaches the failure path on every single bring-up: the
+             * caller who built the table learns about it once, at init, instead of the source
+             * silently never ranging and the reason living in a log line. */
+            if (d.grid_frequency_hz == 0)
                 return -EINVAL;
             continue;
         }

@@ -187,6 +187,17 @@ struct grid_source_ops {
     int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
                             tof_l7::operation_status *st);
     int (*stop)(void *dev, tof_l7::operation_status *st);
+    /* RETURNS AN OPENED-BUT-UNUSABLE SENSOR TO UNOPENED, which the bring-up needs and had no way
+     * to do. tof_l7::close() in production.
+     *
+     * Without it a configure() that failed left the adapter `opened` with nothing owed -- no
+     * cleanup_pending, started false -- so the next bring-up skipped the pre-stop, called open()
+     * on a sensor that was already open, and got -EPERM for the rest of the boot. One source lost
+     * until reboot because one configure call failed once.
+     *
+     * It is not the stop path. close() refuses a sensor that is or may be ranging; the obligation
+     * after a failed start() is still a stop, and that is what cleanup_pending is for. */
+    int (*close)(void *dev, tof_l7::operation_status *st);
 };
 #else
 /* An image without the grid driver still has the descriptor field, so a build that does not carry

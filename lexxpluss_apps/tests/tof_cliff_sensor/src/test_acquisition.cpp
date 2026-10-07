@@ -68,6 +68,11 @@ struct fake_dev {
     int read_calls{0};
     int stop_calls{0};
     int grid_stop_calls{0};
+    /* Counted apart from grid_stop_calls because the configure-failure case is entirely about
+     * which of the two the bring-up chose: a stop would be wrong (nothing is ranging and the
+     * sensor is not in a state stop accepts) and a close is the recovery. */
+    int grid_close_calls{0};
+    int close_rc{0};
     /* A device that will not stop. The interesting case, because the facts must keep saying
      * it is started rather than quietly recording a quiescence that never happened. */
     int stop_rc{0};
@@ -279,8 +284,22 @@ int fake_grid_stop(void *dev, l7f::operation_status *st)
     return d->stop_rc;
 }
 
+/* Counted apart from stop for the same reason stop is counted apart from the cliff path: the whole
+ * question in the configure-failure case is which of the two the bring-up called. */
+int fake_grid_close(void *dev, l7f::operation_status *st)
+{
+    record_caller();
+    auto *const d{static_cast<fake_dev *>(dev)};
+
+    ++d->grid_close_calls;
+    *st = l7f::operation_status{};
+    if (d->close_rc != 0)
+        st->failed_stage = l7f::stage::state;
+    return d->close_rc;
+}
+
 const acq::grid_source_ops kFakeGridOps{fake_grid_open, fake_grid_configure, fake_grid_start,
-                                        fake_grid_read, fake_grid_stop};
+                                        fake_grid_read, fake_grid_stop, fake_grid_close};
 
 /* THE WRONG TABLE, AS A TRAP. The fixture used to give every descriptor both tables with one
  * shared stop counter, which is exactly the arrangement under which a mis-dispatch is invisible:
@@ -2977,4 +2996,107 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
     for (int i{0}; i < 2; ++i)
         zassert_equal(after_bring_up.sources[i].role_id, 255,
                       "a grid source has no cliff role to key");
+}
+
+/* ---- a configure that fails must not cost the source the rest of the boot ---- */
+
+/* THE DEFECT. A failed configure left the adapter open and owed nothing: started stays false and
+ * cleanup_pending stays clear, because nothing is ranging. With nothing owed the next bring-up
+ * skipped its pre-stop and called open() on a sensor that was already open -- which the adapter
+ * refuses -- so the source was gone until reboot, one configure failure deep.
+ *
+ * The recovery is a close, not a stop. stop() refuses a sensor that is not ranging, and reaching
+ * for it here would have swapped one refusal for another. */
+ZTEST(tof_acquisition, test_a_grid_source_comes_back_after_a_failed_configure)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+
+    devs[4].configure_rc = -EIO;
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[4].open_calls, 1, "it opened");
+    zassert_equal(devs[4].start_calls, 0, "and never armed");
+    zassert_equal(devs[4].grid_close_calls, 1, "the open session was closed, not left behind");
+    zassert_equal(devs[4].grid_stop_calls, 0,
+                  "and not through stop, which refuses a sensor that is not ranging");
+
+    acq::run_cycle();
+    {
+        const acq::source_facts &f{rec.last.sources[4]};
+        zassert_false(f.started, "");
+        zassert_false(f.cleanup_pending, "nothing is ranging, so no stop is owed");
+        /* rearm_failed is NOT set here, and that is the existing design rather than an oversight:
+         * it is the start path's sticky, raised when a device may have been left ranging. A
+         * configure failure leaves nothing ranging, so the failure is carried by the error domain
+         * instead. */
+        zassert_true(f.transport_error, "the -EIO is recorded against this source");
+    }
+
+    /* The next attempt, with the device now behaving. Before the fix this open() was refused and
+     * every later one too. */
+    devs[4].configure_rc = 0;
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[4].open_calls, 2, "it could be opened again");
+    zassert_equal(devs[4].start_calls, 1, "and armed this time");
+    zassert_false(wrong_table_called, "all of it through the grid table");
+
+    acq::run_cycle();
+    {
+        const acq::source_facts &f{rec.last.sources[4]};
+        zassert_true(f.started, "the source is back");
+        zassert_false(f.transport_error, "and the cycle's facts are clean again");
+    }
+}
+
+/* A CLOSE THAT ITSELF FAILS CHANGES NOTHING HERE, which is worth pinning rather than assuming: it
+ * can only fail on state, this state is closeable, and the bring-up has no second recovery to
+ * offer. The source stays out of the cycle with its sticky set, exactly as if the close had worked
+ * and the next configure failed again. */
+ZTEST(tof_acquisition, test_a_failed_close_after_a_failed_configure_is_reported_and_no_more)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+
+    devs[4].configure_rc = -EIO;
+    devs[4].close_rc = -EPERM;
+    zassert_equal(acq::bring_up(), 0, "one source failing must not fail the bring-up");
+
+    zassert_equal(devs[4].grid_close_calls, 1, "");
+    zassert_equal(devs[4].grid_stop_calls, 0, "");
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+    zassert_false(f.started, "");
+    zassert_true(f.transport_error, "the configure failure is still what is reported");
+}
+
+/* A grid descriptor that cannot be configured is refused at init rather than failing on every
+ * bring-up. The descriptor comment already said configure() refuses a zero; the caller who built
+ * the table now learns that once, instead of the source silently never ranging. */
+ZTEST(tof_acquisition, test_a_bound_grid_source_needs_a_frequency)
+{
+    acq::config c{make_config(acq::kMaxSources)};
+    const uint8_t had{four_cliff_two_grid[4].grid_frequency_hz};
+    zassert_not_equal(had, 0, "the fixture must bind a real frequency for this to mean anything");
+
+    four_cliff_two_grid[4].grid_frequency_hz = 0;
+    zassert_equal(acq::init(c), -EINVAL, "zero is not a frequency");
+
+    four_cliff_two_grid[4].grid_frequency_hz = had;
+    zassert_equal(acq::init(c), 0, "and the restored table is still accepted");
+}
+
+/* The close entry is required of a bound table, like the other five: a table accepted without it
+ * would reach the configure-failure path and dereference null in the acquisition thread. */
+ZTEST(tof_acquisition, test_a_bound_grid_table_must_carry_close)
+{
+    acq::config c{make_config(acq::kMaxSources)};
+    static acq::grid_source_ops incomplete{kFakeGridOps};
+    incomplete.close = nullptr;
+
+    four_cliff_two_grid[4].grid_ops = &incomplete;
+    zassert_equal(acq::init(c), -EINVAL, "a half-filled grid table is refused at init");
+
+    four_cliff_two_grid[4].grid_ops = &kFakeGridOps;
+    zassert_equal(acq::init(c), 0, "and the complete one is accepted");
 }
