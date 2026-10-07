@@ -132,7 +132,7 @@ int fake_start(void *)
 
 cs::hooks wired()
 {
-    return cs::hooks{fake_draw, fake_permitted, fake_prove, fake_start, fake_installed, nullptr};
+    return cs::hooks{fake_draw, fake_permitted, fake_installed, fake_prove, fake_start, nullptr};
 }
 
 bool enable(uint8_t proofs = 3, uint8_t starts = 3, bool profile = true)
@@ -1023,4 +1023,60 @@ ZTEST(tof_commission_session, test_a_session_refuses_to_start_with_any_hook_miss
     }
     /* And the fully wired one still starts, so this is not just asserting that init() fails. */
     zassert_true(cs::init(c, wired()), "a complete wiring must still produce a session");
+}
+
+/* THE PATH THE FIRST VERSION OF THE GATE LEFT OPEN, and the reason the gate compares two facts
+ * rather than one.
+ *
+ * The session proves and starts epoch 7, so the sequencer sits in `started`. The shell then proves
+ * epoch 9 outside the session, silencing acquisition on its way through. The host asks for epoch 9.
+ * Checking only "does the authority hold this request's epoch" says yes -- and ac::step() then
+ * answers already_started from a state that belongs to epoch 7, with nothing re-started, so the
+ * host is told done/ok for a mapping that was never started.
+ *
+ * Note which direction this differs in from the other two cases: there the request named a STALE
+ * epoch, here it names the CURRENT one. That is why those two cases did not catch it. */
+ZTEST(tof_commission_session, test_a_request_for_the_authoritys_new_epoch_is_not_endorsed_by_an_old_start)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "epoch 7 is commissioned and started");
+    zassert_equal(f_.starts, 1, "");
+
+    /* The shell proves epoch 9 behind the session's back. The authority now holds 9; the sequencer
+     * still holds a `started` that belongs to 7. */
+    f_.installed_epoch = 9;
+
+    uint8_t newer[wire::kFrameLen]{};
+    build_request(newer, 2, 9, 0x11223344U);
+    zassert_true(cs::handle_request(newer, sizeof newer).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_not_equal(t.res, wire::result::ok,
+                      "the host was told its epoch was accepted by a start that predates it");
+    zassert_equal(t.res, wire::result::epoch_mismatch, "");
+    zassert_equal(t.ph, wire::phase::refused, "and not done");
+    zassert_equal(f_.proves, 1, "nothing re-proved");
+    zassert_equal(f_.starts, 1, "and nothing was started for the wrong mapping");
+}
+
+/* The gate must not over-refuse either: the ordinary case, where the session proved the epoch that
+ * is in force and the host asks for it again, is still answered. */
+ZTEST(tof_commission_session, test_the_agreeing_case_is_still_answered_as_done)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "");
+
+    uint8_t again[wire::kFrameLen]{};
+    build_request(again, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(again, sizeof again).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+    zassert_equal(t.res, wire::result::ok, "the epoch in force is the one this session proved");
+    zassert_equal(t.ph, wire::phase::done, "");
+    zassert_equal(f_.proves, 1, "and it was not re-proved to answer that");
 }

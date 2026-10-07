@@ -83,12 +83,6 @@ struct hooks {
     /* Asked, never inferred: the trustworthy stationary condition does not exist yet. */
     bool (*enumeration_permitted)(void *ctx);
 
-    /* The real transaction. Returns 0 when a mapping was installed, and fills `out` either way. */
-    int (*prove)(void *ctx, uint32_t epoch, tof_commissioning::outcome *out);
-
-    /* Acquisition. 0 means the thread is running. */
-    int (*start)(void *ctx);
-
     /* WHAT IS ACTUALLY INSTALLED, which is not the same question as "what did this session prove".
      * Returns true when a mapping is in force -- PROVEN, not merely once proven -- and then writes
      * the epoch it is in force under. tof_authority::current() in production.
@@ -96,8 +90,20 @@ struct hooks {
      * Needed because the session cannot be the source of this fact. The shell's `tof cliff prove`
      * installs a mapping without going through the session at all, and a mapping can go LOST on its
      * own; a session that trusted its own memory answered done/ok to a request naming an epoch that
-     * is no longer the one in force. */
+     * is no longer the one in force.
+     *
+     * POSITIONED HERE ON PURPOSE, among the questions rather than after the actions. A caller that
+     * still writes the old five-element positional list -- tof_commission_runtime.cpp on the wiring
+     * branch does -- would otherwise compile with this left null and the session would refuse at
+     * runtime, which looks like a board with no entropy rather than like a wiring change that was
+     * missed. In this slot the types do not line up and the build fails at the call site. */
     bool (*installed_mapping)(void *ctx, uint8_t *epoch);
+
+    /* The real transaction. Returns 0 when a mapping was installed, and fills `out` either way. */
+    int (*prove)(void *ctx, uint32_t epoch, tof_commissioning::outcome *out);
+
+    /* Acquisition. 0 means the thread is running. */
+    int (*start)(void *ctx);
 
     void *ctx;
 };

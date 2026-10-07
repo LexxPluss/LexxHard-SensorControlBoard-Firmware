@@ -439,8 +439,23 @@ worker_result worker_step()
     const ac::state st{ac::current()};
     const bool holds_proof{st == ac::state::proven || st == ac::state::started};
     uint8_t in_force_epoch{0};
-    const bool authority_holds_this_epoch{hooks_.installed_mapping(hooks_.ctx, &in_force_epoch) &&
-                                          in_force_epoch == req_epoch};
+    const bool authority_proven{hooks_.installed_mapping(hooks_.ctx, &in_force_epoch)};
+    const bool authority_holds_this_epoch{authority_proven && in_force_epoch == req_epoch};
+
+    /* AND THE TWO VIEWS MUST AGREE WITH EACH OTHER, which asking the authority alone does not get.
+     *
+     * The first version of this fix gated on "the authority holds this request's epoch" and nothing
+     * else, and that left a path open. Session proves and starts epoch 7, so the sequencer sits in
+     * `started`. The shell then proves epoch 9 outside the session, which silences acquisition on
+     * its way through. The host asks for epoch 9: the authority does hold 9, so the gate let it
+     * past -- and ac::step() answered `already_started` from a state that belongs to epoch 7, with
+     * nothing re-started. The host was told done/ok for a mapping that was never started.
+     *
+     * So the authority's mapping must not be allowed to endorse a `started` that predates it. The
+     * sequencer's own record of what IT proved is the link: when the epoch in force is not the one
+     * this session proved, the sequencer's state says nothing about what is installed, and the
+     * request is refused rather than answered from it. */
+    const bool views_agree{authority_proven && has_proven_ && proven_epoch_ == in_force_epoch};
 
     /* THE OPCODE BOUNDARY, AND IT IS ENFORCED HERE RATHER THAN INSIDE THE SEQUENCER.
      *
@@ -458,12 +473,22 @@ worker_result worker_step()
      * a different ordinal is installed, which is the one lie the host's `accepted` field cannot
      * recover from. `epoch_mismatch` is terminal on the host side and asks for no retry. */
     bool gated{false};
-    if (holds_proof && !authority_holds_this_epoch) {
+    if (holds_proof && !(authority_holds_this_epoch && views_agree)) {
         /* The sequencer will not prove anything else this boot, so whatever is installed is what
          * this request would be answered about. If that is not this request's epoch -- a different
-         * epoch, or no mapping at all because it went LOST -- then the request cannot be answered
-         * with done/ok. It is reported as a disagreement about the epoch because that is what it
-         * is from the host's side: the ordinal it named is not the one in force. */
+         * epoch, or no mapping at all because it went LOST -- or if it is not the epoch this
+         * session proved, then the request cannot be answered with done/ok. It is reported as a
+         * disagreement about the epoch because that is what it is from the host's side: the ordinal
+         * it named is not the one the running sequence belongs to.
+         *
+         * WHAT THIS STILL DOES NOT CHECK, so that nobody reads more into it: that the acquisition
+         * thread is actually running. The sequencer's `started` is taken at its word once the two
+         * views agree, and a mapping that is in force under the right epoch with acquisition
+         * stopped underneath it would still be answered done. Detecting that needs the acquisition
+         * state, which this module is not given and which the wiring branch should supply. The
+         * shell path is covered because proving always takes a new epoch -- the authority refuses a
+         * reused one -- so it cannot silence acquisition without moving the epoch this gate
+         * compares. */
         gated = true;
     } else if (op == wire::opcode::start_only && !holds_proof &&
                st != ac::state::disabled && st != ac::state::misconfigured) {
