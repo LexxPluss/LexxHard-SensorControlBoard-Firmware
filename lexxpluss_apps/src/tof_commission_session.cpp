@@ -182,7 +182,8 @@ bool init(const config &cfg, const hooks &h)
      * result for, and costs a configuration mistake nothing but a clear answer. */
     uint32_t drawn{0};
     if (hooks_.draw_token == nullptr || hooks_.enumeration_permitted == nullptr ||
-        hooks_.prove == nullptr || hooks_.start == nullptr)
+        hooks_.prove == nullptr || hooks_.start == nullptr ||
+        hooks_.installed_mapping == nullptr)
         return false;
     if (hooks_.draw_token(hooks_.ctx, &drawn) != 0 || drawn == 0) {
         drawn = 0;
@@ -401,11 +402,29 @@ worker_result worker_step()
     };
     verdict v{};
 
-    /* `has_proven_`/`proven_epoch_` are written by ac_prove() and read here, both on this thread and
-     * nowhere else, so they need no lock -- and they are read BEFORE ac::step(), because the whole
-     * point is to decide whether the sequencer may be stepped at all. */
+    /* THE AUTHORITY IS ASKED, NOT THIS FILE'S MEMORY OF IT, and that is a correction.
+     *
+     * The gate used to compare the request's epoch against has_proven_/proven_epoch_, which only
+     * ac_prove() writes. Anything that installed or lost a mapping outside this session was
+     * therefore invisible to it: `tof cliff prove <epoch>` from the shell goes straight to
+     * tof_commissioning::prove() and installs a different epoch, and a mapping can go LOST on its
+     * own. A later request naming the OLD epoch then passed the gate, ac::step() answered
+     * `already_started`, and the host was told done/ok while something else -- or nothing -- was
+     * installed. That is the exact lie the paragraph below says this gate exists to prevent, so the
+     * gate has to read the one place that knows.
+     *
+     * has_proven_/proven_epoch_ are kept, but only as the sequencer's own account of what IT proved;
+     * they no longer decide anything on their own.
+     *
+     * Asked through a hook rather than by calling tof_authority::current() directly, for the reason
+     * every other dependency here is injected: this module is tested on the host, where the
+     * authority is not linked, and the cases worth testing are exactly the ones a real authority
+     * makes hard to produce -- somebody else's epoch installed, or a mapping that went LOST. */
     const ac::state st{ac::current()};
     const bool holds_proof{st == ac::state::proven || st == ac::state::started};
+    uint8_t in_force_epoch{0};
+    const bool authority_holds_this_epoch{hooks_.installed_mapping(hooks_.ctx, &in_force_epoch) &&
+                                          in_force_epoch == req_epoch};
 
     /* THE OPCODE BOUNDARY, AND IT IS ENFORCED HERE RATHER THAN INSIDE THE SEQUENCER.
      *
@@ -423,7 +442,12 @@ worker_result worker_step()
      * a different ordinal is installed, which is the one lie the host's `accepted` field cannot
      * recover from. `epoch_mismatch` is terminal on the host side and asks for no retry. */
     bool gated{false};
-    if (holds_proof && (!has_proven_ || proven_epoch_ != req_epoch)) {
+    if (holds_proof && !authority_holds_this_epoch) {
+        /* The sequencer will not prove anything else this boot, so whatever is installed is what
+         * this request would be answered about. If that is not this request's epoch -- a different
+         * epoch, or no mapping at all because it went LOST -- then the request cannot be answered
+         * with done/ok. It is reported as a disagreement about the epoch because that is what it
+         * is from the host's side: the ordinal it named is not the one in force. */
         gated = true;
     } else if (op == wire::opcode::start_only && !holds_proof &&
                st != ac::state::disabled && st != ac::state::misconfigured) {

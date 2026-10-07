@@ -89,6 +89,16 @@ struct hooks {
     /* Acquisition. 0 means the thread is running. */
     int (*start)(void *ctx);
 
+    /* WHAT IS ACTUALLY INSTALLED, which is not the same question as "what did this session prove".
+     * Returns true when a mapping is in force -- PROVEN, not merely once proven -- and then writes
+     * the epoch it is in force under. tof_authority::current() in production.
+     *
+     * Needed because the session cannot be the source of this fact. The shell's `tof cliff prove`
+     * installs a mapping without going through the session at all, and a mapping can go LOST on its
+     * own; a session that trusted its own memory answered done/ok to a request naming an epoch that
+     * is no longer the one in force. */
+    bool (*installed_mapping)(void *ctx, uint8_t *epoch);
+
     void *ctx;
 };
 

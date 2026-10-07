@@ -50,9 +50,18 @@ struct fakes {
     cm::stage prove_stage{cm::stage::none};
     pf::refusal prove_refusal{pf::refusal::none};
 
+    /* WHAT THE AUTHORITY WOULD SAY, which the session now asks instead of remembering. A successful
+     * prove() installs a mapping in production, so the fake does the same by default and the
+     * existing cases behave as they did. The cases that matter are the ones that make this disagree
+     * with the session's own memory -- another epoch installed from the shell, or a mapping that
+     * went LOST -- and those set these directly. */
+    bool installed_proven{false};
+    uint8_t installed_epoch{0};
+
     int draws{0};
     int proves{0};
     int starts{0};
+    int installed_queries{0};
     uint32_t last_epoch{0xFFFFFFFFU};
 };
 
@@ -99,7 +108,20 @@ int fake_prove(void *, uint32_t epoch, cm::outcome *out)
     f_.last_epoch = epoch;
     out->failed_at = f_.prove_stage;
     out->proof = f_.prove_refusal;
+    if (f_.prove_rc == 0) {
+        f_.installed_proven = true;
+        f_.installed_epoch = static_cast<uint8_t>(epoch);
+    }
     return f_.prove_rc;
+}
+
+bool fake_installed(void *, uint8_t *epoch)
+{
+    ++f_.installed_queries;
+    if (!f_.installed_proven)
+        return false;
+    *epoch = f_.installed_epoch;
+    return true;
 }
 
 int fake_start(void *)
@@ -110,7 +132,7 @@ int fake_start(void *)
 
 cs::hooks wired()
 {
-    return cs::hooks{fake_draw, fake_permitted, fake_prove, fake_start, nullptr};
+    return cs::hooks{fake_draw, fake_permitted, fake_prove, fake_start, fake_installed, nullptr};
 }
 
 bool enable(uint8_t proofs = 3, uint8_t starts = 3, bool profile = true)
@@ -766,4 +788,74 @@ ZTEST(tof_commission_session, test_a_second_worker_takes_nothing_and_runs_nothin
     /* Nothing is claimed any more: the next step finds an empty slot rather than a job it may not
      * touch. */
     zassert_true(cs::worker_step().state == cs::worker_state::idle, "idle");
+}
+
+/* ---- the gate reads the authority, not this session's memory of it ---- */
+
+/* SOMEBODY ELSE INSTALLED A MAPPING. `tof cliff prove <epoch>` from the shell goes straight to
+ * tof_commissioning::prove() and never touches this session, so the session's own has_proven_ /
+ * proven_epoch_ still name the epoch IT proved. A request for that epoch used to pass the gate,
+ * ac::step() answered already_started, and the host was told done/ok -- while a different epoch was
+ * the one in force. The gate now asks what is installed, so the same request is a disagreement. */
+ZTEST(tof_commission_session, test_an_epoch_installed_outside_the_session_is_not_reported_as_done)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "epoch 7 is commissioned");
+
+    /* The shell proves epoch 9 behind the session's back. Nothing in the session changes. */
+    f_.installed_epoch = 9;
+
+    uint8_t again[wire::kFrameLen]{};
+    build_request(again, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(again, sizeof again).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+    zassert_equal(t.res, wire::result::epoch_mismatch,
+                  "the session answered for an epoch that is no longer installed");
+    zassert_equal(t.ph, wire::phase::refused, "and not done");
+    zassert_equal(f_.proves, 1, "nothing re-proved");
+}
+
+/* A MAPPING THAT WENT LOST. Same defect from the other side: the session remembers proving epoch 7,
+ * the authority holds nothing at all, and a request for epoch 7 must not come back done. */
+ZTEST(tof_commission_session, test_a_lost_mapping_is_not_reported_as_done_for_the_epoch_it_had)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "");
+
+    f_.installed_proven = false;  // LOST
+
+    uint8_t again[wire::kFrameLen]{};
+    build_request(again, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(again, sizeof again).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+    zassert_equal(t.res, wire::result::epoch_mismatch,
+                  "a lost mapping was reported as a commissioned one");
+    zassert_equal(t.ph, wire::phase::refused, "");
+    zassert_equal(f_.proves, 1, "nothing re-proved");
+}
+
+/* The gate must actually consult the hook rather than happening to agree with it. */
+ZTEST(tof_commission_session, test_the_installed_mapping_is_asked_and_is_required_at_init)
+{
+    zassert_true(enable(), "");
+    uint8_t req[wire::kFrameLen]{};
+    build_request(req, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(req, sizeof req).queued, "");
+    (void)run_to_terminal();
+    zassert_true(f_.installed_queries > 0, "the authority view was never consulted");
+
+    /* And a session that cannot ask is not a session. */
+    cs::config c{};
+    c.profile_enabled = true;
+    c.max_proof_attempts = 3;
+    c.max_start_attempts = 3;
+    cs::hooks h{wired()};
+    h.installed_mapping = nullptr;
+    zassert_false(cs::init(c, h), "a missing authority view must refuse the session");
 }
