@@ -463,7 +463,26 @@ worker_result worker_step()
         v.stage = wire::wire_stage::not_started;
         v.detail = wire::wire_detail::none;
     } else {
-        switch (const ac::step_result step{ac::step()}; step) {
+        /* WHETHER THIS TRANSACTION RAN ANYTHING, measured rather than inferred from the result.
+         *
+         * The wire says `done` carries the outcome and `refused` carries why it never ran, and the
+         * phase used to be left at its `refused` default for everything except started and
+         * already_started -- so proof_failed, start_failed, attempts_exhausted and the
+         * busy_at_commit that map_result() produces all went out as "never ran". A host written
+         * against the header read those as costing it nothing, when busy_at_commit's own comment
+         * says the host owes a new ordinal for it.
+         *
+         * The result code alone cannot answer the question, which is why this is a measurement:
+         * attempts_exhausted comes back BOTH from a proof that just failed as the last of its
+         * budget and from a step that found the budget already spent and did nothing. The
+         * sequencer's counters tell those apart, and nothing else here can. */
+        const uint8_t attempts_before{ac::attempts_used()};
+        const uint8_t starts_before{ac::start_attempts_used()};
+        const ac::step_result step{ac::step()};
+        const bool proof_ran{ac::attempts_used() != attempts_before};
+        const bool ran{proof_ran || ac::start_attempts_used() != starts_before};
+
+        switch (step) {
         case ac::step_result::started:
         case ac::step_result::already_started: {
             /* The desired end state holds, AND it holds for this request's epoch -- the gate above is
@@ -489,6 +508,18 @@ worker_result worker_step()
         }
         case ac::step_result::attempts_exhausted:
             v.res = wire::result::attempts_exhausted;
+            /* THE REASON THE LAST PROOF FAILED, which used to be dropped. #112 returns
+             * attempts_exhausted rather than proof_failed when the proof that just failed was the
+             * last in the budget, and this branch did not read last_outcome_ -- so the host got
+             * not_started/none for a transaction that had run a whole walk. With
+             * max_proof_attempts = 1 that was every proof failure there is. The result stays
+             * attempts_exhausted, because the budget is the fact the host must act on; the stage
+             * and detail now say what went wrong while spending it. */
+            if (proof_ran) {
+                const map::outcome o{map::map_result(last_outcome_)};
+                v.stage = o.stage;
+                v.detail = o.detail;
+            }
             break;
         case ac::step_result::start_failed:
             v.res = wire::result::start_failed;
@@ -516,6 +547,17 @@ worker_result worker_step()
             v.res = wire::result::misconfigured;
             break;
         }
+
+        /* Set once, from the measurement, rather than per case. `started` and `already_started`
+         * have already said `done` for themselves: the first ran, and the second is the one result
+         * that is `done` without running anything, because the end state the host asked for holds.
+         *
+         * Everything else is `done` exactly when this step consumed an attempt. That includes the
+         * failures -- a proof that ran and failed is an outcome, not a refusal -- and excludes the
+         * cases that never reached a hook: not_permitted, disabled, misconfigured, no_epoch, a
+         * budget found already spent, and a start budget with nothing left to attempt. */
+        if (v.ph != wire::phase::done)
+            v.ph = ran ? wire::phase::done : wire::phase::refused;
     }
 
     key = k_spin_lock(&lock_);

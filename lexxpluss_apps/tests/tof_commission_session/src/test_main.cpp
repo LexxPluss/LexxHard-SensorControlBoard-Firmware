@@ -477,7 +477,10 @@ ZTEST(tof_commission_session, test_a_failed_proof_reports_its_stage_and_detail)
     zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
     const wire::transaction_status t{run_to_terminal()};
 
-    zassert_true(t.ph == wire::phase::refused, "refused");
+    /* DONE, NOT REFUSED, and this assertion was changed deliberately. The wire says `refused`
+     * carries why a transaction never ran; this one ran a walk and the host's ordinal went with it.
+     * `done` carries the outcome, and a failure is an outcome. */
+    zassert_true(t.ph == wire::phase::done, "a proof that ran and failed is an outcome");
     zassert_true(t.res == wire::result::proof_failed, "");
     zassert_true(t.stage == wire::wire_stage::second_walk, "the stage the transaction reached");
     zassert_true(t.detail == wire::wire_detail::walk_mismatch, "and why it stopped there");
@@ -858,4 +861,91 @@ ZTEST(tof_commission_session, test_the_installed_mapping_is_asked_and_is_require
     cs::hooks h{wired()};
     h.installed_mapping = nullptr;
     zassert_false(cs::init(c, h), "a missing authority view must refuse the session");
+}
+
+/* ---- the phase says whether the transaction ran, and the failure keeps its reason ---- */
+
+/* THE RESULT CODE CANNOT ANSWER "DID IT RUN", which is why the phase is set from the sequencer's
+ * counters. attempts_exhausted comes back from two different situations: a proof that just failed as
+ * the last of its budget, and a step that found the budget already spent and did nothing at all.
+ * The host must be able to tell those apart -- the first consumed its ordinal, the second did not. */
+ZTEST(tof_commission_session, test_a_last_attempt_proof_failure_is_done_and_keeps_its_reason)
+{
+    zassert_true(enable(1, 3), "one proof in the budget");
+    f_.prove_rc = -5;
+    f_.prove_stage = cm::stage::evidence_refused;
+    f_.prove_refusal = pf::refusal::fingerprint_mismatch;
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 1, "the walk ran");
+    zassert_equal(t.res, wire::result::attempts_exhausted, "the budget is what the host must act on");
+    zassert_equal(t.ph, wire::phase::done, "but it ran, so it is not a refusal");
+    /* THE REASON THAT USED TO BE DROPPED. #112 returns attempts_exhausted instead of proof_failed
+     * for the last attempt, and this branch did not read last_outcome_ -- so with
+     * max_proof_attempts = 1 no proof-failure reason ever reached the host. */
+    zassert_equal(t.stage, wire::wire_stage::second_walk, "the stage the transaction reached");
+    zassert_equal(t.detail, wire::wire_detail::walk_mismatch, "and why it stopped there");
+}
+
+/* THE OTHER attempts_exhausted. The budget was spent by the request before this one, so this
+ * transaction ran nothing, consumed nothing, and is a refusal with no stage to report. */
+ZTEST(tof_commission_session, test_a_budget_already_spent_is_refused_with_nothing_to_report)
+{
+    zassert_true(enable(1, 3), "");
+    f_.prove_rc = -5;
+    f_.prove_stage = cm::stage::evidence_refused;
+    f_.prove_refusal = pf::refusal::fingerprint_mismatch;
+
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_equal(run_to_terminal().ph, wire::phase::done, "the first one ran");
+
+    uint8_t second[wire::kFrameLen]{};
+    build_request(second, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(second, sizeof second).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 1, "no second walk");
+    zassert_equal(t.res, wire::result::attempts_exhausted, "");
+    zassert_equal(t.ph, wire::phase::refused, "nothing ran, so nothing was consumed");
+    zassert_equal(t.stage, wire::wire_stage::not_started, "");
+    zassert_equal(t.detail, wire::wire_detail::none, "");
+}
+
+/* A start that ran and refused is also an outcome: the proof is installed and its epoch is spent. */
+ZTEST(tof_commission_session, test_a_failed_start_is_done_because_the_epoch_was_already_spent)
+{
+    zassert_true(enable(), "");
+    f_.start_rc = -1;
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 1, "");
+    zassert_equal(f_.starts, 1, "the start was attempted");
+    zassert_equal(t.res, wire::result::start_failed, "");
+    zassert_equal(t.ph, wire::phase::done, "the mapping is installed and the epoch is gone");
+}
+
+/* And the cases that never reach a hook stay refusals, which is what the phase is for. */
+ZTEST(tof_commission_session, test_a_machine_that_is_not_quiescent_never_ran_and_is_refused)
+{
+    zassert_true(enable(), "");
+    f_.permitted = false;
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 0, "nothing ran");
+    zassert_equal(t.res, wire::result::not_permitted, "");
+    zassert_equal(t.ph, wire::phase::refused, "and the phase says so");
 }
