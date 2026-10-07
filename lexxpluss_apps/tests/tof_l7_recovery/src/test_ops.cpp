@@ -36,6 +36,7 @@ namespace
 namespace rec = lexxhard::tof_l7_recovery;
 
 int sticky_port_error{0};
+uint32_t port_completed_{0};
 
 struct uld_spy {
     uint16_t alive_address{0xFFFFU};
@@ -51,6 +52,10 @@ struct uld_spy {
      * clear that has to happen. Modelling the order is what makes these cases mean anything. */
     int alive_port_error{0};
     int stop_port_error{0};
+    /* What the port counted DURING the call. Scripted with the error for the same reason: the
+     * adapter clears the port before every ULD call, so a count set beforehand would be wiped. */
+    uint32_t alive_completed{0};
+    uint32_t stop_completed{0};
     int alive_calls{0};
     int stop_calls{0};
 };
@@ -61,14 +66,16 @@ void reset_spy()
 {
     spy_ = uld_spy{};
     sticky_port_error = 0;
+    port_completed_ = 0;
 }
 
 }  // namespace
 
 extern "C" {
 
-void vl53l7cx_port_clear_error(void) { sticky_port_error = 0; }
+void vl53l7cx_port_clear_error(void) { sticky_port_error = 0; port_completed_ = 0; }
 int vl53l7cx_port_error(void) { return sticky_port_error; }
+uint32_t vl53l7cx_port_completed_transfers(void) { return port_completed_; }
 
 uint8_t vl53l7cx_is_alive(VL53L7CX_Configuration *p_dev, uint8_t *p_is_alive)
 {
@@ -76,6 +83,7 @@ uint8_t vl53l7cx_is_alive(VL53L7CX_Configuration *p_dev, uint8_t *p_is_alive)
     spy_.alive_address = p_dev->platform.address;
     spy_.alive_saw_auto_stop = p_dev->is_auto_stop_enabled;
     sticky_port_error = spy_.alive_port_error;
+    port_completed_ = spy_.alive_completed;
     if (p_is_alive != nullptr)
         *p_is_alive = spy_.alive_answer;
     return spy_.alive_status;
@@ -87,6 +95,7 @@ uint8_t vl53l7cx_stop_ranging(VL53L7CX_Configuration *p_dev)
     spy_.stop_address = p_dev->platform.address;
     spy_.stop_saw_auto_stop = p_dev->is_auto_stop_enabled;
     sticky_port_error = spy_.stop_port_error;
+    port_completed_ = spy_.stop_completed;
     return spy_.stop_status;
 }
 
@@ -112,7 +121,8 @@ ZTEST(tof_l7_recovery_ops, test_a_clean_nack_is_a_completed_probe_with_nobody_th
 {
     reset_spy();
     spy_.alive_port_error = -ENXIO;
-    spy_.alive_answer = 0;   /* nothing acknowledged: the cold boot */
+    spy_.alive_answer = 0;
+    spy_.alive_completed = 0;   /* nothing completed a transaction: the cold boot */
     bool alive{true};
 
     const rec::ops o{ops_under_test()};
@@ -129,20 +139,30 @@ ZTEST(tof_l7_recovery_ops, test_a_clean_nack_is_a_completed_probe_with_nobody_th
  * produces exactly this. Reporting it absent lost the sensor and recorded no failure -- and since
  * this pass's census is evidence, a false absent argues for the wrong conclusion about warm resets.
  */
-ZTEST(tof_l7_recovery_ops, test_a_nack_with_an_answer_is_a_failed_probe_and_not_an_empty_address)
+ZTEST(tof_l7_recovery_ops, test_a_nack_with_a_completed_transfer_is_a_failed_probe)
 {
-    reset_spy();
-    scratch_ = lexxhard::tof_l7::sensor{};
-    spy_.alive_port_error = -ENXIO;
-    spy_.alive_answer = 1;
-    bool alive{true};
+    /* TWO SHAPES OF THE SAME PARTIAL EXCHANGE, and the second is why this is asked of the transport
+     * rather than of the identity. The ULD's alive flag is set only when BOTH identity bytes match,
+     * so a device that answers the device-id read with 0xF0 and NACKs the revision-id read leaves
+     * it at ZERO -- and a classification keyed on that flag files the survivor as an empty address
+     * all over again. Only the port can say that something completed. */
+    const uint8_t identity_flag[]{1U, 0U};
 
-    const rec::ops o{ops_under_test()};
-    const int rc{o.is_alive(o.ctx, 0x2AU, &alive)};
+    for (const uint8_t answered : identity_flag) {
+        reset_spy();
+        scratch_ = lexxhard::tof_l7::sensor{};
+        spy_.alive_port_error = -ENXIO;
+        spy_.alive_answer = answered;
+        spy_.alive_completed = 2U;   /* the page select and one id read got through */
+        bool alive{true};
 
-    zassert_not_equal(rc, 0, "part of the exchange worked: that is not a completed probe");
-    zassert_equal(rc, -EIO, "and it is classed with the other partial exchanges, not as -ENXIO");
-    zassert_false(alive, "the out-parameter stays false on every refusal");
+        const rec::ops o{ops_under_test()};
+        const int rc{o.is_alive(o.ctx, 0x2AU, &alive)};
+
+        zassert_equal(rc, -EIO,
+                      "a partial exchange with alive flag %u was reported %d", answered, rc);
+        zassert_false(alive, "the out-parameter stays false on every refusal");
+    }
 }
 
 /* A bus that could not carry the question. Reporting this as "nobody there" would be the

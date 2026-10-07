@@ -46,6 +46,7 @@ static int polls_seen;
 static int waits_seen;
 
 static int fail_reads;
+static int fail_read_reg;        /* -1 = none */
 static uint8_t identity_device_id;
 static uint8_t identity_revision_id;
 
@@ -58,6 +59,7 @@ static void bus_reset(void)
 	polls_seen = 0;
 	waits_seen = 0;
 	fail_reads = 0;
+	fail_read_reg = -1;
 	identity_device_id = 0;
 	identity_revision_id = 0;
 }
@@ -69,8 +71,7 @@ static void bus_reset(void)
 
 static uint8_t read_register(uint16_t reg, uint8_t *dst, uint32_t len)
 {
-	if (fail_reads) {
-		(void)reg;
+	if (fail_reads || (fail_read_reg >= 0 && reg == (uint16_t)fail_read_reg)) {
 		(void)len;
 		return VL53L7CX_STATUS_ERROR;   /* dst deliberately untouched */
 	}
@@ -398,4 +399,29 @@ ZTEST(tof_l7_uld_stop, test_is_alive_still_recognises_a_real_identity)
 
 	identity_device_id = 0U;
 	identity_revision_id = 0U;
+}
+
+/* THE REAL ULD PATH THE ADAPTER HAS TO SURVIVE, asked for in review and worth having here rather
+ * than only against a faked ULD: a device that answers one identity read and refuses the other.
+ *
+ * The point is what the ULD reports for it. The device-id read gives 0xF0, the revision-id read
+ * fails and -- because of patch 0003 -- leaves a written zero, so the two do not both match and the
+ * alive flag comes back ZERO. The status is non-OK, which is the only signal the ULD gives, and it
+ * is collapsed into one byte that the port's first-error already covers.
+ *
+ * So the ULD cannot tell the adapter the difference between this and an address where nothing
+ * answered: both arrive as alive=0 with a NACK. That is why the adapter asks the port how many
+ * transactions COMPLETED instead of reading the alive flag. This case pins the premise. */
+ZTEST(tof_l7_uld_stop, test_is_alive_reports_not_alive_when_only_one_identity_byte_is_read)
+{
+	identity_device_id = 0xF0U;
+	identity_revision_id = 0x02U;
+	fail_read_reg = 1;   /* the revision id read NACKs; the device id read succeeds */
+
+	uint8_t answered = 0xFFU;
+	const uint8_t rc = vl53l7cx_is_alive(&dev, &answered);
+
+	zassert_not_equal(rc, VL53L7CX_STATUS_OK, "one transfer failed, so the status must say so");
+	zassert_equal(answered, 0U,
+		      "a half-read identity must not read as a recognised sensor");
 }

@@ -80,16 +80,21 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
      * absent on a warm reset" as evidence against the hypothesis this pass exists to test, so that
      * case did not merely lose a sensor -- it argued for the wrong conclusion.
      *
-     * With an answer present this is a failed probe. -EIO rather than the port's -ENXIO, because
-     * what happened is not "nobody there": part of the exchange worked and part did not, which is
-     * the same class as a non-OK status with no transport error below. Whether an L7 actually NACKs
-     * mid-sequence on hardware is unverified; the classification does not depend on it, because the
-     * early return was discarding evidence either way.
+     * ASKED OF THE TRANSPORT, NOT OF THE IDENTITY, and that is a correction to a first attempt
+     * that used `answered`. The ULD sets its alive flag only when BOTH identity bytes match, so
+     * zero does not mean "nothing answered": a device whose device-id read returns 0xF0 and whose
+     * revision-id read NACKs leaves the flag at zero -- patch 0003 makes sure it is a written zero
+     * -- and would have been filed as an empty address all over again, which is the same partial
+     * exchange hidden one layer down. The question is whether anything on the bus completed a
+     * transaction, and only the port can answer it.
      *
-     * This leans on `answered` being written, which patch 0003 is for: the ULD's id locals were
-     * uninitialised and the port does not clear a read buffer it failed to fill. */
+     * So: nothing completed and a NACK is the cold boot, reported as a completed probe with nobody
+     * there. Anything completed alongside a NACK is a partial exchange and a failed probe, -EIO,
+     * classed with the non-OK status below rather than with "nobody there". Whether an L7 actually
+     * NACKs mid-sequence on hardware is unverified; the classification does not depend on it,
+     * because the early return was discarding evidence either way. */
     if (port_errno == -ENXIO)
-        return answered != 0U ? -EIO : 0;
+        return vl53l7cx_port_completed_transfers() != 0U ? -EIO : 0;
 
     /* -EIO or -ETIMEDOUT. The question did not reach the bus, so no answer was heard, and the
      * caller must not treat this as an empty address. */
