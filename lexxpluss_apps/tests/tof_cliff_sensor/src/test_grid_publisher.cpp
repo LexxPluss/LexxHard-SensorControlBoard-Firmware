@@ -74,7 +74,6 @@ int fake_send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
 acq::mapping_state state_value{acq::mapping_state::proven};
 uint8_t epoch_value{kEpoch};
 uint8_t boards_value{kBoards};
-bool binding_untrusted_flag{false};
 bool other_enum_flag{false};
 int authorise_calls{0};
 /* THE ENUMERATOR'S PER-SOURCE PERMISSION, set explicitly rather than defaulted.
@@ -91,7 +90,6 @@ struct pub::authorisation authorise()
     a.state = state_value;
     a.epoch = epoch_value;
     a.boards_detected = boards_value;
-    a.binding_untrusted = binding_untrusted_flag;
     a.other_position_enumeration_failed = other_enum_flag;
     for (int i = 0; i < pub::kGridSources; ++i)
         a.source_allowed[i] = permit[i];
@@ -272,7 +270,6 @@ void before(void *)
     state_value = acq::mapping_state::proven;
     epoch_value = kEpoch;
     boards_value = kBoards;
-    binding_untrusted_flag = false;
     other_enum_flag = false;
     authorise_calls = 0;
     permit[0] = permit[1] = true;
@@ -751,38 +748,43 @@ ZTEST(tof_grid_publisher, test_bit_three_is_restated_every_cycle_and_does_not_wi
     zassert_equal(bus.frames[16].data[3] & 0x08, 0x00);
 }
 
-/* BIT 2 NOW MEANS A GRID IS NOT PUBLISHED AT ALL, under contract 2026-08-02i.
+/* ---- bit 2 is not something this publisher can say ---- */
+
+/* WHAT THE REMOVED INPUT DID TO A TWO-SOURCE CYCLE, which is why it is gone rather than fixed.
  *
- * The bit says the `chain_position -> source_id` binding cannot be trusted, and the permission that
- * admits a grid is the enumerator's verdict on that same binding -- so the two come from one
- * chain_result and cannot disagree. A producer that asserted permission AND set the bit would be
- * contradicting itself, and the packer refuses that outright as defence in depth.
+ * There was a chain-level `binding_untrusted` that set bit 2 on EVERY source. For a source whose
+ * permission was held, that read asserted source_allowed beside bit 2, which the packer refuses as
+ * a self-contradiction -- and the publisher reads a packer refusal as structural, so the cycle was
+ * invalidated and the permitted source's grid was withheld along with the unpermitted one. One
+ * untrusted position took both sides down. The two cases that used to set the flag were
+ * single-source cycles, so neither could see it.
  *
- * This case used to set the bit and assert a published grid. It passed on a pre-i premise: nothing
- * set source_allowed then, so the contradiction was unreachable and the refusal never fired. */
-ZTEST(tof_grid_publisher, test_an_untrusted_binding_publishes_nothing)
+ * Distrust is now said once, per source, by the enumerator: permission clear. This case is that
+ * statement in the shape that used to fail. */
+ZTEST(tof_grid_publisher, test_one_unpermitted_source_does_not_take_the_permitted_one_down)
 {
-    binding_untrusted_flag = true;
-    permit[0] = false;   // the same verdict, from the same chain_result
+    permit[0] = false;
+    permit[1] = true;
 
-    cycle_with_one(1, 0, 0, filler_zones);
+    cycle_with_both(1, filler_zones, filler_zones);
 
-    zassert_equal(bus.count, 0, "an untrusted binding is not a grid with a flag on it");
-    zassert_equal(counters_now().grids_sent, 0U);
+    zassert_equal(bus.count, 17,
+                  "the permitted source's whole grid: sixteen data frames and the health frame");
+    zassert_equal(counters_now().grids_sent, 1U,
+                  "the permitted source's grid was withheld along with the other one");
+
+    /* The unpermitted side is accounted for as what it is -- no permission -- and NOT as a packer
+     * refusal. That distinction is the whole point: a packer refusal means this firmware built a
+     * bad grid, and the publisher answers it by invalidating the cycle. */
+    zassert_equal(counters_now().suppressed_not_permitted, 1U, "");
+    zassert_equal(counters_now().suppressed_not_admitted, 0U,
+                  "a missing permission is not this firmware having built a bad grid");
 }
 
-/* AND THE SELF-CONTRADICTION IS REFUSED RATHER THAN RESOLVED. No conforming producer can reach
- * this, which is why it is tested: the refusal must not be the thing that is deleted when somebody
- * decides it is unreachable. */
-ZTEST(tof_grid_publisher, test_permission_asserted_beside_an_untrusted_binding_is_refused)
-{
-    binding_untrusted_flag = true;
-    permit[0] = true;   // contradicts the bit
-
-    cycle_with_one(1, 0, 0, filler_zones);
-
-    zassert_equal(bus.count, 0, "the safe reading of a contradiction is the unsafe-direction one");
-}
+/* The packer's defence-in-depth refusal of permission-beside-bit-2 is NOT duplicated here. It
+ * lives in the packer suite as test_untrusted_binding_is_never_transmitted, where it can be driven
+ * directly -- which is now the only way to reach it, since nothing in this publisher can set bit 2
+ * any more. It must not be deleted on the grounds that it has become unreachable from here. */
 
 ZTEST(tof_grid_publisher, test_the_authorisation_is_read_once_per_cycle_and_once_at_the_flush)
 {

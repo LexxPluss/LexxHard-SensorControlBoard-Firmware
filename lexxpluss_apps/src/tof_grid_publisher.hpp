@@ -75,13 +75,28 @@ struct authorisation {
     uint8_t epoch{0};
     // Health byte 4, high nibble. Diagnostics only; the contract says so explicitly.
     uint8_t boards_detected{0};
-    /* FLAG BIT 2, UNDER CONTRACT 2026-08-02i: the `chain_position -> source_id` binding cannot be
-     * trusted. It was `chain_length_unexpected` here, which is the definition contract `g` carried
-     * and `i` deliberately replaced -- precisely so the bit cannot be derived from chain length. A
-     * short chain is not the same statement: it co-fired with bit 3 and said nothing about whether
-     * the zones belong to the source id they are labelled with. Setting this because the chain is
-     * short is the defect `i` was written to end. */
-    bool binding_untrusted{false};
+    /* FLAG BIT 2 IS NOT AN INPUT HERE ANY MORE, and the removal is the fix rather than a
+     * simplification.
+     *
+     * There was a chain-level `binding_untrusted` whose only effect was to set bit 2 on every
+     * source. Bit 2 says the chain_position -> source_id binding cannot be trusted, which the
+     * packer treats -- correctly -- as a self-contradiction when the same read asserts
+     * source_allowed, and it refuses the grid. The publisher reads a packer refusal as structural:
+     * this cycle's account of the chain is wrong, so nothing may be sent and the cycle is invalid.
+     *
+     * Put together, one untrusted position took the whole cycle down. With
+     * source_allowed = {false, true} and the chain flag set, the permitted source's grid was
+     * refused as a contradiction it had no part in, and the cycle was counted as structurally
+     * broken: both sides went dark. The two cases that set the flag used one-source cycles, so
+     * neither could see it.
+     *
+     * There is nothing to replace it with, because source_allowed[] already says this per source
+     * and says it as the enumerator's verdict rather than as a status bit. The packer's own
+     * comment is the argument: a conforming producer never sets bit 2, so a conforming producer
+     * has no use for an input whose only effect is to set it. The packer's defence-in-depth check
+     * stays exactly where it is -- it guards the wire against a caller that is not conforming,
+     * including a later one.
+     */
     bool other_position_enumeration_failed{false};  // flag bit 3
     /* THE ENUMERATOR'S PER-SOURCE PERMISSION, indexed by source_id, from THIS snapshot.
      *
