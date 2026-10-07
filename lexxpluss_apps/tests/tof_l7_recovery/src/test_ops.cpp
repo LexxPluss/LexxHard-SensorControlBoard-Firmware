@@ -272,3 +272,73 @@ ZTEST(tof_l7_recovery_ops, test_the_pass_and_the_adapter_together_stop_both_surv
     zassert_equal(spy_.stop_calls, 2);
     zassert_equal(spy_.stop_address, static_cast<uint16_t>(0x2BU << 1), "the last stop was source 1");
 }
+
+/* ---- the scratch must not be a sensor somebody is using ---- */
+
+/* WHY BOTH ENTRY POINTS REFUSE RATHER THAN COPE. addressed() zeroes the whole ULD configuration,
+ * the firmware pointer included, and rewrites the address. Done to a sensor that is open, running or
+ * carrying a stop_unconfirmed debt, that leaves `current` saying one thing and the configuration
+ * describing a different device -- and the next stop() or read_once() would talk to that device
+ * through an empty configuration. The header always required an unopened scratch; only the null
+ * pointer was checked.
+ *
+ * Asserted on the TRAFFIC as well as the return value: a refusal that still issued a transfer would
+ * have already touched the wrong address by the time the caller saw the error. */
+ZTEST(tof_l7_recovery_ops, test_a_scratch_that_is_in_use_is_refused_and_no_traffic_is_issued)
+{
+    const lexxhard::tof_l7::lifecycle in_use[]{
+        lexxhard::tof_l7::lifecycle::opened,
+        lexxhard::tof_l7::lifecycle::configured,
+        lexxhard::tof_l7::lifecycle::running,
+        lexxhard::tof_l7::lifecycle::stop_unconfirmed,
+    };
+
+    for (const auto state : in_use) {
+        reset_spy();
+        scratch_ = lexxhard::tof_l7::sensor{};
+        scratch_.current = state;
+        /* Something recognisable in the configuration, so a wipe is visible. */
+        scratch_.uld.platform.address = 0x52U;
+        scratch_.uld.platform.firmware = reinterpret_cast<const uint8_t *>(&spy_);
+
+        bool alive{true};
+        const rec::ops o{ops_under_test()};
+
+        zassert_equal(o.is_alive(o.ctx, 0x2AU, &alive), -EINVAL,
+                      "probe accepted a scratch in state %d", static_cast<int>(state));
+        zassert_false(alive, "and it must not claim the address is alive");
+        zassert_equal(o.stop_ranging(o.ctx, 0x2AU), -EINVAL,
+                      "stop accepted a scratch in state %d", static_cast<int>(state));
+
+        zassert_equal(spy_.alive_calls, 0, "the ULD was asked anyway");
+        zassert_equal(spy_.stop_calls, 0, "the ULD was asked anyway");
+        zassert_equal(scratch_.uld.platform.address, 0x52U,
+                      "the configuration was wiped before the refusal");
+        zassert_not_null(scratch_.uld.platform.firmware, "the firmware pointer was wiped");
+        zassert_equal(scratch_.current, state, "and the lifecycle was not touched");
+    }
+
+    scratch_ = lexxhard::tof_l7::sensor{};
+}
+
+/* And the ordinary case still works, so the check is not just refusing everything. `empty` is the
+ * one state the pass accepts, and tof_l7::close() is how production gets a used sensor back to it;
+ * the state is set directly here because this suite deliberately does not link tof_l7_sensor.cpp --
+ * it fakes two ULD entry points, and linking the sensor would drag in the rest of the ULD to fake
+ * as well. What is under test is the adapter's precondition, not close(). */
+ZTEST(tof_l7_recovery_ops, test_an_empty_scratch_is_accepted)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    zassert_equal(scratch_.current, lexxhard::tof_l7::lifecycle::empty, "");
+
+    bool alive{false};
+    spy_.alive_answer = 1;
+    const rec::ops o{ops_under_test()};
+    zassert_equal(o.is_alive(o.ctx, 0x2AU, &alive), 0, "");
+    zassert_true(alive, "");
+    zassert_equal(spy_.alive_calls, 1, "");
+    zassert_equal(spy_.alive_address, 0x2AU << 1, "and it was addressed for this probe");
+
+    scratch_ = lexxhard::tof_l7::sensor{};
+}

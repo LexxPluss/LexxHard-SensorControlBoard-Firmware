@@ -25,11 +25,26 @@ namespace lexxhard::tof_l7_recovery {
 namespace {
 
 /* Both entry points begin here. Zeroing is not hygiene: it is what puts is_auto_stop_enabled at 0
- * and sends stop_ranging down the path that can end a session this firmware did not start. */
+ * and sends stop_ranging down the path that can end a session this firmware did not start.
+ *
+ * AND BECAUSE IT ZEROES, IT HAS TO REFUSE ANYTHING BUT AN UNOPENED SENSOR. The header has always
+ * said the scratch must not be open, and only the null pointer was checked -- so an opened,
+ * `running` or `stop_unconfirmed` sensor was silently re-pointed at another address with its whole
+ * ULD configuration wiped, the firmware pointer included, while `current` went on saying running.
+ * The next stop() or read_once() in tof_l7_sensor would then talk to a different device through an
+ * empty configuration, which is exactly the guarantee stop_unconfirmed exists to provide and this
+ * was quietly stepping around.
+ *
+ * Checked on every call rather than once in uld_ops(), because uld_ops() only stores the pointer:
+ * the lifecycle can change between binding the ops and calling them, and a check that ran at
+ * binding time would describe a state that no longer holds. A caller that wants to hand a used
+ * sensor to this pass has tof_l7::close() for it. */
 VL53L7CX_Configuration *addressed(void *ctx, uint8_t addr_7bit)
 {
     auto *const s{static_cast<tof_l7::sensor *>(ctx)};
     if (s == nullptr)
+        return nullptr;
+    if (s->current != tof_l7::lifecycle::empty)
         return nullptr;
     memset(&s->uld, 0, sizeof(s->uld));
     s->uld.platform.address = static_cast<uint16_t>(addr_7bit) << 1;
