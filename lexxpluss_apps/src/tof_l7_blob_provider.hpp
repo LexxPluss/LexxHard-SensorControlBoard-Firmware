@@ -33,7 +33,7 @@
  * it exists on the development branch and reports the stored record without being able to use
  * it -- then this guard and that Kconfig scope widen together, which is the pairing that was
  * missing. */
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <stddef.h>
 
@@ -64,4 +64,4 @@ report stored_header();
 
 }  // namespace lexxhard::tof_l7_blob
 
-#endif  // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif  // ENABLE_TOF_L7_ULD

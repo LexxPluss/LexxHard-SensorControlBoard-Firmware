@@ -7,7 +7,7 @@
 
 #include "tof_l7_runtime.hpp"
 
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <errno.h>
 
@@ -93,6 +93,46 @@ int bootstrap()
     return bootstrap_impl(tof_l7_blob::verify_stored, tof_l7_blob::kAcceptedPayloadList);
 }
 
+namespace {
+
+/* Translates the published stage into the answer a consumer needs. `report_` is read only in the
+ * `refused` branch, and it is written before the stage is published with a full barrier, so this
+ * never races the verifier: the one ordering rule this file states is that nobody touches the
+ * ordinary fields while the stage says `verifying`. */
+int settled_errno()
+{
+    switch (static_cast<stage>(atomic_get(&stage_))) {
+    case stage::available:
+        return 0;
+    case stage::refused:
+        return refusal_errno(report_.st);
+    case stage::verifying:
+        return -EAGAIN;
+    case stage::not_started:
+        /* Unreachable through ensure_verified(), which only consults this after losing the CAS --
+         * and losing it means the stage had already left not_started. Reported rather than
+         * asserted, because a future caller reaching it would be a logic error worth seeing. */
+        return -EAGAIN;
+    }
+    return -EIO;
+}
+
+int ensure_verified_impl(verifier fn, const tof_l7_blob::accept_list &accepted)
+{
+    const int rc{bootstrap_impl(fn, accepted)};
+
+    /* Anything but -EALREADY means this call performed the verification, and bootstrap_impl has
+     * already returned the right answer for it. */
+    return rc == -EALREADY ? settled_errno() : rc;
+}
+
+}  // namespace
+
+int ensure_verified()
+{
+    return ensure_verified_impl(tof_l7_blob::verify_stored, tof_l7_blob::kAcceptedPayloadList);
+}
+
 snapshot current()
 {
     snapshot out{};
@@ -135,6 +175,13 @@ int bootstrap_for_test(verifier fn, const tof_l7_blob::accept_list &accepted)
     return bootstrap_impl(fn, accepted);
 }
 
+int ensure_verified_for_test(verifier fn, const tof_l7_blob::accept_list &accepted)
+{
+    if (fn == nullptr)
+        return -EINVAL;
+    return ensure_verified_impl(fn, accepted);
+}
+
 void reset_for_test()
 {
     /* Tests call this only from their fixture, before any worker exists. It is deliberately absent
@@ -149,4 +196,4 @@ void reset_for_test()
 
 }  // namespace lexxhard::tof_l7_runtime
 
-#endif  // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif  // ENABLE_TOF_L7_ULD

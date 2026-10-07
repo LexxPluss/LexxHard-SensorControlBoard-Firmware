@@ -59,20 +59,23 @@
 
 #pragma once
 
-/* Guarded like every other file in this family, and for the same reason: every source cpp is
- * globbed, so without it this module would compile into the production image and drag SHA-256 and
- * CRC-32 in with it. The production image is byte-identical until the chain is enabled. */
-/* Both flags, where the development images asked only for the chain. Nothing in a chain image
- * without the L7 ULD calls this on THIS branch, and the Kconfig the record needs -- CRC and
- * tinycrypt SHA-256 -- is scoped to L7 builds by overlays/tof_l7.conf, so the wider guard
- * compiled a translation unit whose headers the image had not been configured to provide. It
- * only linked at all because those images enabled tinycrypt globally.
+/* GUARDED ON THE L7 FLAG ALONE, and that is narrower than it reads.
  *
- * If the header-only validation command is ever brought over for a chain image with no ULD --
- * it exists on the development branch and reports the stored record without being able to use
- * it -- then this guard and that Kconfig scope widen together, which is the pairing that was
- * missing. */
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+ * Every source cpp is globbed, so without a guard this module would compile into the production
+ * image and drag SHA-256 and CRC-32 in with it. The guard also has to agree with the Kconfig the
+ * record needs -- CONFIG_CRC and tinycrypt SHA-256 -- or it compiles a translation unit the image
+ * was never configured to provide.
+ *
+ * That Kconfig comes from overlays/tof_l7.conf, applied by CMakeLists.txt under
+ * `if(ENABLE_TOF_L7_ULD)`. So ENABLE_TOF_L7_ULD is exactly the condition under which the headers
+ * exist, and the earlier `ENABLE_TOF_CHAIN &&` added nothing: the chain flag does not gate that
+ * fragment. It was redundant while the only L7 was on the chain, and it stopped being harmless the
+ * moment a second L7 on another bus became possible -- this layer reads flash, hashes it and
+ * checks an accept-list, and touches no I2C, no enable chain and no bus at all.
+ *
+ * The production image is still byte-identical without ENABLE_TOF_L7_ULD, which is the property
+ * the guard exists for. */
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <stddef.h>
 #include <stdint.h>
@@ -181,4 +184,4 @@ status read_header(const reader &r, size_t region_size, header_info &out);
 
 }  // namespace lexxhard::tof_l7_blob
 
-#endif  // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif  // ENABLE_TOF_L7_ULD

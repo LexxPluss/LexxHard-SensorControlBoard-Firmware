@@ -23,7 +23,12 @@ target_sources(app PRIVATE
     # memory-mapped flash address and belongs on hardware.
     ${APP_SRC_DIR}/tof_l7_blob_provider.cpp
 )
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_L7_ULD)
+# ENABLE_TOF_L7_ULD ALONE, deliberately. This layer reads flash, hashes it and checks an
+# accept-list; it touches no bus and no enable chain, and the Kconfig it needs comes from
+# overlays/tof_l7.conf, which CMakeLists.txt applies under this same flag. Defining ENABLE_TOF_CHAIN
+# here too would hide a guard that still required it, which is exactly what a second L7 on another
+# bus needs not to be true.
+target_compile_definitions(app PRIVATE ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld/zephyr
