@@ -496,3 +496,100 @@ ZTEST(tof_l7_sensor, test_stage_names_are_pairwise_distinct) {
           strcmp(l7::stage_name(stages[i]), l7::stage_name(stages[j])), 0);
   }
 }
+
+/* ---- close(): the transition back to empty that the lifecycle was missing ---- */
+
+/* THE BUG THIS CLOSES. Before close() existed, nothing wrote lifecycle::empty after construction
+ * and open() required it, so a sensor could be opened exactly once per boot. The two cases below
+ * are the two ordinary paths that ran into that, and they are separate because the second one is
+ * not reachable from the first: they leave the sensor in different states. */
+ZTEST(tof_l7_sensor, test_a_sensor_can_be_opened_again_after_a_clean_stop) {
+  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
+  zassert_ok(l7::start(&sensor_under_test, &operation));
+  zassert_ok(l7::stop(&sensor_under_test, &operation));
+  zassert_equal(sensor_under_test.current, l7::lifecycle::configured,
+                "a clean stop lands on configured, which open() refuses");
+
+  zassert_equal(l7::open(&sensor_under_test, 0x30, &operation), -EPERM,
+                "and that refusal is correct: close() is the way out, not a weaker open()");
+
+  zassert_ok(l7::close(&sensor_under_test, &operation));
+  zassert_equal(sensor_under_test.current, l7::lifecycle::empty);
+  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+}
+
+/* THE PATH A FIX AT `configured` WOULD HAVE MISSED. A configure() that fails leaves the sensor
+ * `opened`, started == false and with no debt -- so a caller that skips the pre-stop because
+ * nothing is running went straight to open() and met -EPERM on every later attempt. */
+ZTEST(tof_l7_sensor, test_a_sensor_can_be_opened_again_after_a_failed_configure) {
+  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+
+  resolution_status = VL53L7CX_STATUS_ERROR;
+  zassert_not_equal(l7::configure(&sensor_under_test, 10, &operation), 0);
+  zassert_equal(sensor_under_test.current, l7::lifecycle::opened,
+                "a failed configure leaves no debt and does not roll back to empty");
+  resolution_status = VL53L7CX_STATUS_OK;
+
+  zassert_equal(l7::open(&sensor_under_test, 0x30, &operation), -EPERM);
+
+  zassert_ok(l7::close(&sensor_under_test, &operation));
+  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
+}
+
+/* CLOSING MUST NOT BE A WAY TO FORGET A DEVICE THAT MAY BE RANGING. This is the reason close()
+ * exists as a function rather than as `*sensor = {}` at the call site: that assignment also erases
+ * a stop_unconfirmed debt, which only a successful stop() may clear. */
+ZTEST(tof_l7_sensor, test_close_refuses_a_sensor_that_may_still_be_ranging) {
+  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_ok(l7::configure(&sensor_under_test, 10, &operation));
+  zassert_ok(l7::start(&sensor_under_test, &operation));
+
+  zassert_equal(l7::close(&sensor_under_test, &operation), -EPERM,
+                "a running sensor is not closeable");
+  zassert_equal(operation.failed_stage, l7::stage::state);
+  zassert_equal(sensor_under_test.current, l7::lifecycle::running,
+                "and the refusal changed nothing");
+
+  stop_status = VL53L7CX_STATUS_ERROR;
+  zassert_not_equal(l7::stop(&sensor_under_test, &operation), 0);
+  zassert_equal(sensor_under_test.current, l7::lifecycle::stop_unconfirmed);
+
+  zassert_equal(l7::close(&sensor_under_test, &operation), -EPERM,
+                "nor is one whose stop was never confirmed");
+  zassert_equal(sensor_under_test.current, l7::lifecycle::stop_unconfirmed,
+                "the debt survives the attempt, which is the point");
+
+  /* The only exit, and after it the sensor closes normally. */
+  stop_status = VL53L7CX_STATUS_OK;
+  zassert_ok(l7::stop(&sensor_under_test, &operation));
+  zassert_ok(l7::close(&sensor_under_test, &operation));
+  zassert_equal(sensor_under_test.current, l7::lifecycle::empty);
+}
+
+/* Closing something already closed is not an error: a caller giving up on a sensor should be able
+ * to close it without first working out which state it reached. */
+ZTEST(tof_l7_sensor, test_closing_an_empty_sensor_succeeds_and_does_nothing) {
+  zassert_equal(sensor_under_test.current, l7::lifecycle::empty);
+  zassert_ok(l7::close(&sensor_under_test, &operation));
+  zassert_equal(sensor_under_test.current, l7::lifecycle::empty);
+
+  zassert_equal(l7::close(nullptr, &operation), -EINVAL);
+  zassert_equal(operation.failed_stage, l7::stage::arguments);
+  zassert_equal(l7::close(&sensor_under_test, nullptr), -EINVAL);
+}
+
+/* A closed sensor retains nothing -- in particular not the firmware pointer, which production
+ * assigns only from the verified runtime and which should not outlive the session it was verified
+ * for. */
+ZTEST(tof_l7_sensor, test_close_leaves_no_configuration_behind) {
+  zassert_ok(l7::open(&sensor_under_test, 0x30, &operation));
+  zassert_not_null(sensor_under_test.uld.platform.firmware);
+
+  zassert_ok(l7::close(&sensor_under_test, &operation));
+
+  zassert_is_null(sensor_under_test.uld.platform.firmware);
+  zassert_equal(sensor_under_test.uld.platform.firmware_size, 0U);
+  zassert_equal(sensor_under_test.uld.platform.address, 0U);
+}
