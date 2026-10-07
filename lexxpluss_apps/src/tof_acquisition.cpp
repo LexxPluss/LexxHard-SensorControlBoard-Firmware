@@ -401,6 +401,34 @@ void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
         return;
     }
 
+    /* CLOSED BEFORE IT IS OPENED, because open() requires an UNOPENED sensor and almost nothing
+     * leaves it that way. A successful stop() lands the adapter on `configured`, not `empty` -- so
+     * a re-bring-up that quiesced correctly still met -EPERM from open(), every time, which is the
+     * same dead end the configure path had and reached by the ordinary route rather than by a
+     * failure. (I had claimed the configure fix covered this. It did not: that one closes after a
+     * failed configure, and this is a successful stop.)
+     *
+     * Unconditional because the state here is not knowable from the facts: `empty` on the first
+     * bring-up or after an open that failed, `configured` after a stop. close() succeeds and does
+     * nothing on the first, which is why it is safe to call blind.
+     *
+     * A REFUSAL IS NOT IGNORED. close() refuses only a sensor that is or may be ranging, and the
+     * caller has just quiesced -- so a refusal means the adapter disagrees that the previous
+     * session ended. Opening on top of that is the two-drivers-on-one-part case the pre-stop
+     * exists to prevent, so nothing is opened, the debt is restored, and the source stays out of
+     * the cycle. */
+    tof_l7::operation_status cst{};
+    if (const int crc{d.grid_ops->close(d.dev, &cst)}; crc != 0) {
+        record_l7(f, crc, cst);
+        f.started = false;
+        f.cleanup_pending = true;
+        f.rearm_failed = true;
+        LOG_ERR("grid source %d would not close before open at %s rc %d -- the previous session is "
+                "unaccounted for and nothing will be opened", i,
+                tof_l7::stage_name(cst.failed_stage), crc);
+        return;
+    }
+
     int rc{d.grid_ops->open(d.dev, d.addr_7bit, &st)};
     if (rc != 0) {
         record_l7(f, rc, st);

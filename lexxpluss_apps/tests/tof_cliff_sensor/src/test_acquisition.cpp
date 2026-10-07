@@ -72,7 +72,19 @@ struct fake_dev {
      * which of the two the bring-up chose: a stop would be wrong (nothing is ranging and the
      * sensor is not in a state stop accepts) and a close is the recovery. */
     int grid_close_calls{0};
+    /* COUNTED, because the bring-up closes TWICE for different reasons -- once before open, to
+     * return a stopped-but-configured sensor to unopened, and once after a configure that failed.
+     * A blanket injection would always hit the first and could never reach the second. */
     int close_rc{0};
+    int close_fail_on_call{0};   // 0 = never
+    /* THE REAL ADAPTER'S STATE MACHINE, mirrored here because without it this fake accepted call
+     * orders tof_l7_sensor refuses -- and a re-bring-up case that passed against a fake which lets
+     * open() be called twice proves nothing about the board. tof_l7::lifecycle is not reachable
+     * from this suite, so the states are named again rather than imported. */
+    enum class life { empty, opened, configured, running, stop_unconfirmed } grid_life{life::empty};
+    /* Refusals the adapter made, so a test can tell "the fake said no" from "the fake was never
+     * called". */
+    int grid_state_refusals{0};
     /* A device that will not stop. The interesting case, because the facts must keep saying
      * it is started rather than quietly recording a quiescence that never happened. */
     int stop_rc{0};
@@ -212,10 +224,19 @@ int fake_grid_open(void *dev, uint8_t, l7f::operation_status *st)
     ++d.open_calls;
     record_caller();
     *st = l7f::operation_status{};
+    /* open() requires an unopened sensor, exactly as tof_l7::open does. This is the check whose
+     * absence made the re-bring-up cases green while the board returned -EPERM. */
+    if (d.grid_life != fake_dev::life::empty) {
+        ++d.grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d.open_delay_ms != 0)
         k_msleep(d.open_delay_ms);
     if (d.open_rc != 0)
         st->failed_stage = l7f::stage::address;
+    if (d.open_rc == 0)
+        d.grid_life = fake_dev::life::opened;
     return d.open_rc;
 }
 
@@ -225,8 +246,15 @@ int fake_grid_configure(void *dev, uint8_t, l7f::operation_status *st)
 
     record_caller();
     *st = l7f::operation_status{};
+    if (d.grid_life != fake_dev::life::opened) {
+        ++d.grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d.configure_rc != 0)
         st->failed_stage = l7f::stage::frequency;
+    if (d.configure_rc == 0)
+        d.grid_life = fake_dev::life::configured;
     return d.configure_rc;
 }
 
@@ -237,8 +265,16 @@ int fake_grid_start(void *dev, l7f::operation_status *st)
     ++d.start_calls;
     record_caller();
     *st = l7f::operation_status{};
+    if (d.grid_life != fake_dev::life::configured) {
+        ++d.grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d.start_rc != 0)
         st->failed_stage = l7f::stage::start;
+    /* A failed start leaves the debt, which is the adapter's rule and the reason cleanup_pending
+     * exists. */
+    d.grid_life = d.start_rc == 0 ? fake_dev::life::running : fake_dev::life::stop_unconfirmed;
     return d.start_rc;
 }
 
@@ -277,10 +313,21 @@ int fake_grid_stop(void *dev, l7f::operation_status *st)
      * like a correct one. */
     ++d->grid_stop_calls;
     *st = l7f::operation_status{};
+    if (d->grid_life != fake_dev::life::running &&
+        d->grid_life != fake_dev::life::stop_unconfirmed) {
+        ++d->grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d->stop_rc != 0) {
         st->failed_stage = l7f::stage::stop;
         st->port_errno = d->stop_rc;
     }
+    /* ONLY A CONFIRMED STOP DISCHARGES THE DEBT, and a confirmed stop lands on `configured` --
+     * NOT on `empty`. That is the whole defect this fake now models: the next bring-up has to
+     * close before it can open. */
+    d->grid_life = d->stop_rc == 0 ? fake_dev::life::configured
+                                   : fake_dev::life::stop_unconfirmed;
     return d->stop_rc;
 }
 
@@ -293,9 +340,20 @@ int fake_grid_close(void *dev, l7f::operation_status *st)
 
     ++d->grid_close_calls;
     *st = l7f::operation_status{};
-    if (d->close_rc != 0)
+    /* close() refuses a sensor that is or may be ranging, and returns the rest to `empty`. Closing
+     * an already-empty sensor succeeds and does nothing. */
+    if (d->grid_life == fake_dev::life::running ||
+        d->grid_life == fake_dev::life::stop_unconfirmed) {
+        ++d->grid_state_refusals;
         st->failed_stage = l7f::stage::state;
-    return d->close_rc;
+        return -EPERM;
+    }
+    if (d->close_rc != 0 && d->grid_close_calls == d->close_fail_on_call) {
+        st->failed_stage = l7f::stage::state;
+        return d->close_rc;
+    }
+    d->grid_life = fake_dev::life::empty;
+    return 0;
 }
 
 const acq::grid_source_ops kFakeGridOps{fake_grid_open, fake_grid_configure, fake_grid_start,
@@ -3016,7 +3074,9 @@ ZTEST(tof_acquisition, test_a_grid_source_comes_back_after_a_failed_configure)
 
     zassert_equal(devs[4].open_calls, 1, "it opened");
     zassert_equal(devs[4].start_calls, 0, "and never armed");
-    zassert_equal(devs[4].grid_close_calls, 1, "the open session was closed, not left behind");
+    /* Twice: once before the open, which is a no-op on an empty sensor, and once after the failed
+     * configure, which is the recovery. */
+    zassert_equal(devs[4].grid_close_calls, 2, "the open session was closed, not left behind");
     zassert_equal(devs[4].grid_stop_calls, 0,
                   "and not through stop, which refuses a sensor that is not ranging");
 
@@ -3039,6 +3099,9 @@ ZTEST(tof_acquisition, test_a_grid_source_comes_back_after_a_failed_configure)
 
     zassert_equal(devs[4].open_calls, 2, "it could be opened again");
     zassert_equal(devs[4].start_calls, 1, "and armed this time");
+    zassert_equal(devs[4].grid_close_calls, 3, "with its own close before the open");
+    zassert_equal(devs[4].grid_state_refusals, 0,
+                  "and the adapter refused nothing: every call was legal in its state");
     zassert_false(wrong_table_called, "all of it through the grid table");
 
     acq::run_cycle();
@@ -3049,25 +3112,84 @@ ZTEST(tof_acquisition, test_a_grid_source_comes_back_after_a_failed_configure)
     }
 }
 
-/* A CLOSE THAT ITSELF FAILS CHANGES NOTHING HERE, which is worth pinning rather than assuming: it
- * can only fail on state, this state is closeable, and the bring-up has no second recovery to
- * offer. The source stays out of the cycle with its sticky set, exactly as if the close had worked
- * and the next configure failed again. */
+/* A CLOSE THAT ITSELF FAILS AFTER A FAILED CONFIGURE changes nothing, which is worth pinning
+ * rather than assuming: the bring-up has no second recovery to offer. The failure injected is the
+ * SECOND close -- the recovery one -- because the bring-up now closes before opening as well, and
+ * a blanket injection would never get past that first call. */
 ZTEST(tof_acquisition, test_a_failed_close_after_a_failed_configure_is_reported_and_no_more)
 {
     zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
 
     devs[4].configure_rc = -EIO;
     devs[4].close_rc = -EPERM;
+    devs[4].close_fail_on_call = 2;   /* the recovery close, not the pre-open one */
     zassert_equal(acq::bring_up(), 0, "one source failing must not fail the bring-up");
 
-    zassert_equal(devs[4].grid_close_calls, 1, "");
-    zassert_equal(devs[4].grid_stop_calls, 0, "");
+    zassert_equal(devs[4].grid_close_calls, 2, "closed before open, and again after configure");
+    zassert_equal(devs[4].grid_stop_calls, 0, "never through stop");
 
     acq::run_cycle();
     const acq::source_facts &f{rec.last.sources[4]};
     zassert_false(f.started, "");
     zassert_true(f.transport_error, "the configure failure is still what is reported");
+}
+
+/* ---- closed before opened, which is the ordinary path and not a failure path ---- */
+
+/* A SUCCESSFUL STOP LEAVES THE ADAPTER CONFIGURED, NOT UNOPENED, and open() requires unopened. So
+ * the re-bring-up has to close first. This is the case that was green against a fake which did not
+ * model the lifecycle: every call order was accepted, so open() being illegal here was invisible.
+ *
+ * The fake now refuses what tof_l7_sensor refuses, and grid_state_refusals counts those refusals,
+ * so "the adapter said no" is distinguishable from "it was never called". */
+ZTEST(tof_acquisition, test_a_re_bring_up_closes_before_it_opens_again)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    zassert_equal(devs[4].grid_close_calls, 1, "the first bring-up closed an empty sensor: a no-op");
+    zassert_equal(devs[4].open_calls, 1, "");
+
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[4].grid_stop_calls, 1, "the previous session was stopped");
+    zassert_equal(devs[4].grid_close_calls, 2, "and then closed, which is what open() requires");
+    zassert_equal(devs[4].open_calls, 2, "so the second open was accepted");
+    zassert_equal(devs[4].start_calls, 2, "and the source armed again");
+    zassert_equal(devs[4].grid_state_refusals, 0,
+                  "the adapter refused nothing: the call order was legal throughout");
+    zassert_false(wrong_table_called, "all of it through the grid table");
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+    zassert_true(f.started, "");
+    zassert_false(f.cleanup_pending, "");
+}
+
+/* AND A CLOSE THAT REFUSES BEFORE THE OPEN STOPS THE BRING-UP. close() refuses only a sensor that
+ * is or may be ranging, so this means the adapter disagrees that the previous session ended --
+ * opening on top of that is the two-drivers-on-one-part case the pre-stop exists to prevent.
+ *
+ * Reaching it needs the facts and the adapter to disagree, which the bring-up itself does not
+ * produce: a failed start sets cleanup_pending, so they agree. The state is therefore injected
+ * directly, and the case is a guard on the branch rather than a reachable scenario. */
+ZTEST(tof_acquisition, test_a_refused_close_before_open_opens_nothing)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+
+    /* Facts say nothing is running, so no pre-stop happens; the adapter says otherwise. */
+    devs[4].grid_life = fake_dev::life::running;
+
+    zassert_equal(acq::bring_up(), 0, "one source failing must not fail the bring-up");
+
+    zassert_equal(devs[4].grid_close_calls, 1, "the close was attempted");
+    zassert_equal(devs[4].grid_state_refusals, 1, "and refused");
+    zassert_equal(devs[4].open_calls, 0, "nothing was opened on top of a live session");
+    zassert_equal(devs[4].start_calls, 0, "");
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+    zassert_false(f.started, "the source stays out of the cycle");
+    zassert_true(f.cleanup_pending, "and the stop it may still owe is restored");
 }
 
 /* A grid descriptor that cannot be configured is refused at init rather than failing on every
