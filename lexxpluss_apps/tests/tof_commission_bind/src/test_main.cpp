@@ -121,6 +121,20 @@ bool no_transaction_within(k_timeout_t wait = K_MSEC(200))
     return !next_transaction(f, wait);
 }
 
+/* What the authority would say. A successful prove installs a mapping in production, so the fake
+ * does the same; the cases that make this disagree with the session's memory live in #116's suite,
+ * which can drive the session directly. */
+bool installed_proven_{false};
+uint8_t installed_epoch_{0};
+
+bool test_installed(void *, uint8_t *epoch)
+{
+    if (!installed_proven_)
+        return false;
+    *epoch = installed_epoch_;
+    return true;
+}
+
 bind::config configured()
 {
     bind::config c{};
@@ -130,6 +144,7 @@ bind::config configured()
     c.announce_period_ms = 60000;  /* inert: this suite drives what it wants to observe */
     c.poll_ms = 60000;
     c.enumeration_permitted = test_permitted;
+    c.installed_mapping = test_installed;
     return c;
 }
 
@@ -162,9 +177,14 @@ bool available()
 
 namespace lexxhard::tof_commissioning {
 
-outcome prove(uint32_t)
+outcome prove(uint32_t epoch)
 {
     ++proves_;
+    /* A successful proof installs a mapping, so the authority view this suite hands the session
+     * agrees with it from here on. Without that the session's epoch gate would refuse the next
+     * request for the epoch it had just proved. */
+    installed_proven_ = true;
+    installed_epoch_ = static_cast<uint8_t>(epoch);
     outcome r{};
     r.failed_at = stage::none;
     return r;

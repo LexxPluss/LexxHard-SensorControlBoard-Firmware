@@ -75,6 +75,11 @@ bool bind_permitted(void *)
     return cfg_.enumeration_permitted != nullptr && cfg_.enumeration_permitted(cfg_.ctx);
 }
 
+bool bind_installed(void *, uint8_t *epoch)
+{
+    return cfg_.installed_mapping != nullptr && cfg_.installed_mapping(cfg_.ctx, epoch);
+}
+
 int bind_prove(void *, uint32_t epoch, tof_commissioning::outcome *out)
 {
     const tof_commissioning::outcome r{tof_commissioning::prove(epoch)};
@@ -131,8 +136,9 @@ result start(const struct device *can_dev, const config &cfg)
     rc.max_proof_attempts = cfg.max_proof_attempts;
     rc.max_start_attempts = cfg.max_start_attempts;
 
-    const rt::hooks hooks{bind_send,       bind_permitted, bind_prove,
-                          bind_start,      tof_commission_entropy::draw_token, nullptr};
+    const rt::hooks hooks{bind_send,  bind_permitted, bind_prove,
+                          bind_start, bind_installed, tof_commission_entropy::draw_token,
+                          nullptr};
     out.rc = rt::init(rc, hooks);
 
     if (out.rc != 0 && out.rc != -ENODEV) {
