@@ -167,8 +167,22 @@ bool init(const config &cfg, const hooks &h)
     /* Zero is reserved as "no token", so a draw that yields it is retried once before the subsystem
      * gives up -- a single zero from a healthy generator is an ordinary sample, not a fault. Two in
      * a row is treated as no entropy at all. */
+    /* EVERY HOOK IS CHECKED HERE, not where it is called, because #112's own wiring check cannot
+     * see them. The sequencer is handed ac_permitted/ac_acquire_epoch/ac_prove/ac_start, which are
+     * this file's adapters and are never null, so ac::wired() is satisfied by construction however
+     * little is actually bound underneath. What each missing hook produced instead was a plausible
+     * operational answer rather than a fault: a missing enumeration_permitted made ac_permitted
+     * return false and the host read `not_permitted` forever, which is indistinguishable from a
+     * machine that is simply never quiescent; a missing prove spent an attempt from the proof budget
+     * before returning -ENODEV, because the sequencer increments the counter before the call; and a
+     * missing start was found only after a real proof had run, installed a mapping and spent the
+     * epoch, which is exactly the expensive discovery #112's budget comment exists to avoid.
+     *
+     * Refusing the session instead leaves ac::state::misconfigured, which the wire already has a
+     * result for, and costs a configuration mistake nothing but a clear answer. */
     uint32_t drawn{0};
-    if (hooks_.draw_token == nullptr)
+    if (hooks_.draw_token == nullptr || hooks_.enumeration_permitted == nullptr ||
+        hooks_.prove == nullptr || hooks_.start == nullptr)
         return false;
     if (hooks_.draw_token(hooks_.ctx, &drawn) != 0 || drawn == 0) {
         drawn = 0;
