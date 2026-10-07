@@ -16,7 +16,8 @@ configure_file(${VL53L7CX_ULD_DIR}/upstream/modules/vl53l7cx_buffers.h
 find_program(VL53L7CX_PATCH_EXECUTABLE patch REQUIRED)
 foreach(vl53l7cx_patch
     0001-use-verified-external-firmware.patch
-    0002-stop-ranging-timeout-is-a-failure.patch)
+    0002-stop-ranging-timeout-is-a-failure.patch
+    0003-is-alive-must-not-report-from-uninitialised-ids.patch)
   execute_process(
     COMMAND ${VL53L7CX_PATCH_EXECUTABLE} --silent -p1
             -i ${VL53L7CX_ULD_DIR}/zephyr/patches/${vl53l7cx_patch}

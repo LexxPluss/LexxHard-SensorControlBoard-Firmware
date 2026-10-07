@@ -66,11 +66,30 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     const uint8_t uld_status{vl53l7cx_is_alive(dev, &answered)};
     const int port_errno{vl53l7cx_port_error()};
 
-    /* A clean NACK is an answer, and on a cold boot it is the answer every address gives. It is
-     * reported as a completed probe with nobody there rather than as a failure, because a pass
-     * that called every cold boot a failure would say nothing about the boots that matter. */
+    /* A CLEAN NACK WITH NOTHING ACKNOWLEDGED is the cold boot, and on a cold boot it is the answer
+     * every address gives. Reported as a completed probe with nobody there rather than as a
+     * failure, because a pass that called every cold boot a failure would say nothing about the
+     * boots that matter.
+     *
+     * BUT ONLY WITH NOTHING ACKNOWLEDGED, and that qualifier was missing. The port keeps the FIRST
+     * error it sees -- atomic_cas(&first_error, 0, rc) in platform.c -- and vl53l7cx_is_alive()
+     * issues all four of its transfers regardless, ORing their statuses with no early return. So a
+     * survivor whose page-select write NACKs while its two ID reads answer 0xF0 and 0x02 arrives
+     * here with -ENXIO AND an answer, and returning early threw the answer away: the address was
+     * reported empty, nothing was stopped, and no failure was recorded. The header reads "all
+     * absent on a warm reset" as evidence against the hypothesis this pass exists to test, so that
+     * case did not merely lose a sensor -- it argued for the wrong conclusion.
+     *
+     * With an answer present this is a failed probe. -EIO rather than the port's -ENXIO, because
+     * what happened is not "nobody there": part of the exchange worked and part did not, which is
+     * the same class as a non-OK status with no transport error below. Whether an L7 actually NACKs
+     * mid-sequence on hardware is unverified; the classification does not depend on it, because the
+     * early return was discarding evidence either way.
+     *
+     * This leans on `answered` being written, which patch 0003 is for: the ULD's id locals were
+     * uninitialised and the port does not clear a read buffer it failed to fill. */
     if (port_errno == -ENXIO)
-        return 0;
+        return answered != 0U ? -EIO : 0;
 
     /* -EIO or -ETIMEDOUT. The question did not reach the bus, so no answer was heard, and the
      * caller must not treat this as an empty address. */

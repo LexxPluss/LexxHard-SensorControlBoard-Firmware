@@ -112,12 +112,37 @@ ZTEST(tof_l7_recovery_ops, test_a_clean_nack_is_a_completed_probe_with_nobody_th
 {
     reset_spy();
     spy_.alive_port_error = -ENXIO;
-    spy_.alive_answer = 1;   /* even if the ULD would claim one, a NACK means nobody answered */
+    spy_.alive_answer = 0;   /* nothing acknowledged: the cold boot */
     bool alive{true};
 
     const rec::ops o{ops_under_test()};
     zassert_equal(o.is_alive(o.ctx, 0x2AU, &alive), 0, "a NACK is an answer, not an error");
     zassert_false(alive);
+}
+
+/* THE CASE THE CASE ABOVE USED TO HIDE, and the reason its `alive_answer` changed from 1 to 0.
+ *
+ * It used to script a NACK together with an answer and assert absent, on the reading that a NACK
+ * means nobody answered. Those two facts cannot both be true, and the combination is reachable:
+ * the port keeps only the FIRST error, and vl53l7cx_is_alive() issues all four transfers with no
+ * early return, so a survivor whose page-select write NACKs while its ID reads return 0xF0 and 0x02
+ * produces exactly this. Reporting it absent lost the sensor and recorded no failure -- and since
+ * this pass's census is evidence, a false absent argues for the wrong conclusion about warm resets.
+ */
+ZTEST(tof_l7_recovery_ops, test_a_nack_with_an_answer_is_a_failed_probe_and_not_an_empty_address)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    spy_.alive_port_error = -ENXIO;
+    spy_.alive_answer = 1;
+    bool alive{true};
+
+    const rec::ops o{ops_under_test()};
+    const int rc{o.is_alive(o.ctx, 0x2AU, &alive)};
+
+    zassert_not_equal(rc, 0, "part of the exchange worked: that is not a completed probe");
+    zassert_equal(rc, -EIO, "and it is classed with the other partial exchanges, not as -ENXIO");
+    zassert_false(alive, "the out-parameter stays false on every refusal");
 }
 
 /* A bus that could not carry the question. Reporting this as "nobody there" would be the

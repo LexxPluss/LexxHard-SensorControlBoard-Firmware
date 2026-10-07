@@ -45,6 +45,10 @@ static int confirm_after_polls;  /* -1 = never confirms */
 static int polls_seen;
 static int waits_seen;
 
+static int fail_reads;
+static uint8_t identity_device_id;
+static uint8_t identity_revision_id;
+
 static void bus_reset(void)
 {
 	status0_before = 0x00;
@@ -53,10 +57,24 @@ static void bus_reset(void)
 	confirm_after_polls = -1;
 	polls_seen = 0;
 	waits_seen = 0;
+	fail_reads = 0;
+	identity_device_id = 0;
+	identity_revision_id = 0;
 }
+
+/* MODELS THE REAL PORT'S FAILURE, which the rest of this fake does not: read_chunk() in
+ * zephyr/platform.c hands the caller's buffer straight to i2c_transfer() and returns its error, so
+ * a read that fails leaves those bytes EXACTLY as they were. The zeroing below is convenience for
+ * the success paths and would hide anything that reads an unwritten buffer. */
 
 static uint8_t read_register(uint16_t reg, uint8_t *dst, uint32_t len)
 {
+	if (fail_reads) {
+		(void)reg;
+		(void)len;
+		return VL53L7CX_STATUS_ERROR;   /* dst deliberately untouched */
+	}
+
 	memset(dst, 0, len);
 
 	if (reg == REG_AUTO_STOP) {
@@ -74,6 +92,15 @@ static uint8_t read_register(uint16_t reg, uint8_t *dst, uint32_t len)
 	}
 	if (reg == REG_G02_STATUS_1 && len >= 1U) {
 		dst[0] = status1_value;
+		return VL53L7CX_STATUS_OK;
+	}
+	/* The two identity registers vl53l7cx_is_alive() reads. */
+	if (reg == 0U && len >= 1U) {
+		dst[0] = identity_device_id;
+		return VL53L7CX_STATUS_OK;
+	}
+	if (reg == 1U && len >= 1U) {
+		dst[0] = identity_revision_id;
 		return VL53L7CX_STATUS_OK;
 	}
 	return VL53L7CX_STATUS_OK;
@@ -302,4 +329,73 @@ ZTEST(tof_l7_uld_stop, test_the_two_accepted_status_1_values_are_still_success)
 	confirm_after_polls = 1;
 	status1_value = 0x85;
 	zassert_equal(vl53l7cx_stop_ranging(&dev), VL53L7CX_STATUS_OK, "0x85");
+}
+
+/* ---- is_alive must not answer out of memory nobody wrote ---- */
+
+/* Leaves 0xF0 and 0x02 adjacent on the stack, which is what a real sensor's identity reads put
+ * there. Not marked inline or static-noinline-dependent: what matters is that it runs and returns
+ * before the call under test, at a comparable depth, the way one loop iteration precedes the next
+ * in the recovery pass. */
+static volatile uint8_t sink;
+
+static void leave_an_identity_on_the_stack(void)
+{
+	uint8_t crumbs[64];
+	for (size_t i = 0; i + 1 < sizeof crumbs; i += 2) {
+		crumbs[i] = 0xF0U;
+		crumbs[i + 1] = 0x02U;
+	}
+	sink = crumbs[0];
+}
+
+/* PATCH 0003. device_id and revision_id are plain locals, the function issues all four of its
+ * transfers with no early return, and the port does not clear a buffer whose read failed -- so
+ * *p_is_alive was computed by comparing whatever was on the stack against 0xF0 and 0x02.
+ *
+ * That matters because the recovery pass probes six addresses in a loop through the same frame: a
+ * sensor that IS there leaves those two values behind, and the next empty address can read its
+ * answer out of the previous one's leftovers and be reported alive. The pass's census is evidence,
+ * so a false positive argues for a hypothesis nobody tested.
+ *
+ * WHAT THIS CASE DOES NOT DO, measured rather than assumed: it does NOT fail when patch 0003 is
+ * removed. That was tried -- unregistering the patch leaves this suite fully green -- because the
+ * priming below does not reliably land 0xF0 and 0x02 in the two slots the compiler happens to give
+ * those locals. Reading uninitialised memory cannot be pinned by a test that must produce a
+ * specific wrong answer to fail, so the patch rests on the code: the locals are uninitialised, all
+ * four transfers are issued regardless, and the port leaves a failed read's buffer untouched.
+ *
+ * What this case does pin is the property the patch guarantees and the deterministic half of the
+ * pair below it: with nothing acknowledged the probe says not alive, and with a real identity it
+ * still says alive. The priming stays because it costs nothing and makes the mechanism legible. */
+ZTEST(tof_l7_uld_stop, test_is_alive_reports_not_alive_when_no_identity_was_read)
+{
+	fail_reads = 1;
+	leave_an_identity_on_the_stack();
+
+	uint8_t answered = 0xFFU;
+	const uint8_t rc = vl53l7cx_is_alive(&dev, &answered);
+
+	zassert_not_equal(rc, VL53L7CX_STATUS_OK, "every transfer failed, so the status must say so");
+	zassert_equal(answered, 0U,
+		      "the probe answered %u from bytes no read ever wrote", answered);
+}
+
+/* And a device that does identify is still reported alive, so the initialisation did not simply
+ * pin the answer to zero. */
+ZTEST(tof_l7_uld_stop, test_is_alive_still_recognises_a_real_identity)
+{
+	/* The fake's success path zeroes, so drive the two identity registers explicitly. */
+	fail_reads = 0;
+	identity_device_id = 0xF0U;
+	identity_revision_id = 0x02U;
+
+	uint8_t answered = 0U;
+	const uint8_t rc = vl53l7cx_is_alive(&dev, &answered);
+
+	zassert_equal(rc, VL53L7CX_STATUS_OK, "");
+	zassert_equal(answered, 1U, "a real L7 identity must still read as alive");
+
+	identity_device_id = 0U;
+	identity_revision_id = 0U;
 }
