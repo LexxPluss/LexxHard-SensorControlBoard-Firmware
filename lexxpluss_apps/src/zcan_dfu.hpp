@@ -31,6 +31,7 @@
 #include <zephyr/logging/log.h>
 #include "firmware_updater.hpp"
 #include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_DFU_DATA 0x20d
 #define CAN_ID_DFU_RESP 0x20e
@@ -65,24 +66,37 @@ public:
 
     void poll()
     {
-    	if (can_frame frame; k_msgq_get(&msgq_can_dfu, &frame, K_NO_WAIT) == 0) {
-    	    if (frame.id == CAN_ID_DFU_DATA && frame.dlc == sizeof (firmware_updater::command_packet)) {
-    	        while (k_msgq_put(&firmware_updater::msgq_command, frame.data, K_NO_WAIT) != 0)
-    	            k_msgq_purge(&firmware_updater::msgq_command);
-    	    }
-    	}
-    	if (firmware_updater::response_packet response;
-    	    k_msgq_get(&firmware_updater::msgq_response, &response, K_NO_WAIT) == 0) {
-    	    can_frame frame{
-    	        .id{CAN_ID_DFU_RESP},
-    	        .dlc{sizeof response}
-    	    };
-    	    std::copy_n(reinterpret_cast<uint8_t*>(&response), sizeof response, frame.data);
-    	    zcan_bounded_send::send(dev, &frame, K_MSEC(100));
-    	}
+        if (can_frame frame; k_msgq_get(&msgq_can_dfu, &frame, K_NO_WAIT) == 0) {
+            if (frame.id == CAN_ID_DFU_DATA && frame.dlc == sizeof (firmware_updater::command_packet)) {
+                while (k_msgq_put(&firmware_updater::msgq_command, frame.data, K_NO_WAIT) != 0)
+                    k_msgq_purge(&firmware_updater::msgq_command);
+            }
+        }
+        /* A DFU response is held until it is actually accepted by the controller, rather than
+         * taken off the queue and sent once. The updater generates one response per command and
+         * never repeats it, so a response dropped because all three mailboxes were busy is a
+         * response the host never sees -- and the host waits for it, which is what makes a DFU
+         * look hung. Periodic telemetry can drop a frame and send fresher data next pass; this
+         * cannot, so a refused send leaves `pending_response_` in place for a later pass. */
+        if (!pending_response_valid_ &&
+            k_msgq_get(&firmware_updater::msgq_response, &pending_response_, K_NO_WAIT) == 0) {
+            pending_response_valid_ = true;
+        }
+        if (pending_response_valid_) {
+            can_frame frame{
+                .id{CAN_ID_DFU_RESP},
+                .dlc{sizeof pending_response_}
+            };
+            std::copy_n(reinterpret_cast<uint8_t*>(&pending_response_), sizeof pending_response_,
+                        frame.data);
+            if (zcan_bounded_send::send(dev, &frame, zcan_poll_budget::kMailboxWait) == 0)
+                pending_response_valid_ = false;
+        }
     }
 private:
     const device *dev{nullptr};
+    firmware_updater::response_packet pending_response_{};
+    bool pending_response_valid_{false};
 };
 
 }

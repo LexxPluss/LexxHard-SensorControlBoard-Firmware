@@ -32,6 +32,7 @@
 #include <zephyr/logging/log.h>
 #include "actuator_controller.hpp"
 #include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_ACTUATOR_CONTROL 0x208 // based on CAN ID assignment
 #define CAN_ID_ACTUATOR_ENCODER 0x209 // based on CAN ID assignment
@@ -69,7 +70,8 @@ public:
     void poll() {
         // send to IPC of sensor informations
         actuator_controller::msg message;
-        while (k_msgq_get(&actuator_controller::msgq, &message, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&actuator_controller::msgq, &message, K_NO_WAIT) == 0; ++n) {
             can_frame can_frame_actuator_encoder{
                 .id = CAN_ID_ACTUATOR_ENCODER,
                 .dlc = CAN_DATALENGTH_ACTUATOR_ENCODER
@@ -84,14 +86,15 @@ public:
             actuator_controller::can_format_current tmp_cur = actuator_controller::can_format_current(message.current[0], message.current[1], message.current[2], message.connect);
             tmp_cur.into(can_frame_actuator_current.data);
 
-            zcan_bounded_send::send(dev, &can_frame_actuator_encoder, K_MSEC(100));
-            zcan_bounded_send::send(dev, &can_frame_actuator_current, K_MSEC(100));
+            zcan_bounded_send::send(dev, &can_frame_actuator_encoder, zcan_poll_budget::kMailboxWait);
+            zcan_bounded_send::send(dev, &can_frame_actuator_current, zcan_poll_budget::kMailboxWait);
         }
 
         {
             // receive from IPC of motion control
             struct can_frame can_frame;
-            while (k_msgq_get(&msgq_can_actuator_control, &can_frame, K_NO_WAIT) == 0) {
+            for (int n{0}; n < zcan_poll_budget::kRxPerPass &&
+                          k_msgq_get(&msgq_can_actuator_control, &can_frame, K_NO_WAIT) == 0; ++n) {
                 auto const msg_cntl{actuator_controller::msg_control::from(can_frame.data)};
                 while (k_msgq_put(&actuator_controller::msgq_control, &msg_cntl, K_NO_WAIT) != 0)
                     k_msgq_purge(&actuator_controller::msgq_control);

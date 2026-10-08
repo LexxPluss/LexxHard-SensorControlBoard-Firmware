@@ -30,6 +30,7 @@
 #include <zephyr/logging/log.h>
 #include "tug_encoder_controller.hpp"
 #include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_TUG_ENCODER 0x210
 #define CAN_DATA_LENGTH_TUG_ENCODER 2
@@ -50,7 +51,8 @@ public:
     void poll() {
         tug_encoder_controller::msg message;
 
-        while (k_msgq_get(&tug_encoder_controller::msgq, &message, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&tug_encoder_controller::msgq, &message, K_NO_WAIT) == 0; ++n) {
             uint8_t packedData[CAN_DATA_LENGTH_TUG_ENCODER] {0};
             packedData[0] = message.angle >> 8;
             packedData[1] = message.angle & 0xFF;
@@ -65,7 +67,7 @@ public:
             // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_TUG_ENCODER);
 
-            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
+            zcan_bounded_send::send(dev, &frame, zcan_poll_budget::kMailboxWait);
         }
     }
 private:

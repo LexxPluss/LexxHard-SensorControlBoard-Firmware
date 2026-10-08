@@ -8,11 +8,11 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(tof_progress_test)
+project(runtime_progress_test)
 
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 
 target_sources(app PRIVATE
     src/test_main.cpp
-    ${APP_SRC_DIR}/tof_progress.cpp)
+    ${APP_SRC_DIR}/runtime_progress.cpp)
 target_include_directories(app PRIVATE ${APP_SRC_DIR})

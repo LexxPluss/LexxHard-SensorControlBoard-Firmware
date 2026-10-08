@@ -41,7 +41,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace lexxhard::tof_progress {
+namespace lexxhard::runtime_progress {
 
 enum class activity : uint8_t {
     acquisition,   // one cycle of the ToF acquisition loop
@@ -63,12 +63,25 @@ struct snapshot {
 };
 
 /* Called on entry to and exit from the work. Every call site is a real production completion point;
- * there is no path that increments `ended` without the work having returned. */
+ * there is no path that increments `ended` without the work having returned.
+ *
+ * A SEND THAT WAS REFUSED HAS STILL RETURNED, and `end()` must be called for it. zcan_poll_budget
+ * makes refusals ordinary: with no node acknowledging, the mailboxes stay full and every send comes
+ * back -EAGAIN. Calling `end()` only on a zero would leave `begun` permanently ahead of `ended` and
+ * make a bus with nobody listening indistinguishable from a sender wedged inside a send -- which is
+ * the one thing these pairs exist to tell apart. Delivery is not what this records; it lives in
+ * zcan_bounded_send::snapshot(). What this records is whether the work came back. */
 void begin(activity a);
 void end(activity a);
 
-/* The free-running loop. One counter, because an iteration has no inside. */
-void zcan_tick();
+/* One pass of the zcan loop finished. One counter, because a pass has no inside.
+ *
+ * CALLED AFTER EVERY POLLER HAS RETURNED, at the bottom of the loop, never between pollers: the
+ * question it answers is "did a whole pass complete", and a counter bumped mid-pass would keep
+ * moving while the pollers behind it never ran. zcan_poll_budget is what makes that reachable --
+ * each poller takes a bounded number of messages, so a pass completes in bounded time whether or
+ * not the host is answering, and a host that went away therefore does not look like a stuck loop. */
+void zcan_pass_completed();
 
 /* Which of the two CAN slots the calling thread is. Exposed so the send path can be explicit about
  * it rather than hiding the rule inside begin(). */
@@ -76,4 +89,4 @@ activity current_send_slot();
 
 snapshot read();
 
-}  // namespace lexxhard::tof_progress
+}  // namespace lexxhard::runtime_progress

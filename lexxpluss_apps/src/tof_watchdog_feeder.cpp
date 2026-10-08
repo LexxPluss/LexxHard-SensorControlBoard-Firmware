@@ -22,7 +22,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
-#include "tof_progress.hpp"
+#include "runtime_progress.hpp"
 #include "tof_task_watchdog.hpp"
 #include "tof_watchdog_tombstone.hpp"
 
@@ -230,23 +230,23 @@ void feeder(void *, void *, void *)
     int consecutive_failures{0};
     for (;;) {
         if (!stopped) {
-            const tof_progress::snapshot p{tof_progress::read()};
+            const runtime_progress::snapshot p{runtime_progress::read()};
 
             wd::input in{};
             in.now_ms = now_ms();
             in.baseline_point = atomic_get(&baseline_point_) != 0;
             in.l7_expected = atomic_get(&l7_expected_) != 0;
             in.acquisition_expected = atomic_get(&acquisition_expected_) != 0;
-            in.acquisition = {p.at[static_cast<size_t>(tof_progress::activity::acquisition)].begun,
-                              p.at[static_cast<size_t>(tof_progress::activity::acquisition)].ended};
-            in.send_acq = {p.at[static_cast<size_t>(tof_progress::activity::send_acq)].begun,
-                           p.at[static_cast<size_t>(tof_progress::activity::send_acq)].ended};
-            in.send_workq = {p.at[static_cast<size_t>(tof_progress::activity::send_workq)].begun,
-                             p.at[static_cast<size_t>(tof_progress::activity::send_workq)].ended};
-            in.health = {p.at[static_cast<size_t>(tof_progress::activity::health)].begun,
-                         p.at[static_cast<size_t>(tof_progress::activity::health)].ended};
-            in.l7 = {p.at[static_cast<size_t>(tof_progress::activity::l7)].begun,
-                     p.at[static_cast<size_t>(tof_progress::activity::l7)].ended};
+            in.acquisition = {p.at[static_cast<size_t>(runtime_progress::activity::acquisition)].begun,
+                              p.at[static_cast<size_t>(runtime_progress::activity::acquisition)].ended};
+            in.send_acq = {p.at[static_cast<size_t>(runtime_progress::activity::send_acq)].begun,
+                           p.at[static_cast<size_t>(runtime_progress::activity::send_acq)].ended};
+            in.send_workq = {p.at[static_cast<size_t>(runtime_progress::activity::send_workq)].begun,
+                             p.at[static_cast<size_t>(runtime_progress::activity::send_workq)].ended};
+            in.health = {p.at[static_cast<size_t>(runtime_progress::activity::health)].begun,
+                         p.at[static_cast<size_t>(runtime_progress::activity::health)].ended};
+            in.l7 = {p.at[static_cast<size_t>(runtime_progress::activity::l7)].begun,
+                     p.at[static_cast<size_t>(runtime_progress::activity::l7)].ended};
             in.zcan_loops = p.zcan_loops;
             in.long_operation = atomic_get(&long_operation_) != 0;
             in.long_operation_began_ms = static_cast<uint32_t>(atomic_get(&long_began_ms_));

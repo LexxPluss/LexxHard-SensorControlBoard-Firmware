@@ -4,15 +4,15 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * See tof_progress.hpp. The read order in read() is the part that matters.
+ * See runtime_progress.hpp. The read order in read() is the part that matters.
  */
 
-#include "tof_progress.hpp"
+#include "runtime_progress.hpp"
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
-namespace lexxhard::tof_progress {
+namespace lexxhard::runtime_progress {
 
 namespace {
 
@@ -41,7 +41,7 @@ void end(activity a)
         atomic_inc(&ended_[static_cast<size_t>(a)]);
 }
 
-void zcan_tick()
+void zcan_pass_completed()
 {
     atomic_inc(&zcan_);
 }
@@ -71,4 +71,4 @@ snapshot read()
     return s;
 }
 
-}  // namespace lexxhard::tof_progress
+}  // namespace lexxhard::runtime_progress

@@ -17,5 +17,5 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_watchdog_feeder.cpp
     ${APP_SRC_DIR}/tof_task_watchdog.cpp
     ${APP_SRC_DIR}/tof_watchdog_tombstone.cpp
-    ${APP_SRC_DIR}/tof_progress.cpp)
+    ${APP_SRC_DIR}/runtime_progress.cpp)
 target_include_directories(app PRIVATE ${APP_SRC_DIR})

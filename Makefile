@@ -39,8 +39,9 @@ clean:
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
 	        build-test-tof-enumerator build-test-tof-auto-commission build-tof-chain \
-	        build-test-tof-progress build-test-tof-task-watchdog \
-	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder
+	        build-test-runtime-progress build-test-tof-task-watchdog \
+	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder \
+	        build-test-zcan-bounded-send build-test-zcan-poll-budget
 
 .PHONY: distclean
 distclean: clean
@@ -156,15 +157,33 @@ test_tof_mapping_proof:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_proof -d build-test-tof-mapping-proof -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
-# Host-side tests for the runtime monitoring layer. Four suites, listed separately because they
-# fail for different reasons: the counters, the decision, the record and the wiring around them.
+# Host-side tests for the runtime monitoring layer. Five suites, listed separately because they
+# fail for different reasons: the transmit path, the per-pass budget, the counters, the decision,
+# the record and the wiring around them.
+
+# The transmit path that cannot wait forever: what a zero means, what a refusal means, and the
+# counter signature of a bus with nobody acknowledging. Needs CONFIG_CAN for the frame type only;
+# the device is a fake.
+.PHONY: test_zcan_bounded_send
+test_zcan_bounded_send:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_bounded_send -d build-test-zcan-bounded-send -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# What one pass of the zcan loop may do, run through the production pollers with real kernel queues
+# and a send that can be told to refuse. Covers the two properties a count-based suite cannot get at
+# from outside: that a pass terminates while its producer keeps refilling, and that a request/reply
+# path holds a refused reply instead of losing it.
+.PHONY: test_zcan_poll_budget
+test_zcan_poll_budget:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_poll_budget -d build-test-zcan-poll-budget -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The six heartbeats. Needs a real kernel rather than a host stub: which of the two CAN sender slots
 # a send belongs to is decided by comparing against the system work queue's thread.
-.PHONY: test_tof_progress
-test_tof_progress:
+.PHONY: test_runtime_progress
+test_runtime_progress:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_progress -d build-test-tof-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/runtime_progress -d build-test-runtime-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The decision itself: may the hardware watchdog be fed right now. Pure logic over counters and a
 # clock, so it links the production source directly and needs no board and no watchdog driver.

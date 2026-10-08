@@ -31,6 +31,7 @@
 #include <cstdio>
 #include "bmu_controller.hpp"
 #include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 namespace lexxhard::zcan_bmu {
 
@@ -50,8 +51,9 @@ public:
     void poll() {
         can_frame message;
 
-        while (k_msgq_get(&bmu_controller::msgq_rawframe_bmu, &message, K_NO_WAIT) == 0) {
-            zcan_bounded_send::send(dev, &message, K_MSEC(100));
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&bmu_controller::msgq_rawframe_bmu, &message, K_NO_WAIT) == 0; ++n) {
+            zcan_bounded_send::send(dev, &message, zcan_poll_budget::kMailboxWait);
         }
     }
 private:

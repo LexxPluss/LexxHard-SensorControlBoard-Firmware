@@ -35,26 +35,42 @@
  * answer is always feed.
  *
  * THAT COVERS BOOT AND NOT A HOST THAT LEAVES LATER, AND THIS LAYER CANNOT COVER IT. The baseline
- * is a one-time arming condition; after it, a host that goes away blocks the senders again and the
- * board resets about ten seconds later, once per host restart, on a product whose other half
+ * is a one-time arming condition; after it, a host that goes away used to block the senders again
+ * and reset the board about ten seconds later, once per host restart, on a product whose other half
  * treats host loss as ordinary (ros_heartbeat_timeout in board_controller.cpp).
  *
  * It is not fixable here, and an earlier version of this file tried. The reason is the shape of the
- * call chain rather than a missing condition: tof_progress::end(acquisition) is the LAST statement
+ * call chain rather than a missing condition: runtime_progress::end(acquisition) is the LAST statement
  * of run_cycle(), after the hook that sends, and end(health) is after the send in the health work.
- * So a sender blocked in k_sem_take(&ctx.done, K_FOREVER) -- which is what can_send()'s
- * callback == NULL form does, with the timeout bounding only the wait for a free mailbox -- freezes
- * the CYCLE and HEALTH counters too, not just the send ones. Suspending the send reasons while the
- * host is away therefore changes nothing: stuck_cycle and stuck_health latch anyway. Widening the
- * suspension to cover them would hide a genuinely broken acquisition, which is most of what this
- * layer is for.
+ * So a sender that cannot return freezes the CYCLE and HEALTH counters too, not just the send ones.
+ * Suspending the send reasons while the host is away therefore changes nothing: stuck_cycle and
+ * stuck_health latch anyway. Widening the suspension to cover them would hide a genuinely broken
+ * acquisition, which is most of what this layer is for.
  *
- * THE FIX IS A BOUNDED SEND, in the send path: the callback form of can_send(), or any completion
- * wait that can expire. With that, a vanished host makes every send FAIL quickly, every counter
- * keeps moving, and none of this arises -- no gate needed anywhere. That change is now in this same
- * branch, as zcan_bounded_send::send() with all fifteen senders converted to it, because the
- * alternative was shipping a watchdog whose own header explained why it would reset a healthy
- * board.
+ * THE FIX IS IN THE SEND PATH, AND IT TOOK TWO PARTS. An earlier version of this comment claimed
+ * one, and it was wrong in a way worth recording rather than quietly correcting.
+ *
+ * The first part is a bounded send: the callback form of can_send(), or any completion wait that
+ * can expire. Without it a sender parks in k_sem_take(&ctx.done, K_FOREVER), with the timeout
+ * bounding only the wait for a free mailbox. That is zcan_bounded_send::send(), with all fifteen
+ * senders converted to it.
+ *
+ * THAT ALONE WAS NOT ENOUGH, which is the correction. Bounding one send does not bound a pass: every
+ * poller in zcan_main::run() drained its queue with `while (k_msgq_get(..., K_NO_WAIT) == 0)`, so
+ * with nothing acknowledging and all three mailboxes occupied, each send waits out its mailbox
+ * timeout before returning -EAGAIN and the drain rate falls to a few messages per second -- below
+ * what the producers generate (the IMU alone runs at 40 Hz), so the queue never empties and the pass
+ * never ends. A beacon at the bottom of that loop stops being updated exactly as before. Worse, and
+ * independently of any watchdog: in zcan_board::poll() and zcan_actuator::poll() the transmit drain
+ * runs BEFORE the receive drain that feeds the controller queues, so a pass that never finishes its
+ * transmit half never consumes the host's control frames -- including after the host comes back.
+ *
+ * The second part is therefore a per-pass budget, zcan_poll_budget: a bounded number of messages per
+ * queue per pass, so a pass completes in bounded time whether or not anything is acknowledging, and
+ * the receive drains behind the transmit drains always run. Together with calling end() on a refused
+ * send (see runtime_progress.hpp), host loss keeps every counter moving and is not a reset condition
+ * here at all -- no gate needed anywhere, and the safe state for a missing host stays where it
+ * already is, in board_controller.
  *
  * WHAT IS STILL TRUE REGARDLESS: this layer does not survive an unbounded sender, and nothing here
  * makes it do so. It judges progress; a thread parked forever inside its own work cycle has no
@@ -155,7 +171,7 @@ inline constexpr uint32_t kLongOperationSuspends{stuck_cycle | silent_cycle | st
 
 /* What a stopped acquisition suspends.
  *
- * send_acq is in here because it IS the acquisition thread: tof_progress attributes 0x214-0x216 and
+ * send_acq is in here because it IS the acquisition thread: runtime_progress attributes 0x214-0x216 and
  * the cycle health frame to that slot, so an acquisition that is not running cannot be sending.
  *
  * silent_l7 is in here because a stopped acquisition is also what stops asking the L7 for grids, so

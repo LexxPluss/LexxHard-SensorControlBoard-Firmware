@@ -30,6 +30,7 @@
 #include <zephyr/logging/log.h>
 #include "gpio_controller.hpp"
 #include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_GPIO_OUT 0x211
 #define CAN_ID_GPIO_IN 0x212
@@ -61,7 +62,8 @@ public:
     }
     void poll() {
         gpio_controller::msg message;
-        while (k_msgq_get(&gpio_controller::msgq, &message, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&gpio_controller::msgq, &message, K_NO_WAIT) == 0; ++n) {
             uint8_t packedData[CAN_DATA_LENGTH_GPIO_IN] {
                 pack_gpio_input_status(message)
             };
@@ -76,11 +78,12 @@ public:
             // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_GPIO_IN);
 
-            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
+            zcan_bounded_send::send(dev, &frame, zcan_poll_budget::kMailboxWait);
         }
 
         struct can_frame frame;
-        while (k_msgq_get(&msgq_can_gpio, &frame, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kRxPerPass &&
+                      k_msgq_get(&msgq_can_gpio, &frame, K_NO_WAIT) == 0; ++n) {
             if (frame.id != CAN_ID_GPIO_OUT || frame.dlc != CAN_DATA_LENGTH_GPIO_OUT) {
                 LOG_INF("Unknown CAN frame received: %x %x", frame.id, frame.dlc);
                 continue;

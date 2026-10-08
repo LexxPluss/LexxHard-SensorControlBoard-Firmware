@@ -2,4 +2,4 @@ common:
   platform_allow: native_sim
   tags: tof watchdog
 tests:
-  tof.progress: {}
+  runtime.progress: {}

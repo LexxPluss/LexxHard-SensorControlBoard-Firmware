@@ -20,12 +20,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
 
-#include "tof_progress.hpp"
+#include "runtime_progress.hpp"
 
 namespace
 {
 
-namespace prog = lexxhard::tof_progress;
+namespace prog = lexxhard::runtime_progress;
 
 size_t idx(prog::activity a) { return static_cast<size_t>(a); }
 
@@ -43,12 +43,12 @@ K_WORK_DEFINE(workq_probe_, ask_from_workq);
 
 }  // namespace
 
-ZTEST_SUITE(tof_progress, nullptr, nullptr, nullptr, nullptr, nullptr);
+ZTEST_SUITE(runtime_progress, nullptr, nullptr, nullptr, nullptr, nullptr);
 
 /* THE DISCRIMINATION THE TWO-SLOT DESIGN RESTS ON. A send from the system work queue is the 0x217
  * heartbeat; anything else is the acquisition slot. Get this backwards and a live heartbeat keeps
  * refreshing the timestamp of a sender that died. */
-ZTEST(tof_progress, test_the_work_queue_and_everything_else_are_different_send_slots)
+ZTEST(runtime_progress, test_the_work_queue_and_everything_else_are_different_send_slots)
 {
     zassert_equal(prog::current_send_slot(), prog::activity::send_acq,
                   "a thread that is not the work queue is the acquisition slot");
@@ -65,7 +65,7 @@ ZTEST(tof_progress, test_the_work_queue_and_everything_else_are_different_send_s
 
 /* begun and ended move independently, which is what lets the feeder tell a task that is inside its
  * work from one that has finished. */
-ZTEST(tof_progress, test_begin_and_end_move_their_own_halves)
+ZTEST(runtime_progress, test_begin_and_end_move_their_own_halves)
 {
     const prog::snapshot before{prog::read()};
 
@@ -85,7 +85,7 @@ ZTEST(tof_progress, test_begin_and_end_move_their_own_halves)
 
 /* Six activities, six counters. A hook wired to the wrong one would make the watchdog blame the
  * wrong subsystem, which is worse than not watching it. */
-ZTEST(tof_progress, test_each_activity_has_its_own_counter)
+ZTEST(runtime_progress, test_each_activity_has_its_own_counter)
 {
     const prog::snapshot before{prog::read()};
 
@@ -106,17 +106,17 @@ ZTEST(tof_progress, test_each_activity_has_its_own_counter)
 }
 
 /* The free-running loop has one counter because an iteration has no inside to be stuck in. */
-ZTEST(tof_progress, test_the_zcan_loop_has_a_single_counter)
+ZTEST(runtime_progress, test_the_zcan_loop_has_a_single_counter)
 {
     const uint32_t before{prog::read().zcan_loops};
-    prog::zcan_tick();
-    prog::zcan_tick();
+    prog::zcan_pass_completed();
+    prog::zcan_pass_completed();
     zassert_equal(prog::read().zcan_loops, before + 2);
 }
 
 /* An out-of-range activity must not write past the array. It cannot happen through the enum, and
  * that is exactly the sort of thing that stops being true when somebody adds a seventh. */
-ZTEST(tof_progress, test_an_out_of_range_activity_touches_nothing)
+ZTEST(runtime_progress, test_an_out_of_range_activity_touches_nothing)
 {
     const prog::snapshot before{prog::read()};
     prog::begin(prog::activity::count);
@@ -131,7 +131,7 @@ ZTEST(tof_progress, test_an_out_of_range_activity_touches_nothing)
 
 /* A read never reports more completions than starts. That ordering is what makes a torn read
  * harmless: the worst it can show is a pair that looks in-flight for one sample. */
-ZTEST(tof_progress, test_a_read_never_shows_more_completions_than_starts)
+ZTEST(runtime_progress, test_a_read_never_shows_more_completions_than_starts)
 {
     for (int i{0}; i < 200; ++i) {
         prog::begin(prog::activity::health);

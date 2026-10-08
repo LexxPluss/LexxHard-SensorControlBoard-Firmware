@@ -30,6 +30,7 @@
 #include <zephyr/logging/log.h>
 #include "uss_controller.hpp"
 #include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_USS 0x204
 #define CAN_DATA_LENGTH_USS 8
@@ -50,7 +51,8 @@ public:
     void poll() {
         uss_controller::msg message;
 
-        while (k_msgq_get(&uss_controller::msgq, &message, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&uss_controller::msgq, &message, K_NO_WAIT) == 0; ++n) {
             uint8_t packedData[CAN_DATA_LENGTH_USS] {0}; 
             uint16_t data1 = (uint16_t)(message.front_left / 2);
             uint16_t data2 = (uint16_t)(message.front_right / 2);
@@ -79,7 +81,7 @@ public:
             // copy packedData to CAN frame data
             memcpy(frame.data, packedData, CAN_DATA_LENGTH_USS);
 
-            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
+            zcan_bounded_send::send(dev, &frame, zcan_poll_budget::kMailboxWait);
         }
     }
 private:

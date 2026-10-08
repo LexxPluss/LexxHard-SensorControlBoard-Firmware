@@ -29,6 +29,7 @@
 #include <zephyr/logging/log.h>
 #include "can_controller.hpp"
 #include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_BOARD_TX 0x20C
 #define CAN_ID_BOARD_RX 0x20F
@@ -64,7 +65,8 @@ public:
         uint8_t packedData[CAN_TX_DATA_LENGTH_BOARD] {0};
         can_controller::msg_board message;
 
-        while (k_msgq_get(&can_controller::msgq_board, &message, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&can_controller::msgq_board, &message, K_NO_WAIT) == 0; ++n) {
             can_frame frame{
                 .id = CAN_ID_BOARD_TX,
                 .dlc = CAN_TX_DATA_LENGTH_BOARD,
@@ -106,11 +108,12 @@ public:
             packedData[5] = (uint8_t)(scaled_voltage & 0xFF); // Lower Byte
 
             memcpy(frame.data, packedData, CAN_TX_DATA_LENGTH_BOARD);
-            zcan_bounded_send::send(dev, &frame, K_MSEC(100));
+            zcan_bounded_send::send(dev, &frame, zcan_poll_budget::kMailboxWait);
         }
 
         can_frame frame;
-        while (k_msgq_get(&msgq_can_ros2board, &frame, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kRxPerPass &&
+                      k_msgq_get(&msgq_can_ros2board, &frame, K_NO_WAIT) == 0; ++n) {
             can_controller::msg_control msg;
 
             msg.emergency_stop = frame.data[0] & 0x01;
