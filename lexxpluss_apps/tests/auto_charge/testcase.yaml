@@ -1,0 +1,10 @@
+tests:
+  power_control.auto_charge.standard:
+    platform_allow: native_sim
+    tags: auto_charge
+    timeout: 300
+  power_control.auto_charge.push:
+    platform_allow: native_sim
+    tags: auto_charge
+    timeout: 300
+    extra_args: ENABLE_PUSH_MODE=1

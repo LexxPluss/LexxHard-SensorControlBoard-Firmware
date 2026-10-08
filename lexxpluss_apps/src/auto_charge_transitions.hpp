@@ -1,4 +1,4 @@
-// Copyright (c) 2024, LexxPluss Inc.
+// Copyright (c) 2026, LexxPluss Inc.
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -26,13 +26,10 @@
 
 namespace lexxhard::board_controller {
 
-// Inputs for NORMAL state transition evaluation.
-// Mirrors the if-else chain in board_controller.cpp NORMAL case (poll).
-// IMPORTANT: Keep in sync with board_controller.cpp when editing transition conditions.
-struct normal_state_inputs {
+// Inputs for the AUTO_CHARGE state poll. Each field is a judged boolean, not a raw device state.
+struct auto_charge_inputs {
     bool should_turn_off{false};
     bool ksw_transition_to_running{false};
-    bool should_lockdown{false};
     bool psw_pushed{false};
     bool power_off_from_ros{false};
     bool bmu_ok{true};
@@ -41,47 +38,54 @@ struct normal_state_inputs {
     bool sl_asserted{false};
     bool emergency_stop_from_ros{false};
     bool is_dead{false};
-    bool charge_guard_asserted{false};
-    bool ac_docked{false};
-    bool bmu_chargable{false};
-    bool ac_charger_ready{false};
-    bool should_manual_charge{false};
+    bool bmu_full_charge{false};
+    bool ac_docked{true};
+    bool mc_plugged{false};
+    bool current_check_enable{false};
+    bool bmu_charging{false};
 };
 
-// Returns the next POWER_STATE for the NORMAL state poll.
-// Pure function — no side effects (use_software_brake, can_skip_wait_sw are handled by caller).
-inline POWER_STATE eval_normal_transitions(const normal_state_inputs& in) {
-    if (in.should_turn_off)
-        return POWER_STATE::OFF_WAIT;
-    if (in.ksw_transition_to_running)
-        return POWER_STATE::OFF_WAIT;
-    if (in.should_lockdown)
-        return POWER_STATE::LOCKDOWN;
-#ifndef ENABLE_PUSH_MODE
-    if (in.psw_pushed)
-        return POWER_STATE::SUSPEND;
-#endif
-    if (in.power_off_from_ros)
-        return POWER_STATE::SUSPEND;
-    if (!in.bmu_ok)
-        return POWER_STATE::SUSPEND;
-    if (!in.dcdc_ok)
-        return POWER_STATE::SUSPEND;
-    if (in.esw_asserted)
-        return POWER_STATE::SUSPEND;
-#ifndef ENABLE_PUSH_MODE
-    if (in.sl_asserted)
-        return POWER_STATE::SUSPEND;
-    if (in.emergency_stop_from_ros)
-        return POWER_STATE::SUSPEND;
-    if (in.is_dead)
-        return POWER_STATE::SUSPEND;
-#endif
-    if (!in.charge_guard_asserted && in.ac_docked && in.bmu_chargable && in.ac_charger_ready)
-        return POWER_STATE::AUTO_CHARGE;
-    if (in.should_manual_charge)
-        return POWER_STATE::MANUAL_CHARGE;
-    return POWER_STATE::NORMAL;
-}
+// Why the AUTO_CHARGE poll decided to leave. The caller uses it to pick the log line.
+enum class auto_charge_exit_reason {
+    NONE,
+    TURN_OFF,
+    KSW_TO_RUNNING,
+    PSW,
+    POWER_OFF_FROM_ROS,
+    BMU_FAILURE,
+    DCDC_FAILURE,
+    ESW,
+    SAFETY_LIDAR,
+    EMERGENCY_STOP_FROM_ROS,
+    DEAD,
+    FULL_CHARGE,
+    UNDOCKED,
+    MANUAL_CHARGER,
+    NOT_CHARGING,
+};
+
+// Decision for one AUTO_CHARGE poll. The caller applies the side effects.
+struct auto_charge_decision {
+    POWER_STATE next{POWER_STATE::AUTO_CHARGE};
+    bool can_skip_wait_sw{false};
+    bool use_software_brake{false};
+    auto_charge_exit_reason reason{auto_charge_exit_reason::NONE};
+};
+
+auto_charge_decision eval_auto_charge_transitions(const auto_charge_inputs& in);
+
+enum class wheel_en_action { NONE, ENABLE, DISABLE_IMMEDIATE, DISABLE_DELAYED };
+
+// Operations on leaving AUTO_CHARGE. The caller applies them.
+struct leave_auto_charge_plan {
+    bool stop_current_check_timer;
+    bool force_stop_charger;
+    wheel_en_action wheel_en;
+};
+
+leave_auto_charge_plan plan_leave_auto_charge(bool use_software_brake);
+
+// wheel_en action on entering `s`. Only AUTO_CHARGE, NORMAL, STANDBY, SUSPEND and OFF_WAIT are handled.
+wheel_en_action plan_enter_wheel_en(POWER_STATE s, bool ksw_maintenance);
 
 }  // namespace lexxhard::board_controller
