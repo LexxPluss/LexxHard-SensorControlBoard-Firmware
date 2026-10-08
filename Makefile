@@ -315,6 +315,39 @@ firmware_tof_cliff:
 	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
 	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
 
+# The Package ToF bench image: ONE VL53L7CX on I2C4 at 0x29, driven from the shell through the real
+# lifecycle. BENCH ONLY, and three properties make that a property of the build rather than a claim:
+#
+# NO CHAIN AND NO BYPASS. ENABLE_TOF_CHAIN is absent, so the i2c2 enable chain, the cliff data path
+# and the tug encoder are not in this image; BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST is absent, and
+# is never to be added here by inheritance the way firmware_tof_cliff was first copied with it.
+#
+# NEVER CONFIRMED, AND THAT IS THE DELIVERY. main.cpp's self-confirm is inside ENABLE_TOF_CHAIN, so
+# this image does not confirm itself, and no shell command in it can -- there is no confirm command.
+# Instead it arms an unattended revert (see src/tof_package_bench_deadman.hpp): a whole-machine cold
+# reboot some minutes after boot, which is what applies MCUboot's revert. So the two possible
+# outcomes of a bench session are a revert on that timer and a revert on any other reset.
+#
+# DELIVERED AS A PADDED TEST IMAGE, like firmware_tof_cliff and for the same measured reason: the CAN
+# DFU writes raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer embedded in
+# the file can request a swap. An unpadded signed.bin sits in slot1 doing nothing while the machine
+# keeps running the old firmware, which looks identical to a revert. The last line clears image_ok
+# to 0xff, 24 bytes from the end, which is what makes the swap a TEST boot rather than a permanent
+# one.
+#
+# -p always rather than -p auto: this target produces something that gets flashed onto a machine, and
+# the image's hash has to come from a clean tree rather than from whatever an incremental build
+# happened to reuse.
+.PHONY: firmware_tof_package_bench
+firmware_tof_package_bench:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-bench -- -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_BENCH=ON -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-package-bench/zephyr/zephyr.signed.bin out/zephyr_tof_package_bench.signed.bin
+	mv build-tof-package-bench/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_package_bench.signed.confirmed.bin
+	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin
+	printf '\377' | dd of=out/zephyr_tof_package_bench.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_bench.test.bin) - 24)) conv=notrunc status=none
+
 #
 # The `tof enum` command is present but is NOT expected to complete on this
 # image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition

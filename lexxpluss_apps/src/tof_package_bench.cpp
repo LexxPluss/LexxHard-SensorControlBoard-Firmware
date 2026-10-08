@@ -59,6 +59,7 @@ extern "C" {
 #include "tof_l7_probe_verdict.hpp"
 #include "tof_l7_runtime.hpp"
 #include "tof_l7_sensor.hpp"
+#include "tof_package_bench_deadman.hpp"
 #include "tof_package_l7.hpp"
 
 LOG_MODULE_REGISTER(tof_package_bench);
@@ -504,8 +505,54 @@ int cmd_status(const struct shell *sh, size_t, char **)
     shell_print(sh, "blob stage %s, firmware %s, %zu bytes",
                 tof_l7_runtime::stage_name(blob.current_stage),
                 blob.firmware_available ? "available" : "unavailable", blob.firmware_size);
+
+    /* THE WAY BACK TO PRODUCTION, PRINTED EVERY TIME. An operator has to be able to see, without
+     * remembering anything, whether this image still reverts on its own and how long is left. */
+    namespace deadman = tof_package_bench_deadman;
+    if (deadman::image_confirmed()) {
+        shell_error(sh, "image is CONFIRMED and will NOT revert. Nothing in this image confirms "
+                        "one, so this is unexpected -- report it; only a re-flash removes it.");
+    } else if (deadman::armed()) {
+        shell_print(sh, "UNCONFIRMED: whole-machine cold reboot in %u s reverts this image to "
+                        "production (%u of %u extensions used; `pkg_tof hold` adds more)",
+                    deadman::remaining_ms() / 1000U, deadman::extensions_used(),
+                    deadman::kMaxExtensions);
+    } else {
+        shell_warn(sh, "UNCONFIRMED but the unattended revert is NOT armed: a wedge that keeps the "
+                       "watchdog fed would need a manual power cycle. Expected only before main() "
+                       "has finished starting the subsystems.");
+    }
+
     shell_print(sh, "NOTE: this tool never provisions the blob, publishes no CAN and moves no "
-                    "shutter.");
+                    "shutter, and it cannot confirm this image.");
+    return 0;
+}
+
+int cmd_hold(const struct shell *sh, size_t argc, char **argv)
+{
+    namespace deadman = tof_package_bench_deadman;
+    const unsigned long minutes{argc > 1 ? strtoul(argv[1], nullptr, 10) : deadman::kWindowMinutes};
+
+    /* MANUAL, BOUNDED, AND NOT TIED TO ACTIVITY. A window that renewed itself whenever a command ran
+     * would never fire during the session it exists for -- one where an operator is busy and the
+     * machine is in a state nobody intended. */
+    const int rc{deadman::extend(static_cast<uint32_t>(minutes))};
+    if (rc == -EPERM) {
+        shell_error(sh, "all %u extensions are spent. This image reverts in %u s; re-flashing it is "
+                        "a decision to take again, not one to extend into.",
+                    deadman::kMaxExtensions, deadman::remaining_ms() / 1000U);
+        return rc;
+    }
+    if (rc == -EALREADY) {
+        shell_error(sh, "image is confirmed; there is no revert to extend");
+        return rc;
+    }
+    if (rc != 0) {
+        shell_error(sh, "usage: pkg_tof hold [minutes 1-%u]", deadman::kWindowMinutes);
+        return rc;
+    }
+    shell_print(sh, "revert re-armed: cold reboot in %lu min (%u of %u extensions used)", minutes,
+                deadman::extensions_used(), deadman::kMaxExtensions);
     return 0;
 }
 
@@ -519,6 +566,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_pkg_tof,
                   "read [frames=8] [budget_ms=5000] - wait for N complete grids, print each",
                   cmd_read, 1, 2),
     SHELL_CMD(stop, NULL, "stop ranging; retryable while the debt stands", cmd_stop),
+    SHELL_CMD_ARG(hold, NULL,
+                  "hold [minutes] - extend the unattended revert; bounded, and no confirm exists",
+                  cmd_hold, 1, 1),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(pkg_tof, &sub_pkg_tof, "Package ToF bench driver (BENCH BUILD ONLY)", NULL);

@@ -46,6 +46,9 @@
 #include <zephyr/dfu/mcuboot.h>
 #include "tof_chain_controller.hpp"
 #endif
+#ifdef ENABLE_TOF_PACKAGE_BENCH
+#include "tof_package_bench_deadman.hpp"
+#endif
 
 namespace {
 
@@ -368,6 +371,19 @@ int main()
         printk("tof_chain: image confirmed\n");
     else
         printk("tof_chain: image confirm failed (%d), will revert on next boot\n", rc);
+#endif
+
+#ifdef ENABLE_TOF_PACKAGE_BENCH
+    // THE OPPOSITE DECISION FROM THE BLOCK ABOVE, and deliberately so. A chain commissioning image
+    // confirms itself because the CAN-DFU reboot cascade would otherwise revert it before anyone
+    // could interact with it. A Package bench image is never confirmed -- there is no confirm
+    // command in it at all -- so its revert is intact, and what it lacks is something to produce the
+    // reset that applies it. This arms that: see tof_package_bench_deadman.hpp for the case it
+    // covers that the watchdog does not.
+    //
+    // Armed here, after thread creation, so the window belongs to the operator rather than to boot.
+    // A wedge BEFORE this point is the watchdog's case, not this one.
+    lexxhard::tof_package_bench_deadman::arm();
 #endif
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);
