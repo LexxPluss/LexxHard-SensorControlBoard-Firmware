@@ -28,6 +28,21 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 # make IN_HOST=1 WORKDIR=$PWD firmware
 WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
+# The west workspace root -- the directory that holds zephyr/ next to the manifest repository. Found
+# by walking up, exactly as scripts/manage_zephyr_patches.sh does, because in a git worktree of the
+# app repository it is NOT $(CURDIR): the worktree has no zephyr/ of its own and shares the
+# workspace's.
+WSROOT:=$(shell d="$(CURDIR)"; while [ "$$d" != "/" ]; do if [ -e "$$d/zephyr/.git" ]; then echo "$$d"; break; fi; d=$$(dirname "$$d"); done)
+# Build against a Zephyr tree other than the workspace's zephyr/, named relative to the workspace
+# root (e.g. ZBASE=zephyr-clean). Needed whenever zephyr/ does not pass
+# scripts/manage_zephyr_patches.sh verify -- it has carried a stale revision of the I2C ISR rework,
+# and for anything that drives an I2C sensor the driver that gets linked is not a detail. The verify
+# step and the build both follow it, so the gate and the artefact cannot disagree about which tree
+# was used. The host path and the container path are computed separately because the workspace root
+# is mounted at $(WORKDIR) inside the builder.
+ZBASE:=
+ZBASE_VERIFY:=$(if $(ZBASE),ZEPHYR_TREE=$(WSROOT)/$(ZBASE),)
+ZBASE_BUILD:=$(if $(ZBASE),-DZEPHYR_BASE=$(WORKDIR)/$(ZBASE),)
 
 .PHONY: all
 all: bootloader firmware
@@ -340,9 +355,9 @@ firmware_tof_cliff:
 # happened to reuse.
 .PHONY: firmware_tof_package_bench
 firmware_tof_package_bench:
-	./scripts/manage_zephyr_patches.sh verify
+	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-bench -- -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_BENCH=ON -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-bench -- $(ZBASE_BUILD) -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_BENCH=ON -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-tof-package-bench/zephyr/zephyr.signed.bin out/zephyr_tof_package_bench.signed.bin
 	mv build-tof-package-bench/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_package_bench.signed.confirmed.bin
 	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin

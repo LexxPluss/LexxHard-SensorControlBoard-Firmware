@@ -39,7 +39,13 @@ find_zephyr() {
     echo "zephyr checkout not found above $ROOT" >&2
     return 1
 }
-ZEPHYR="$(find_zephyr)"
+# ZEPHYR_TREE overrides the search, for the case the search cannot serve: verifying or building
+# against a Zephyr tree that is NOT the west workspace's. That is not hypothetical here -- the
+# workspace tree has carried a stale revision of the I2C ISR rework, which verify reports as a mixed
+# tree, and a release or acceptance image must be pinned to a tree this script passes on. The
+# override takes an absolute path and changes nothing else: the baseline commit and the patch set are
+# still the ones in this repository.
+ZEPHYR="${ZEPHYR_TREE:-$(find_zephyr)}"
 PATCH_DIR="$ROOT/patches/zephyr"
 BASELINE="468eb56cf242eedba62006ee758700ee6148763f"  # v3.6.0, as pinned in west.yml
 
