@@ -31,6 +31,14 @@ if(ENABLE_TOF_L7_ULD)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
 endif()
 
+# The bench driver runs the whole ULD path on the shell thread, which the default shell stack does
+# not cover: see overlays/tof_package_bench.conf for the measurement. Appended here rather than in
+# the ENABLE_TOF_PACKAGE_BENCH block further down, because Kconfig is fixed by find_package(Zephyr)
+# below and that block runs after it.
+if(ENABLE_TOF_PACKAGE_BENCH)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_bench.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
