@@ -177,6 +177,26 @@ if(ENABLE_TOF_L7_ULD)
     add_definitions(-DENABLE_TOF_L7_ULD)
 endif()
 
+# Package ToF bench driver. BENCH ONLY, and a separate flag rather than a corner of the L7 one:
+# tof_package_l7 has no caller, so --gc-sections drops it and every size measured for the L7 flag
+# says nothing about what the lifecycle costs. This is what calls the path, which is the only way
+# the linked cost becomes a number -- and binding it into a product entry point instead would make
+# a bring-up decision that belongs to the Package configuration, which does not exist yet.
+#
+# It registers a shell command group and nothing else: no thread, no timer, no SYS_INIT. It never
+# provisions the blob, publishes nothing on CAN and moves no shutter; the file says why for each.
+#
+# No product configuration sets this. The guard inside the source also refuses the combination
+# without ENABLE_TOF_L7_ULD, so a bench image cannot be built without the driver it drives.
+if(ENABLE_TOF_PACKAGE_BENCH)
+    if(NOT ENABLE_TOF_L7_ULD)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_BENCH requires ENABLE_TOF_L7_ULD: the bench driver exists to call "
+            "the L7 lifecycle, and without the driver there is nothing to call.")
+    endif()
+    add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
+endif()
+
 if(VERSION)
     add_definitions(-DVERSION=${VERSION})
 endif()
