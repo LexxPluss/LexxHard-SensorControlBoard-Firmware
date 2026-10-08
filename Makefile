@@ -38,9 +38,9 @@ clean:
 	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
-	        build-test-tof-enumerator build-tof-chain build-test-tof-progress \
-	        build-test-tof-task-watchdog build-test-tof-watchdog-tombstone \
-	        build-test-tof-watchdog-feeder
+	        build-test-tof-enumerator build-test-tof-auto-commission build-tof-chain \
+	        build-test-tof-progress build-test-tof-task-watchdog \
+	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder
 
 .PHONY: distclean
 distclean: clean
@@ -136,6 +136,13 @@ test_tof_mapping_authority:
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the prove-then-start sequencer: every path that must NOT reach start(), the
+# bounded retry, and the hooks that refuse before anything is attempted. No device, no bus, no proof.
+.PHONY: test_tof_auto_commission
+test_tof_auto_commission:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
 .PHONY: test_tof_tail_isolation
