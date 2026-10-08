@@ -27,9 +27,15 @@ int lifecycle::init(const hooks &h, const config &c)
      * missing stop would silently remove the only check standing between an unknown device and an
      * open. Refusing here is the only place the omission is visible. */
     if (h.ensure_verified == nullptr || h.probe == nullptr || h.quiesce == nullptr ||
-        h.open == nullptr || h.configure == nullptr || h.start == nullptr || h.read == nullptr ||
-        h.stop == nullptr)
+        h.close == nullptr || h.open == nullptr || h.configure == nullptr || h.start == nullptr ||
+        h.read == nullptr || h.stop == nullptr)
         return -EINVAL;
+    /* RE-INITIALISING OVER A LIVE OR UNACCOUNTED SESSION IS REFUSED, and refused before anything
+     * is written, so a rejected call leaves the object exactly as it was. init() otherwise resets
+     * the state wholesale, which would discard a stop debt that only a successful stop may clear
+     * -- and the way back from a forgotten live session on this sensor is a machine power cycle. */
+    if (initialised_ && !discardable())
+        return -EPERM;
     /* The ULD accepts 1..15 Hz; the value is the caller's because the sustainable rate for this
      * geometry has not been accepted yet. Zero is refused rather than defaulted, so a caller that
      * forgot it finds out here instead of ranging at whatever the ULD does with 0. */
@@ -66,12 +72,19 @@ int lifecycle::bring_up()
      * payload there is nothing to download, and probing a device we could not then open would only
      * disturb it. */
     if (const int rc{hooks_.ensure_verified()}; rc != 0) {
-        status_.current = state::blocked;
+        /* -EINPROGRESS MEANS ASK AGAIN, NOT GIVE UP. Another consumer is mid-verification, so the
+         * answer is not in yet; blocking on it would turn a few milliseconds of contention into a
+         * permanent refusal. The state is left untouched -- still idle, nothing opened, no device
+         * disturbed -- so a later call simply runs. Every other errno is a verdict and blocks. */
+        if (rc != -EINPROGRESS)
+            status_.current = state::blocked;
         return refuse(step::firmware, rc);
     }
 
     bool present{false};
-    const int probe_rc{hooks_.probe(hooks_.ctx, config_.address_7bit, &present)};
+    bool wrong_identity{false};
+    const int probe_rc{
+        hooks_.probe(hooks_.ctx, config_.address_7bit, &present, &wrong_identity)};
 
     /* THE RULE THIS MODULE EXISTS FOR. A probe that did not complete tells us nothing about
      * presence, and `present` is meaningless. The chain could record that and carry on to other
@@ -80,6 +93,19 @@ int lifecycle::bring_up()
     if (probe_rc != 0) {
         status_.current = state::blocked;
         return refuse(step::probe, probe_rc);
+    }
+
+    /* SOMETHING ANSWERED AND IS NOT A VL53L7CX. Stopped here, and in particular BEFORE the
+     * quiesce: issuing a five-second L7 stop sequence to a device that is not one is not this
+     * module's business, and opening it afterwards would download 86 KB of L7 firmware into
+     * something nobody has identified.
+     *
+     * The chain can afford to report this and move on, because its addresses are assigned by the
+     * enable chain and enumeration exists to act on a census anomaly. Here the address is fixed at
+     * 0x29 and there is no enumerator, so there is nothing to hand it to. */
+    if (wrong_identity) {
+        status_.current = state::blocked;
+        return refuse(step::identity, -ENOTSUP);
     }
 
     if (present) {
@@ -94,11 +120,22 @@ int lifecycle::bring_up()
         }
     }
 
-    /* A FULL INITIALISATION EITHER WAY, survivor or cold. A successful quiesce clears the stop
-     * debt and nothing more: which device state survives an SCB reset is not established, and the
+    /* A FULL INITIALISATION EITHER WAY, survivor or cold. A successful quiesce clears the stop debt
+     * and nothing more: which device state survives an SCB reset is not established, and the
      * host-side configuration object is gone with the reset regardless, so there is nothing to
      * resume into. Skipping the firmware download on a warm entry would be an optimisation that
-     * needs its own evidence. */
+     * needs its own evidence.
+     *
+     * AND IT STARTS WITH A CLOSE, BEFORE EVERY OPEN, not only after a failure. A confirmed stop
+     * leaves the sensor `configured` and tof_l7::open() requires `empty`, so an ordinary
+     * up -> stop -> up sequence fails on its second open without this -- the sensor would be a
+     * one-session-per-boot object. From an already-empty sensor the close succeeds and does nothing,
+     * which is what lets it be unconditional rather than conditional on reasoning about which
+     * earlier failure left what behind. */
+    if (const int rc{hooks_.close(hooks_.ctx)}; rc != 0) {
+        status_.current = state::blocked;
+        return refuse(step::close, rc);
+    }
     if (const int rc{hooks_.open(hooks_.ctx, config_.address_7bit)}; rc != 0) {
         status_.current = state::blocked;
         return refuse(step::open, rc);
@@ -176,6 +213,38 @@ int lifecycle::stop()
     return refuse(step::stop, rc);
 }
 
+bool lifecycle::discardable() const
+{
+    switch (status_.current) {
+    case state::idle:
+        return true;
+    case state::ranging:
+    case state::stop_owed:
+        /* A device that is measuring, or one whose session nobody can account for. */
+        return false;
+    case state::blocked:
+        /* THE DIVIDING LINE IS WHETHER A MEASUREMENT COULD HAVE BEEN STARTED, not whether the device
+         * was touched. Only start() can begin one, and a start failure does not land here: it owes a
+         * stop, so it is `stop_owed` above and reaches `blocked` only through a spent stop budget,
+         * which is recorded as step::stop. The two steps left off this list are exactly the ones a
+         * live session can be behind:
+         *
+         *   - step::close, because close() refuses precisely when the sensor is running or owes a
+         *     stop, so arriving here means one of those was true;
+         *   - step::stop, which is the spent budget: a device that may still be measuring and that
+         *     this tool has given up on stopping.
+         *
+         * open and configure are on the list because neither starts ranging -- a failure in either
+         * leaves a device that was configured at most, and the sensor layer in a state a later close
+         * accepts. Listed positively so that a step added later is non-discardable until someone
+         * decides otherwise. */
+        return status_.failed_step == step::firmware || status_.failed_step == step::probe ||
+               status_.failed_step == step::identity || status_.failed_step == step::survivor ||
+               status_.failed_step == step::open || status_.failed_step == step::configure;
+    }
+    return false;
+}
+
 const char *state_name(state s)
 {
     switch (s) {
@@ -193,7 +262,9 @@ const char *step_name(step s)
     case step::none:      return "none";
     case step::firmware:  return "firmware";
     case step::probe:     return "probe";
+    case step::identity:  return "identity";
     case step::survivor:  return "survivor";
+    case step::close:     return "close";
     case step::open:      return "open";
     case step::configure: return "configure";
     case step::start:     return "start";

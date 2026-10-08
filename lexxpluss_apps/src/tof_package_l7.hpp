@@ -55,7 +55,9 @@ enum class step : uint8_t {
     none,
     firmware,   // the image-wide blob verification did not say the payload is usable
     probe,      // the probe did not complete, so presence is unknown
+    identity,   // something answered at the address and is not a VL53L7CX
     survivor,   // something answered and could not be quiesced
+    close,
     open,
     configure,
     start,
@@ -67,11 +69,25 @@ struct hooks {
     /* The image-wide verification, asked rather than performed: one payload, one record, one
      * accept-list. 0 means the firmware is readable now. */
     int (*ensure_verified)(){nullptr};
-    /* Sets *present. Returns 0 when the probe itself completed, whatever its verdict; non-zero is
-     * a transport error and *present is then meaningless. */
-    int (*probe)(void *ctx, uint8_t addr_7bit, bool *present){nullptr};
+    /* Sets *present and *wrong_identity. Returns 0 when the probe itself completed, whatever its
+     * verdict; non-zero is a transport error and both flags are then meaningless.
+     *
+     * THE THIRD OUTCOME IS NOT OPTIONAL HERE. `*present == false` with `*wrong_identity == true`
+     * means something answered and is not a VL53L7CX, which on this sensor must stop the run: the
+     * address is fixed, the device is always powered, and there is no enumerator to hand the
+     * anomaly to. Collapsing it into "nobody there" would be followed by an open onto a device
+     * nobody has identified. */
+    int (*probe)(void *ctx, uint8_t addr_7bit, bool *present, bool *wrong_identity){nullptr};
     /* Stop a device that answered before this run began. */
     int (*quiesce)(void *ctx, uint8_t addr_7bit){nullptr};
+    /* Returns the sensor object to a state an open may start from. Called before EVERY open, not
+     * only after a failure: a confirmed stop leaves the adapter `configured`, and tof_l7::open()
+     * requires `empty`, so without this an ordinary up -> stop -> up sequence fails on the second
+     * open. Must succeed and do nothing on an already-empty sensor. */
+    int (*close)(void *ctx){nullptr};
+    /* NEITHER open NOR configure MAY START A MEASUREMENT. That is what makes a failure in either of
+     * them recoverable without a power cycle, and discardable() depends on it. Only start() begins
+     * ranging, and its failure is a stop debt rather than a dead end for exactly that reason. */
     int (*open)(void *ctx, uint8_t addr_7bit){nullptr};
     int (*configure)(void *ctx, uint8_t frequency_hz){nullptr};
     int (*start)(void *ctx){nullptr};
@@ -121,6 +137,18 @@ public:
     int stop();
 
     status current() const { return status_; }
+
+    /* WHETHER THIS OBJECT CAN BE THROWN AWAY, which is the question a caller must ask before
+     * re-binding or re-initialising it. False whenever a device may still be measuring or holds a
+     * session nobody has accounted for: `ranging`, `stop_owed`, and `blocked` reached after
+     * something was opened. True from `idle`, and from a `blocked` that never opened anything --
+     * a refused verification, an unclassifiable probe, a wrong identity, a survivor that would not
+     * quiesce.
+     *
+     * Discarding a non-discardable object does not merely lose bookkeeping: it forgets a stop debt
+     * that only a successful stop may clear, and on this sensor the way back from a forgotten live
+     * session is a machine power cycle. */
+    bool discardable() const;
 
 private:
     int refuse(step s, int rc);
