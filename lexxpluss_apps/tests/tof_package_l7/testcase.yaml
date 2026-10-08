@@ -1,0 +1,4 @@
+tests:
+  tof.package.l7:
+    platform_allow: native_sim
+    tags: tof l7 package
