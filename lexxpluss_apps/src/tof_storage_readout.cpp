@@ -54,10 +54,30 @@ constexpr off_t kPartitionOffset{DT_REG_ADDR(DT_NODELABEL(storage_partition))};
  * which is why nothing here allocates a kilobyte. */
 constexpr size_t kLineBytes{16};
 
-/* HOW OFTEN THIS GIVES THE CPU BACK. A 128 KiB region is 8,192 lines; printing them in one
- * uninterruptible loop would hold the shell thread for the better part of a minute, which on this
- * board is long enough to matter -- board_controller feeds the independent watchdog, and a machine
- * that resets takes the whole power rail with it. So the loop yields every kYieldLines lines. */
+/* PACING, AND IT IS A TRANSPORT PROBLEM RATHER THAN A CPU ONE.
+ *
+ * Two separate reasons to pause, and the second one is the binding constraint:
+ *
+ *   - giving the CPU back. 8,192 lines printed in one uninterruptible loop would hold the shell
+ *     thread for the better part of a minute, and board_controller feeds the independent watchdog on
+ *     this board, where a reset takes the whole power rail with it.
+ *   - not outrunning the console. MEASURED on dasher1: a dump paced at 16 lines per 1 ms pause
+ *     delivered exactly the first 10 lines of each group and lost the other 6, identically on
+ *     repeated runs -- 800 of 2048 lines, residues 0..9 mod 16 present and 10..15 never. Ten lines
+ *     is about 600 B, and 16 lines is 960 B, which needs 84 ms to leave a 115200 baud port. The
+ *     firmware is not what drops them: CONFIG_SHELL_BACKEND_SERIAL is interrupt driven and its write
+ *     blocks on the ring buffer. The loss is on the host side, where /dev/ttyAHC2 is multiplexed
+ *     through socat over a UDP broadcast and an overrun is silent.
+ *
+ * So the defaults pause long enough for a group to actually leave the port, and both numbers are
+ * command arguments: the figure that matters belongs to a transport nobody here controls, and
+ * retuning it must not need another flash. */
+constexpr size_t kDefaultGroupLines{8};
+constexpr int32_t kDefaultPauseMs{60};
+constexpr size_t kMaxGroupLines{64};
+constexpr int32_t kMaxPauseMs{500};
+
+/* The census and the hash print a few lines in total, so their pacing is only about the CPU. */
 constexpr size_t kYieldLines{16};
 
 int read_at(const struct flash_area *fa, size_t off, uint8_t *dst, size_t len)
@@ -135,10 +155,19 @@ int cmd_dump(const struct shell *sh, size_t argc, char **argv)
      * with a clumsy signature. */
     const size_t off{argc > 1 ? strtoul(argv[1], nullptr, 16) : 0U};
     const size_t len{argc > 2 ? strtoul(argv[2], nullptr, 16) : 0x1000U};
+    const size_t group{argc > 3 ? strtoul(argv[3], nullptr, 10) : kDefaultGroupLines};
+    const int32_t pause{argc > 4 ? static_cast<int32_t>(strtol(argv[4], nullptr, 10))
+                                 : kDefaultPauseMs};
 
     if (off >= kPartitionSize || len == 0U || len > 0x8000U || off + len > kPartitionSize) {
-        shell_error(sh, "usage: pkg_storage dump [hex offset] [hex len <= 0x8000], region is 0x%zx",
+        shell_error(sh, "usage: pkg_storage dump [hex offset] [hex len <= 0x8000] [lines/pause] "
+                        "[pause ms], region is 0x%zx",
                     kPartitionSize);
+        return -EINVAL;
+    }
+    if (group == 0U || group > kMaxGroupLines || pause < 0 || pause > kMaxPauseMs) {
+        shell_error(sh, "pacing out of range: lines 1-%zu, pause 0-%d ms", kMaxGroupLines,
+                    kMaxPauseMs);
         return -EINVAL;
     }
 
@@ -159,8 +188,8 @@ int cmd_dump(const struct shell *sh, size_t argc, char **argv)
             shell_hexdump_line(sh, static_cast<unsigned int>(CONFIG_FLASH_BASE_ADDRESS +
                                                             kPartitionOffset + p),
                                buf, n);
-            if ((++lines % kYieldLines) == 0U)
-                k_msleep(1);
+            if ((++lines % group) == 0U)
+                k_msleep(pause);
         }
         return 0;
     });
@@ -207,7 +236,9 @@ int cmd_sha(const struct shell *sh, size_t, char **)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_pkg_storage,
     SHELL_CMD(info, NULL, "partition geometry and a per-4-KiB-block erased/not census", cmd_info),
-    SHELL_CMD_ARG(dump, NULL, "dump [hex off] [hex len<=0x8000] - read-only hexdump", cmd_dump, 1, 2),
+    SHELL_CMD_ARG(dump, NULL,
+                  "dump [hex off] [hex len<=0x8000] [lines/pause=8] [pause ms=60] - read-only hexdump",
+                  cmd_dump, 1, 4),
     SHELL_CMD(sha, NULL, "sha256 of the whole region, to check a host-side reassembly", cmd_sha),
     SHELL_SUBCMD_SET_END
 );
