@@ -54,24 +54,27 @@ constexpr off_t kPartitionOffset{DT_REG_ADDR(DT_NODELABEL(storage_partition))};
  * which is why nothing here allocates a kilobyte. */
 constexpr size_t kLineBytes{16};
 
-/* PACING, AND IT IS A TRANSPORT PROBLEM RATHER THAN A CPU ONE.
+/* PACING, AND WHY IT IS STILL HERE AFTER THE REASON FOR IT TURNED OUT TO BE WRONG.
  *
- * Two separate reasons to pause, and the second one is the binding constraint:
+ * The honest history, because the wrong version of it is already in the commit that added these
+ * arguments. A dump paced at 16 lines per 1 ms pause looked like it lost exactly the last 6 lines of
+ * every 16-line group, identically on repeated runs, and that was read as the host-side socat/UDP
+ * multiplexer overrunning. It was not. The host-side PARSER was wrong twice: shell_hexdump_line
+ * prints addresses in UPPERCASE hex and the parser matched [0-9a-f], so every line whose address
+ * contained A-F was discarded -- which is exactly the last six of each group -- and the two groups of
+ * eight bytes are separated by TWO spaces, which the parser's single optional space did not accept.
+ * Nothing was ever lost on the wire. A re-read of the same capture with a fixed parser gave all
+ * 2,048 lines of a 32 KiB chunk with no gaps.
  *
- *   - giving the CPU back. 8,192 lines printed in one uninterruptible loop would hold the shell
- *     thread for the better part of a minute, and board_controller feeds the independent watchdog on
- *     this board, where a reset takes the whole power rail with it.
- *   - not outrunning the console. MEASURED on dasher1: a dump paced at 16 lines per 1 ms pause
- *     delivered exactly the first 10 lines of each group and lost the other 6, identically on
- *     repeated runs -- 800 of 2048 lines, residues 0..9 mod 16 present and 10..15 never. Ten lines
- *     is about 600 B, and 16 lines is 960 B, which needs 84 ms to leave a 115200 baud port. The
- *     firmware is not what drops them: CONFIG_SHELL_BACKEND_SERIAL is interrupt driven and its write
- *     blocks on the ring buffer. The loss is on the host side, where /dev/ttyAHC2 is multiplexed
- *     through socat over a UDP broadcast and an overrun is silent.
+ * So the pause is only ever about the CPU, which is reason enough on its own: 8,192 lines printed in
+ * one uninterruptible loop would hold the shell thread for the better part of a minute, and
+ * board_controller feeds the independent watchdog on this board, where a reset takes the whole power
+ * rail with it.
  *
- * So the defaults pause long enough for a group to actually leave the port, and both numbers are
- * command arguments: the figure that matters belongs to a transport nobody here controls, and
- * retuning it must not need another flash. */
+ * The defaults stay conservative and both numbers stay arguments, because the console path is shared
+ * with a multiplexer this repository does not control, and if it ever does drop output the fix must
+ * not need another flash. `dump <off> <len> 16 1` restores the fast pacing that was measured to be
+ * lossless. */
 constexpr size_t kDefaultGroupLines{8};
 constexpr int32_t kDefaultPauseMs{60};
 constexpr size_t kMaxGroupLines{64};
