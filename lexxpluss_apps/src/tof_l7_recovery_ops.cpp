@@ -8,6 +8,7 @@
  */
 
 #include "tof_l7_recovery_ops.hpp"
+#include "tof_l7_probe_verdict.hpp"
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
 
@@ -71,68 +72,26 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     vl53l7cx_port_clear_error(dev->platform.port);
     uint8_t answered{0};
     const uint8_t uld_status{vl53l7cx_is_alive(dev, &answered)};
-    /* An image-wide argument fault outranks the classification below. It means this port or the
-     * ULD was handed a buffer it cannot process, so nothing about what the bus did is worth
-     * interpreting -- and reading it as "nobody there" would be the worst available answer. Not
-     * cleared here: a programming error does not stop being true because the next probe started. */
-    if (const int fault{vl53l7cx_port_argument_fault()}; fault != 0)
-        return fault;
-    const int port_errno{vl53l7cx_port_error(dev->platform.port)};
 
-    /* A CLEAN NACK WITH NOTHING ACKNOWLEDGED is the cold boot, and on a cold boot it is the answer
-     * every address gives. Reported as a completed probe with nobody there rather than as a
-     * failure, because a pass that called every cold boot a failure would say nothing about the
-     * boots that matter.
-     *
-     * BUT ONLY WITH NOTHING ACKNOWLEDGED, and that qualifier was missing. The port keeps the FIRST
-     * error it sees -- atomic_cas(&first_error, 0, rc) in platform.c -- and vl53l7cx_is_alive()
-     * issues all four of its transfers regardless, ORing their statuses with no early return. So a
-     * survivor whose page-select write NACKs while its two ID reads answer 0xF0 and 0x02 arrives
-     * here with -ENXIO AND an answer, and returning early threw the answer away: the address was
-     * reported empty, nothing was stopped, and no failure was recorded. The header reads "all
-     * absent on a warm reset" as evidence against the hypothesis this pass exists to test, so that
-     * case did not merely lose a sensor -- it argued for the wrong conclusion.
-     *
-     * ASKED OF THE TRANSPORT, NOT OF THE IDENTITY, and that is a correction to a first attempt
-     * that used `answered`. The ULD sets its alive flag only when BOTH identity bytes match, so
-     * zero does not mean "nothing answered": a device whose device-id read returns 0xF0 and whose
-     * revision-id read NACKs leaves the flag at zero -- patch 0003 makes sure it is a written zero
-     * -- and would have been filed as an empty address all over again, which is the same partial
-     * exchange hidden one layer down. The question is whether anything on the bus completed a
-     * transaction, and only the port can answer it.
-     *
-     * So: nothing completed and a NACK is the cold boot, reported as a completed probe with nobody
-     * there. Anything completed alongside a NACK is a partial exchange and a failed probe, -EIO,
-     * classed with the non-OK status below rather than with "nobody there". Whether an L7 actually
-     * NACKs mid-sequence on hardware is unverified; the classification does not depend on it,
-     * because the early return was discarding evidence either way. */
-    if (port_errno == -ENXIO)
-        return vl53l7cx_port_completed_transfers(dev->platform.port) != 0U ? -EIO : 0;
+    /* THE RULE ITSELF LIVES IN tof_l7_probe_verdict, and this adapter only gathers its inputs.
+     * It was reasoned out here first and is four cases deep -- a clean NACK with nothing
+     * acknowledged is the ordinary cold boot, the same NACK with transfers completed is a partial
+     * exchange, any other errno never reached the bus, and a non-OK ULD status with no transport
+     * error is an anomaly rather than an empty address. The Package sensor needs exactly that rule
+     * and cannot reach this file, which is guarded on ENABLE_TOF_CHAIN; two copies of a
+     * classification that must always agree is worse than one function both call. The reasoning
+     * moved with it, so nothing here repeats it. */
+    const tof_l7_probe::inputs in{
+        .argument_fault = vl53l7cx_port_argument_fault(),
+        .port_errno = vl53l7cx_port_error(dev->platform.port),
+        .completed = vl53l7cx_port_completed_transfers(dev->platform.port),
+        .uld_ok = uld_status == VL53L7CX_STATUS_OK,
+        .identity_matched = answered != 0U,
+    };
+    const tof_l7_probe::verdict v{tof_l7_probe::classify(in)};
 
-    /* -EIO or -ETIMEDOUT. The question did not reach the bus, so no answer was heard, and the
-     * caller must not treat this as an empty address. */
-    if (port_errno != 0)
-        return port_errno;
-
-    /* A NON-OK STATUS WITH NO TRANSPORT ERROR IS A FAILED PROBE, NOT AN EMPTY ADDRESS.
-     *
-     * This used to return 0 with *alive false, on the reading that a device which does not identify
-     * as an L7 should be passed over. That is a real case and it is NOT this one.
-     * vl53l7cx_is_alive() reports a wrong identity by setting its out-parameter to zero and
-     * returning OK -- the status can only become non-OK from one of the four platform calls it
-     * makes, and every one of those sets the port's sticky errno, which was checked above. So
-     * reaching here means the port said every transfer succeeded and the ULD still refused, which
-     * is an anomaly, and calling it "nobody there" would file it as the most ordinary observation a
-     * cold boot makes. */
-    if (uld_status != VL53L7CX_STATUS_OK)
-        return -EIO;
-
-    /* An ACK from something that is not an L7. Reported as a completed probe with nobody to stop,
-     * on purpose: this pass stops L7 sessions and has no business issuing a five-second stop
-     * sequence to a device that is not one. It is a real anomaly, and the place that acts on it is
-     * enumeration, whose census exists for exactly that. */
-    *alive = answered != 0U;
-    return 0;
+    *alive = v.present;
+    return v.rc;
 }
 
 int stop_ranging(void *ctx, uint8_t addr_7bit)

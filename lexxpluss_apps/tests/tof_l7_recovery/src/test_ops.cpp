@@ -29,6 +29,7 @@
 #include "tof_l7_recovery.hpp"
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
+#include "tof_l7_probe_verdict.hpp"
 #include "vl53l7cx_port.h"
 
 namespace
@@ -516,4 +517,103 @@ ZTEST(tof_l7_recovery_ops, test_an_argument_fault_is_not_reported_as_a_completed
                   "not 0, which the enumeration would read as a stopped survivor");
 
     sticky_argument_fault_ = 0;
+}
+
+/* ---- the probe rule, exhaustively and without a bus --------------------------------------- */
+
+/* The adapter above exercises this rule through a ULD spy, which is the right test for the
+ * adapter and a poor one for the rule: each case needs a whole fake probe. Extracting it made the
+ * decision addressable on its own, and every branch has a different failure direction, so each one
+ * is pinned here. */
+
+namespace probe = lexxhard::tof_l7_probe;
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_an_image_fault_outranks_everything)
+{
+    probe::inputs in{};
+    in.argument_fault = -EINVAL;
+    /* Everything else says "a healthy, present L7". */
+    in.port_errno = 0;
+    in.completed = 4;
+    in.uld_ok = true;
+    in.identity_matched = true;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_equal(v.rc, -EINVAL, "the build called the port wrongly; nothing else is interpretable");
+    zassert_false(v.present);
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_clean_nack_with_nothing_completed_is_the_cold_boot)
+{
+    probe::inputs in{};
+    in.port_errno = -ENXIO;
+    in.completed = 0;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_ok(v.rc, "a completed probe that found nobody, which costs a cold boot nothing");
+    zassert_false(v.present);
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_nack_with_transfers_completed_is_a_partial_exchange)
+{
+    probe::inputs in{};
+    in.port_errno = -ENXIO;
+    in.completed = 2;
+    /* The identity flag is zero here, which is exactly why the rule asks the transport instead:
+     * the ULD sets it only when BOTH bytes match, so zero does not mean nothing answered. */
+    in.identity_matched = false;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_equal(v.rc, -EIO, "something answered, so this is not an empty address");
+    zassert_false(v.present);
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_any_other_errno_never_reached_the_bus)
+{
+    const int errnos[]{-EIO, -ETIMEDOUT, -ENODEV};
+
+    for (const int e : errnos) {
+        probe::inputs in{};
+        in.port_errno = e;
+        in.completed = 1;
+        in.uld_ok = true;
+        in.identity_matched = true;
+
+        const probe::verdict v{probe::classify(in)};
+        zassert_equal(v.rc, e, "errno %d is passed through, not flattened to absent", e);
+        zassert_false(v.present);
+    }
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_non_ok_status_without_a_transport_error_is_an_anomaly)
+{
+    probe::inputs in{};
+    in.port_errno = 0;
+    in.completed = 4;
+    in.uld_ok = false;
+    in.identity_matched = false;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_equal(v.rc, -EIO,
+                  "every transfer succeeded and the ULD still refused; not 'nobody there'");
+    zassert_false(v.present);
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_completed_probe_reports_the_identity_it_found)
+{
+    probe::inputs matched{};
+    matched.uld_ok = true;
+    matched.completed = 4;
+    matched.identity_matched = true;
+    const probe::verdict found{probe::classify(matched)};
+    zassert_ok(found.rc);
+    zassert_true(found.present);
+
+    /* An ACK from something that is not an L7: a real anomaly, but one the caller acts on rather
+     * than one hidden behind an errno. */
+    probe::inputs unmatched{matched};
+    unmatched.identity_matched = false;
+    const probe::verdict other{probe::classify(unmatched)};
+    zassert_ok(other.rc, "the probe itself completed");
+    zassert_false(other.present);
 }
