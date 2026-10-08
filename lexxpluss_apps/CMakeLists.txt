@@ -123,11 +123,25 @@ endif()
 # The explicit source list compiles the ULD core and our platform only. The plugins and the STM32
 # BSP wrapper stay vendored and do not enter any image; see third_party/st/vl53l7cx_uld/UPSTREAM.md.
 if(ENABLE_TOF_L7_ULD)
-    # Same dependency, and for the same reason, as the cliff ULD: i2c2 belongs to the tug encoder
-    # until ENABLE_TOF_CHAIN hands it over. Refuse the combination at configure time.
-    if(NOT ENABLE_TOF_CHAIN)
-        message(FATAL_ERROR "ENABLE_TOF_L7_ULD requires ENABLE_TOF_CHAIN")
-    endif()
+    # NO CHAIN DEPENDENCY, and that is a change from the cliff ULD above rather than an oversight.
+    #
+    # This block used to refuse ENABLE_TOF_L7_ULD without ENABLE_TOF_CHAIN "for the same reason as
+    # the cliff ULD": i2c2 belongs to the tug encoder until the chain hands it over, and a ULD that
+    # reaches the same bus would give it two owners. That reason held while the L7 port resolved
+    # DT_NODELABEL(i2c2) itself. It no longer does -- the port takes its controller from a
+    # per-device vl53l7cx_port_context the caller supplies, and references no devicetree node at
+    # all -- so enabling this flag no longer names any bus, and cannot contend for i2c2 by
+    # construction.
+    #
+    # The cliff refusal above stays exactly as it was, because VL53L4CX_I2C_NODE in
+    # third_party/st/vl53l4cx_uld/zephyr/vl53lx_platform.c really is DT_NODELABEL(i2c2). The
+    # asymmetry is the point: one port has been decoupled and the other has not.
+    #
+    # WHAT REPLACES THE REFUSAL IS A RUNTIME REFUSAL, not nothing. tof_l7::open() rejects a null
+    # context and one that names no controller, and the port refuses every transfer without one.
+    # Handing an L7 the i2c2 device while the tug encoder still owns it is now a wiring decision in
+    # whoever builds the context, which is where the knowledge lives; a configure-time flag could
+    # only have guessed at it.
 
     # THE FILESYSTEM IS NOT REMOVED HERE, and the reason is a measurement rather than inheritance.
     #
