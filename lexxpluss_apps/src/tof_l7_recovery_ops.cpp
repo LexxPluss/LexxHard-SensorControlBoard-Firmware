@@ -90,6 +90,15 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     };
     const tof_l7_probe::verdict v{tof_l7_probe::classify(in)};
 
+    /* v.answered_without_matching_identity IS DELIBERATELY NOT FORWARDED, and the enumeration above
+     * is why. Its contract is a census: one pass over every chain position, comparing what answered
+     * against what the enable chain should have produced, so "this address answered and is not an
+     * L7" is a finding it already derives from the pass as a whole and routes around. Promoting it
+     * into this adapter's return would change a recovery pass's behaviour to no benefit.
+     *
+     * The Package sensor cannot do that -- one fixed address, nothing to compare against, no
+     * enumerator to report to -- which is why the field exists at all. See its handling in
+     * tof_package_l7.cpp. */
     *alive = v.present;
     return v.rc;
 }

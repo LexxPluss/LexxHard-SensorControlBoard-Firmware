@@ -48,9 +48,21 @@ struct inputs {
 
 struct verdict {
     /* 0 means the probe itself completed, whatever it found. Non-zero means it did not, and
-     * `present` is then meaningless -- the caller must not read it as an empty address. */
+     * neither flag below is meaningful -- the caller must not read it as an empty address. */
     int rc{0};
+    /* An L7 answered: the transfers completed and both identity bytes matched. */
     bool present{false};
+    /* SOMETHING ANSWERED AND IS NOT AN L7, which is a THIRD outcome and not a shade of the other
+     * two. The first version of this function collapsed it into `rc == 0, present == false` --
+     * the same answer it gives when nothing answered at all -- and the two need opposite
+     * handling.
+     *
+     * On the chain that collapse was tolerable: addresses are assigned by the enable chain, an
+     * unexpected device is a census anomaly, and enumeration exists to act on it. On the Package
+     * sensor it is not. There the address is fixed at 0x29, the device is always powered, and
+     * "nothing answered" is the abnormal case -- so a wrong identity reported as an empty address
+     * would be followed by an open, onto a device nobody has identified. */
+    bool answered_without_matching_identity{false};
 };
 
 verdict classify(const inputs &in);

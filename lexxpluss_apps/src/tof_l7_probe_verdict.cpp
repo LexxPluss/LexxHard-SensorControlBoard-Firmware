@@ -18,7 +18,7 @@ verdict classify(const inputs &in)
     /* AN IMAGE FAULT OUTRANKS THE CLASSIFICATION. Reading it as "nobody there" would be the worst
      * available answer: the reason nothing was heard is that this build called the port wrongly. */
     if (in.argument_fault != 0)
-        return {in.argument_fault, false};
+        return {in.argument_fault, false, false};
 
     /* A CLEAN NACK WITH NOTHING ACKNOWLEDGED is the cold boot, and on a cold boot it is the answer
      * every address gives. Reported as a completed probe with nobody there rather than as a
@@ -33,12 +33,12 @@ verdict classify(const inputs &in)
      * flag, because the ULD sets that flag only when both identity bytes match -- zero does not
      * mean nothing answered. */
     if (in.port_errno == -ENXIO)
-        return {in.completed != 0U ? -EIO : 0, false};
+        return {in.completed != 0U ? -EIO : 0, false, false};
 
     /* -EIO or -ETIMEDOUT. The question did not reach the bus, so no answer was heard, and the
      * caller must not treat this as an empty address. */
     if (in.port_errno != 0)
-        return {in.port_errno, false};
+        return {in.port_errno, false, false};
 
     /* A NON-OK STATUS WITH NO TRANSPORT ERROR IS A FAILED PROBE, NOT AN EMPTY ADDRESS.
      *
@@ -49,11 +49,15 @@ verdict classify(const inputs &in)
      * is an anomaly, and calling it "nobody there" would file it as the most ordinary observation a
      * cold boot makes. */
     if (!in.uld_ok)
-        return {-EIO, false};
+        return {-EIO, false, false};
 
-    /* A completed probe. `present` is the identity match: an ACK from something that is not an L7
-     * is a real anomaly, but it is one for the caller to act on, not one to hide behind an errno. */
-    return {0, in.identity_matched};
+    /* A COMPLETED PROBE, AND THE TWO OUTCOMES IT CAN HAVE ARE REPORTED SEPARATELY.
+     *
+     * Every transfer succeeded, so something on the bus acknowledged. Whether it is an L7 is the
+     * identity match, and a mismatch is reported in its own field rather than as "nobody there":
+     * the two need opposite handling, and only the caller knows which it can afford. See
+     * verdict::answered_without_matching_identity. */
+    return {0, in.identity_matched, !in.identity_matched};
 }
 
 }  // namespace lexxhard::tof_l7_probe

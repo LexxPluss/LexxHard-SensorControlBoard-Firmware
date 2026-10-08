@@ -541,6 +541,8 @@ ZTEST(tof_l7_recovery_ops, test_probe_rule_an_image_fault_outranks_everything)
     const probe::verdict v{probe::classify(in)};
     zassert_equal(v.rc, -EINVAL, "the build called the port wrongly; nothing else is interpretable");
     zassert_false(v.present);
+    zassert_false(v.answered_without_matching_identity,
+                  "a failed probe heard no identity to disagree with");
 }
 
 ZTEST(tof_l7_recovery_ops, test_probe_rule_a_clean_nack_with_nothing_completed_is_the_cold_boot)
@@ -552,6 +554,10 @@ ZTEST(tof_l7_recovery_ops, test_probe_rule_a_clean_nack_with_nothing_completed_i
     const probe::verdict v{probe::classify(in)};
     zassert_ok(v.rc, "a completed probe that found nobody, which costs a cold boot nothing");
     zassert_false(v.present);
+    /* THE ONE PAIR THAT MUST NOT BE CONFUSED. This is a completed probe with nobody there; the case
+     * below it is a completed probe with somebody wrong. Both report present == false, and only
+     * this field separates them -- on the Package sensor they need opposite handling. */
+    zassert_false(v.answered_without_matching_identity, "nothing answered at all");
 }
 
 ZTEST(tof_l7_recovery_ops, test_probe_rule_a_nack_with_transfers_completed_is_a_partial_exchange)
@@ -566,6 +572,8 @@ ZTEST(tof_l7_recovery_ops, test_probe_rule_a_nack_with_transfers_completed_is_a_
     const probe::verdict v{probe::classify(in)};
     zassert_equal(v.rc, -EIO, "something answered, so this is not an empty address");
     zassert_false(v.present);
+    zassert_false(v.answered_without_matching_identity,
+                  "the probe failed, so no identity verdict was reached; rc is what the caller acts on");
 }
 
 ZTEST(tof_l7_recovery_ops, test_probe_rule_any_other_errno_never_reached_the_bus)
@@ -582,6 +590,8 @@ ZTEST(tof_l7_recovery_ops, test_probe_rule_any_other_errno_never_reached_the_bus
         const probe::verdict v{probe::classify(in)};
         zassert_equal(v.rc, e, "errno %d is passed through, not flattened to absent", e);
         zassert_false(v.present);
+        zassert_false(v.answered_without_matching_identity,
+                      "errno %d never reached the bus, so no identity was heard", e);
     }
 }
 
@@ -597,6 +607,8 @@ ZTEST(tof_l7_recovery_ops, test_probe_rule_a_non_ok_status_without_a_transport_e
     zassert_equal(v.rc, -EIO,
                   "every transfer succeeded and the ULD still refused; not 'nobody there'");
     zassert_false(v.present);
+    zassert_false(v.answered_without_matching_identity,
+                  "reported through rc, not as an identity verdict: the ULD refused before giving one");
 }
 
 ZTEST(tof_l7_recovery_ops, test_probe_rule_a_completed_probe_reports_the_identity_it_found)
@@ -608,6 +620,8 @@ ZTEST(tof_l7_recovery_ops, test_probe_rule_a_completed_probe_reports_the_identit
     const probe::verdict found{probe::classify(matched)};
     zassert_ok(found.rc);
     zassert_true(found.present);
+    zassert_false(found.answered_without_matching_identity,
+                  "the identity matched, so there is nothing to disagree about");
 
     /* An ACK from something that is not an L7: a real anomaly, but one the caller acts on rather
      * than one hidden behind an errno. */
@@ -616,4 +630,44 @@ ZTEST(tof_l7_recovery_ops, test_probe_rule_a_completed_probe_reports_the_identit
     const probe::verdict other{probe::classify(unmatched)};
     zassert_ok(other.rc, "the probe itself completed");
     zassert_false(other.present);
+    zassert_true(other.answered_without_matching_identity,
+                 "THE THIRD OUTCOME: something is on the bus and it is not a VL53L7CX");
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_the_outcomes_never_overlap)
+{
+    /* Pinned as a property rather than per case, because the Package lifecycle branches on these
+     * one at a time and would mishandle any input that set two of them at once.
+     *
+     * NOTE WHAT THE PROPERTY IS NOT. It is not "exactly one flag is set": the ordinary cold boot is
+     * a completed probe with nobody there, which is rc == 0 and NEITHER flag -- a fourth outcome,
+     * and the one an empty address legitimately produces. The invariants that matter are that a
+     * failed probe asserts nothing about identity, and that "an L7 answered" and "something that is
+     * not an L7 answered" can never both be true. */
+    const probe::inputs cases[]{
+        {.argument_fault = -EINVAL},
+        {.argument_fault = -EINVAL, .completed = 4, .uld_ok = true, .identity_matched = true},
+        {.port_errno = -ENXIO, .completed = 0},
+        {.port_errno = -ENXIO, .completed = 3},
+        {.port_errno = -ENXIO, .completed = 3, .uld_ok = true, .identity_matched = true},
+        {.port_errno = -EIO},
+        {.port_errno = -ETIMEDOUT, .completed = 4, .uld_ok = true, .identity_matched = true},
+        {.completed = 4, .uld_ok = false},
+        {.completed = 4, .uld_ok = false, .identity_matched = true},
+        {.completed = 4, .uld_ok = true, .identity_matched = true},
+        {.completed = 4, .uld_ok = true, .identity_matched = false},
+        {.completed = 0, .uld_ok = true, .identity_matched = true},
+    };
+
+    for (const probe::inputs &in : cases) {
+        const probe::verdict v{probe::classify(in)};
+
+        zassert_false(v.present && v.answered_without_matching_identity,
+                      "an L7 answered and something that is not an L7 answered cannot both hold");
+        if (v.rc != 0) {
+            zassert_false(v.present, "a failed probe heard no L7");
+            zassert_false(v.answered_without_matching_identity,
+                          "a failed probe reached no identity verdict either, rc=%d", v.rc);
+        }
+    }
 }
