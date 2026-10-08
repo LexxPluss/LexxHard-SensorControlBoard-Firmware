@@ -11,7 +11,11 @@
 
 #pragma once
 
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+/* GUARDED ON THE L7 FLAG ALONE. This file drives one already-addressed device through a port
+ * context the caller supplies; it names no bus, no enable chain and no scheduler, so the chain
+ * flag was never its condition. Narrowing it does not reach the acquisition layer, which carries
+ * its own gate -- ENABLE_TOF_CHAIN && ENABLE_TOF_CLIFF_ULD in tof_acquisition.cpp. */
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <stdint.h>
 
@@ -136,4 +140,4 @@ int copy_raw(const VL53L7CX_ResultsData *input, sample *out);
 
 } // namespace lexxhard::tof_l7
 
-#endif // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif // ENABLE_TOF_L7_ULD

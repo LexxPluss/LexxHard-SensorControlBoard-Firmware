@@ -56,9 +56,16 @@ int bootstrap();
  *
  * Returns what the caller needs rather than what this call performed:
  *
- *   0         verified and readable now -- firmware_data() is non-null
- *   -EAGAIN   another consumer is still verifying; ask again
- *   other     the refusal errno, the same value bootstrap() would have returned
+ *   0              verified and readable now -- firmware_data() is non-null
+ *   -EINPROGRESS   another consumer is still verifying; ask again
+ *   other          the refusal errno, the same value bootstrap() would have returned
+ *
+ * -EINPROGRESS RATHER THAN -EAGAIN, and the difference is not cosmetic. refusal_errno() already
+ * maps status::uncommitted -- an interrupted provisioning attempt, which is a TERMINAL refusal --
+ * to -EAGAIN. Using -EAGAIN for "still verifying" as well would have made those two
+ * indistinguishable, so a consumer waiting for the check to finish would wait forever on a record
+ * that had already been refused. The refusal errnos are left exactly as they were; only the busy
+ * code is distinct from all of them.
  *
  * Still exactly one verification: this is bootstrap() plus a meaningful answer for the loser, not a
  * second path into the record. */

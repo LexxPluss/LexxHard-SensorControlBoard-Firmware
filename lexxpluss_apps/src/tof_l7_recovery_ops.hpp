@@ -31,6 +31,12 @@
 
 #pragma once
 
+/* STILL GUARDED ON BOTH FLAGS, and not because this adapter touches the chain -- it does not. All
+ * it does is probe and stop one device by address, which works on any bus given a port context.
+ * What is chain-specific is the boot flow ABOVE it: the pass that walks the enable chain's
+ * positions and decides what a cold or a surviving address means there. Until that upper layer has
+ * a non-chain caller there is nothing to widen this for, so the pairing is left alone rather than
+ * loosened speculatively. The adapter is reusable; the guard records who calls it today. */
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
 
 #include "tof_l7_recovery.hpp"

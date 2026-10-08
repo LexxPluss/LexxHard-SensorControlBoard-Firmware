@@ -107,12 +107,15 @@ int settled_errno()
     case stage::refused:
         return refusal_errno(report_.st);
     case stage::verifying:
-        return -EAGAIN;
+        /* -EINPROGRESS, not -EAGAIN: refusal_errno() already returns -EAGAIN for
+         * status::uncommitted, which is terminal. Sharing the value would make a consumer wait for
+         * a verification that had already finished and refused. */
+        return -EINPROGRESS;
     case stage::not_started:
         /* Unreachable through ensure_verified(), which only consults this after losing the CAS --
          * and losing it means the stage had already left not_started. Reported rather than
          * asserted, because a future caller reaching it would be a logic error worth seeing. */
-        return -EAGAIN;
+        return -EINPROGRESS;
     }
     return -EIO;
 }

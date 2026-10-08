@@ -590,7 +590,32 @@ ZTEST(tof_l7_blob, test_a_consumer_asking_mid_verification_is_told_to_ask_again)
     reentrant_answer = 0x7fffffff;
     zassert_ok(runtime::ensure_verified_for_test(reentrant_verify, golden_accept_list()));
 
-    zassert_equal(reentrant_answer, -EAGAIN,
+    zassert_equal(reentrant_answer, -EINPROGRESS,
                   "mid-verification is not a verdict, and must not read as one");
     zassert_equal(verify_calls, 1, "and the re-entrant ask did not start a second verification");
+}
+
+/* THE BUSY CODE MUST NOT COLLIDE WITH A REFUSAL ERRNO, and one refusal already used -EAGAIN:
+ * status::uncommitted, an interrupted provisioning attempt. It is TERMINAL -- the stage is
+ * `refused` and no further verification will happen -- so a second consumer told -EAGAIN would
+ * poll for a result that had already arrived. */
+ZTEST(tof_l7_blob, test_an_uncommitted_record_does_not_look_like_a_verification_in_flight)
+{
+    memset(region + blob::kHeaderSize + blob::golden::kPayloadLen, 0xFF,
+           blob::kCommitMarkerSize);
+
+    zassert_equal(runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list()),
+                  -EAGAIN, "the first consumer gets the refusal errno for uncommitted");
+
+    const runtime::snapshot state{runtime::current()};
+    zassert_equal(state.current_stage, runtime::stage::refused, "and the stage is terminal");
+    zassert_equal(state.verification.st, blob::status::uncommitted);
+
+    const int second{runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list())};
+    zassert_equal(second, -EAGAIN,
+                  "the second consumer gets the same terminal refusal, not the busy code");
+    zassert_not_equal(second, -EINPROGRESS,
+                      "which is the whole point: waiting here would never end");
+    zassert_equal(verify_calls, 1, "and no second verification was attempted");
+    zassert_is_null(runtime::firmware_data());
 }

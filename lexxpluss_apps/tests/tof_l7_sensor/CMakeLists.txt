@@ -18,7 +18,10 @@ target_sources(app PRIVATE
     src/test_main.cpp
     ${APP_SRC_DIR}/tof_l7_sensor.cpp
 )
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_L7_ULD)
+# ENABLE_TOF_L7_ULD alone, which is what makes the narrowed guard a compile-time property rather
+# than a claim. The sensor drives one addressed device through a caller-supplied port context; it
+# names no bus and no chain.
+target_compile_definitions(app PRIVATE ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
     ${L7_DIR}/zephyr

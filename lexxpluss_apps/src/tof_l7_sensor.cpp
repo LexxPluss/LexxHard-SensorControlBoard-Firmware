@@ -7,7 +7,7 @@
 
 #include "tof_l7_sensor.hpp"
 
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <errno.h>
 #include <string.h>
@@ -330,4 +330,4 @@ int read_once(sensor *device, scratch *work, sample *out,
 
 } // namespace lexxhard::tof_l7
 
-#endif // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif // ENABLE_TOF_L7_ULD
