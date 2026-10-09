@@ -2631,6 +2631,118 @@ ZTEST(tof_acquisition, test_the_overrun_count_belongs_to_one_configuration)
                   "the new configuration inherited %u misses from the old one", before);
 }
 
+/* WHAT A READER ON A BOARD CAN SEE. Review pointed out that the overrun counter had no reader
+ * outside these tests: nothing in the firmware read it, so the degradation it exists to reveal was
+ * invisible without a debugger. The readers added for that are a log line on the first miss and a
+ * `tof cliff status` subcommand, and both need the period beside the count -- a count means nothing
+ * without the cadence it was measured against. These cases pin the published period, because the
+ * shell handler is a printf over exactly these two accessors and has nothing else to get wrong. */
+ZTEST(tof_acquisition, test_the_published_period_is_the_one_init_accepted)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::configured_cycle_period_ms(), kCyclePeriodMs,
+                  "a reader must see the cadence that was configured, not a default");
+}
+
+/* A REFUSED init() MUST NOT MOVE THE ANSWER. The status reader has no way to tell "this is the
+ * cadence in force" from "this is a cadence somebody tried to install", so a rejected
+ * configuration that overwrote the published period would make the report describe a cadence the
+ * thread is not running at -- and zero the count that belongs to the one it is. */
+ZTEST(tof_acquisition, test_a_refused_init_leaves_the_published_cadence_and_the_count_standing)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;   /* longer than the 50 ms period: unschedulable by construction */
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(300);
+    zassert_equal(acq::try_stop(), 0);
+
+    const uint32_t count{acq::cycle_overruns()};
+    zassert_true(count > 0U, "the fixture must actually produce overruns, or this proves nothing");
+
+    /* teardown() first, because init() answers -EALREADY while the subsystem is live and would
+     * never reach the validation this case is about. teardown() itself touches neither the count
+     * nor the published period: retiring the subsystem is not a statement about what the last
+     * cadence was or how it did. */
+    zassert_equal(acq::teardown(), 0);
+    zassert_equal(acq::cycle_overruns(), count, "teardown() must not be the thing that clears it");
+
+    acq::config bad{make_config(1)};
+    bad.periods.cycle_period_ms = 0;
+    zassert_equal(acq::init(bad), -EINVAL, "and it must really be refused");
+
+    zassert_equal(acq::configured_cycle_period_ms(), kCyclePeriodMs,
+                  "a refused configuration published its period anyway");
+    zassert_equal(acq::cycle_overruns(), count,
+                  "a refused configuration cleared the count that belongs to the live one");
+}
+
+/* THE WARNING IS RATE-LIMITED BY THE COUNTER, so what has to hold is that the edge recurs per
+ * configuration. The loop logs when atomic_inc() returns 0 -- the transition from "has met every
+ * deadline" to "has missed one" -- which is why a board that cannot keep up gets one line and not
+ * one per cycle. The log call itself is not observable from a host suite; the condition it is
+ * gated on is, and it is this: non-zero, then zero again after a new cadence is accepted, then
+ * non-zero again. A counter that only ever rose would warn once per boot and stay silent about
+ * every later cadence. */
+ZTEST(tof_acquisition, test_a_new_cadence_re_arms_the_first_miss_warning)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(300);
+    zassert_equal(acq::try_stop(), 0);
+    zassert_true(acq::cycle_overruns() > 0U, "the first cadence missed, as the fixture intends");
+
+    zassert_equal(acq::teardown(), 0);
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::cycle_overruns(), 0U, "so the edge is available again");
+
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(300);
+    zassert_equal(acq::try_stop(), 0);
+    zassert_true(acq::cycle_overruns() > 0U,
+                 "and the second cadence can report its own first miss");
+}
+
+/* READING IT CHANGES NOTHING, which is the one promise a diagnostic has to keep. The status handler
+ * asks these accessors while the thread is running, so a read that reset a counter, or that waited
+ * on the lock the cycle holds, would turn looking at the cadence into interfering with it. */
+ZTEST(tof_acquisition, test_reading_the_cadence_does_not_disturb_the_thread)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(200);
+
+    const int cycles_before{rec.cycles};
+    const uint32_t overruns_before{acq::cycle_overruns()};
+
+    /* Read far more often than any operator would, from a thread that is not the acquisition
+     * thread -- the shell's position exactly. */
+    for (int i{0}; i < 200; ++i) {
+        (void)acq::thread_running();
+        (void)acq::configured_cycle_period_ms();
+        (void)acq::cycle_overruns();
+    }
+
+    zassert_equal(acq::configured_cycle_period_ms(), kCyclePeriodMs, "the period survived reading");
+    zassert_true(acq::cycle_overruns() >= overruns_before,
+                 "reading the count must not reset it (%u before, %u after)", overruns_before,
+                 acq::cycle_overruns());
+    zassert_true(acq::thread_running(), "and the thread is still running");
+
+    k_msleep(200);
+    zassert_true(rec.cycles > cycles_before,
+                 "cycles kept advancing across the reads (%d then %d)", cycles_before, rec.cycles);
+    zassert_equal(acq::try_stop(), 0);
+}
+
 ZTEST(tof_acquisition, test_a_stop_request_ends_the_cycles_and_the_thread_stops_the_devices)
 {
     /* The first acceptance boundary: after a stop request nothing enters a new cycle, and the STOP

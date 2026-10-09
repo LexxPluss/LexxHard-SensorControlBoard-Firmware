@@ -97,6 +97,17 @@ atomic_t thread_stop_rc_{ATOMIC_INIT(0)};
  * others are. */
 atomic_t tally_overruns_{ATOMIC_INIT(0)};
 
+/* The cadence a reader is allowed to see, published rather than read out of cfg_.
+ *
+ * cfg_ is a plain struct written by init() and read by the acquisition thread, so a shell thread
+ * reaching into it would be reading a structure nobody synchronises for the benefit of readers. The
+ * alternative -- taking chain_lock() to answer -- is worse: it parks the shell behind a cycle in
+ * progress, which is the wait thread_running() already refuses to pay for a fact. One atomic word
+ * carries the only field a reader needs, and the fact it is 0 until a successful init() is itself
+ * the answer to "is a cadence configured". Written on the success path only, so a refused init
+ * leaves the previous answer standing. */
+atomic_t published_period_ms_{ATOMIC_INIT(0)};
+
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
  * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed.
@@ -808,8 +819,11 @@ int init(const config &cfg)
 
     facts_ = cycle_facts{};
     /* The overrun count describes a cadence, and init() is where the cadence is chosen. Carrying it
-     * across would attribute the old period's misses to the new one. */
+     * across would attribute the old period's misses to the new one. Clearing it is also what
+     * re-arms the one warning the loop emits, which is correct for the same reason: the new period
+     * has not missed anything yet, and whether it can be met is a fresh question. */
     atomic_clear(&tally_overruns_);
+    atomic_set(&published_period_ms_, static_cast<atomic_val_t>(cfg.periods.cycle_period_ms));
     /* A fresh start is a fresh epoch, so the first cycle must carry 0. */
     next_cycle_seq_ = 0;
     facts_.source_count = cfg.source_count;
@@ -1301,6 +1315,11 @@ uint32_t cycle_overruns()
     return static_cast<uint32_t>(atomic_get(&tally_overruns_));
 }
 
+uint32_t configured_cycle_period_ms()
+{
+    return static_cast<uint32_t>(atomic_get(&published_period_ms_));
+}
+
 static void thread_entry(void *, void *, void *)
 {
     /* The whole ULD lifecycle, on one thread, in one place.
@@ -1338,8 +1357,22 @@ static void thread_entry(void *, void *, void *)
             next_cycle_due(due_ms, k_uptime_get(), cfg_.periods.cycle_period_ms)};
 
         due_ms = step.next_due_ms;
-        if (step.overran)
-            atomic_inc(&tally_overruns_);
+        if (step.overran) {
+            /* ONCE PER CONFIGURED CADENCE, and the rate limit is the counter itself rather than a
+             * timer: atomic_inc() returns the value before the increment, so this is the edge from
+             * "has met every deadline" to "has missed one". A board that cannot keep up misses
+             * every cycle, and a line per cycle would bury the log that is supposed to reveal it.
+             * init() clears the count, so choosing a new cadence asks the question again.
+             *
+             * WHAT IT SAYS AND WHAT IT DOES NOT. A missed deadline is not by itself a verdict on
+             * the hardware: scheduling latency or one slow transfer produces the same miss, and so
+             * does sustained interference from elsewhere in the system. The line reports the miss
+             * and the period it was measured against and stops there. Whether the misses keep
+             * happening is a different question, and `tof cliff status` is where it is asked. */
+            if (atomic_inc(&tally_overruns_) == 0)
+                LOG_WRN("acquisition missed its cycle deadline; configured period %u ms",
+                        cfg_.periods.cycle_period_ms);
+        }
 
         /* The cadence, and the stop signal, in one wait. Sleeping for the period and checking the
          * flag afterwards would make every stop request cost up to a full period before it was even
