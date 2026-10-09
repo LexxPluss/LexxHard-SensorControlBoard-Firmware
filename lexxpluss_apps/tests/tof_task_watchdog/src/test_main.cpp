@@ -703,3 +703,84 @@ ZTEST(tof_task_watchdog, test_a_send_that_never_returns_is_still_caught_on_its_o
     zassert_true(stopped, "a send that never returned was fed forever");
     zassert_true((h.st.why & wd::stuck_send_acq) != 0, "why 0x%08x", h.st.why);
 }
+
+/* THE FIRST OPEN CANNOT WAIT FOR THE CYCLE IT IS PREVENTING, and before this it did.
+ *
+ * Built in the production order: the thread brings the sensors up and only then runs a cycle, so at
+ * the first open acquisition and its sender have completed nothing. The baseline requires both, so
+ * an open that never returns holds the baseline off for ever -- and the phase that waits for the
+ * baseline was answering "feed" on every sample, which put the L7 in-flight bound out of reach.
+ * The header offers that bound as what covers the two-second ULD download at open(); this is the
+ * case where the offer was empty. */
+ZTEST(tof_task_watchdog, test_a_first_l7_open_cannot_wait_for_the_cycle_it_prevents)
+{
+    harness h;
+
+    h.healthy_pre_l7();
+    h.in.baseline_point = true;
+    h.in.l7_expected = true;
+    /* Nothing has cycled yet, which is the whole point: this is before the first cycle, not after
+     * a board that stopped cycling. */
+    h.in.acquisition = {0, 0};
+    h.in.send_acq = {0, 0};
+    h.in.l7 = {1, 0};  // one open, in flight
+
+    (void)h.tick(1, advance{.acq = false, .send_acq = false, .l7 = false});
+    zassert_equal(h.st.current, wd::phase::waiting, "the baseline cannot be ready yet");
+    zassert_true(h.st.l7_watching, "the L7 monitor arms at the first open, wherever it falls");
+
+    const bool stopped = h.run_until_stopped(
+        20, 1000, advance{.acq = false, .send_acq = false, .l7 = false});
+    zassert_true(stopped, "a first open that never returned held off the baseline and was fed "
+                          "forever");
+    zassert_true((h.st.why & wd::stuck_l7) != 0, "why 0x%08x", h.st.why);
+}
+
+/* THE CONTROL, and it is the case the whole phase exists for: a post-DFU boot with no host. Every
+ * sender legitimately blocks, no baseline is reachable, and the board must be fed indefinitely. If
+ * the judgement above had been written as "judge everything in waiting too", this is what it would
+ * have broken. */
+ZTEST(tof_task_watchdog, test_a_board_waiting_for_its_host_is_still_fed_indefinitely)
+{
+    harness h;
+
+    h.healthy_pre_l7();
+    h.in.baseline_point = true;
+    h.in.l7_expected = true;
+    h.in.acquisition = {0, 0};
+    h.in.send_acq = {0, 0};
+    h.in.send_workq = {0, 0};
+    h.in.l7 = {0, 0};  // nothing opened: no L7 operation to judge
+
+    zassert_false(h.run_until_stopped(60, 1000, advance{.acq = false, .send_acq = false,
+                                                        .send_workq = false, .l7 = false}),
+                  "a board waiting for its host was reset: why 0x%08x", h.st.why);
+    zassert_equal(h.st.current, wd::phase::waiting);
+}
+
+/* AND A DECLARED OPERATION STILL COVERS THE L7 IN THIS PHASE, with its own cap doing the bounding.
+ * The blob verification runs here and is declared, so an image that hashes 86 KB on the main stack
+ * must not be judged against the five-second L7 bound while it does. */
+ZTEST(tof_task_watchdog, test_a_declaration_still_covers_the_l7_before_the_baseline)
+{
+    harness h;
+
+    h.healthy_pre_l7();
+    h.in.baseline_point = true;
+    h.in.l7_expected = true;
+    h.in.acquisition = {0, 0};
+    h.in.send_acq = {0, 0};
+    h.in.l7 = {1, 0};
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+
+    /* Past the L7 bound and inside the declaration's cap. */
+    for (int i{0}; i < 20; ++i)
+        zassert_true(h.tick(1000, advance{.acq = false, .send_acq = false, .l7 = false}),
+                     "a declared operation was judged on the L7 bound: why 0x%08x", h.st.why);
+
+    /* And the declaration's own cap is what ends it. */
+    zassert_true(h.run_until_stopped(30, 1000, advance{.acq = false, .send_acq = false,
+                                                       .l7 = false}));
+    zassert_true((h.st.why & wd::long_operation_over) != 0, "why 0x%08x", h.st.why);
+}

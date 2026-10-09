@@ -154,6 +154,44 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
             st.current = phase::stopped;
             return false;
         }
+        /* AND A FIRST L7 OPEN, because it is the one activity that can PREVENT the baseline it
+         * would otherwise be judged after -- so waiting for the baseline to judge it is waiting
+         * for something it is holding up.
+         *
+         * The production thread brings every sensor up before it runs a cycle, and the baseline
+         * requires acquisition AND the acquisition sender to have completed once. An open that
+         * never returns leaves both counters at zero for ever, baseline_ready() stays false, and
+         * this phase answered "feed" on every sample -- so the L7 in-flight bound, which the
+         * header offers as the thing that covers the two-second ULD download at open(), was never
+         * reached. The whole point of arming the L7 monitor at the first open rather than at the
+         * baseline was to cover this operation, and the judgement was on the wrong side of the
+         * phase test.
+         *
+         * THE IN-FLIGHT HALF ONLY, which is what UINT32_MAX says: nothing periodic is expected
+         * before the baseline, so "it has completed nothing" is the normal state here and silence
+         * is not a question that can be asked yet.
+         *
+         * NOT EVERY ACTIVITY, and this does not close the class. A cliff open() that hangs is
+         * invisible to all of this: nothing brackets it, and bring_up() is not inside the
+         * acquisition pair either, so no counter moves and there is nothing to time. Bounding a
+         * bring-up that reports no progress at all needs its own mechanism and is not this. */
+        if (st.l7_watching) {
+            uint32_t l7_why{judge(in.l7, in.now_ms, st.l7_begun_ms, st.l7_seen_ms, b.l7_ms,
+                                  UINT32_MAX, stuck_l7, silent_l7)};
+            if (in.long_operation) {
+                /* A declaration covers the L7, and it carries its own cap above. Held forward for
+                 * the same reason as in the armed phase: a declaration spanning the open would
+                 * otherwise leave a stale clock for the first sample after it. */
+                l7_why &= ~kLongOperationSuspends;
+                st.l7_seen_ms = in.now_ms;
+                st.l7_begun_ms = in.now_ms;
+            }
+            if (l7_why != 0) {
+                st.why = l7_why;
+                st.current = phase::stopped;
+                return false;
+            }
+        }
         if (in.baseline_point && baseline_ready(in)) {
             st.current = phase::armed;
             st.armed_ms = in.now_ms;

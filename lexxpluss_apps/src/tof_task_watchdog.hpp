@@ -84,7 +84,16 @@
  * verifying the stored L7 blob, which hashes 86 KB on the main stack before any baseline exists.
  * The other two candidates do not need declaring and are named here so nobody adds them by reflex.
  * The ULD download at open() takes about two seconds per sensor and is covered by the L7 in-flight
- * bound, which is longer than that.
+ * bound, which is longer than that -- and that sentence was an empty offer until the bound was
+ * actually applied before the baseline. Opens happen BEFORE the first cycle, the baseline requires
+ * a cycle, so an open that never returned held off the baseline and the phase that waits for it
+ * fed for ever. The in-flight half is now judged in `waiting` as well, which is what the L7
+ * monitor arming at the first open was for.
+ *
+ * A CLIFF open() THAT HANGS IS STILL INVISIBLE, and this is the honest limit. Nothing brackets the
+ * cliff adapter's open or configure, and bring_up() is not inside the acquisition pair either, so
+ * no counter moves and there is nothing to time. Bounding a bring-up that reports no progress at
+ * all needs a mechanism this file does not have.
  *
  * Commissioning is NOT one of them, and an earlier version of this header said it was harmless on
  * the grounds that it "blocks no thread, so the periodic work continues". That was wrong:
