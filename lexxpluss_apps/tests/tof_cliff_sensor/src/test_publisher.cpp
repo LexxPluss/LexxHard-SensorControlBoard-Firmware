@@ -771,6 +771,63 @@ int op_read(void *, void *, void *, struct tof_cliff_sample *out, acq::op_status
 
 const acq::source_ops kOps{op_open, op_configure, op_start, op_read, op_stop};
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* A grid source in an L7 build is a real source with a real table, not a hole in the descriptor
+ * array. It answers every call and produces a fresh sample, so this test asserts that the cliff
+ * publisher ignores grid data because nothing routes grid data to it -- not because the grid
+ * sources never ran. */
+namespace l7i = lexxhard::tof_l7;
+
+int grid_open(void *, uint8_t, l7i::operation_status *st) { *st = l7i::operation_status{}; return 0; }
+int grid_configure(void *, uint8_t, l7i::operation_status *st)
+{
+    *st = l7i::operation_status{};
+    return 0;
+}
+int grid_start(void *, l7i::operation_status *st)
+{
+    *st = l7i::operation_status{};
+    if (start_fails) {
+        st->failed_stage = l7i::stage::start;
+        return -EIO;
+    }
+    return 0;
+}
+int grid_read(void *, void *, l7i::sample *out, l7i::operation_status *st)
+{
+    *st = l7i::operation_status{};
+    *out = l7i::sample{};
+    out->fresh = true;
+    for (size_t z{0}; z < l7i::kZoneCount; ++z) {
+        out->distance_mm[z] = canned_mm;
+        out->target_status[z] = 5;
+        out->target_count[z] = 1;
+    }
+    st->sample_present = true;
+    return 0;
+}
+int grid_stop(void *, l7i::operation_status *st) { *st = l7i::operation_status{}; return 0; }
+
+int grid_close(void *, l7i::operation_status *st) { *st = l7i::operation_status{}; return 0; }
+
+const acq::grid_source_ops kGridOps{grid_open,  grid_configure, grid_start,
+                                    grid_read,  grid_stop,      grid_close};
+
+/* The L4 table a grid source must never reach. Handing it the working kOps is what would let a
+ * mis-dispatch pass as a correct run. */
+bool wrong_table_called{false};
+int trap_open(void *, uint8_t, acq::op_status *) { wrong_table_called = true; return -EIO; }
+int trap_configure(void *, acq::op_status *) { wrong_table_called = true; return -EIO; }
+int trap_start(void *, void *, acq::op_status *) { wrong_table_called = true; return -EIO; }
+int trap_stop(void *, acq::op_status *) { wrong_table_called = true; return -EIO; }
+int trap_read(void *, void *, void *, struct tof_cliff_sample *, acq::op_status *)
+{
+    wrong_table_called = true;
+    return -EIO;
+}
+const acq::source_ops kTrapOps{trap_open, trap_configure, trap_start, trap_read, trap_stop};
+#endif
+
 acq::mapping_state provider() { return acq::mapping_state::proven; }
 uint32_t clock_ms() { return 0; }
 
@@ -781,6 +838,16 @@ acq::config make_acq_config()
         descs[i].dev = &fake_dev[i];
         descs[i].scratch = &fake_scratch[i];
         descs[i].stream = &fake_stream[i];
+#if defined(ENABLE_TOF_L7_ULD)
+        /* One table each, chosen by model -- build_descs() has already set kind. */
+        if (descs[i].kind == acq::model::l7_grid) {
+            descs[i].ops = &kTrapOps;
+            descs[i].grid_ops = &kGridOps;
+            descs[i].grid_frequency_hz = 10;
+            continue;
+        }
+        descs[i].grid_ops = nullptr;
+#endif
         descs[i].ops = &kOps;
     }
     c.sources = descs;
