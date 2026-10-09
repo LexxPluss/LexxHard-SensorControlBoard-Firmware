@@ -42,7 +42,10 @@ clean:
 	        build-tof-l7 build-test-tof-l7-port build-test-tof-l7-sensor \
 	        build-test-tof-l7-blob build-test-tof-l7-uld-stop \
 	        build-test-tof-l7-recovery \
-	        build-test-tof-commission-wire build-test-tof-commission-session
+	        build-test-tof-commission-wire build-test-tof-commission-session \
+	        build-test-tof-commission-runtime build-test-tof-commission-worker \
+	        build-test-tof-commission-bind build-test-tof-commission-bind-session \
+	        build-test-tof-commission-entropy-poll build-auto-commission
 
 .PHONY: distclean
 distclean: clean
@@ -154,6 +157,24 @@ test_tof_commission_worker:
 test_tof_commission_bind:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind -d build-test-tof-commission-bind -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The cases that draw a session, in their own binary and as ONE ordered scenario. Separate from
+# tof_commission_bind for the same reason the worker suite is separate: a session creates the worker,
+# the worker outlives the case that made it, and bind::start() initialises the session layer every
+# time it is called. One session per binary is how the suites keep the ONE INIT PER BOOT
+# precondition that tof_commission_runtime.hpp states and nothing inside the runtime enforces.
+.PHONY: test_tof_commission_bind_session
+test_tof_commission_bind_session:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind_session -d build-test-tof-commission-bind-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The deadline-bounded entropy read. Header-only over injected seams, because the production
+# translation unit is nailed to the st,stm32-rng devicetree node and a host suite cannot compile it
+# -- which is why the decision it makes had no test before the loop was separated out.
+.PHONY: test_tof_commission_entropy_poll
+test_tof_commission_entropy_poll:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_entropy_poll -d build-test-tof-commission-entropy-poll -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # Host-side tests for the prove-then-start sequencer: every path that must NOT reach start(), the
 # bounded retry, and the hooks that refuse before anything is attempted. No device, no bus, no proof.
