@@ -23,6 +23,13 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
+# The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
+# nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
+# find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
+# carries the record must not be configurable without it. See overlays/forensics_dtcm.overlay, and
+# src/tof_watchdog_tombstone.cpp for the compile-time check that this line is what satisfies.
+list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_dtcm.overlay)
+
 # An L7 image verifies the stored blob on the main stack at boot, which does not fit the default
 # main stack: see overlays/tof_l7.conf for the per-frame measurement. Kconfig is fixed by
 # find_package(Zephyr) below, so the fragment is added here, and only for L7 builds -- every other
@@ -68,6 +75,32 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/tof_commission_map.c
 # separate artefacts and are not on this path by accident.
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs
                                        ${CMAKE_CURRENT_SOURCE_DIR}/../docs/can)
+
+# ONE BOUNDED WAY TO TRANSMIT, enforced here because the unbounded way looks identical at the
+# call site. can_send() with a null callback waits for acknowledgement with K_FOREVER whatever
+# timeout is passed to it (see src/zcan_bounded_send.hpp), so a bus with no other node awake
+# stops the calling thread for good. Every sender goes through zcan_bounded_send::send(); this
+# refuses to configure if a null-callback call comes back, in a new module or a merge, rather
+# than letting it ship and be found on a vehicle whose host was switched off.
+file(GLOB_RECURSE _can_send_sources ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp)
+set(_blocking_can_send "")
+foreach(_f ${_can_send_sources})
+    if(_f STREQUAL ${CMAKE_CURRENT_SOURCE_DIR}/src/zcan_bounded_send.cpp)
+        continue()  # the one place allowed to call can_send at all
+    endif()
+    file(STRINGS ${_f} _hits REGEX "can_send[ \t]*\\(.*(nullptr|NULL)[ \t]*,[ \t]*(nullptr|NULL)")
+    if(_hits)
+        get_filename_component(_name ${_f} NAME)
+        list(APPEND _blocking_can_send ${_name})
+    endif()
+endforeach()
+if(_blocking_can_send)
+    message(FATAL_ERROR
+        "can_send() with a null callback waits for acknowledgement forever, whatever timeout "
+        "it is given: a bus with no other node awake stops the caller permanently. Use "
+        "zcan_bounded_send::send() instead. Found in: ${_blocking_can_send}")
+endif()
 
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)
@@ -157,9 +190,11 @@ endif()
 
 # Hanging-object ToF: the vendored VL53L7CX ULD, our Zephyr platform layer, and the blob machinery
 # that lets the 86,016-byte device firmware live in storage_partition instead of in the signed
-# image. Off by default, and nothing in this branch turns it on: the grid operations that would
-# call the adapter are still the named -ENOSYS stubs in tof_acquisition.cpp, so with the flag off
-# the image is unchanged and with it on the driver is present and unreachable.
+# image. Off by default, and nothing in this branch turns it on. The acquisition layer now has a
+# grid lifecycle -- open, configure, start, read, stop, dispatched per model -- but no production
+# descriptor binds it: build_descriptors() still hands every grid position the named -ENOSYS stub
+# in tof_acquisition.cpp. So with the flag off the image is unchanged and with it on the driver is
+# present and unreachable.
 #
 # The explicit source list compiles the ULD core and our platform only. The plugins and the STM32
 # BSP wrapper stay vendored and do not enter any image; see third_party/st/vl53l7cx_uld/UPSTREAM.md.
@@ -173,19 +208,36 @@ if(ENABLE_TOF_L7_ULD)
     # THE FILESYSTEM IS NOT REMOVED HERE, and the reason is a measurement rather than inheritance.
     #
     # The development images that carried this driver also dropped the FAT stack, on the grounds
-    # that an L7 image does not fit beside it. Measured on this branch: chain + cliff + L7 with the
-    # filesystem still configured signs at 245,504 B against the 261,712 B ceiling, 16,208 B spare,
-    # and 72 B more than the same image without the flag.
+    # that an L7 image does not fit beside it. Re-measured after this branch merged prod at
+    # 0084f750, against the clean Zephyr tree, chain + cliff with the filesystem still configured,
+    # VERSION=9.9.9-cmp, against the 261,712 B ceiling for zephyr.signed.bin:
     #
-    # READ THAT CAREFULLY RATHER THAN AS A PASS. It is 72 B because nothing calls the driver: the
-    # grid operations are still the -ENOSYS stubs in tof_acquisition.cpp, so --gc-sections drops the
-    # ULD, the platform layer, the adapter and the blob machinery. Compiled, those objects are
-    # 11,531 B of text -- a reference for what binding them will add, not a prediction, since
-    # inlining and --gc-sections move it again once there are callers. The publisher, the runtime
-    # monitoring and the boot recovery are each still to come and none of them is measured here.
-    # So the headroom after wiring is an estimate of roughly 4.7 KB and no more than that: it is a
-    # reason to expect the decision to be forced later, and it is NOT an account of why the
-    # development images overflowed, which was never measured contribution by contribution.
+    #   flag off   245,608 B signed, 16,104 B spare
+    #   flag on    247,560 B signed, 14,152 B spare   (+1,952 B)
+    #
+    # ONE TREE WITH AND WITHOUT THE FLAG is the only thing those two lines compare. What this
+    # branch adds is a different number: in the flag-on configuration this tree is +1,880 B signed
+    # against prod at 0084f750, and that belongs to the grid lifecycle and the grid publisher
+    # rather than to the driver. Both figures move with the base, so re-measure them rather than
+    # carry them forward.
+    #
+    # READ THE +1,952 B CAREFULLY RATHER THAN AS A PASS. It is not the driver's cost. No
+    # production table binds the L7 adapter: build_descriptors() still gives every grid position
+    # the named -ENOSYS stub and leaves grid_ops null, so the grid lifecycle is reachable only
+    # through a function-pointer table nothing fills, and --gc-sections keeps the dispatch while
+    # dropping most of what it would have called. The two ULD objects this list compiles carry
+    # 5,932 B of text and 2,673 B of rodata before the link -- a reference for what binding them
+    # will move, not a prediction, since inlining and --gc-sections change it again once there are
+    # callers.
+    #
+    # The grid publisher and packer are NOT in this list, and nothing of them survives the link
+    # today: the flag-on image carries no tof_grid_pub or grid packer symbol, and they are built
+    # and exercised by lexxpluss_apps/tests/tof_cliff_sensor only. Their in-image cost, and the
+    # cost of an adapter that is actually bound, are both unmeasured and belong to the wiring
+    # change that creates the callers. The runtime monitoring and the boot recovery are likewise
+    # not measured here. So nothing here supports an estimate of the headroom that will be left
+    # after wiring, and none is offered -- and none of it is an account of why the development
+    # images overflowed, which was never measured contribution by contribution.
     #
     # It is not forced by THIS change, and removing ~26 KB of product content is not something a
     # driver's build block should do on the way past. It is a change about what the image CONTAINS,

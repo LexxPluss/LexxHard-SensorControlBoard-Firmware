@@ -84,6 +84,13 @@
 #include <zephyr/kernel.h>
 
 #include "tof_cliff_sensor.h"
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* For grid_source_ops and the grid sample hook. An image without the grid driver has no grid
+ * sources to describe, and these types do not exist in it. */
+#include "tof_l7_sample.hpp"
+#include "tof_l7_status.hpp"
+#endif
 #include "tof_mapping_state.hpp"
 
 namespace lexxhard::tof_acq {
@@ -103,6 +110,41 @@ enum class model : uint8_t {
 // for "where did it fail and with which errno" costs nothing and keeps one triage
 // vocabulary. It says nothing about what the failure means.
 using op_status = struct tof_cliff_read_status;
+
+
+/* WHICH VENDOR'S VOCABULARY `stage` IS IN. The two ULDs' enums are unrelated numbers that happen
+ * to share a range, so a stage is meaningless without the domain that interprets it. `none` is the
+ * state of a source that has not been read this cycle -- not a third device. */
+enum class status_domain : uint8_t {
+    none,
+    l4,
+    l7,
+};
+
+/* A MODEL-NEUTRAL DIAGNOSTIC SNAPSHOT, and the reason this type exists at all.
+ *
+ * `source_facts::status` used to be an op_status -- that is, literally a tof_cliff_read_status --
+ * for every source including a grid sensor. An L7 failure had to be expressed in L4 words or not
+ * at all, and `stage` silently meant a different thing depending on which sensor filled it in.
+ * This carries the domain with the number so the two can never be read as the same scale.
+ *
+ * WHAT IT DOES NOT ABSORB, deliberately. The four error classifications on source_facts stay where
+ * they are: this is raw device detail, and they are the per-cycle MEANING, which was decided in
+ * review rather than derived from an errno. Nor does it carry rearm_failed or cleanup_pending --
+ * those are sticky facts about the device across cycles, and a per-read snapshot is the wrong
+ * place for them. The development branch's version of this struct had its own rearm_failed beside
+ * source_facts', which is two fields with one name and two lifetimes. */
+struct source_status {
+    status_domain domain{status_domain::none};
+    /* Raw, and interpreted only inside `domain`. */
+    uint8_t stage{0};
+    int port_errno{0};
+    int uld_status{0};
+    bool sample_present{false};
+};
+
+/* Names the stage in its own domain. Returns "none" for a source nothing has read yet. */
+const char *operation_stage_name(const source_status &status);
 
 // One source's device operations. There is no enable, no address change and no reset:
 // the enable line is the chain's addressing mechanism and belongs to commissioning.
@@ -131,12 +173,49 @@ const source_ops &l7_stub_ops();
 // The cliff ops, bound to the real tof_cliff_sensor functions.
 const source_ops &l4_cliff_ops();
 
+/* THE GRID PATH'S OWN TABLE, because an 8x8 zone frame is not a tof_cliff_sample and no amount of
+ * naming makes source_ops carry one. The two tables are deliberately not unified: the status types
+ * are each vendor's own, and a common one would have to be the union of two unrelated vocabularies.
+ *
+ * There is no stream argument. The L4 adapter's replay guard compares a stream count against the
+ * previous one from the same device; the grid adapter has no such history to keep. */
+#if defined(ENABLE_TOF_L7_ULD)
+struct grid_source_ops {
+    int (*open)(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st);
+    int (*configure)(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st);
+    int (*start)(void *dev, tof_l7::operation_status *st);
+    int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
+                            tof_l7::operation_status *st);
+    int (*stop)(void *dev, tof_l7::operation_status *st);
+    /* RETURNS AN OPENED-BUT-UNUSABLE SENSOR TO UNOPENED, which the bring-up needs and had no way
+     * to do. tof_l7::close() in production.
+     *
+     * Without it a configure() that failed left the adapter `opened` with nothing owed -- no
+     * cleanup_pending, started false -- so the next bring-up skipped the pre-stop, called open()
+     * on a sensor that was already open, and got -EPERM for the rest of the boot. One source lost
+     * until reboot because one configure call failed once.
+     *
+     * It is not the stop path. close() refuses a sensor that is or may be ranging; the obligation
+     * after a failed start() is still a stop, and that is what cleanup_pending is for. */
+    int (*close)(void *dev, tof_l7::operation_status *st);
+};
+#else
+/* An image without the grid driver still has the descriptor field, so a build that does not carry
+ * the ULD does not need a different source_desc. The table can only ever be null there. */
+struct grid_source_ops;
+#endif
+
 struct source_desc {
     model kind{model::l4_cliff};
     uint8_t addr_7bit{0};
     // Opaque to this layer. The mapping owns what a role means; treating it as a number
     // here is what keeps position policy out of the scheduler.
     uint8_t role_id{0};
+    /* EXPLICIT FOR A GRID SOURCE, with no scheduler default, for the same reason the cliff
+     * cadence has none: a number invented at this level becomes the specification by being the
+     * only one available. Zero means the caller has not configured this source, and configure()
+     * refuses rather than picking something. Unused by an l4_cliff source. */
+    uint8_t grid_frequency_hz{0};
     void *dev{nullptr};      // VL53L4CX_Object_t* for l4_cliff
     void *scratch{nullptr};  // tof_cliff_scratch* for l4_cliff, deliberately SHARED
     // tof_cliff_stream_state* for l4_cliff, and deliberately NOT shared: the replay
@@ -146,6 +225,9 @@ struct source_desc {
     // cannot detect a repeat across cycles - which is the only thing it is for.
     void *stream{nullptr};
     const source_ops *ops{nullptr};
+    /* For an l7_grid source, and the only table used for one. A descriptor carrying the wrong one
+     * for its kind is a configuration error the bring-up refuses rather than works around. */
+    const grid_source_ops *grid_ops{nullptr};
 };
 
 // What happened to one source in one cycle. No classification, no reduction, no alarm.
@@ -195,7 +277,10 @@ struct source_facts {
      * Cleared only by a stop that returns success. Recovery is a stop, never a retried start:
      * a half-armed device has to come down before it can go up. */
     bool cleanup_pending{false};
-    op_status status{};
+    /* The last device-level detail recorded for this source, in the vocabulary of whichever model
+     * produced it. See source_status: the domain is part of the value because `stage` is a raw
+     * vendor number and the two vendors' enums are unrelated. */
+    source_status status{};
 };
 
 struct cycle_facts {
@@ -230,6 +315,13 @@ struct sinks {
                             const struct tof_cliff_sample &sample);
     // Sent from startup, on its own timer, never from the acquisition path.
     void (*on_cliff_health)(uint32_t snapshot, mapping_state state);
+#if defined(ENABLE_TOF_L7_ULD)
+    /* The grid equivalent of on_cliff_sample, and separate for the same reason the ops tables are:
+     * an 8x8 zone frame is not a tof_cliff_sample. Fires under the chain lock, after the read and
+     * before on_cycle, so a sink sees one consistent ordering across both models. */
+    void (*on_grid_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
+                           const tof_l7::sample &sample);
+#endif
 };
 
 // Both are unresolved symbols in the cliff wire contract, so neither has a default and
