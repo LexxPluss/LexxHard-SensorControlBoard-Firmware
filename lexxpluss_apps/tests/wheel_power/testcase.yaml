@@ -1,5 +1,0 @@
-tests:
-  wheel_power.output:
-    platform_allow: native_sim
-    tags: wheel_power
-    timeout: 300

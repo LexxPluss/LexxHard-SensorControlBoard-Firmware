@@ -44,7 +44,6 @@
 #include "common.hpp"
 #include "led_controller.hpp"
 #include "power_state.hpp"
-#include "v_wheel_output.hpp"
 
 namespace {
     constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{5000};
@@ -959,46 +958,52 @@ private:
 
 class dcdc_converter { // Variables Implemented
 public:
-    // wheel_step writes v_wheel through its owner and returns false on failure.
-    // Returns true when the v_wheel step succeeded.
-    template <typename WheelStep>
-    bool set_enable(bool enable, WheelStep &&wheel_step) {
-        gpio_dt_spec gpio_dev;
+    void set_enable(bool enable) {
+        gpio_dt_spec gpio_dev; 
         // 0=OFF, 1=ON
-        if (!wheel_step()) {
-            return false;
-        }
-        k_msleep(3000);
         if (enable) {
+            gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
+            gpio_pin_set_dt(&gpio_dev, 1);
+            k_msleep(3000);
             gpio_dev = GET_GPIO(v_peripheral);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
-                return true;
+                return;
             }
             gpio_pin_set_dt(&gpio_dev, 1);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v24);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
-                return true;
+                return;
             }
             gpio_pin_set_dt(&gpio_dev, 0);
         } else {
+            gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
+                return;
+            }
+            gpio_pin_set_dt(&gpio_dev, 0);
+            k_msleep(3000);
             gpio_dev = GET_GPIO(v_peripheral);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
-                return true;
+                return;
             }
             gpio_pin_set_dt(&gpio_dev, 0);
             k_msleep(3000);
             gpio_dev = GET_GPIO(v24);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
-                return true;
+                return;
             }
             gpio_pin_set_dt(&gpio_dev, 1);
         }
-        return true;
     }
     bool is_ok(bool is_maintenance) {
         // 0:OK, 1:NG
@@ -1330,12 +1335,10 @@ public:
         }
     }
     void power_on() {
-        static_cast<void>(dcdc.set_enable(
-            true, [this] { return v_wheel.enter(v_wheel_state::STANDBY, wheelEnterInputs()); }));
+        dcdc.set_enable(true);
     }
     void power_off() {
-        static_cast<void>(dcdc.set_enable(
-            false, [this] { return v_wheel.enter(v_wheel_state::OFF, wheelEnterInputs()); }));
+        dcdc.set_enable(false);
     }
     void auto_charge_on() {
         ac.set_enable(true);
@@ -1395,9 +1398,48 @@ private:
 
     void poll() {
         auto wheel_relay_control = [&](){
-            v_wheel.poll(wheelInputs());
-        };
+#ifdef ENABLE_PUSH_MODE
+            // The ESW means the robot is pushed by hand, so an ROS cut must not drop the wheel supply.
+            bool wheel_poweroff{mbd.is_wheel_poweroff() && !esw.is_asserted()};
+#else
+            bool wheel_poweroff{mbd.is_wheel_poweroff()};
+#endif
+            if (last_wheel_poweroff != wheel_poweroff) {
+                last_wheel_poweroff = wheel_poweroff;
+                gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                if (!gpio_is_ready_dt(&gpio_dev)) {
+                    LOG_ERR("gpio_is_ready_dt Failed\n");
+                    return;
+                }
 
+                gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
+                LOG_DBG("wheel power control %d!\n", wheel_poweroff);
+            }
+#ifdef ENABLE_PUSH_MODE
+            if (esw.is_asserted()) {
+                // Keep the wheel supplied while the robot is pushed by hand.
+                gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                if (!gpio_is_ready_dt(&gpio_dev)) {
+                    LOG_ERR("gpio_is_ready_dt Failed\n");
+                    return;
+                }
+
+                gpio_pin_set_dt(&gpio_dev, 1);
+            } else if (!ksw.is_running()) {
+#else
+            if (!ksw.is_running()) {
+#endif
+                gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                if (!gpio_is_ready_dt(&gpio_dev)) {
+                    LOG_ERR("gpio_is_ready_dt Failed\n");
+                    return;
+                }
+
+                gpio_pin_set_dt(&gpio_dev, 0);
+                LOG_DBG("wheel power was cut off\n");
+            }
+        };
+        
         psw.poll();
         rsw.poll();
         ksw.poll();
@@ -1760,6 +1802,13 @@ private:
             break;
         }
 
+#ifdef ENABLE_PUSH_MODE
+        // The ESW means the robot is pushed by hand, so the wheel stays supplied.
+        int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running() || esw.is_asserted())};
+#else
+        int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running())};
+#endif
+
         switch (newstate) {
         case POWER_STATE::OFF: {
             LOG_INF("enter OFF\n");
@@ -1768,8 +1817,7 @@ private:
             psw.set_led(false);
             rsw.set_led(false);
             bsw.request_reset();
-            static_cast<void>(dcdc.set_enable(
-                false, [this] { return v_wheel.enter(v_wheel_state::OFF, wheelEnterInputs()); }));
+            dcdc.set_enable(false);
 
             // Set LED OFF
             led_controller::msg const msg_led{led_controller::msg::NONE, 0, 1};
@@ -1778,19 +1826,20 @@ private:
         } break;
         case POWER_STATE::TIMEROFF: {
             LOG_INF("enter TIMEROFF\n");
-            static_cast<void>(v_wheel.enter(v_wheel_state::OTHER, wheelEnterInputs()));
             timer_poweroff = k_uptime_get();    // timer reset
         } break;
         case POWER_STATE::WAIT_SW: {
             LOG_INF("enter WAIT_SW\n");
-            static_cast<void>(v_wheel.enter(v_wheel_state::OTHER, wheelEnterInputs()));
         } break;
         case POWER_STATE::POST: {
             LOG_INF("enter POST\n");
             psw.set_led(true);
-            if (!v_wheel.enter(v_wheel_state::POST, wheelEnterInputs())) {
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
             }
+            gpio_pin_set_dt(&gpio_dev, 0);
             timer_post = k_uptime_get();    // timer reset
             // Set LED
             led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 0};
@@ -1801,12 +1850,14 @@ private:
             LOG_INF("enter STANDBY\n");
             mbd.reset_heartbeat();
             psw.set_led(true);
-            const bool wheel_ok = dcdc.set_enable(
-                true, [this] { return v_wheel.enter(v_wheel_state::STANDBY, wheelEnterInputs()); });
+            dcdc.set_enable(true);
             applyWheelEnAction(plan_enter_wheel_en(POWER_STATE::STANDBY, ksw.is_maintenance()));
-            if (!wheel_ok) {
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
             }
+            gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
 
             // Wait for dcdc is ready
@@ -1816,9 +1867,12 @@ private:
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
             applyWheelEnAction(plan_enter_wheel_en(POWER_STATE::NORMAL, ksw.is_maintenance()));
-            if (!v_wheel.enter(v_wheel_state::NORMAL, wheelEnterInputs())) {
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
             }
+            gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
             charge_guard_asserted = true;
             use_software_brake = false;
@@ -1827,19 +1881,20 @@ private:
         case POWER_STATE::SUSPEND: {
             LOG_INF("enter SUSPEND\n");
             psw.set_led(true);
-            if (!v_wheel.enter(v_wheel_state::SUSPEND, wheelEnterInputs())) {
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
             }
+            gpio_pin_set_dt(&gpio_dev, bat_out_state);
             ac.set_enable(false);
         } break;
         case POWER_STATE::RESUME_WAIT: {
             LOG_INF("enter RESUME_WAIT\n");
             rsw.set_led(true);
-            static_cast<void>(v_wheel.enter(v_wheel_state::RESUME_WAIT, wheelEnterInputs()));
         } break;
         case POWER_STATE::AUTO_CHARGE: {
             LOG_INF("enter AUTO_CHARGE\n");
-            static_cast<void>(v_wheel.enter(v_wheel_state::AUTO_CHARGE, wheelEnterInputs()));
             applyWheelEnAction(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, ksw.is_maintenance()));
             ac.set_enable(true);
             current_check_enable = false;
@@ -1854,18 +1909,24 @@ private:
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("enter MANUAL_CHARGE\n");
             wsw.set_disable(true);
-            if (!v_wheel.enter(v_wheel_state::MANUAL_CHARGE, wheelEnterInputs())) {
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
             }
+            gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
         } break;
         case POWER_STATE::LOCKDOWN: {
             LOG_INF("enter LOCKDOWN\n");
             is_lockdown = true;
             wsw.set_disable(true);
-            if (!v_wheel.enter(v_wheel_state::LOCKDOWN, wheelEnterInputs())) {
+            gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+            if (!gpio_is_ready_dt(&gpio_dev)) {
+                LOG_ERR("gpio_is_ready_dt Failed\n");
                 return;
             }
+            gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
 
             // Set LED
@@ -1875,7 +1936,6 @@ private:
         } break;
         case POWER_STATE::OFF_WAIT: {
             LOG_INF("enter OFF_WAIT\n");
-            static_cast<void>(v_wheel.enter(v_wheel_state::OTHER, wheelEnterInputs()));
             timer_shutdown = k_uptime_get();    // timer reset
             if (psw.get_state() == power_switch::STATE::PUSHED || should_turn_off() || should_manual_charge() || ksw.is_transition_to_running())
                 shutdown_reason = SHUTDOWN_REASON::SWITCH;
@@ -1965,44 +2025,6 @@ private:
     bool should_manual_charge() {
         return mc.is_plugged();
     }
-    // The KSW-changed-to-running cycle moves every polling state to OFF_WAIT (restart path), so the periodic
-    // decision does not supply power in that cycle.
-    v_wheel_inputs wheelInputs() const {
-        return {mbd.is_wheel_poweroff(), ksw.is_running() && !ksw.is_transition_to_running(), esw.is_asserted()};
-    }
-
-    // State entries decide from the raw key switch, as before the owner existed.
-    v_wheel_inputs wheelEnterInputs() const {
-        return {mbd.is_wheel_poweroff(), ksw.is_running(), esw.is_asserted()};
-    }
-
-    struct v_wheel_gpio_writer {
-        bool last_supplied{false};
-
-        bool write(bool supplied, v_wheel_write_reason reason) {
-            gpio_dt_spec const gpio_dev = GET_GPIO(v_wheel);
-            if (!gpio_is_ready_dt(&gpio_dev)) {
-                LOG_ERR("gpio_is_ready_dt Failed\n");
-                return false;
-            }
-            gpio_pin_set_dt(&gpio_dev, supplied ? 1 : 0);
-            if (reason == v_wheel_write_reason::POLL && supplied != last_supplied) {
-                LOG_DBG("wheel power %d\n", supplied ? 1 : 0);
-            }
-            last_supplied = supplied;
-            return true;
-        }
-    };
-
-    v_wheel_gpio_writer v_wheel_writer;
-#ifdef ENABLE_PUSH_MODE
-    // Push Mode: the ESW supplies the wheel regardless of the key switch.
-    using v_wheel_policy = push_policy;
-#else
-    using v_wheel_policy = standard_policy;
-#endif
-    v_wheel_output<v_wheel_gpio_writer, v_wheel_policy> v_wheel{v_wheel_writer};
-
     power_switch psw;
     resume_switch rsw;
     key_switch ksw;
@@ -2032,7 +2054,7 @@ private:
     k_timer current_check_timeout, charge_guard_timeout;
     const device *dev_wdi{nullptr};
     bool poweron_by_switch{false}, current_check_enable{false}, charge_guard_asserted{false},
-         is_lockdown{false}, is_in_maintenance_mode{false},
+         last_wheel_poweroff{false}, is_lockdown{false}, is_in_maintenance_mode{false},
          use_software_brake{false}, can_skip_wait_sw{false};
 } impl;
 
