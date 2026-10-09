@@ -38,9 +38,11 @@ clean:
 	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
-	        build-test-tof-enumerator build-tof-chain build-tof-l7 \
-	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob \
-	        build-test-tof-l7-uld-stop build-test-tof-l7-recovery
+	        build-test-tof-enumerator build-test-tof-auto-commission build-tof-chain \
+	        build-tof-l7 build-test-tof-l7-port build-test-tof-l7-sensor \
+	        build-test-tof-l7-blob build-test-tof-l7-uld-stop \
+	        build-test-tof-l7-recovery \
+	        build-test-tof-commission-wire build-test-tof-commission-session
 
 .PHONY: distclean
 distclean: clean
@@ -136,6 +138,35 @@ test_tof_mapping_authority:
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the prove-then-start sequencer: every path that must NOT reach start(), the
+# bounded retry, and the hooks that refuse before anything is attempted. No device, no bus, no proof.
+.PHONY: test_tof_auto_commission
+test_tof_auto_commission:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the automatic-commissioning downlink. Two suites, and the split is the point:
+# one is about bytes and the other about transactions, and a PR that only proved the byte layout
+# would have proved nothing about what a second request does.
+
+# The codec and the internal-to-wire mapper, against fixed byte vectors. GOLDEN MEANS BYTE-EXACT:
+# every positive case asserts the actual eight bytes rather than round-tripping through the encoder,
+# which would agree with whatever layout the encoder chose. The mapper is compiled with
+# -Werror=switch-enum by its own CMakeLists, so adding an enumerator to any mapped enum fails the
+# build until it is given a wire meaning.
+.PHONY: test_tof_commission_wire
+test_tof_commission_wire:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_wire -d build-test-tof-commission-wire -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The protocol state machine: sessions, duplicate requests, retransmission, sequence and epoch
+# checks, and the attempt budget. It links the real sequencer from the prove-then-start PR, so what
+# it drives is the production call order rather than a stand-in for it.
+.PHONY: test_tof_commission_session
+test_tof_commission_session:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_session -d build-test-tof-commission-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
 .PHONY: test_tof_tail_isolation
