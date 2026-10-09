@@ -200,14 +200,19 @@ result start(const struct device *can_dev, const config &cfg)
      * worker_started as the only trace, which is what let the suite's `worker_started ||
      * rt::running()` read the previous case's worker and agree.
      *
-     * THE FAILURE BRANCH IS UNREACHABLE BEHIND THE GUARD ABOVE and is still reported rather than
-     * papered over. rt::start() refuses with -EPERM only when the runtime is unconfigured or has
-     * no session, which out.rc == 0 has just ruled out, and with -EALREADY only when a worker
-     * exists, which rt::running() was asked about before anything moved. Reaching it means two
-     * threads called this at once, and then the truthful answer is that THIS call delivered no
-     * worker: the filter it just added is taken back out so the result describes one thing instead
-     * of half of two. The filter and the worker the other caller installed are left alone, and so
-     * is can_, which that worker sends through. */
+     * THE GUARD ABOVE DOES NOT MAKE THIS FAILURE IMPOSSIBLE, and it is worth being exact about
+     * what it does. rt::running() and rt::start() are two steps, not one: the guard rules out a
+     * caller that starts after another has finished, which is the sequence this firmware has --
+     * one call, from the bootstrap. It does not rule out two callers in the window between the
+     * two steps, where one takes the worker claim and the other arrives here with -EALREADY. For
+     * the same reason -EPERM is ruled out only by out.rc == 0 above, which another caller's
+     * re-init could in principle have moved. Both need a second caller that this firmware does
+     * not have, and neither is prevented by construction.
+     *
+     * So the branch is reported rather than papered over. The truthful answer is that THIS call
+     * delivered no worker: the filter it just added is taken back out, so the result describes one
+     * thing instead of half of two. The filter and the worker the other caller installed are left
+     * alone, and so is can_, which that worker sends through. */
     const int start_rc{rt::start()};
     out.worker_started = start_rc == 0;
     if (!out.worker_started) {
