@@ -208,3 +208,67 @@ ZTEST(tof_l7_port, test_swap_buffer_matches_the_uld_word_conversion)
 	VL53L7CX_SwapBuffer(data, 3);
 	zassert_equal(vl53l7cx_port_error(), -EINVAL);
 }
+
+/* ---- how many transactions completed, which the error alone cannot say ---- */
+
+/* WHY THE PORT COUNTS AT ALL. The recovery pass has to tell an address where nothing answered --
+ * the ordinary cold boot -- from a survivor that acknowledged part of an exchange and NACKed the
+ * rest. The first error cannot say: both arrive as -ENXIO. The ULD's own alive flag cannot either,
+ * because it is set only when BOTH identity bytes match, so a device that answers one read and
+ * refuses the other reports zero exactly like an empty address. Only "did anything complete"
+ * separates them, and only the port knows. */
+ZTEST(tof_l7_port, test_completed_transfers_counts_what_got_through)
+{
+	uint8_t byte = 0;
+
+	zassert_equal(vl53l7cx_port_completed_transfers(), 0U, "cleared in the fixture");
+
+	zassert_equal(VL53L7CX_WrByte(&platform, 0, 0), VL53L7CX_STATUS_OK);
+	zassert_equal(vl53l7cx_port_completed_transfers(), 1U);
+	zassert_equal(VL53L7CX_RdByte(&platform, 0, &byte), VL53L7CX_STATUS_OK);
+	zassert_equal(vl53l7cx_port_completed_transfers(), 2U);
+
+	vl53l7cx_port_clear_error();
+	zassert_equal(vl53l7cx_port_completed_transfers(), 0U,
+		      "the count belongs to one ULD operation, so the clear resets it with the error");
+}
+
+/* A TRANSACTION THAT FAILED DID NOT COMPLETE. This is the direction that matters: a non-zero count
+ * is evidence that something on the bus answered, so counting attempts instead of completions would
+ * make every cold boot look like a partial exchange. */
+ZTEST(tof_l7_port, test_a_failed_transaction_is_not_counted)
+{
+	fake_i2c_fail_on(1, -ENXIO);
+	zassert_equal(VL53L7CX_WrByte(&platform, 0, 0), VL53L7CX_STATUS_ERROR);
+	zassert_equal(vl53l7cx_port_completed_transfers(), 0U, "a NACK is not a completion");
+	zassert_equal(vl53l7cx_port_error(), -ENXIO);
+}
+
+/* AND THE PARTIAL EXCHANGE, which is the whole case this exists for: one transaction through, the
+ * next refused. The error says -ENXIO and the count says something answered, and the pass needs
+ * both to reach the right conclusion. */
+ZTEST(tof_l7_port, test_a_partial_exchange_shows_both_an_error_and_a_completion)
+{
+	uint8_t byte = 0;
+
+	zassert_equal(VL53L7CX_WrByte(&platform, 0, 0), VL53L7CX_STATUS_OK);
+	fake_i2c_fail_on(2, -ENXIO);
+	zassert_equal(VL53L7CX_RdByte(&platform, 1, &byte), VL53L7CX_STATUS_ERROR);
+
+	zassert_equal(vl53l7cx_port_error(), -ENXIO, "the refusal is recorded");
+	zassert_equal(vl53l7cx_port_completed_transfers(), 1U, "and so is what got through");
+}
+
+/* A segmented operation that fails midway counts the pieces that landed, not the operation. The
+ * recovery pass only asks whether the count is zero, but a caller reading it as "operations" would
+ * be wrong, so the meaning is pinned. */
+ZTEST(tof_l7_port, test_segments_are_counted_individually)
+{
+	uint8_t payload[VL53L7CX_PORT_MAX_TRANSFER * 2 + 1] = {0};
+
+	fake_i2c_fail_on(2, -ETIMEDOUT);
+	zassert_equal(VL53L7CX_WrMulti(&platform, 0x0100, payload, sizeof(payload)),
+		      VL53L7CX_STATUS_ERROR);
+	zassert_equal(vl53l7cx_port_completed_transfers(), 1U,
+		      "the first segment landed, the second did not, and the rest never ran");
+}
