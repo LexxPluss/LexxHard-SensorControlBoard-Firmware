@@ -39,6 +39,24 @@
 		stop-join-timeout-ms = <500>;
 		acq-stack-size = <2048>;
 		acq-thread-priority = <7>;
+		/* THE FOUR CLIFF SENSORS' RANGING PROFILE, and setting it changes
+		 * how the robot ranges. Until now configure() was a no-op that
+		 * reported success, so the parts ran on what VL53LX_DataInit left
+		 * them: MEDIUM at 33333 us.
+		 *
+		 * 15000 is the budget the E3 rate experiment ran at, and the
+		 * per-corner rate recorded for E3 belongs to that configuration.
+		 * It is a historical measurement on a different image -- not a
+		 * property of this one, and not a guarantee of any frequency.
+		 * What a shorter budget costs in maximum distance, ambient-light
+		 * behaviour and error rate has not been measured at this value on
+		 * the installed harness.
+		 *
+		 * Read by an image that enables ENABLE_TOF_CLIFF_ULD. This overlay
+		 * is shared with firmware_tof_chain, which does not -- that image
+		 * carries the properties and reads neither. */
+		cliff-timing-budget-us = <15000>;
+		cliff-distance-mode = <2>;	/* MEDIUM */
 	};
 };
 

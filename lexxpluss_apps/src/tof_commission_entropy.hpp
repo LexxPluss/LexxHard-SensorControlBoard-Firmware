@@ -23,6 +23,14 @@
  * request is answered `no_session`. A board that cannot tell this boot from the last one has no
  * business acting on a request that claims to know.
  *
+ * AND THE READ IS BOUNDED, which that sentence quietly assumed and did not get. Zephyr's blocking
+ * entropy call has no failure return on this driver -- it waits on a semaphore with K_FOREVER until
+ * the pool refills and then returns zero -- and the refill interrupt leaves early on a seed or
+ * clock error without giving that semaphore. An RNG that stopped producing therefore parked the
+ * caller for ever instead of failing, which took the bootstrap thread with it and left no log. The
+ * read is now a deadline-bounded poll of the non-blocking entropy call, and a deadline that expires
+ * returns -ETIMEDOUT, so the paragraph above is reachable rather than aspirational.
+ *
  * A ZERO IS NOT ONE OF THOSE. Zero is reserved as "no token", but one zero from a healthy generator
  * is an ordinary sample -- once in 2^32 -- so the session layer draws AGAIN and refuses only on a
  * second zero. Treating a single zero as a failure would leave roughly one board in four billion

@@ -1,0 +1,42 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * The top 4 KiB of DTCM, reserved for records that must outlive a reset.
+ *
+ * WHY THIS IS A FILE AND NOT A COMMENT. A record placed at a fixed DTCM address on the strength of
+ * "the application links nothing into DTCM" is not reserved; it is unclaimed. That observation is
+ * true of every image built so far and it is not a guarantee: the first translation unit to ask for
+ * DTCM would be placed there by a linker that was never told the space was spoken for, and nothing
+ * would fail to build. Shrinking the DTCM node is what takes the space out of the region the linker
+ * allocates from, and declaring a memory region over the same range is what gives the records
+ * something to bound themselves against -- the alternative being for them to keep asserting against
+ * the node they had just been moved out of, which would fail every assertion.
+ *
+ * WHAT A RELEASED IMAGE PUTS THERE. One record, 256 bytes, at 0x2001FF00: the watchdog tombstone
+ * written on the single transition from feeding to not feeding. See src/tof_watchdog_tombstone.hpp.
+ *
+ * WHY 4 KiB FOR 256 BYTES. DTCM holds no application data in any image in this branch, so 124 KiB
+ * instead of 128 changes no placement and costs nothing measurable. Sizing the reservation to the
+ * record would save nothing and would leave the lower addresses -- which the hang-isolation and I2C
+ * forensics images use, at 0x2001F000 and 0x2001F200 -- unreserved again, re-creating for those
+ * builds exactly the problem this file exists to end. The reservation is written once, here, so a
+ * change that does want DTCM meets it rather than the records.
+ *
+ * APPLIED BY lexxpluss_apps/CMakeLists.txt to every image rather than named per target, so a build
+ * that carries one of those records cannot be configured without the reservation that makes it one.
+ * src/tof_watchdog_tombstone.cpp refuses to compile for the board without it.
+ */
+
+/ {
+	forensics_dtcm: memory@2001f000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x2001F000 DT_SIZE_K(4)>;
+		zephyr,memory-region = "FORENSICS";
+		status = "okay";
+	};
+};
+
+&dtcm {
+	reg = <0x20000000 DT_SIZE_K(124)>;
+};

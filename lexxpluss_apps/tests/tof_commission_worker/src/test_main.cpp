@@ -102,9 +102,25 @@ int fake_draw(void *, uint32_t *out)
     return 0;
 }
 
+bool installed_proven_{false};
+uint8_t installed_epoch_{0};
+
+/* WHAT THE AUTHORITY WOULD SAY. A successful prove installs a mapping in production, so the fake
+ * does the same and the existing cases behave as they did; the ones that make this disagree with
+ * the session's own memory belong to #116's suite, which can drive it directly. */
+bool fake_installed(void *, uint8_t *epoch)
+{
+    if (!installed_proven_)
+        return false;
+    *epoch = installed_epoch_;
+    return true;
+}
+
 rt::hooks wired()
 {
-    return rt::hooks{fake_send, fake_permitted, fake_prove, fake_start, fake_draw, nullptr};
+    return rt::hooks{fake_send,  fake_permitted, fake_prove,
+                     fake_start, fake_installed, fake_draw,
+                     nullptr};
 }
 
 rt::config configured()

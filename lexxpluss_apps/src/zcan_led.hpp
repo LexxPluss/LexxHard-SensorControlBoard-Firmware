@@ -31,6 +31,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "led_controller.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_LED 0x205 //based on CAN ID assignment
 
@@ -67,7 +68,8 @@ public:
     void poll()
     {
         struct can_frame can_frame;
-        while (k_msgq_get(&msgq_can_led, &can_frame, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kRxPerPass &&
+                      k_msgq_get(&msgq_can_led, &can_frame, K_NO_WAIT) == 0; ++n) {
             can_led_frame.pattern = can_frame.data[0];
             can_led_frame.count_per_minutes = (can_frame.data[1] << 8) | can_frame.data[2];
             can_led_frame.rgb[0] = can_frame.data[3];

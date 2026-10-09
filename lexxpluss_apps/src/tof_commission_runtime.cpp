@@ -202,6 +202,11 @@ int rt_draw(void *, uint32_t *out)
     return hooks_.draw_token != nullptr ? hooks_.draw_token(hooks_.ctx, out) : -ENODEV;
 }
 
+bool rt_installed(void *, uint8_t *epoch)
+{
+    return hooks_.installed_mapping != nullptr && hooks_.installed_mapping(hooks_.ctx, epoch);
+}
+
 void worker_entry(void *, void *, void *)
 {
     for (;;) {
@@ -252,7 +257,7 @@ int init(const config &cfg, const hooks &h)
     sc.profile_enabled = cfg_.profile_enabled;
     sc.max_proof_attempts = cfg_.max_proof_attempts;
     sc.max_start_attempts = cfg_.max_start_attempts;
-    const session::hooks sh{rt_draw, rt_permitted, rt_prove, rt_start, nullptr};
+    const session::hooks sh{rt_draw, rt_permitted, rt_installed, rt_prove, rt_start, nullptr};
     session_ok_ = session::init(sc, sh);
 
     /* CONFIGURED EITHER WAY, and that is the fix for a host that cannot get out of a retransmit

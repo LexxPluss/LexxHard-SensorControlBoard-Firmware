@@ -16,6 +16,11 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* Only for the stage vocabulary. An image without the grid driver has no l7 domain to name. */
+#include "tof_l7_status.hpp"
+#endif
+
 #include "tof_chain_controller.hpp"
 
 LOG_MODULE_REGISTER(tof_acq, CONFIG_LOG_DEFAULT_LEVEL);
@@ -87,6 +92,22 @@ atomic_t foreign_calls_{ATOMIC_INIT(0)};
  * that was still ranging. */
 atomic_t thread_stop_rc_{ATOMIC_INIT(0)};
 
+/* Cycles that were already past due when they finished. Atomic because the loop writes it and any
+ * thread may read it; see cycle_overruns() in the header for why this one number is here and no
+ * others are. */
+atomic_t tally_overruns_{ATOMIC_INIT(0)};
+
+/* The cadence a reader is allowed to see, published rather than read out of cfg_.
+ *
+ * cfg_ is a plain struct written by init() and read by the acquisition thread, so a shell thread
+ * reaching into it would be reading a structure nobody synchronises for the benefit of readers. The
+ * alternative -- taking chain_lock() to answer -- is worse: it parks the shell behind a cycle in
+ * progress, which is the wait thread_running() already refuses to pay for a fact. One atomic word
+ * carries the only field a reader needs, and the fact it is 0 until a successful init() is itself
+ * the answer to "is a cadence configured". Written on the success path only, so a refused init
+ * leaves the previous answer standing. */
+atomic_t published_period_ms_{ATOMIC_INIT(0)};
+
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
  * defect and a wiring defect that leaves no trace gets rediscovered instead of fixed.
@@ -151,15 +172,14 @@ int cliff_open(void *dev, uint8_t addr_7bit, op_status *st)
     return tof_cliff_sensor_open(static_cast<VL53L4CX_Object_t *>(dev), addr_7bit, st);
 }
 
-int cliff_configure(void *dev, op_status *st)
+int cliff_configure(void *dev, uint32_t timing_budget_us, uint8_t distance_mode, op_status *st)
 {
-    // The mode and budget are the caller's business, not this layer's, and both are
-    // still unresolved in the wire contract. Until the injection point for them exists
-    // the configure step is a no-op that reports success without touching the device -
-    // deliberately visible as "not configured yet" rather than as a frozen value.
-    ARG_UNUSED(dev);
-    memset(st, 0, sizeof(*st));
-    return 0;
+    /* It used to be a no-op that reported success, so the four cliff sensors ran on whatever
+     * VL53LX_DataInit had left: MEDIUM at 33,333 us, written down nowhere. The values now come from
+     * the descriptor, which refuses to be built without them. */
+    return tof_cliff_sensor_configure(static_cast<VL53L4CX_Object_t *>(dev),
+                                      static_cast<VL53LX_DistanceModes>(distance_mode),
+                                      timing_budget_us, st);
 }
 
 int cliff_start(void *dev, void *stream, op_status *st)
@@ -192,7 +212,7 @@ int l7_open(void *, uint8_t, op_status *st)
     memset(st, 0, sizeof(*st));
     return -ENOSYS;
 }
-int l7_configure(void *, op_status *st)
+int l7_configure(void *, uint32_t, uint8_t, op_status *st)
 {
     memset(st, 0, sizeof(*st));
     return -ENOSYS;
@@ -286,7 +306,7 @@ void clear_cycle_outcomes(source_facts &f)
     f.protocol_error = false;
     f.unsupported = false;
     f.usage_error = false;
-    f.status = op_status{};
+    f.status = source_status{};
 }
 
 // Records an operation's outcome as a neutral fact. The only interpretation performed
@@ -338,6 +358,180 @@ bool any_source_unquiesced_locked()
     return false;
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* The grid adapter's status, converted for the same reason the L4 one is: the stage is a raw
+ * vendor number and means nothing without the domain that interprets it. */
+source_status from_l7(const tof_l7::operation_status &st)
+{
+    source_status out{};
+
+    out.domain = status_domain::l7;
+    out.stage = static_cast<uint8_t>(st.failed_stage);
+    out.port_errno = st.port_errno;
+    out.uld_status = st.uld_status;
+    out.sample_present = st.sample_present;
+    return out;
+}
+
+void record_l7(source_facts &f, int rc, const tof_l7::operation_status &st)
+{
+    f.status = from_l7(st);
+    if (rc == 0)
+        return;
+    if (rc == -EPROTO || rc == -EBADMSG)
+        f.protocol_error = true;
+    else if (rc == -ENOSYS)
+        f.unsupported = true;
+    else if (rc == -EINVAL || rc == -EPERM)
+        f.usage_error = true;
+    else
+        f.transport_error = true;
+}
+#endif
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* Bring one grid source up, with the SAME obligations the cliff path carries and one rule that is
+ * simpler here.
+ *
+ * A FAILED START ALWAYS OWES A STOP. The cliff adapter can sometimes say the device was left quiet,
+ * so it reports ranging_unknown and this layer only takes the obligation when it is set. The grid
+ * adapter cannot: vl53l7cx_start_ranging() writes the start command and then polls and reads back,
+ * so a failure anywhere after the command went out is consistent with a device that is ranging. So
+ * the obligation is unconditional rather than reported, and the adapter agrees -- a failed start
+ * leaves it in lifecycle::stop_unconfirmed, where it refuses to configure, start or be read until a
+ * stop returns success.
+ *
+ * `started` is deliberately not set on any failure path: it means "may be read", and a source whose
+ * session cannot be accounted for must not enter run_cycle(). */
+void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
+{
+    tof_l7::operation_status st{};
+
+    if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
+        d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
+        d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr ||
+        d.grid_ops->close == nullptr) {
+        f.usage_error = true;
+        LOG_ERR("source %d is an l7_grid with no grid_ops table", i);
+        return;
+    }
+
+    /* CLOSED BEFORE IT IS OPENED, because open() requires an UNOPENED sensor and almost nothing
+     * leaves it that way. A successful stop() lands the adapter on `configured`, not `empty` -- so
+     * a re-bring-up that quiesced correctly still met -EPERM from open(), every time, which is the
+     * same dead end the configure path had and reached by the ordinary route rather than by a
+     * failure. (I had claimed the configure fix covered this. It did not: that one closes after a
+     * failed configure, and this is a successful stop.)
+     *
+     * Unconditional because the state here is not knowable from the facts: `empty` on the first
+     * bring-up or after an open that failed, `configured` after a stop. close() succeeds and does
+     * nothing on the first, which is why it is safe to call blind.
+     *
+     * A REFUSAL IS NOT IGNORED. close() refuses only a sensor that is or may be ranging, and the
+     * caller has just quiesced -- so a refusal means the adapter disagrees that the previous
+     * session ended. Opening on top of that is the two-drivers-on-one-part case the pre-stop
+     * exists to prevent, so nothing is opened, the debt is restored, and the source stays out of
+     * the cycle. */
+    tof_l7::operation_status cst{};
+    if (const int crc{d.grid_ops->close(d.dev, &cst)}; crc != 0) {
+        record_l7(f, crc, cst);
+        f.started = false;
+        f.cleanup_pending = true;
+        f.rearm_failed = true;
+        LOG_ERR("grid source %d would not close before open at %s rc %d -- the previous session is "
+                "unaccounted for and nothing will be opened", i,
+                tof_l7::stage_name(cst.failed_stage), crc);
+        return;
+    }
+
+    int rc{d.grid_ops->open(d.dev, d.addr_7bit, &st)};
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        LOG_WRN("grid source %d open failed at %s rc %d errno %d", i,
+                tof_l7::stage_name(st.failed_stage), rc, st.port_errno);
+        // One sensor that will not open must not stop the others from ranging.
+        return;
+    }
+
+    rc = d.grid_ops->configure(d.dev, d.grid_frequency_hz, &st);
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        /* CLOSED, OR THIS SOURCE IS GONE UNTIL REBOOT. The sensor is open and unconfigured:
+         * nothing is ranging, so no stop is owed and cleanup_pending stays clear -- and that is
+         * exactly what made this unrecoverable. With nothing owed the next bring-up skips the
+         * pre-stop and calls open() on a sensor that is already open, which refuses, every time,
+         * for the rest of the boot. One configure failure cost the source permanently.
+         *
+         * A close that itself fails is reported and nothing else: it can only fail on state, this
+         * state is closeable, and inventing a second recovery for it would be inventing a path
+         * that cannot be reached. */
+        tof_l7::operation_status cst{};
+        const int crc{d.grid_ops->close(d.dev, &cst)};
+        LOG_WRN("grid source %d configure failed at %s rc %d errno %d (freq %u); close rc %d", i,
+                tof_l7::stage_name(st.failed_stage), rc, st.port_errno,
+                static_cast<unsigned>(d.grid_frequency_hz), crc);
+        return;
+    }
+
+    rc = d.grid_ops->start(d.dev, &st);
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        f.cleanup_pending = true;
+        f.rearm_failed = true;
+        LOG_ERR("grid source %d start failed at %s rc %d -- the device may be ranging, a stop is "
+                "owed", i, tof_l7::stage_name(st.failed_stage), rc);
+        return;
+    }
+
+    f.started = true;
+    /* Same place and same reason as the cliff path: only a complete open -> configure -> start
+     * clears the sticky, so every early return above leaves it standing. */
+    f.rearm_failed = false;
+}
+
+/* Stop one grid source. The flag discipline is the cliff path's, verbatim: both obligations stay
+ * set when the stop is not confirmed, and only a stop that returned success discharges them. */
+/* A GRID SOURCE WHOSE ADAPTER IS ACTUALLY BOUND. The model alone is not the question the dispatch
+ * needs answered.
+ *
+ * No production table binds the real L7 adapter yet: build_descriptors() gives every grid position
+ * the named -ENOSYS stub in d.ops and leaves grid_ops null, and "a stubbed model is not a sensor
+ * fault" is behaviour this branch does not change. Dispatching on the kind alone sent exactly that
+ * configuration -- an ENABLE_TOF_L7_ULD build on a real board -- into the grid path with a null
+ * table, and made init() reject the only grid descriptor production builds. */
+inline bool grid_bound(const source_desc &d)
+{
+    return d.kind == model::l7_grid && d.grid_ops != nullptr;
+}
+
+int stop_grid_locked(int i, const source_desc &d, source_facts &f)
+{
+    tof_l7::operation_status st{};
+
+    if (d.grid_ops == nullptr || d.grid_ops->stop == nullptr)
+        return -EINVAL;
+
+    const int rc{d.grid_ops->stop(d.dev, &st)};
+    if (rc != 0) {
+        record_l7(f, rc, st);
+        f.rearm_failed = true;
+        /* SET, not merely left alone. The two flags are independent claims -- `started` says the
+         * source may be read, `cleanup_pending` says it still owes a successful stop -- and an
+         * unconfirmed stop changes both. Leaving them as they were kept the common case (started,
+         * no debt) reading as a healthy readable source with nothing owed, which is the one thing
+         * a device that would not quiesce is not. */
+        f.started = false;
+        f.cleanup_pending = true;
+        LOG_ERR("grid source %d stop failed at %s rc %d errno %d -- stop not confirmed", i,
+                tof_l7::stage_name(st.failed_stage), rc, st.port_errno);
+        return rc;
+    }
+    f.started = false;
+    f.cleanup_pending = false;
+    return 0;
+}
+#endif
+
 int stop_locked()
 {
     running_ = false;
@@ -353,6 +547,15 @@ int stop_locked()
          * iterating on started alone skipped it forever. */
         if (!f.started && !f.cleanup_pending)
             continue;
+
+#if defined(ENABLE_TOF_L7_ULD)
+        if (grid_bound(d)) {
+            if (const int grid_rc{stop_grid_locked(i, d, f)}; grid_rc != 0 && first_error == 0)
+                first_error = grid_rc;
+            continue;
+        }
+#endif
+
         const int rc{d.ops->stop(d.dev, &st)};
         if (rc != 0) {
             record(f, rc, st);
@@ -360,11 +563,15 @@ int stop_locked()
              * confirmed will not produce a trustworthy sample either, and only a complete
              * re-bring-up may clear it. */
             f.rearm_failed = true;
+            /* SET, not merely left alone -- see stop_grid_locked(). An unconfirmed stop makes the
+             * source unreadable AND leaves a stop owed, and the flags have to say both. */
+            f.started = false;
+            f.cleanup_pending = true;
             LOG_ERR("source %d stop failed at %s rc %d errno %d -- stop not confirmed", i,
                     tof_cliff_stage_name(st.stage), rc, st.port_errno);
             if (first_error == 0)
                 first_error = rc;
-            continue;   // both flags stay set: the stop was not confirmed
+            continue;
         }
         f.started = false;
         /* The obligation is discharged only by a stop that returned success. */
@@ -375,9 +582,44 @@ int stop_locked()
     return first_error;
 }
 
+/* The L4 adapter's status, converted rather than assigned. The fields line up one for one; what
+ * the conversion adds is the domain, without which `stage` is a number whose scale depends on who
+ * wrote it. */
+const char *stage_name_in_domain(const source_status &status)
+{
+    switch (status.domain) {
+    case status_domain::none:
+        return "none";
+    case status_domain::l4:
+        return tof_cliff_stage_name(static_cast<enum tof_cliff_stage>(status.stage));
+    case status_domain::l7:
+#if defined(ENABLE_TOF_L7_ULD)
+        return tof_l7::stage_name(static_cast<tof_l7::stage>(status.stage));
+#else
+        /* An image without the grid driver has no vocabulary for an L7 stage and must not invent
+         * one. It also cannot produce this value: nothing records an l7 domain without the driver
+         * that fills it in. */
+        return "l7";
+#endif
+    }
+    return "unknown";
+}
+
+source_status from_l4(const op_status &st)
+{
+    source_status out{};
+
+    out.domain = status_domain::l4;
+    out.stage = static_cast<uint8_t>(st.stage);
+    out.port_errno = st.port_errno;
+    out.uld_status = st.uld_rc;
+    out.sample_present = st.sample_present;
+    return out;
+}
+
 void record(source_facts &f, int rc, const op_status &st)
 {
-    f.status = st;
+    f.status = from_l4(st);
     if (rc == 0)
         return;
     if (rc == -EPROTO)
@@ -396,6 +638,11 @@ void record(source_facts &f, int rc, const op_status &st)
 }
 
 }  // namespace
+
+const char *operation_stage_name(const source_status &status)
+{
+    return stage_name_in_domain(status);
+}
 
 const source_ops &l7_stub_ops()
 {
@@ -560,6 +807,58 @@ int init(const config &cfg)
          * here with any of them null does not fail at init -- it dereferences null on the
          * first lifecycle operation, which is a crash in the acquisition thread rather
          * than an -EINVAL to the caller who built the table. */
+        /* PER MODEL, because the two paths do not use the same table and a single check could
+         * only be wrong in one direction or the other. Requiring a complete d.ops of every source
+         * rejected a correct descriptor that carried only grid_ops, and -- worse -- accepted a
+         * grid descriptor whose grid_ops was null or half-filled, which then dereferenced null on
+         * the first lifecycle operation: a crash in the acquisition thread rather than an -EINVAL
+         * to the caller who built the table. */
+        /* NO L4 PROFILE ON A GRID DESCRIPTOR, and checked BEFORE any of the grid branches below,
+         * because a bound grid source leaves this loop through them and would otherwise never be
+         * asked. A field belonging to the other model, quietly carried, is a wiring mistake nothing
+         * else would catch -- the grid path never reads these two, so a descriptor carrying them
+         * would range exactly as if they were absent. */
+        if (d.kind == model::l7_grid &&
+            (d.cliff_timing_budget_us != 0 || d.cliff_distance_mode != 0))
+            return -EINVAL;
+
+#if defined(ENABLE_TOF_L7_ULD)
+        /* A BOUND grid source, not every grid source. Until a production table binds the real L7
+         * adapter, a grid descriptor carries the complete -ENOSYS stub in d.ops and no grid_ops,
+         * and it is validated as the stub below -- requiring grid_ops of every grid source
+         * rejected the only grid descriptor production builds today. A grid_ops that is present
+         * but half-filled is still refused here rather than dereferenced on the first call. */
+        if (grid_bound(d)) {
+            if (d.grid_ops->open == nullptr ||
+                d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
+                d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr)
+                return -EINVAL;
+            if (d.grid_ops->close == nullptr)
+                return -EINVAL;
+            /* The adapter needs both its device and the per-read work object. */
+            if (d.dev == nullptr || d.scratch == nullptr)
+                return -EINVAL;
+            /* ZERO IS NOT A FREQUENCY, and the descriptor comment already says configure()
+             * refuses rather than picking something. Refused HERE as well, because a descriptor
+             * that cannot be configured reaches the failure path on every single bring-up: the
+             * caller who built the table learns about it once, at init, instead of the source
+             * silently never ranging and the reason living in a log line. */
+            if (d.grid_frequency_hz == 0)
+                return -EINVAL;
+            continue;
+        }
+        /* UNBOUND, AND THE ONLY TABLE ALLOWED IS THE NAMED STUB. Falling through to the check
+         * below would have asked only "is this table complete", and acq::l4_cliff_ops() is
+         * complete -- so a grid descriptor could name the L4 driver and be accepted, which is
+         * the chain's one unrecoverable wiring mistake: the cliff adapter talking to an L7 at
+         * an L7's address. Identity is the check, not shape. */
+        if (d.kind == model::l7_grid && d.ops != &l7_stub_ops())
+            return -EINVAL;
+#endif
+        /* ALL FIVE, not the two this function used to name. In a build without the grid driver an
+         * l7_grid source reaches this too, and its table is the stub -- which is complete, so the
+         * flag-off behaviour is unchanged. With the driver, a grid source reaching here has
+         * already been required to BE the stub. */
         if (d.ops == nullptr || d.ops->open == nullptr || d.ops->configure == nullptr ||
             d.ops->start == nullptr || d.ops->read_cliff_sample == nullptr ||
             d.ops->stop == nullptr)
@@ -571,6 +870,24 @@ int init(const config &cfg)
         if (d.kind == model::l4_cliff &&
             (d.dev == nullptr || d.scratch == nullptr || d.stream == nullptr))
             return -EINVAL;
+
+        /* THE RANGING PROFILE, REFUSED RATHER THAN DEFAULTED. A zero budget reaching the ULD is
+         * VL53LX_SetMeasurementTimingBudgetMicroSeconds failing on every sensor at bring-up; a
+         * budget invented here would become the specification by being the only value anybody
+         * could find.
+         *
+         * MEDIUM or LONG, and SHORT is not among them even though the enumeration defines it: the
+         * vendored ULD refuses SHORT for an L4 part outright -- the IsL4() check in
+         * VL53LX_SetDistanceMode -- so accepting it would produce a descriptor that passes
+         * validation and then fails at bring-up on every sensor, with the reason buried in a
+         * vendor error code. */
+        if (d.kind == model::l4_cliff &&
+            (d.cliff_timing_budget_us == 0 ||
+             d.cliff_distance_mode < VL53LX_DISTANCEMODE_MEDIUM ||
+             d.cliff_distance_mode > VL53LX_DISTANCEMODE_LONG))
+            return -EINVAL;
+
+
     }
 
     cfg_ = cfg;
@@ -579,6 +896,12 @@ int init(const config &cfg)
     in_cycle_ = false;
 
     facts_ = cycle_facts{};
+    /* The overrun count describes a cadence, and init() is where the cadence is chosen. Carrying it
+     * across would attribute the old period's misses to the new one. Clearing it is also what
+     * re-arms the one warning the loop emits, which is correct for the same reason: the new period
+     * has not missed anything yet, and whether it can be met is a fresh question. */
+    atomic_clear(&tally_overruns_);
+    atomic_set(&published_period_ms_, static_cast<atomic_val_t>(cfg.periods.cycle_period_ms));
     /* A fresh start is a fresh epoch, so the first cycle must carry 0. */
     next_cycle_seq_ = 0;
     facts_.source_count = cfg.source_count;
@@ -713,19 +1036,47 @@ int bring_up()
          * commissioning session re-addressed a live sensor. A re-bring-up that cannot
          * quiesce the previous device is not a re-bring-up; it is two drivers on one part. */
         if (f.started || f.cleanup_pending) {
-            op_status stop_st{};
-            const int stop_rc{d.ops->stop(d.dev, &stop_st)};
-            if (stop_rc != 0) {
-                record(f, stop_rc, stop_st);
-                f.rearm_failed = true;
-                LOG_ERR("source %d could not be stopped before re-bring-up at %s rc %d", i,
-                        tof_cliff_stage_name(stop_st.stage), stop_rc);
-                continue;   // both flags stay set: the device was never quiesced
+            /* THROUGH THE MODEL'S OWN TABLE. This used to call d.ops->stop() for every source
+             * before the dispatch below, so a grid source being restarted -- or retried while it
+             * still owed a stop -- had the cliff driver pointed at it. The dispatch a few lines
+             * down was doing the right thing for the bring-up and the wrong driver had already
+             * been called for the quiesce. */
+            int stop_rc;
+#if defined(ENABLE_TOF_L7_ULD)
+            if (grid_bound(d)) {
+                stop_rc = stop_grid_locked(i, d, f);
+            } else
+#endif
+            {
+                op_status stop_st{};
+
+                stop_rc = d.ops->stop(d.dev, &stop_st);
+                if (stop_rc != 0) {
+                    record(f, stop_rc, stop_st);
+                    f.rearm_failed = true;
+                    /* Same discipline as stop_locked(): unreadable, and a stop still owed. */
+                    f.started = false;
+                    f.cleanup_pending = true;
+                    LOG_ERR("source %d could not be stopped before re-bring-up at %s rc %d", i,
+                            tof_cliff_stage_name(stop_st.stage), stop_rc);
+                }
             }
+            /* A re-bring-up that cannot quiesce the previous device is not a re-bring-up; it is
+             * two drivers on one part. The source is left unreadable, still owing a stop, and
+             * nothing is opened. */
+            if (stop_rc != 0)
+                continue;
             f.started = false;
             f.cleanup_pending = false;
         }
         clear_cycle_outcomes(f);
+
+#if defined(ENABLE_TOF_L7_ULD)
+        if (grid_bound(d)) {
+            bring_up_grid_locked(i, d, f);
+            continue;
+        }
+#endif
 
         rc = d.ops->open(d.dev, d.addr_7bit, &st);
         if (rc != 0) {
@@ -736,7 +1087,7 @@ int bring_up()
             continue;
         }
 
-        rc = d.ops->configure(d.dev, &st);
+        rc = d.ops->configure(d.dev, d.cliff_timing_budget_us, d.cliff_distance_mode, &st);
         if (rc != 0) {
             record(f, rc, st);
             continue;
@@ -843,6 +1194,27 @@ void run_cycle()
             continue;
 
         clear_cycle_outcomes(f);
+
+#if defined(ENABLE_TOF_L7_ULD)
+        if (grid_bound(d)) {
+            tof_l7::sample grid{};
+            tof_l7::operation_status grid_st{};
+
+            const int grid_rc{
+                d.grid_ops->read_grid_sample(d.dev, d.scratch, &grid, &grid_st)};
+            record_l7(f, grid_rc, grid_st);
+            /* `fresh` is the adapter's all-or-nothing answer: read_once clears the sample on entry
+             * and leaves it non-fresh on every refusal, so a fresh sample is a whole one. A cycle
+             * in which the sensor simply had nothing ready is rc 0 and not fresh -- not a failure,
+             * and not a sample. */
+            if (grid_rc == 0 && grid.fresh) {
+                f.sample_produced = true;
+                if (cfg_.hooks.on_grid_sample != nullptr)
+                    cfg_.hooks.on_grid_sample(i, facts_.cycle_seq, f, grid);
+            }
+            continue;
+        }
+#endif
 
         rc = d.ops->read_cliff_sample(d.dev, d.scratch, d.stream, &sample, &st);
         record(f, rc, st);
@@ -961,6 +1333,71 @@ int stop()
     return rc;
 }
 
+schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period_ms)
+{
+    schedule_decision out{};
+
+    if (period_ms != 0U && now_ms < due_ms) {
+        const int64_t remaining{due_ms - now_ms};
+
+        /* A deadline more than one period away is not a state the loop can reach: each one is the
+         * previous deadline plus a period, and the loop does not return until it has waited for
+         * that deadline. If it happens anyway -- a clock that stepped backwards, a deadline
+         * computed before a re-init -- waiting it out would stall acquisition for however wrong the
+         * number was, silently, with the heartbeat still flowing. So it is REPAIRED rather than
+         * obeyed, and it is not counted as an overrun: nothing was late. */
+        if (remaining > static_cast<int64_t>(period_ms)) {
+            out.wait_ms = period_ms;
+            /* TWO periods, because the invariant every branch has to satisfy is "the next deadline
+             * is one period after the instant this wait ends". This branch waits a whole period, so
+             * it ends at now + period and the deadline after it is now + 2 * period.
+             *
+             * It said now + period, which is the instant the wait ENDS -- so the cycle that ran
+             * after the repair was born already due and was counted as an overrun however little
+             * work it did. ONE cycle: that decision re-bases on now, so the cadence is correct
+             * again from the cycle after it. The cost is therefore a miscount rather than a stall,
+             * and it still matters, because the overrun count is the one signal that says the
+             * period is too short for the work -- a clock glitch must not be able to spend it. */
+            out.next_due_ms = now_ms + 2 * static_cast<int64_t>(period_ms);
+            return out;
+        }
+        out.wait_ms = static_cast<uint32_t>(remaining);
+        /* Advanced by one period from the deadline it just met, NOT from now. That is what keeps
+         * the cadence fixed instead of drifting by however long each cycle happened to take. */
+        out.next_due_ms = due_ms + period_ms;
+        return out;
+    }
+
+    /* Past due, or exactly due. The shortest wait the kernel can express -- not zero, which is the
+     * spin, and not a period, which would throw the rate away over a fraction of a millisecond: at
+     * a 20 ms target a cycle taking 20.1 ms would then run at 40.1 ms, or about 25 Hz. When the
+     * work is longer than the period the best achievable cadence is the work itself.
+     *
+     * Re-based on now rather than advanced, so a late cycle owes no backlog. */
+    out.overran = true;
+    out.yield_only = true;
+    out.next_due_ms = now_ms + period_ms;
+    return out;
+}
+
+k_timeout_t cadence_timeout(const schedule_decision &step)
+{
+    /* K_TICKS(1) rather than a millisecond figure: a tick is 0.1 ms on this board and every
+     * millisecond value that could stand for "briefly" would round to zero, which is the spin. It
+     * is the kernel's own floor for a wait, not a number chosen here. */
+    return step.yield_only ? K_TICKS(1) : K_MSEC(step.wait_ms);
+}
+
+uint32_t cycle_overruns()
+{
+    return static_cast<uint32_t>(atomic_get(&tally_overruns_));
+}
+
+uint32_t configured_cycle_period_ms()
+{
+    return static_cast<uint32_t>(atomic_get(&published_period_ms_));
+}
+
 static void thread_entry(void *, void *, void *)
 {
     /* The whole ULD lifecycle, on one thread, in one place.
@@ -981,12 +1418,49 @@ static void thread_entry(void *, void *, void *)
     if (int const rc{bring_up()}; rc != 0)
         LOG_ERR("acquisition bring-up refused before source bring-up: rc %d", rc);
 
+    /* The first cycle is due one period from now; every later one is due a period after the
+     * deadline the one before it MET, which is what keeps the cadence fixed instead of drifting by
+     * however long each cycle happened to take.
+     *
+     * k_uptime_get() rather than cfg_.now_ms(), because this is the clock the kernel will actually
+     * sleep against and the two must not be allowed to disagree -- a test clock that stands still
+     * would otherwise make every cycle look permanently overdue. The decision itself is
+     * next_cycle_due(), which is pure and is where the rule is tested. */
+    int64_t due_ms{k_uptime_get() + cfg_.periods.cycle_period_ms};
+
     while (atomic_get(&stop_requested_) == 0) {
         run_cycle();
+
+        const schedule_decision step{
+            next_cycle_due(due_ms, k_uptime_get(), cfg_.periods.cycle_period_ms)};
+
+        due_ms = step.next_due_ms;
+        if (step.overran) {
+            /* ONCE PER CONFIGURED CADENCE, and the rate limit is the counter itself rather than a
+             * timer: atomic_inc() returns the value before the increment, so this is the edge from
+             * "has met every deadline" to "has missed one". A board that cannot keep up misses
+             * every cycle, and a line per cycle would bury the log that is supposed to reveal it.
+             * init() clears the count, so choosing a new cadence asks the question again.
+             *
+             * WHAT IT SAYS AND WHAT IT DOES NOT. A missed deadline is not by itself a verdict on
+             * the hardware: scheduling latency or one slow transfer produces the same miss, and so
+             * does sustained interference from elsewhere in the system. The line reports the miss
+             * and the period it was measured against and stops there. Whether the misses keep
+             * happening is a different question, and `tof cliff status` is where it is asked. */
+            if (atomic_inc(&tally_overruns_) == 0)
+                LOG_WRN("acquisition missed its cycle deadline; configured period %u ms",
+                        cfg_.periods.cycle_period_ms);
+        }
+
         /* The cadence, and the stop signal, in one wait. Sleeping for the period and checking the
          * flag afterwards would make every stop request cost up to a full period before it was even
-         * noticed -- and that period is what a caller's join timeout would then have to cover. */
-        (void)k_sem_take(&stop_sem_, K_MSEC(cfg_.periods.cycle_period_ms));
+         * noticed -- and that period is what a caller's join timeout would then have to cover.
+         *
+         * The timeout is now the REMAINDER of the period rather than a whole one, so the work and
+         * the sends happen inside the cadence instead of being added to it. What that is not is a
+         * guarantee: if the remainder is regularly small, or cycle_overruns() is moving, the period
+         * is too short for the work and no schedule can repair that. */
+        (void)k_sem_take(&stop_sem_, cadence_timeout(step));
     }
 
     /* At a cycle boundary, from the thread that owns the devices. This is the reason try_stop() no

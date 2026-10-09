@@ -74,7 +74,8 @@ enum class phase : uint8_t {
     refused = 5,
 };
 
-/* Terminal means the transaction is over: `done` carries the outcome, `refused` carries why it never
+/* Terminal means the transaction is over: `done` carries the OUTCOME -- which includes a transaction
+ * that ran and failed, and therefore consumed the ordinal it named -- while `refused` carries why it never
  * ran. Anything else is progress, and a host that treated it as terminal would drop the pending
  * tuple it needs to retransmit with. */
 constexpr bool is_terminal(phase p)

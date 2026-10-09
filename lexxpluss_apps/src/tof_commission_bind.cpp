@@ -75,6 +75,11 @@ bool bind_permitted(void *)
     return cfg_.enumeration_permitted != nullptr && cfg_.enumeration_permitted(cfg_.ctx);
 }
 
+bool bind_installed(void *, uint8_t *epoch)
+{
+    return cfg_.installed_mapping != nullptr && cfg_.installed_mapping(cfg_.ctx, epoch);
+}
+
 int bind_prove(void *, uint32_t epoch, tof_commissioning::outcome *out)
 {
     const tof_commissioning::outcome r{tof_commissioning::prove(epoch)};
@@ -107,6 +112,31 @@ result start(const struct device *can_dev, const config &cfg)
 {
     result out{};
 
+    /* REFUSED BEFORE ANYTHING MOVES, and the order is the point.
+     *
+     * This function calls rt::init() unconditionally, and tof_commission_runtime.hpp states ONE
+     * INIT PER BOOT: init() draws a new token, purges the queues and resets the attempt budgets,
+     * and the worker is not stoppable, so a second init under a live worker moves the ground under
+     * whatever that worker is doing. Nothing in the runtime enforces it -- the header says the
+     * callers respect it -- so the enforcement belongs here, at the one call site that does the
+     * init.
+     *
+     * A LIVE WORKER IS THE CONDITION, not "has this function been called before". A start that
+     * drew no session never creates a worker, and its repeated init() has nothing to move the
+     * ground under; refusing those would break the no-session cases for no gain. What must never
+     * happen twice is an init while a worker is running.
+     *
+     * AND IT IS CHECKED HERE RATHER THAN REPORTED LATER. An earlier revision let the second call
+     * run to completion and reported `answering_only` when rt::start() came back -EALREADY. By
+     * then can_, cfg_ and the whole session layer had already been rewritten, and the state was
+     * untrue besides: the previous worker was still running, so the board was commissioning, not
+     * merely answering. The damage is the init, not the report. */
+    if (rt::running()) {
+        out.state = outcome::refused;
+        out.rc = -EALREADY;
+        return out;
+    }
+
     if (cfg.enumeration_permitted == nullptr) {
         /* A board must not re-enumerate its chain because nobody said it should not. */
         out.state = outcome::refused;
@@ -131,8 +161,9 @@ result start(const struct device *can_dev, const config &cfg)
     rc.max_proof_attempts = cfg.max_proof_attempts;
     rc.max_start_attempts = cfg.max_start_attempts;
 
-    const rt::hooks hooks{bind_send,       bind_permitted, bind_prove,
-                          bind_start,      tof_commission_entropy::draw_token, nullptr};
+    const rt::hooks hooks{bind_send,  bind_permitted, bind_prove,
+                          bind_start, bind_installed, tof_commission_entropy::draw_token,
+                          nullptr};
     out.rc = rt::init(rc, hooks);
 
     if (out.rc != 0 && out.rc != -ENODEV) {
@@ -165,7 +196,33 @@ result start(const struct device *can_dev, const config &cfg)
         return out;
     }
 
-    out.worker_started = rt::start() == 0;
+    /* `running` MEANS A WORKER IS RUNNING. It used to be set unconditionally, leaving
+     * worker_started as the only trace, which is what let the suite's `worker_started ||
+     * rt::running()` read the previous case's worker and agree.
+     *
+     * THE GUARD ABOVE DOES NOT MAKE THIS FAILURE IMPOSSIBLE, and it is worth being exact about
+     * what it does. rt::running() and rt::start() are two steps, not one: the guard rules out a
+     * caller that starts after another has finished, which is the sequence this firmware has --
+     * one call, from the bootstrap. It does not rule out two callers in the window between the
+     * two steps, where one takes the worker claim and the other arrives here with -EALREADY. For
+     * the same reason -EPERM is ruled out only by out.rc == 0 above, which another caller's
+     * re-init could in principle have moved. Both need a second caller that this firmware does
+     * not have, and neither is prevented by construction.
+     *
+     * So the branch is reported rather than papered over. The truthful answer is that THIS call
+     * delivered no worker: the filter it just added is taken back out, so the result describes one
+     * thing instead of half of two. The filter and the worker the other caller installed are left
+     * alone, and so is can_, which that worker sends through. */
+    const int start_rc{rt::start()};
+    out.worker_started = start_rc == 0;
+    if (!out.worker_started) {
+        can_remove_rx_filter(can_, out.filter_id);
+        out.filter_installed = false;
+        out.filter_id = -1;
+        out.state = outcome::refused;
+        out.rc = start_rc;
+        return out;
+    }
     out.state = outcome::running;
     return out;
 }

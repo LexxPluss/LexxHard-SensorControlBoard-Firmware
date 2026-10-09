@@ -49,6 +49,7 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 # The generated contract headers the publisher and the packer pin against.
 set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
 set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
+set(L7_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld)
 
 target_sources(app PRIVATE
     src/fake_i2c.c
@@ -56,10 +57,21 @@ target_sources(app PRIVATE
     src/test_read_once.c
     src/test_acquisition.cpp
     src/test_publisher.cpp
+    #   test_grid_publisher.cpp  the grid path: acquisition -> packer -> a fake CAN sink, with the
+    #                            authorisation injected so a case can drive both sides of the gate
+    #                            and both sides of each source's permission.
+    src/test_grid_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_sensor.c
     ${APP_SRC_DIR}/tof_acquisition.cpp
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
+    ${APP_SRC_DIR}/tof_grid_packer.cpp
+    ${APP_SRC_DIR}/tof_grid_publisher.cpp
+    #   The grid publisher consumes tof_l7::sample, which is vendor-free on purpose, so this suite
+    #   still compiles without a line of ST's VL53L7CX driver. The adapter that does use it has its
+    #   own suite; l7_vendor_stubs.cpp is here only so the binary links.
+    src/l7_vendor_stubs.cpp
+    ${APP_SRC_DIR}/tof_l7_sensor.cpp
     ${ULD_DIR}/zephyr/vl53lx_platform.c
     ${ULD_DIR}/zephyr/vl53l4cx_bus_io.c
 )
@@ -68,7 +80,8 @@ target_sources(app PRIVATE
 # production, so the test defines both. The chain controller itself is NOT linked here: the test
 # fakes chain_lock() with a real k_mutex, which keeps the lock assertions honest without dragging
 # the bus and the shell into a suite about lifecycle.
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
+# ENABLE_TOF_L7_ULD joins the other two for the grid publisher, which is guarded on all three.
+target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
     ${CONTRACT_DIR}
@@ -76,5 +89,8 @@ target_include_directories(app PRIVATE
     ${ULD_DIR}/upstream
     ${ULD_DIR}/upstream/modules
     ${ULD_DIR}/upstream/porting
+    # For tof_l7_sensor.cpp's vendor-facing half. The grid publisher itself needs none of it.
+    ${L7_DIR}/zephyr
+    ${L7_DIR}/upstream/modules
 )
 target_compile_options(app PRIVATE -Wno-unused-parameter)

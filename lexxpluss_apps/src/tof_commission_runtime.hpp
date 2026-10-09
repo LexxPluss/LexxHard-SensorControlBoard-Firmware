@@ -114,6 +114,16 @@ struct hooks {
     int (*prove)(void *ctx, uint32_t epoch, tof_commissioning::outcome *out);
     int (*start)(void *ctx);
 
+    /* WHAT MAPPING IS ACTUALLY IN FORCE, which is not what this session proved. Returns true when
+     * one is PROVEN and then writes the epoch it is in force under; production passes
+     * tof_authority::current(). Required: #116's session refuses to start without it, because a
+     * session that trusted its own memory answered done/ok for an epoch the shell had replaced.
+     *
+     * Passed through rather than called directly for the reason every other dependency here is:
+     * none of this module's suites link the authority, and the cases worth driving are the ones a
+     * real authority makes hard to produce. */
+    bool (*installed_mapping)(void *ctx, uint8_t *epoch);
+
     /* Entropy for the session token. Production passes tof_commission_entropy::draw_token; there is
      * no default and no fallback. */
     int (*draw_token)(void *ctx, uint32_t *out);

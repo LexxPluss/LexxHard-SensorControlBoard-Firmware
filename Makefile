@@ -39,7 +39,16 @@ clean:
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
 	        build-test-tof-enumerator build-test-tof-auto-commission build-tof-chain \
-	        build-test-tof-commission-wire build-test-tof-commission-session
+	        build-tof-l7 build-test-tof-l7-port build-test-tof-l7-sensor \
+	        build-test-tof-l7-blob build-test-tof-l7-uld-stop \
+	        build-test-tof-l7-recovery \
+	        build-test-tof-commission-wire build-test-tof-commission-session \
+	        build-test-runtime-progress build-test-tof-task-watchdog \
+	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder \
+	        build-test-zcan-bounded-send build-test-zcan-poll-budget \
+	        build-test-tof-commission-runtime build-test-tof-commission-worker \
+	        build-test-tof-commission-bind build-test-tof-commission-bind-session \
+	        build-test-tof-commission-entropy-poll build-auto-commission
 
 .PHONY: distclean
 distclean: clean
@@ -152,6 +161,24 @@ test_tof_commission_bind:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind -d build-test-tof-commission-bind -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# The cases that draw a session, in their own binary and as ONE ordered scenario. Separate from
+# tof_commission_bind for the same reason the worker suite is separate: a session creates the worker,
+# the worker outlives the case that made it, and bind::start() initialises the session layer every
+# time it is called. One session per binary is how the suites keep the ONE INIT PER BOOT
+# precondition that tof_commission_runtime.hpp states and nothing inside the runtime enforces.
+.PHONY: test_tof_commission_bind_session
+test_tof_commission_bind_session:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind_session -d build-test-tof-commission-bind-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The deadline-bounded entropy read. Header-only over injected seams, because the production
+# translation unit is nailed to the st,stm32-rng devicetree node and a host suite cannot compile it
+# -- which is why the decision it makes had no test before the loop was separated out.
+.PHONY: test_tof_commission_entropy_poll
+test_tof_commission_entropy_poll:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_entropy_poll -d build-test-tof-commission-entropy-poll -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for the prove-then-start sequencer: every path that must NOT reach start(), the
 # bounded retry, and the hooks that refuse before anything is attempted. No device, no bus, no proof.
 .PHONY: test_tof_auto_commission
@@ -192,6 +219,110 @@ test_tof_tail_isolation:
 test_tof_mapping_proof:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_mapping_proof -d build-test-tof-mapping-proof -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the hanging-object (VL53L7CX) driver and the stored device-firmware blob.
+# Three suites, separate because they fail for different reasons.
+
+# The Zephyr port, at wire level, with the vendor ULD deliberately absent: it pins our 16-bit index,
+# repeated start, the 328-byte segmentation bound and the sticky errno contract, without freezing
+# ST's internal register sequence into this repository.
+.PHONY: test_tof_l7_port
+test_tof_l7_port:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_port -d build-test-tof-l7-port -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The adapter, against fake ULD and runtime symbols. There is no test-only open path: the object
+# assignment still calls tof_l7_runtime::firmware_data(), and the link substitute only controls the
+# answer it gets.
+.PHONY: test_tof_l7_sensor
+test_tof_l7_sensor:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_sensor -d build-test-tof-l7-sensor -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The stored blob record, with the real SHA-256 and the real CRC against the GENERATOR's own output,
+# committed as the suite's golden record. A layout written once at manufacture and read at every
+# boot needs its two implementations pinned to each other.
+#
+# TWO GENERATOR CHECKS RUN FIRST, and they pin different things. The golden record proves the
+# committed fixture is still what the generator emits, so the suite cannot drift from the writer.
+# The expectation check proves the accept-list compiled INTO the image still describes the payload
+# in the vendored ULD -- a re-vendored snapshot with a different device firmware would otherwise
+# leave the two disagreeing, and the first thing to notice would be a board refusing to range.
+.PHONY: test_tof_l7_blob
+test_tof_l7_blob:
+	$(RUNNER) bash -c 'python3 docs/can/gen_l7_blob_record.py golden --out /tmp/golden_record.h && diff -u lexxpluss_apps/tests/tof_l7_blob/src/golden_record.h /tmp/golden_record.h'
+	$(RUNNER) python3 docs/can/gen_l7_blob_record.py pack lexxpluss_apps/third_party/st/vl53l7cx_uld/upstream/modules/vl53l7cx_buffers.h --c-array VL53L7CX_FIRMWARE --expect-header lexxpluss_apps/third_party/st/vl53l7cx_uld/zephyr/vl53l7cx_blob_expectation.hpp --check
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_blob -d build-test-tof-l7-blob -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# vl53l7cx_stop_ranging() against a bus the test controls, with the REAL vendor function compiled
+# from the patched copy. The adapter suite substitutes the whole ULD, which is right for the adapter
+# and is exactly why it cannot see a defect inside the vendor function itself: on timeout the
+# upstream code folded in the last polled byte, which is zero precisely when the stop was not
+# confirmed, so a five-second wait returned OK. See zephyr/patches/0002.
+.PHONY: test_tof_l7_uld_stop
+test_tof_l7_uld_stop:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_uld_stop -d build-test-tof-l7-uld-stop -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The boot-time L7 recovery pass, its ULD adapter and the boot ordering around them. Pure logic over
+# injected calls, so it links the production sources directly and needs no bus, no Zephyr device and
+# no ULD. Three suites in one binary on purpose: the ordering, the pass and the translation between
+# them are proven together rather than in two binaries that agree by assumption.
+.PHONY: test_tof_l7_recovery
+test_tof_l7_recovery:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_recovery -d build-test-tof-l7-recovery -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the runtime monitoring layer. Six suites, listed separately because they fail
+# for different reasons: the transmit path, the per-pass budget, the counters, the decision, the
+# record and the wiring around them.
+
+# The transmit path that cannot wait forever: what a zero means, what a refusal means, and the
+# counter signature of a bus with nobody acknowledging. Needs CONFIG_CAN for the frame type only;
+# the device is a fake.
+.PHONY: test_zcan_bounded_send
+test_zcan_bounded_send:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_bounded_send -d build-test-zcan-bounded-send -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# What one pass of the zcan loop may do, run through the production pollers with real kernel queues
+# and a send that can be told to refuse. Covers the two properties a count-based suite cannot get at
+# from outside: that a pass terminates while its producer keeps refilling, and that a request/reply
+# path holds a refused reply instead of losing it.
+.PHONY: test_zcan_poll_budget
+test_zcan_poll_budget:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_poll_budget -d build-test-zcan-poll-budget -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The six heartbeats. Needs a real kernel rather than a host stub: which of the two CAN sender slots
+# a send belongs to is decided by comparing against the system work queue's thread.
+.PHONY: test_runtime_progress
+test_runtime_progress:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/runtime_progress -d build-test-runtime-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The decision itself: may the hardware watchdog be fed right now. Pure logic over counters and a
+# clock, so it links the production source directly and needs no board and no watchdog driver.
+.PHONY: test_tof_task_watchdog
+test_tof_task_watchdog:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_task_watchdog -d build-test-tof-task-watchdog -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The retained record. Formatting and validation over a caller-supplied region, so the suite writes
+# into an ordinary array; only the production placement knows about DTCM.
+.PHONY: test_tof_watchdog_tombstone
+test_tof_watchdog_tombstone:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_watchdog_tombstone -d build-test-tof-watchdog-tombstone -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The startup handshake against a fake watchdog, in the order the board uses it. One ordered
+# scenario on purpose: the module keeps one set of state for the life of the image, exactly as it
+# does on the board, so it cannot be set up again per test case.
+.PHONY: test_tof_watchdog_feeder
+test_tof_watchdog_feeder:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_watchdog_feeder -d build-test-tof-watchdog-feeder -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming
@@ -274,6 +405,27 @@ firmware_bypass_safety_lidar:
 #
 # firmware_tof_chain still carries the flag. That is pre-existing and deliberately left alone here;
 # whether a bring-up target should keep it is a separate decision from what this one ships with.
+
+# The cliff image plus the hanging-object ULD. BRING-UP, NOT A PRODUCT BUILD, and it is named here
+# rather than left to a command line so that what it carries is reviewable.
+#
+# NO SAFETY-LIDAR BYPASS, for the reason firmware_tof_cliff gives below: the development images this
+# driver comes from carried one, and inheriting it is how a bypass ships.
+#
+# IT FITS TODAY, AND THAT IS NOT A PASS. Measured at 245,504 B signed against the 261,712 B ceiling
+# with the filesystem stack still configured -- 72 B more than the same image without the L7 flag,
+# because nothing calls the driver and --gc-sections drops it. The development images this comes
+# from did not fit and dropped the filesystem; they also carried the publisher, the monitoring and
+# the recovery. Binding the grid operations adds the 11,531 B those objects compile to, before any
+# of the rest. So this target is for compiling and measuring the driver, the filesystem decision is
+# lexxpluss_apps/CMakeLists.txt's to explain and nobody's to inherit, and whoever revisits it must
+# re-measure on the configuration they are shipping.
+.PHONY: firmware_tof_l7
+firmware_tof_l7:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
 .PHONY: firmware_tof_cliff
 firmware_tof_cliff:
 	./scripts/manage_zephyr_patches.sh verify

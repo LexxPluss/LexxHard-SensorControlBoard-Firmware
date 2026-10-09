@@ -84,6 +84,13 @@
 #include <zephyr/kernel.h>
 
 #include "tof_cliff_sensor.h"
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* For grid_source_ops and the grid sample hook. An image without the grid driver has no grid
+ * sources to describe, and these types do not exist in it. */
+#include "tof_l7_sample.hpp"
+#include "tof_l7_status.hpp"
+#endif
 #include "tof_mapping_state.hpp"
 
 namespace lexxhard::tof_acq {
@@ -104,6 +111,41 @@ enum class model : uint8_t {
 // vocabulary. It says nothing about what the failure means.
 using op_status = struct tof_cliff_read_status;
 
+
+/* WHICH VENDOR'S VOCABULARY `stage` IS IN. The two ULDs' enums are unrelated numbers that happen
+ * to share a range, so a stage is meaningless without the domain that interprets it. `none` is the
+ * state of a source that has not been read this cycle -- not a third device. */
+enum class status_domain : uint8_t {
+    none,
+    l4,
+    l7,
+};
+
+/* A MODEL-NEUTRAL DIAGNOSTIC SNAPSHOT, and the reason this type exists at all.
+ *
+ * `source_facts::status` used to be an op_status -- that is, literally a tof_cliff_read_status --
+ * for every source including a grid sensor. An L7 failure had to be expressed in L4 words or not
+ * at all, and `stage` silently meant a different thing depending on which sensor filled it in.
+ * This carries the domain with the number so the two can never be read as the same scale.
+ *
+ * WHAT IT DOES NOT ABSORB, deliberately. The four error classifications on source_facts stay where
+ * they are: this is raw device detail, and they are the per-cycle MEANING, which was decided in
+ * review rather than derived from an errno. Nor does it carry rearm_failed or cleanup_pending --
+ * those are sticky facts about the device across cycles, and a per-read snapshot is the wrong
+ * place for them. The development branch's version of this struct had its own rearm_failed beside
+ * source_facts', which is two fields with one name and two lifetimes. */
+struct source_status {
+    status_domain domain{status_domain::none};
+    /* Raw, and interpreted only inside `domain`. */
+    uint8_t stage{0};
+    int port_errno{0};
+    int uld_status{0};
+    bool sample_present{false};
+};
+
+/* Names the stage in its own domain. Returns "none" for a source nothing has read yet. */
+const char *operation_stage_name(const source_status &status);
+
 // One source's device operations. There is no enable, no address change and no reset:
 // the enable line is the chain's addressing mechanism and belongs to commissioning.
 //
@@ -113,7 +155,10 @@ using op_status = struct tof_cliff_read_status;
 // this signature has to change, rather than a claim that it is already general.
 struct source_ops {
     int (*open)(void *dev, uint8_t addr_7bit, op_status *st);
-    int (*configure)(void *dev, op_status *st);
+    /* The ranging profile is an ARGUMENT, not something the adapter decides. It comes from the
+     * descriptor, which comes from the devicetree, so the value a board ranges at is visible in a
+     * diff of the deployment rather than buried in a driver. */
+    int (*configure)(void *dev, uint32_t timing_budget_us, uint8_t distance_mode, op_status *st);
     // start() takes the stream state because a successful start begins a new numbering
     // and the replay guard's history has to be dropped inside the same call, not by a
     // caller that might forget.
@@ -131,12 +176,65 @@ const source_ops &l7_stub_ops();
 // The cliff ops, bound to the real tof_cliff_sensor functions.
 const source_ops &l4_cliff_ops();
 
+/* THE GRID PATH'S OWN TABLE, because an 8x8 zone frame is not a tof_cliff_sample and no amount of
+ * naming makes source_ops carry one. The two tables are deliberately not unified: the status types
+ * are each vendor's own, and a common one would have to be the union of two unrelated vocabularies.
+ *
+ * There is no stream argument. The L4 adapter's replay guard compares a stream count against the
+ * previous one from the same device; the grid adapter has no such history to keep. */
+#if defined(ENABLE_TOF_L7_ULD)
+struct grid_source_ops {
+    int (*open)(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st);
+    int (*configure)(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st);
+    int (*start)(void *dev, tof_l7::operation_status *st);
+    int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
+                            tof_l7::operation_status *st);
+    int (*stop)(void *dev, tof_l7::operation_status *st);
+    /* RETURNS AN OPENED-BUT-UNUSABLE SENSOR TO UNOPENED, which the bring-up needs and had no way
+     * to do. tof_l7::close() in production.
+     *
+     * Without it a configure() that failed left the adapter `opened` with nothing owed -- no
+     * cleanup_pending, started false -- so the next bring-up skipped the pre-stop, called open()
+     * on a sensor that was already open, and got -EPERM for the rest of the boot. One source lost
+     * until reboot because one configure call failed once.
+     *
+     * It is not the stop path. close() refuses a sensor that is or may be ranging; the obligation
+     * after a failed start() is still a stop, and that is what cleanup_pending is for. */
+    int (*close)(void *dev, tof_l7::operation_status *st);
+};
+#else
+/* An image without the grid driver still has the descriptor field, so a build that does not carry
+ * the ULD does not need a different source_desc. The table can only ever be null there. */
+struct grid_source_ops;
+#endif
+
 struct source_desc {
     model kind{model::l4_cliff};
     uint8_t addr_7bit{0};
     // Opaque to this layer. The mapping owns what a role means; treating it as a number
     // here is what keeps position policy out of the scheduler.
     uint8_t role_id{0};
+    /* EXPLICIT FOR A GRID SOURCE, with no scheduler default, for the same reason the cliff
+     * cadence has none: a number invented at this level becomes the specification by being the
+     * only one available. Zero means the caller has not configured this source, and configure()
+     * refuses rather than picking something. Unused by an l4_cliff source. */
+    uint8_t grid_frequency_hz{0};
+    /* THE L4 RANGING PROFILE, and it is required rather than defaulted on an l4_cliff source.
+     *
+     * configure() used to be a no-op that reported success, so the four cliff sensors ranged on
+     * whatever VL53LX_DataInit had left them: MEDIUM at 33,333 us. Nothing anywhere said so, and
+     * the one number that decides the achievable rate was the one number not written down.
+     *
+     * MEDIUM (2) or LONG (3). SHORT (1) is defined by the ULD's own enumeration and refused for an
+     * L4 part by the ULD itself -- see the IsL4() check in VL53LX_SetDistanceMode -- so it is
+     * rejected at init() rather than allowed to fail at bring-up on every sensor with the reason
+     * buried in a vendor error code. The ULD's numbering rather than a private enumeration,
+     * because a mapping onto three integers is only a chance to get it wrong.
+     *
+     * Both must be zero on an l7_grid source: a field belonging to the other model, quietly
+     * carried, is a wiring mistake the compiler cannot see. */
+    uint32_t cliff_timing_budget_us{0};
+    uint8_t cliff_distance_mode{0};
     void *dev{nullptr};      // VL53L4CX_Object_t* for l4_cliff
     void *scratch{nullptr};  // tof_cliff_scratch* for l4_cliff, deliberately SHARED
     // tof_cliff_stream_state* for l4_cliff, and deliberately NOT shared: the replay
@@ -146,6 +244,9 @@ struct source_desc {
     // cannot detect a repeat across cycles - which is the only thing it is for.
     void *stream{nullptr};
     const source_ops *ops{nullptr};
+    /* For an l7_grid source, and the only table used for one. A descriptor carrying the wrong one
+     * for its kind is a configuration error the bring-up refuses rather than works around. */
+    const grid_source_ops *grid_ops{nullptr};
 };
 
 // What happened to one source in one cycle. No classification, no reduction, no alarm.
@@ -195,7 +296,10 @@ struct source_facts {
      * Cleared only by a stop that returns success. Recovery is a stop, never a retried start:
      * a half-armed device has to come down before it can go up. */
     bool cleanup_pending{false};
-    op_status status{};
+    /* The last device-level detail recorded for this source, in the vocabulary of whichever model
+     * produced it. See source_status: the domain is part of the value because `stage` is a raw
+     * vendor number and the two vendors' enums are unrelated. */
+    source_status status{};
 };
 
 struct cycle_facts {
@@ -230,6 +334,13 @@ struct sinks {
                             const struct tof_cliff_sample &sample);
     // Sent from startup, on its own timer, never from the acquisition path.
     void (*on_cliff_health)(uint32_t snapshot, mapping_state state);
+#if defined(ENABLE_TOF_L7_ULD)
+    /* The grid equivalent of on_cliff_sample, and separate for the same reason the ops tables are:
+     * an 8x8 zone frame is not a tof_cliff_sample. Fires under the chain lock, after the read and
+     * before on_cycle, so a sink sees one consistent ordering across both models. */
+    void (*on_grid_sample)(int index, uint32_t cycle_seq, const source_facts &facts,
+                           const tof_l7::sample &sample);
+#endif
 };
 
 // Both are unresolved symbols in the cliff wire contract, so neither has a default and
@@ -315,6 +426,85 @@ struct thread_config {
     // How long a caller's bounded join waits before giving up. Zero is refused.
     uint32_t join_timeout_ms{0};
 };
+
+/* ----------------------------------------------------------------- the cadence ------ */
+/*
+ * WHAT THE LOOP USED TO DO, AND WHY IT WAS NOT A PERIOD. It ran a cycle and then waited a whole
+ * `cycle_period_ms`, so the interval between two cycles was the work PLUS the period: at a 20 ms
+ * setting and 6 ms of work the real cadence was 26 ms, and it moved with whatever each cycle
+ * happened to cost -- a bus retry, a sensor that answered slowly. The configured period was
+ * therefore not the rate, and no number anywhere said what the rate was.
+ *
+ * The rule now is a deadline rather than a delay: each cycle is due one period after the deadline
+ * the previous one met, not one period after it finished, so the work happens INSIDE the cadence.
+ *
+ * A deadline that has already passed is not waited out and is not slept off for a further period
+ * either -- at a 20 ms target a cycle taking 20.1 ms would then run at 40.1 ms, about 25 Hz, which
+ * is a rate thrown away over a fraction of a millisecond. It yields and re-bases on now, so a late
+ * cycle owes no backlog, and it is COUNTED: when the work is longer than the period the best
+ * achievable cadence is the work itself, and nothing else in the firmware would say so.
+ *
+ * A deadline further ahead than one period is not reachable -- each is the previous plus a period,
+ * and the loop does not return until it has waited for it -- but a clock that stepped backwards, or
+ * a deadline computed before a re-init, could produce one. It is REPAIRED rather than obeyed:
+ * waiting it out would stall acquisition for however wrong the number was, silently, with the
+ * heartbeat still flowing and nothing to say why the measurements stopped. It is not an overrun,
+ * because nothing was late -- and the deadline it rebuilds is one period after the wait it is about
+ * to perform, not one period after now, or the cycle that follows the repair would be born already
+ * due and counted late. That miscount is bounded to one cycle, since the overrun branch re-bases on
+ * now; it is still worth getting right, because the overrun count is the one signal that says the
+ * period is too short for the work.
+ *
+ * `due_ms` and `now_ms` are milliseconds from a monotonic clock. A period of zero is not reachable
+ * -- init() refuses one -- and is treated as an overrun rather than splitting the responsibility
+ * for that check between two places.
+ */
+struct schedule_decision {
+    /* Meaningful only when yield_only is false, and never zero then. */
+    uint32_t wait_ms{0};
+    /* Wait the shortest interval the kernel can express instead of wait_ms. Set exactly when the
+     * deadline had already passed -- see the overrun rule above. */
+    bool yield_only{false};
+    int64_t next_due_ms{0};
+    bool overran{false};
+};
+
+/* Pure, and separated from the loop for that reason: the rule above is the part that can be wrong,
+ * and a thread with a sleep in it is not where a rule gets tested. */
+schedule_decision next_cycle_due(int64_t due_ms, int64_t now_ms, uint32_t period_ms);
+
+/* The decision turned into the timeout the loop passes to the kernel.
+ *
+ * Its own function because the interesting property lives here and nowhere else: it must never
+ * return K_NO_WAIT. A `yield_only` decision carries no millisecond figure -- a tick is 0.1 ms on
+ * this board, and every millisecond value standing for "briefly" rounds to zero -- so a loop that
+ * read wait_ms regardless would turn every missed deadline into a spin, and every test of
+ * next_cycle_due() would still pass. The loop's own line is then a pass-through with nothing left
+ * to get wrong. */
+k_timeout_t cadence_timeout(const schedule_decision &step);
+
+/* Cycles that were already past due when they finished.
+ *
+ * NOT performance telemetry, and deliberately the only number this change adds. A cadence that
+ * cannot be met is not an error -- no sensor failed and no frame was lost -- so it is counted
+ * rather than logged per cycle. But it is the ONE fact that distinguishes "running at the
+ * configured rate" from "running as fast as the work allows", and without it a period set too short
+ * for the work degrades silently while every other indicator stays healthy. Cleared by init().
+ *
+ * READABLE ON A BOARD, which it was not when this counter was added. Review pointed out that
+ * nothing outside the tests read it, so the degradation it exists to reveal was still invisible
+ * without a debugger -- the counter was the fix's own blind spot. There are two readers now: the
+ * loop logs once on the transition from zero, and `tof cliff status` prints the running total
+ * beside the period it is measured against. */
+uint32_t cycle_overruns();
+
+/* The cadence init() was last given, or 0 when none has been accepted.
+ *
+ * Exists so a reader does not have to reach into the configuration the acquisition thread is
+ * using: this is one atomic word, written only on a successful init(), and a refused init() leaves
+ * the previous answer standing. 0 is not a period -- init() rejects it -- so 0 means "no cadence
+ * has been configured", which is the distinction a status reader needs first. */
+uint32_t configured_cycle_period_ms();
 
 /* Starts the acquisition thread: bring-up, then one cycle per cadence period until asked to stop.
  *

@@ -4,7 +4,7 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * The binding, over a REAL CAN controller.
+ * The binding WITHOUT a session, over a REAL CAN controller.
  *
  * native_sim's loopback driver is a real Zephyr CAN device: filters are installed through the real
  * API, frames go through the real send path, and what comes back comes back through the real
@@ -16,6 +16,13 @@
  * WHAT THE TEST SUPPLIES INSTEAD OF PRODUCTION: the proof, the acquisition start and the entropy
  * draw -- all three are hardware, and the binding's job with them is to pass them along. The CAN
  * path is not supplied: it is the thing under test.
+ *
+ * NO CASE HERE DRAWS A SESSION, which is a structural choice rather than a gap. bind::start()
+ * calls rt::init() every time, and tof_commission_runtime.hpp states ONE INIT PER BOOT as a
+ * precondition that nothing enforces -- init() reconfigures the session layer under a worker that
+ * cannot be stopped. With no session no worker is ever started here, so the repeated init() has
+ * nothing to move the ground under. The cases that do draw one are in tof_commission_bind_session,
+ * as a single ordered scenario, for exactly that reason.
  *
  * THE IDENTIFIERS ARE THE ALLOCATED ONES HERE, unlike the runtime suite, and for the opposite
  * reason: this is the file that is supposed to know them, so the test's job is to check that what
@@ -121,6 +128,20 @@ bool no_transaction_within(k_timeout_t wait = K_MSEC(200))
     return !next_transaction(f, wait);
 }
 
+/* What the authority would say. A successful prove installs a mapping in production, so the fake
+ * does the same; the cases that make this disagree with the session's memory live in #116's suite,
+ * which can drive the session directly. */
+bool installed_proven_{false};
+uint8_t installed_epoch_{0};
+
+bool test_installed(void *, uint8_t *epoch)
+{
+    if (!installed_proven_)
+        return false;
+    *epoch = installed_epoch_;
+    return true;
+}
+
 bind::config configured()
 {
     bind::config c{};
@@ -130,6 +151,7 @@ bind::config configured()
     c.announce_period_ms = 60000;  /* inert: this suite drives what it wants to observe */
     c.poll_ms = 60000;
     c.enumeration_permitted = test_permitted;
+    c.installed_mapping = test_installed;
     return c;
 }
 
@@ -162,9 +184,14 @@ bool available()
 
 namespace lexxhard::tof_commissioning {
 
-outcome prove(uint32_t)
+outcome prove(uint32_t epoch)
 {
     ++proves_;
+    /* A successful proof installs a mapping, so the authority view this suite hands the session
+     * agrees with it from here on. Without that the session's epoch gate would refuse the next
+     * request for the epoch it had just proved. */
+    installed_proven_ = true;
+    installed_epoch_ = static_cast<uint8_t>(epoch);
     outcome r{};
     r.failed_at = stage::none;
     return r;
@@ -217,38 +244,6 @@ static void before(void *)
 }
 
 ZTEST_SUITE(tof_commission_bind, NULL, suite_setup, before, NULL, NULL);
-
-ZTEST(tof_commission_bind, test_a_session_means_a_filter_and_a_worker)
-{
-    const bind::result r{bind::start(can_dev(), configured())};
-    zassert_equal(r.rc, 0, "a session was drawn");
-    zassert_true(r.state == bind::outcome::running, "so the board is commissionable");
-    zassert_true(r.filter_installed, "the request filter is installed");
-    zassert_true(r.worker_started || rt::running(), "and a worker is up");
-
-    /* A REAL FRAME, through the real driver, on the allocated identifier. */
-    zassert_equal(send_request(ctr::kCommissionRequestId, 1, 7, token_), 0, "the request goes out");
-
-    struct can_frame answer {};
-    zassert_true(next_transaction(answer), "the board answered");
-    zassert_equal(answer.id, ctr::kCommissionStatusId, "on 0x219, the status identifier");
-    zassert_equal(answer.dlc, wire::kFrameLen, "eight bytes");
-
-    wire::transaction_status t{};
-    zassert_equal(wire::decode_transaction_status(answer.data, answer.dlc, t),
-                  wire::decode_error::none, "and it decodes");
-    zassert_true(t.ph == wire::phase::accepted, "accepted: the receive path does no work");
-    zassert_equal(t.seq, 1, "for the request that asked");
-
-    /* NOTHING OF OURS EVER APPEARS ON THE REQUEST IDENTIFIER. The observer on 0x218 sees the
-     * test's own frame and must see nothing else. */
-    struct can_frame echoed {};
-    zassert_equal(k_msgq_get(&request_msgq, &echoed, K_MSEC(50)), 0, "the request itself");
-    zassert_equal(k_msgq_get(&request_msgq, &echoed, K_MSEC(200)), -EAGAIN,
-                  "and the board transmitted nothing on it");
-
-    teardown(r);
-}
 
 ZTEST(tof_commission_bind, test_no_session_still_installs_the_filter_and_answers)
 {
@@ -305,60 +300,3 @@ ZTEST(tof_commission_bind, test_a_device_that_is_not_ready_installs_nothing)
     zassert_false(r.filter_installed, "");
 }
 
-ZTEST(tof_commission_bind, test_a_refused_release_condition_proves_nothing)
-{
-    /* THE DEFAULT EVERY IMAGE BUT THE BENCH ONE HAS. The transport works, the session exists, the
-     * request is accepted -- and the chain is never touched, because nobody said it was safe to
-     * touch it. A board that proved anyway would be re-enumerating on a machine that may be moving.
-     */
-    permitted_ = false;
-    const bind::result r{ bind::start(can_dev(), configured()) };
-    zassert_true(r.state == bind::outcome::running, "the downlink is up");
-
-    zassert_equal(send_request(ctr::kCommissionRequestId, 7, 3, token_), 0, "");
-    struct can_frame answer {};
-    zassert_true(next_transaction(answer), "accepted");
-
-    /* Driven here rather than waiting for the worker's own tick: this suite's worker sleeps for a
-     * minute between passes, and the session's claim makes a direct call safe either way. */
-    (void)rt::service_once(k_uptime_get());
-    zassert_true(next_transaction(answer), "and then answered");
-
-    wire::transaction_status t{};
-    zassert_equal(wire::decode_transaction_status(answer.data, answer.dlc, t),
-                  wire::decode_error::none, "");
-    zassert_true(t.ph == wire::phase::refused, "refused");
-    zassert_true(t.res == wire::result::not_permitted, "because the condition said no");
-    zassert_true(permitted_calls_ >= 1, "and it was ASKED, not assumed");
-    zassert_equal(proves_, 0, "NOT ONE PROOF RAN");
-    zassert_equal(starts_, 0, "and acquisition was never started");
-
-    teardown(r);
-}
-
-ZTEST(tof_commission_bind, test_only_the_request_identifier_is_received)
-{
-    const bind::result r{bind::start(can_dev(), configured())};
-    zassert_true(r.state == bind::outcome::running, "");
-    const uint32_t before_in{rt::stats().frames_in};
-
-    /* A well-formed request on the STATUS identifier, and on a neighbour. Either would be answered
-     * by a board that filtered on the wrong value, and the second is what an adjacent allocation
-     * looks like. */
-    zassert_equal(send_request(ctr::kCommissionStatusId, 9, 9, token_), 0, "");
-    zassert_equal(send_request(ctr::kMeasId, 9, 9, token_), 0, "");
-    k_msleep(100);
-
-    zassert_equal(rt::stats().frames_in, before_in, "neither reached the runtime");
-    zassert_equal(proves_, 0, "and nothing ran");
-
-    /* NOT CHECKED ON THE BUS, and the reason is worth writing down: the frame this test put on the
-     * status identifier is a request, whose byte 1 is the opcode -- and opcode 1 is the same value
-     * as `status_kind::transaction`. Read back off the status identifier it is indistinguishable
-     * from a status, which is precisely why the contract gives the two directions their own
-     * identifiers and why nobody may send a request on 0x219. The runtime's own counter is the
-     * honest evidence here, and it has not moved. */
-    zassert_equal(rt::stats().frames_in, before_in, "still nothing reached the runtime");
-
-    teardown(r);
-}
