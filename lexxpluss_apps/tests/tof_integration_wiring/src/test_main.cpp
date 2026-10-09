@@ -202,8 +202,13 @@ ZTEST(tof_integration_wiring, test_a_proven_grid_source_is_permitted_by_its_own_
     /* boards_detected is not in the snapshot, so it is zero and says so rather than carrying a
      * plausible-looking number into a diagnostics field. */
     zassert_equal(a.boards_detected, 0, "");
-    /* Bit 2 is "the binding cannot be trusted", which nothing in this snapshot establishes. */
-    zassert_false(a.binding_untrusted, "");
+    /* Bit 2 -- "the binding cannot be trusted" -- is NOT a field here, and asking for it is what
+     * kept this suite from compiling at all. authorisation carried a chain-level
+     * binding_untrusted until #118 removed it: its only effect was to set bit 2 on every source,
+     * which the packer reads as a contradiction against source_allowed and refuses, taking the
+     * whole cycle down over one position. source_allowed[] already says this per source, as the
+     * enumerator's verdict rather than as a status bit, so there is nothing to assert here --
+     * the input a conforming producer must never set no longer exists to be set. */
     /* kNoFailingPosition is 0xFF, not 0: a healthy chain must not report a failure here. */
     zassert_false(a.other_position_enumeration_failed, "");
 }
@@ -230,6 +235,10 @@ ZTEST(tof_integration_wiring, test_the_live_grid_gate_is_never_proven)
 namespace lexxhard::tof_watchdog_feeder {
 
 void set_baseline_point(bool)
+{
+}
+
+void set_acquisition_expected(bool)
 {
 }
 

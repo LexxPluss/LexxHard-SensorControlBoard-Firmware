@@ -180,10 +180,14 @@ struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::
     for (int i{0}; i < tof_grid_pub::kGridSources; ++i)
         a.source_allowed[i] = (now.grid_source_mask & (1U << i)) != 0U;
 
-    /* Bit 2 is "the chain_position -> source_id binding cannot be trusted", which contract
-     * 2026-08-02i deliberately separated from chain length. Nothing in this snapshot establishes
-     * it, so it stays false rather than being derived from something that is not it. */
-    a.binding_untrusted = false;
+    /* BIT 2 IS NOT SET FROM HERE, and there is no field for it to be set through. It says "the
+     * chain_position -> source_id binding cannot be trusted", and authorisation carried a
+     * chain-level binding_untrusted until #118 removed it: its only effect was to set the bit on
+     * every source, which the packer reads as a contradiction against source_allowed and refuses,
+     * taking a whole cycle down over one position. source_allowed[] above already says this per
+     * source and says it as the enumerator's verdict. Nothing in this snapshot establishes bit 2
+     * either way, so nothing here claims it; the packer's own check still guards the wire against
+     * a non-conforming caller. */
     /* kNoFailingPosition is 0xFF, not 0. Comparing against zero would have reported a failure on
      * every healthy chain -- the default IS the no-failure value. */
     a.other_position_enumeration_failed = now.failing_position != tof_authority::kNoFailingPosition;

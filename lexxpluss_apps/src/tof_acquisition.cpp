@@ -276,8 +276,34 @@ int l7_real_stop(void *dev, tof_l7::operation_status *st)
     return rc;
 }
 
+/* THE WAY BACK TO `empty`, and the table is refused without it. open() accepts only an unopened
+ * sensor and almost nothing leaves it that way -- a successful stop() lands on `configured` -- so
+ * bring_up_grid_locked() closes unconditionally before it opens, and a table whose close is null
+ * would dereference nothing: init() refuses it instead. The real table was bound with five entries
+ * and this sixth left at nullptr, which refused the whole descriptor set and took acquisition down
+ * with it in every image that has the grid driver.
+ *
+ * Bracketed like the rest even though it does no transport I/O. It cannot fail for any reason but
+ * state, so it cannot hang on a bus -- but it runs on the acquisition thread, and a call on that
+ * thread that does not return is worth seeing whatever the reason. */
+int l7_real_close(void *dev, tof_l7::operation_status *st)
+{
+    runtime_progress::begin(runtime_progress::activity::l7);
+    const int rc{tof_l7::close(static_cast<tof_l7::sensor *>(dev), st)};
+    runtime_progress::end(runtime_progress::activity::l7);
+    return rc;
+}
+
+/* DESIGNATED, not positional. The positional form is what left close at nullptr: the struct gained
+ * a member and the five-entry initialiser stayed valid, silently. Named members cannot drift that
+ * way -- a new member is either named here or it is visibly absent. */
 const grid_source_ops kL7GridOps{
-    l7_real_open, l7_real_configure, l7_real_start, l7_real_read_grid_sample, l7_real_stop,
+    .open = l7_real_open,
+    .configure = l7_real_configure,
+    .start = l7_real_start,
+    .read_grid_sample = l7_real_read_grid_sample,
+    .stop = l7_real_stop,
+    .close = l7_real_close,
 };
 #endif
 

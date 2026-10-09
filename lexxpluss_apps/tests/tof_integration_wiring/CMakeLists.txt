@@ -50,6 +50,10 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_runtime.cpp
     ${APP_SRC_DIR}/tof_cliff_can.cpp
+    # tof_cliff_can sends through the bounded send rather than can_send() directly, so the real one
+    # is linked rather than stubbed: a stub here would let the suite pass against a send that does
+    # not exist, and the file depends on nothing but atomics and errno.
+    ${APP_SRC_DIR}/zcan_bounded_send.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
     ${APP_SRC_DIR}/tof_enumerator.cpp
     ${APP_SRC_DIR}/tof_grid_packer.cpp
