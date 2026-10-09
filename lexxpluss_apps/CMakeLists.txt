@@ -23,6 +23,13 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
+# The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
+# nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
+# find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
+# carries the record must not be configurable without it. See overlays/forensics_dtcm.overlay, and
+# src/tof_watchdog_tombstone.cpp for the compile-time check that this line is what satisfies.
+list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_dtcm.overlay)
+
 # An L7 image verifies the stored blob on the main stack at boot, which does not fit the default
 # main stack: see overlays/tof_l7.conf for the per-frame measurement. Kconfig is fixed by
 # find_package(Zephyr) below, so the fragment is added here, and only for L7 builds -- every other
@@ -68,6 +75,32 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/tof_commission_map.c
 # separate artefacts and are not on this path by accident.
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs
                                        ${CMAKE_CURRENT_SOURCE_DIR}/../docs/can)
+
+# ONE BOUNDED WAY TO TRANSMIT, enforced here because the unbounded way looks identical at the
+# call site. can_send() with a null callback waits for acknowledgement with K_FOREVER whatever
+# timeout is passed to it (see src/zcan_bounded_send.hpp), so a bus with no other node awake
+# stops the calling thread for good. Every sender goes through zcan_bounded_send::send(); this
+# refuses to configure if a null-callback call comes back, in a new module or a merge, rather
+# than letting it ship and be found on a vehicle whose host was switched off.
+file(GLOB_RECURSE _can_send_sources ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp)
+set(_blocking_can_send "")
+foreach(_f ${_can_send_sources})
+    if(_f STREQUAL ${CMAKE_CURRENT_SOURCE_DIR}/src/zcan_bounded_send.cpp)
+        continue()  # the one place allowed to call can_send at all
+    endif()
+    file(STRINGS ${_f} _hits REGEX "can_send[ \t]*\\(.*(nullptr|NULL)[ \t]*,[ \t]*(nullptr|NULL)")
+    if(_hits)
+        get_filename_component(_name ${_f} NAME)
+        list(APPEND _blocking_can_send ${_name})
+    endif()
+endforeach()
+if(_blocking_can_send)
+    message(FATAL_ERROR
+        "can_send() with a null callback waits for acknowledgement forever, whatever timeout "
+        "it is given: a bus with no other node awake stops the caller permanently. Use "
+        "zcan_bounded_send::send() instead. Found in: ${_blocking_can_send}")
+endif()
 
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)

@@ -42,7 +42,10 @@ clean:
 	        build-tof-l7 build-test-tof-l7-port build-test-tof-l7-sensor \
 	        build-test-tof-l7-blob build-test-tof-l7-uld-stop \
 	        build-test-tof-l7-recovery \
-	        build-test-tof-commission-wire build-test-tof-commission-session
+	        build-test-tof-commission-wire build-test-tof-commission-session \
+	        build-test-runtime-progress build-test-tof-task-watchdog \
+	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder \
+	        build-test-zcan-bounded-send build-test-zcan-poll-budget
 
 .PHONY: distclean
 distclean: clean
@@ -233,6 +236,56 @@ test_tof_l7_uld_stop:
 test_tof_l7_recovery:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_recovery -d build-test-tof-l7-recovery -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the runtime monitoring layer. Six suites, listed separately because they fail
+# for different reasons: the transmit path, the per-pass budget, the counters, the decision, the
+# record and the wiring around them.
+
+# The transmit path that cannot wait forever: what a zero means, what a refusal means, and the
+# counter signature of a bus with nobody acknowledging. Needs CONFIG_CAN for the frame type only;
+# the device is a fake.
+.PHONY: test_zcan_bounded_send
+test_zcan_bounded_send:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_bounded_send -d build-test-zcan-bounded-send -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# What one pass of the zcan loop may do, run through the production pollers with real kernel queues
+# and a send that can be told to refuse. Covers the two properties a count-based suite cannot get at
+# from outside: that a pass terminates while its producer keeps refilling, and that a request/reply
+# path holds a refused reply instead of losing it.
+.PHONY: test_zcan_poll_budget
+test_zcan_poll_budget:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_poll_budget -d build-test-zcan-poll-budget -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The six heartbeats. Needs a real kernel rather than a host stub: which of the two CAN sender slots
+# a send belongs to is decided by comparing against the system work queue's thread.
+.PHONY: test_runtime_progress
+test_runtime_progress:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/runtime_progress -d build-test-runtime-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The decision itself: may the hardware watchdog be fed right now. Pure logic over counters and a
+# clock, so it links the production source directly and needs no board and no watchdog driver.
+.PHONY: test_tof_task_watchdog
+test_tof_task_watchdog:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_task_watchdog -d build-test-tof-task-watchdog -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The retained record. Formatting and validation over a caller-supplied region, so the suite writes
+# into an ordinary array; only the production placement knows about DTCM.
+.PHONY: test_tof_watchdog_tombstone
+test_tof_watchdog_tombstone:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_watchdog_tombstone -d build-test-tof-watchdog-tombstone -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The startup handshake against a fake watchdog, in the order the board uses it. One ordered
+# scenario on purpose: the module keeps one set of state for the life of the image, exactly as it
+# does on the board, so it cannot be set up again per test case.
+.PHONY: test_tof_watchdog_feeder
+test_tof_watchdog_feeder:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_watchdog_feeder -d build-test-tof-watchdog-feeder -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming
