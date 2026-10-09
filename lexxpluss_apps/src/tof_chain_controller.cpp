@@ -64,13 +64,16 @@
 #endif
 #include "tof_enumerator.hpp"
 #include "tof_l7_boot_order.hpp"
+/* Outside every feature guard: the quiesce that reports a stopped acquisition lives behind the
+ * cliff guard and the boot recovery lives behind the L7 one, and the header was only included for
+ * the second. A chain + cliff build without the grid driver is a configuration CMake permits. */
+#include "tof_watchdog_feeder.hpp"
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_recovery.hpp"
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_blob_record.hpp"
 #include "tof_l7_runtime.hpp"
 #endif
-#include "tof_watchdog_feeder.hpp"
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
 #endif
@@ -807,15 +810,44 @@ zephyr_chain_ops chain_ops{};
  * pieces that need the Zephyr image; the ORDER they are used in belongs to tof_commission_wiring,
  * where a host suite can link it.
  *
- * The quiesce is the tested primitive itself, with no wrapper in between. try_stop(), not stop():
- * stop() takes the chain with K_FOREVER, so a wrapper around it would block and the session's
- * K_NO_WAIT acquire -- the whole reason a busy chain is a refusal rather than a wait -- would never
- * be reached. And try_stop(), not "try_stop plus a check": is_idle() also takes the chain with
- * K_FOREVER, so verifying the quiesce that way would put the block back one line later.
+ * The quiesce is try_stop(), not stop(): stop() takes the chain with K_FOREVER, so anything built
+ * on it would block and the session's K_NO_WAIT acquire -- the whole reason a busy chain is a
+ * refusal rather than a wait -- would never be reached. And try_stop(), not "try_stop plus a
+ * check": is_idle() also takes the chain with K_FOREVER, so verifying the quiesce that way would
+ * put the block back one line later.
+ *
+ * IT IS WRAPPED, AND ONLY TO TELL THE WATCHDOG. The wrapper adds no check and no wait -- one atomic
+ * store after a call that already returned -- so the reasoning above still holds. What it buys is
+ * that the one place acquisition is stopped in production is also the place that says so; see
+ * quiesce_acquisition().
  *
  * NO #if ON start_downlink BEYOND THE ONE THAT DECIDES WHETHER IT EXISTS. An image without the
  * downlink leaves that step null and the sequence runs the half it has; the preprocessor decides
  * what exists, not what the order is. */
+/* THE ONE PLACE ACQUISITION IS STOPPED IN PRODUCTION, and therefore the one place that can tell the
+ * watchdog it has been.
+ *
+ * tof_watchdog_feeder::set_acquisition_expected() had no caller at all: the feeder's atomic
+ * defaults to expected, which its header says is deliberate so that a missing wiring fails loudly
+ * rather than silently blinding the watchdog. This is that missing wiring, and the loud failure is
+ * real -- the cycle and its sender stop for the whole pass, which is longer than their silence
+ * bounds, so an unwired board resets itself during its first commissioning run.
+ *
+ * NOT on the failure path. A quiesce that did not succeed left acquisition running, or left it in a
+ * state nobody can account for, and in neither case is "stopped" a fact to report; the bounds keep
+ * applying, which is the safe direction. start_acquisition() is what says it is expected again, and
+ * only when the thread actually started -- so a proof that fails and leaves acquisition stopped by
+ * design keeps the suspension, which is the case a long-operation declaration cannot cover because
+ * it has no end to wait for. */
+int quiesce_acquisition()
+{
+    const int rc{tof_acq::try_stop()};
+
+    if (rc == 0)
+        tof_watchdog_feeder::set_acquisition_expected(false);
+    return rc;
+}
+
 tof_commission_wiring::inputs commission_inputs()
 {
     tof_commission_wiring::inputs in{};
@@ -823,7 +855,7 @@ tof_commission_wiring::inputs commission_inputs()
     in.chain = &chain_mutex;
     in.ops = &chain_ops;
     in.set_bus_speed = set_bus_speed_hw;
-    in.quiesce = tof_acq::try_stop;
+    in.quiesce = quiesce_acquisition;
 #if defined(ENABLE_TOF_AUTO_COMMISSION)
     in.start_downlink = boot_start_downlink;
 #endif

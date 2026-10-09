@@ -515,7 +515,19 @@ int start_acquisition()
     tcfg.stack_size = stack_size_;
     tcfg.priority = cfg_.thread_priority;
     tcfg.join_timeout_ms = cfg_.stop_join_timeout_ms;
-    return acq::start(tcfg);
+
+    const int rc{acq::start(tcfg)};
+
+    /* EXPECTED AGAIN, and only now that the thread is actually running. The watchdog suspends the
+     * cycle and the acquisition sender while acquisition is stopped, and this is the other end of
+     * that: commissioning's quiesce says "stopped", a successful start says "expected".
+     *
+     * Not on the failure path, deliberately. A start that was refused leaves acquisition stopped,
+     * and claiming otherwise would put the cycle back under bounds it cannot meet -- which is a
+     * reset for a board whose only fault is that it has nothing proven to acquire with. */
+    if (rc == 0)
+        tof_watchdog_feeder::set_acquisition_expected(true);
+    return rc;
 }
 
 #ifdef CONFIG_ZTEST

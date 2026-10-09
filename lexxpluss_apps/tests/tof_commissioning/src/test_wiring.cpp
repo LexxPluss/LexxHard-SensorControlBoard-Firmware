@@ -226,4 +226,14 @@ void set_baseline_point(bool ready)
     baseline_point_set = ready;
 }
 
+/* Recorded rather than ignored, because the sequence is the claim: the quiesce says stopped and a
+ * successful start says expected again, and a suite that only counted the calls could not tell
+ * those two apart. Starts at `true` because the feeder's own default is expected. */
+bool acquisition_expected{true};
+
+void set_acquisition_expected(bool expected)
+{
+    acquisition_expected = expected;
+}
+
 }  // namespace lexxhard::tof_watchdog_feeder
