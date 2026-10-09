@@ -190,30 +190,36 @@ if(ENABLE_TOF_L7_ULD)
     # THE FILESYSTEM IS NOT REMOVED HERE, and the reason is a measurement rather than inheritance.
     #
     # The development images that carried this driver also dropped the FAT stack, on the grounds
-    # that an L7 image does not fit beside it. Measured on this branch against the clean Zephyr
-    # tree, chain + cliff with the filesystem still configured, 261,712 B ceiling:
+    # that an L7 image does not fit beside it. Re-measured after this branch merged prod at
+    # 0084f750, against the clean Zephyr tree, chain + cliff with the filesystem still configured,
+    # VERSION=9.9.9-cmp, against the 261,712 B ceiling for zephyr.signed.bin:
     #
-    #   flag off  build-pub-prod-off  245,452 B signed, 16,260 B spare
-    #   flag on   build-pub-prod-on   246,776 B signed, 14,936 B spare   (+1,324 B)
+    #   flag off   245,608 B signed, 16,104 B spare
+    #   flag on    247,560 B signed, 14,152 B spare   (+1,952 B)
     #
-    # READ THAT CAREFULLY RATHER THAN AS A PASS. The +1,324 B is not the driver's cost. No
+    # ONE TREE WITH AND WITHOUT THE FLAG is the only thing those two lines compare. What this
+    # branch adds is a different number: in the flag-on configuration this tree is +1,880 B signed
+    # against prod at 0084f750, and that belongs to the grid lifecycle and the grid publisher
+    # rather than to the driver. Both figures move with the base, so re-measure them rather than
+    # carry them forward.
+    #
+    # READ THE +1,952 B CAREFULLY RATHER THAN AS A PASS. It is not the driver's cost. No
     # production table binds the L7 adapter: build_descriptors() still gives every grid position
     # the named -ENOSYS stub and leaves grid_ops null, so the grid lifecycle is reachable only
     # through a function-pointer table nothing fills, and --gc-sections keeps the dispatch while
-    # dropping most of what it would have called. Compiled, the ULD objects are 11,531 B of text --
-    # a reference for what binding them will add, not a prediction, since inlining and
-    # --gc-sections move it again once there are callers.
+    # dropping most of what it would have called. The two ULD objects this list compiles carry
+    # 5,932 B of text and 2,673 B of rodata before the link -- a reference for what binding them
+    # will move, not a prediction, since inlining and --gc-sections change it again once there are
+    # callers.
     #
-    # The grid publisher and packer are NOT in this list and are in no product image; they are
-    # built and tested by lexxpluss_apps/tests/tof_cliff_sensor only. Their in-image cost, and the
+    # The grid publisher and packer are NOT in this list, and nothing of them survives the link
+    # today: the flag-on image carries no tof_grid_pub or grid packer symbol, and they are built
+    # and exercised by lexxpluss_apps/tests/tof_cliff_sensor only. Their in-image cost, and the
     # cost of an adapter that is actually bound, are both unmeasured and belong to the wiring
     # change that creates the callers. The runtime monitoring and the boot recovery are likewise
-    # not measured here.
-    # So the headroom after wiring is an estimate and no more: 14,936 spare less 11,531 of ULD text
-    # is about 3.3 KB, before the publisher, the packer, a bound adapter or anything else that is
-    # still to come. It is a reason to expect the decision to be forced later, and it is NOT an
-    # account of why the development images overflowed, which was never measured contribution by
-    # contribution.
+    # not measured here. So nothing here supports an estimate of the headroom that will be left
+    # after wiring, and none is offered -- and none of it is an account of why the development
+    # images overflowed, which was never measured contribution by contribution.
     #
     # It is not forced by THIS change, and removing ~26 KB of product content is not something a
     # driver's build block should do on the way past. It is a change about what the image CONTAINS,
