@@ -45,6 +45,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 
+#include <errno.h>
 #include <string.h>
 
 #include "tof_cliff_contract.h"
@@ -64,6 +65,12 @@ namespace {
 /* What the three hardware seams do in this suite. */
 bool entropy_ok_{true};
 uint32_t token_{0x0BADF00DU};
+/* HOW THE SUITE SEES AN init() IT WAS NOT SUPPOSED TO GET. rt::init() draws the session token, and
+ * this is the only draw in the binary, so the count is a direct witness: it going up means the
+ * session layer was reconfigured. Asserting on the token's value could not see it -- the fake
+ * returns the same number every time, so a second init would install an identical token and look
+ * like nothing had happened. */
+int draws_{0};
 int proves_{0};
 int starts_{0};
 bool permitted_{true};
@@ -182,6 +189,7 @@ namespace lexxhard::tof_commission_entropy {
 
 int draw_token(void *, uint32_t *out)
 {
+    ++draws_;
     if (!entropy_ok_)
         return -ENODEV;
     *out = token_;
@@ -254,6 +262,8 @@ static void before(void *)
     permitted_ = true;
     permitted_calls_ = 0;
     drain();
+    /* draws_ is deliberately not reset. It counts for the life of the binary, which is the scope
+     * ONE INIT PER BOOT is about; zeroing it per case would hide exactly what it is here to see. */
 }
 
 ZTEST_SUITE(tof_commission_bind_session, NULL, suite_setup, before, NULL, NULL);
@@ -324,19 +334,48 @@ ZTEST(tof_commission_bind_session, test_a_session_serves_requests_on_the_allocat
     zassert_equal(rt::stats().frames_in, before_in,
                   "neither reached the receive path, so neither was answered");
 
-    /* --- AND WHAT A SECOND START REPORTS, deliberately last ---
+    /* --- AND A SECOND START IS REFUSED BEFORE IT CAN DO ANY DAMAGE ---
      *
-     * This does the thing tof_commission_runtime.hpp forbids: a second rt::init() while the worker
-     * is alive. It is here, at the end of the only case in this binary, with nothing after it to be
-     * affected, because the question is what the RESULT says when a caller makes that mistake. It
-     * used to say `running` with worker_started false, and the old assertion's `|| rt::running()`
-     * read the first worker and agreed. `answering_only` is what the state means now. */
+     * A second bind::start() under this live worker is what tof_commission_runtime.hpp forbids: a
+     * second rt::init(), which draws a new token, purges the queues and resets the budgets while
+     * the worker is mid-pass. An earlier revision let it run and only reported differently at the
+     * end; being last in the binary did not make it safe, it made it unobserved.
+     *
+     * So the assertions are about what did NOT happen, not about what was reported. */
+    const int draws_before{draws_};
+    const bool running_before{rt::running()};
+    const uint32_t in_before{rt::stats().frames_in};
+
     const bind::result again{bind::start(can_dev(), configured())};
-    zassert_false(again.worker_started, "rt::start() refuses a second worker");
-    zassert_true(again.state == bind::outcome::answering_only,
-                 "so the state must not claim the board is commissioning");
-    zassert_true(again.filter_installed, "the receive path is still up and still answers");
-    teardown(again);
+    zassert_true(again.state == bind::outcome::refused, "a second start is refused");
+    zassert_equal(again.rc, -EALREADY, "and says why: a worker is already running");
+    zassert_false(again.worker_started, "it started nothing");
+    zassert_false(again.filter_installed, "and installed nothing");
+
+    /* THE SESSION LAYER WAS NEVER TOUCHED, which is the whole point of refusing early. */
+    zassert_equal(draws_, draws_before, "no second token was drawn, so there was no second init");
+    zassert_true(rt::has_session(), "the session this boot drew is still the session");
+    zassert_true(running_before && rt::running(), "and the original worker is still the worker");
+
+    /* THE OBSERVER IS EMPTIED FIRST, and not as hygiene. The step above deliberately sent a
+     * REQUEST onto the status identifier to prove the board does not listen there -- and the
+     * observer in this suite listens there, so that frame is sitting in its queue. Worse,
+     * next_transaction() does not filter it out: decode_status_kind() reads a request's bytes as a
+     * transaction status, so the next read would return the test's own frame and decode it as a
+     * phase of 13 with a result of 240. Nothing before this needed a frame after that step, which
+     * is why the trap had never been stepped in. */
+    drain();
+
+    /* AND THE ORIGINAL FILTER IS STILL THE ONE ON THE BUS. A request on the allocated identifier
+     * still reaches the receive path and is still answered under the original token -- which a
+     * re-init would have replaced, leaving this frame answered `no_session` instead. */
+    zassert_equal(send_request(ctr::kCommissionRequestId, 4, 7, token_), 0, "the request goes out");
+    zassert_true(next_transaction(answer), "and the board answered it");
+    zassert_equal(wire::decode_transaction_status(answer.data, answer.dlc, t),
+                  wire::decode_error::none, "");
+    zassert_true(t.ph == wire::phase::accepted, "accepted, not no_session");
+    zassert_equal(t.seq, 4, "for the request that asked");
+    zassert_true(rt::stats().frames_in > in_before, "through the one filter that is installed");
 
     teardown(r);
 }

@@ -112,6 +112,31 @@ result start(const struct device *can_dev, const config &cfg)
 {
     result out{};
 
+    /* REFUSED BEFORE ANYTHING MOVES, and the order is the point.
+     *
+     * This function calls rt::init() unconditionally, and tof_commission_runtime.hpp states ONE
+     * INIT PER BOOT: init() draws a new token, purges the queues and resets the attempt budgets,
+     * and the worker is not stoppable, so a second init under a live worker moves the ground under
+     * whatever that worker is doing. Nothing in the runtime enforces it -- the header says the
+     * callers respect it -- so the enforcement belongs here, at the one call site that does the
+     * init.
+     *
+     * A LIVE WORKER IS THE CONDITION, not "has this function been called before". A start that
+     * drew no session never creates a worker, and its repeated init() has nothing to move the
+     * ground under; refusing those would break the no-session cases for no gain. What must never
+     * happen twice is an init while a worker is running.
+     *
+     * AND IT IS CHECKED HERE RATHER THAN REPORTED LATER. An earlier revision let the second call
+     * run to completion and reported `answering_only` when rt::start() came back -EALREADY. By
+     * then can_, cfg_ and the whole session layer had already been rewritten, and the state was
+     * untrue besides: the previous worker was still running, so the board was commissioning, not
+     * merely answering. The damage is the init, not the report. */
+    if (rt::running()) {
+        out.state = outcome::refused;
+        out.rc = -EALREADY;
+        return out;
+    }
+
     if (cfg.enumeration_permitted == nullptr) {
         /* A board must not re-enumerate its chain because nobody said it should not. */
         out.state = outcome::refused;
@@ -171,17 +196,29 @@ result start(const struct device *can_dev, const config &cfg)
         return out;
     }
 
-    /* `running` MEANS A WORKER IS RUNNING, which it did not. This used to set `running`
-     * unconditionally and leave worker_started as the only trace, so a caller reading the state --
-     * and the suite, which read `worker_started || rt::running()` -- could not tell a board that
-     * commissions from one that merely answers. `answering_only` already describes exactly this:
-     * the filter is in, the receive path replies, and no transaction will ever be executed.
+    /* `running` MEANS A WORKER IS RUNNING. It used to be set unconditionally, leaving
+     * worker_started as the only trace, which is what let the suite's `worker_started ||
+     * rt::running()` read the previous case's worker and agree.
      *
-     * Not reachable from a conforming caller: rt::start() refuses a second thread with -EALREADY,
-     * and production calls this once from the bootstrap. The branch exists so that the state never
-     * overstates what is running, whoever calls it. */
-    out.worker_started = rt::start() == 0;
-    out.state = out.worker_started ? outcome::running : outcome::answering_only;
+     * THE FAILURE BRANCH IS UNREACHABLE BEHIND THE GUARD ABOVE and is still reported rather than
+     * papered over. rt::start() refuses with -EPERM only when the runtime is unconfigured or has
+     * no session, which out.rc == 0 has just ruled out, and with -EALREADY only when a worker
+     * exists, which rt::running() was asked about before anything moved. Reaching it means two
+     * threads called this at once, and then the truthful answer is that THIS call delivered no
+     * worker: the filter it just added is taken back out so the result describes one thing instead
+     * of half of two. The filter and the worker the other caller installed are left alone, and so
+     * is can_, which that worker sends through. */
+    const int start_rc{rt::start()};
+    out.worker_started = start_rc == 0;
+    if (!out.worker_started) {
+        can_remove_rx_filter(can_, out.filter_id);
+        out.filter_installed = false;
+        out.filter_id = -1;
+        out.state = outcome::refused;
+        out.rc = start_rc;
+        return out;
+    }
+    out.state = outcome::running;
     return out;
 }
 
