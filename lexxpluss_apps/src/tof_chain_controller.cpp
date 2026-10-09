@@ -286,14 +286,6 @@ const char *stage_label(tof_commissioning::stage st)
     return "?";
 }
 
-/* THE PRODUCTION RETIME, and the one place the two speeds become register values.
- *
- * It does not take the chain lock: commissioning calls it while holding it, and a lock in here
- * would deadlock that caller.
- *
- * Nor does it check whether acquisition is running. That check belongs to the caller, which is in a
- * position to know -- commissioning has already quiesced and holds the chain -- and repeating it
- * here would be a third opinion about the same fact. */
 const char *bus_label(tof_commissioning::bus_state b)
 {
     switch (b) {
@@ -318,6 +310,14 @@ const char *recheck_label(tof_commissioning::recheck_fault f)
     return "?";
 }
 
+/* THE PRODUCTION RETIME, and the one place the two speeds become register values.
+ *
+ * It does not take the chain lock: commissioning calls it while holding it, and a lock in here
+ * would deadlock that caller.
+ *
+ * Nor does it check whether acquisition is running. That check belongs to the caller, which is in a
+ * position to know -- commissioning has already quiesced and holds the chain -- and repeating it
+ * here would be a third opinion about the same fact. */
 int set_bus_speed_hw(tof_commissioning::bus_speed s)
 {
     if (!device_is_ready(i2c2_dev))
