@@ -34,11 +34,17 @@ bool moved(uint32_t now, uint32_t before)
  * `in_flight` is a task that went in and did not come out. `silent` is a task that stopped running
  * at all -- the failure an in-flight test cannot see, because a thread that dies between two cycles
  * leaves begun == ended and looks exactly like one that is idle. */
-uint32_t judge(const progress &p, uint32_t now_ms, uint32_t seen_ms, uint32_t in_flight_bound_ms,
-               uint32_t silence_bound_ms, uint32_t in_flight_reason, uint32_t silent_reason)
+uint32_t judge(const progress &p, uint32_t now_ms, uint32_t begun_ms, uint32_t seen_ms,
+               uint32_t in_flight_bound_ms, uint32_t silence_bound_ms, uint32_t in_flight_reason,
+               uint32_t silent_reason)
 {
     uint32_t why{0};
-    if (p.begun != p.ended && longer_than(now_ms, seen_ms, in_flight_bound_ms))
+    /* MEASURED FROM WHEN THIS OPERATION STARTED, not from the last completion. Both clocks used to
+     * be `seen_ms`, which asked "how long since anything finished" of a question that is about one
+     * operation: a send in flight for a millisecond was declared stuck because the previous send
+     * had completed three seconds earlier, which on a quiet bus is ordinary and after a
+     * commissioning pause is certain. */
+    if (p.begun != p.ended && longer_than(now_ms, begun_ms, in_flight_bound_ms))
         why |= in_flight_reason;
     if (longer_than(now_ms, seen_ms, silence_bound_ms))
         why |= silent_reason;
@@ -59,6 +65,20 @@ void note_progress(state &st, const input &in)
         st.l7_seen_ms = in.now_ms;
     if (moved(in.zcan_loops, st.last_zcan))
         st.zcan_seen_ms = in.now_ms;
+
+    /* The in-flight clocks, stamped when `begun` moves. A counter that moved twice between two
+     * samples still stamps now: whatever is inside now started no earlier than the previous
+     * sample, so `now` is the earliest instant the evidence supports. */
+    if (moved(in.acquisition.begun, st.last_acq.begun))
+        st.acq_begun_ms = in.now_ms;
+    if (moved(in.send_acq.begun, st.last_send_acq.begun))
+        st.send_acq_begun_ms = in.now_ms;
+    if (moved(in.send_workq.begun, st.last_send_workq.begun))
+        st.send_workq_begun_ms = in.now_ms;
+    if (moved(in.health.begun, st.last_health.begun))
+        st.health_begun_ms = in.now_ms;
+    if (moved(in.l7.begun, st.last_l7.begun))
+        st.l7_begun_ms = in.now_ms;
 
     st.last_acq = in.acquisition;
     st.last_send_acq = in.send_acq;
@@ -118,6 +138,7 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
     if (!st.l7_watching && in.l7_expected && in.l7.begun != 0) {
         st.l7_watching = true;
         st.l7_seen_ms = in.now_ms;
+        st.l7_begun_ms = in.now_ms;
     }
 
     if (st.current == phase::waiting) {
@@ -141,6 +162,12 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
             st.send_workq_seen_ms = in.now_ms;
             st.health_seen_ms = in.now_ms;
             st.zcan_seen_ms = in.now_ms;
+            /* The in-flight clocks start here as well. baseline_ready() has already required that
+             * nothing is inside any of these, so there is nothing to time from earlier. */
+            st.acq_begun_ms = in.now_ms;
+            st.send_acq_begun_ms = in.now_ms;
+            st.send_workq_begun_ms = in.now_ms;
+            st.health_begun_ms = in.now_ms;
         }
         return true;
     }
@@ -150,21 +177,21 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
 
     uint32_t why{0};
 
-    why |= judge(in.acquisition, in.now_ms, st.acq_seen_ms, b.cycle_ms, b.cycle_silence_ms,
-                 stuck_cycle, silent_cycle);
-    why |= judge(in.send_acq, in.now_ms, st.send_acq_seen_ms, b.send_ms, b.send_silence_ms,
-                 stuck_send_acq, silent_send_acq);
-    why |= judge(in.send_workq, in.now_ms, st.send_workq_seen_ms, b.send_ms, b.send_silence_ms,
-                 stuck_send_workq, silent_send_workq);
-    why |= judge(in.health, in.now_ms, st.health_seen_ms, b.health_ms, b.health_silence_ms,
-                 stuck_health, silent_health);
+    why |= judge(in.acquisition, in.now_ms, st.acq_begun_ms, st.acq_seen_ms, b.cycle_ms,
+                 b.cycle_silence_ms, stuck_cycle, silent_cycle);
+    why |= judge(in.send_acq, in.now_ms, st.send_acq_begun_ms, st.send_acq_seen_ms, b.send_ms,
+                 b.send_silence_ms, stuck_send_acq, silent_send_acq);
+    why |= judge(in.send_workq, in.now_ms, st.send_workq_begun_ms, st.send_workq_seen_ms, b.send_ms,
+                 b.send_silence_ms, stuck_send_workq, silent_send_workq);
+    why |= judge(in.health, in.now_ms, st.health_begun_ms, st.health_seen_ms, b.health_ms,
+                 b.health_silence_ms, stuck_health, silent_health);
 
     if (st.l7_watching) {
         /* The silence half applies only once an L7 operation has completed. Before that the only
          * thing the L7 has done is the open that is still running, and the in-flight bound is what
          * judges it -- a silence reason there would say "it has completed nothing" about an
          * operation that has not had a chance to. */
-        why |= judge(in.l7, in.now_ms, st.l7_seen_ms, b.l7_ms,
+        why |= judge(in.l7, in.now_ms, st.l7_begun_ms, st.l7_seen_ms, b.l7_ms,
                      in.l7.ended != 0 ? b.l7_silence_ms : UINT32_MAX, stuck_l7, silent_l7);
     }
 
@@ -173,11 +200,32 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
         why |= silent_zcan;
 
     /* A STOPPED ACQUISITION, which is what a commissioning pass produces -- and what a FAILED proof
-     * leaves behind, with no end-of-operation to wait for. Applied to the reasons rather than to
-     * the judgements, so note_progress() keeps its bookkeeping and an activity that resumes is
-     * seen to resume. */
-    if (!in.acquisition_expected)
+     * leaves behind, with no end-of-operation to wait for.
+     *
+     * MASKING THE REASON IS NOT ENOUGH ON ITS OWN, and the previous comment here claimed otherwise:
+     * it said note_progress() keeps the bookkeeping, so "an activity that resumes is seen to
+     * resume". note_progress() only stamps a clock when a counter MOVES, and nothing moves while
+     * the activity is stopped -- so the clocks stood still through the pause while `now_ms` did
+     * not. The pause outlasts the silence bound by design, which meant the first sample after
+     * acquisition came back judged a gap the mask had been hiding all along, and latched
+     * silent_cycle before the resumed thread could possibly have completed anything.
+     *
+     * So a suspended clock is held at `now`, every sample, for exactly the halves the mask covers.
+     * The judgement above has already been computed and discarded, so this cannot hide a fault:
+     * the only reasons whose clocks move here are the ones that are not being asked. When the
+     * suspension lifts the clocks read "last seen now", and the bound then measures the resumed
+     * activity rather than the pause. */
+    if (!in.acquisition_expected) {
         why &= ~kAcquisitionStoppedSuspends;
+        st.acq_seen_ms = in.now_ms;
+        st.acq_begun_ms = in.now_ms;
+        st.send_acq_seen_ms = in.now_ms;
+        st.send_acq_begun_ms = in.now_ms;
+        /* The SILENCE clock only. stuck_l7 is deliberately not in the mask -- an operation already
+         * in flight when acquisition stopped is still in flight and is still a hang -- so holding
+         * its in-flight clock would suspend a judgement that is still being asked. */
+        st.l7_seen_ms = in.now_ms;
+    }
 
     if (in.long_operation) {
         /* A declared operation holds the chain, so it holds acquisition and the L7 -- and NOTHING
@@ -185,6 +233,14 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
          * still turning, and an earlier version of this file suspended everything, which bought
          * thirty seconds of silence for tasks the operation never touched. */
         why &= ~kLongOperationSuspends;
+
+        /* Held forward for the same reason as above, and here BOTH halves of both activities are
+         * masked, so both clocks move. The operation's own cap below is what bounds this; the
+         * clocks being held is not a licence for the declaration to run forever. */
+        st.acq_seen_ms = in.now_ms;
+        st.acq_begun_ms = in.now_ms;
+        st.l7_seen_ms = in.now_ms;
+        st.l7_begun_ms = in.now_ms;
 
         /* The declaration does not suspend itself. "The firmware said it was busy" is the shape of
          * excuse a hang would offer, so it carries a cap, and the first L7 open never returning is

@@ -93,6 +93,14 @@
  * a proof that fails leaves acquisition stopped by design and a declaration has no end to wait
  * for.
  *
+ * A SUSPENSION HOLDS ITS CLOCKS, which is the other half of suspending anything and was missing.
+ * Masking the reason stops the judgement being reported; it does not stop the clock the judgement
+ * is measured against from running. A pause long enough to be worth suspending is longer than the
+ * silence bound, so the first sample after it latched the gap the mask had been hiding -- before
+ * the resumed activity could complete anything. Each suspended half therefore reads "last seen
+ * now" for as long as it is suspended, and the bound measures the resumed activity rather than the
+ * pause. Only the halves the mask covers are held, so nothing that is still being asked is hidden.
+ *
  * A declaration suspends a FIXED, NAMED set of activities and nothing else -- this is the part an
  * earlier version got wrong. Hashing a blob says nothing about whether the CAN heartbeat is still
  * going out, and a declaration that bought thirty seconds of silence for every unrelated task would
@@ -242,13 +250,27 @@ struct input {
 struct state {
     phase current{phase::waiting};
     uint32_t why{0};
-    /* When each activity's `ended` was last seen to move. */
+    /* When each activity's `ended` was last seen to move. This is the SILENCE clock: how long the
+     * activity has completed nothing. */
     uint32_t acq_seen_ms{0};
     uint32_t send_acq_seen_ms{0};
     uint32_t send_workq_seen_ms{0};
     uint32_t health_seen_ms{0};
     uint32_t zcan_seen_ms{0};
     uint32_t l7_seen_ms{0};
+    /* When each activity's `begun` was last seen to move: the IN-FLIGHT clock, and a separate one
+     * because the two questions are measured from different instants.
+     *
+     * The in-flight bound used to be measured from the last COMPLETION, which judged the wrong
+     * interval. A sender whose last completion was three seconds ago -- an ordinary thing on a
+     * quiet bus, and the guaranteed state on the first send after a commissioning pause -- was
+     * declared stuck by a send that had been in flight for a millisecond. The bound belongs to the
+     * operation that is actually inside, so it is measured from when THAT operation started. */
+    uint32_t acq_begun_ms{0};
+    uint32_t send_acq_begun_ms{0};
+    uint32_t send_workq_begun_ms{0};
+    uint32_t health_begun_ms{0};
+    uint32_t l7_begun_ms{0};
     uint32_t armed_ms{0};
     /* The L7 monitor starts at the first open rather than at the baseline; see the header. */
     bool l7_watching{false};

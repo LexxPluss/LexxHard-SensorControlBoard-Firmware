@@ -508,6 +508,15 @@ ZTEST(tof_task_watchdog, test_a_stopped_acquisition_does_not_excuse_an_l7_operat
 
     h.in.acquisition_expected = false;
     ++h.in.l7.begun;  // went in, never came out
+
+    /* ONE SAMPLE FIRST, so the operation is in flight and young. The in-flight bound is measured
+     * from when THIS operation began, so a case that begins one and reads the verdict in the same
+     * sample proves nothing about the bound -- it used to pass only because the clock was the last
+     * completion, which is the defect this timing replaced. */
+    const bool fed_young =
+        h.tick(1, advance{.acq = false, .send_acq = false, .l7 = false});
+    zassert_true(fed_young, "an L7 operation one millisecond old was already called stuck");
+
     const bool fed = h.tick(h.b.l7_ms + 1, advance{.acq = false, .send_acq = false, .l7 = false});
     zassert_false(fed, "a stopped acquisition excused an L7 operation stuck in flight");
     zassert_true((h.st.why & wd::stuck_l7) != 0, "why 0x%08x", h.st.why);
@@ -580,4 +589,117 @@ ZTEST(tof_task_watchdog, test_suspending_acquisition_does_not_hide_a_wedged_send
     zassert_true((h.st.why & wd::stuck_health) != 0, "why 0x%08x", h.st.why);
     zassert_equal(h.st.why & (wd::stuck_cycle | wd::stuck_send_acq), 0U,
                   "the suspension must still cover what it covers: why 0x%08x", h.st.why);
+}
+
+/* ------------------------------------------- what a suspension and a bound measure ----- */
+
+/* A PAUSE IS NOT A GAP THE RESUMED WORK OWNS, and it was being charged for it.
+ *
+ * A commissioning pass clears acquisition_expected for seconds -- longer than cycle_silence_ms,
+ * which is the whole reason it has to be suspended at all. The mask hid the reasons while it ran,
+ * but the clocks they are measured against kept running, so the first sample after acquisition came
+ * back read "nothing has completed for eight seconds" and latched silent_cycle before the resumed
+ * thread had been given a single opportunity to complete anything. A board that commissioned
+ * successfully reset itself on the way back. */
+ZTEST(tof_task_watchdog, test_a_resumed_acquisition_is_not_judged_on_the_pause_it_sat_out)
+{
+    harness h;
+    h.arm();
+
+    /* The pass: well past cycle_silence_ms with the cycle and its sender stopped, which is what
+     * try_stop() leaves behind. */
+    h.in.acquisition_expected = false;
+    for (int i{0}; i < 8; ++i)
+        zassert_true(h.tick(1000, advance{.acq = false, .send_acq = false, .l7 = false}),
+                     "the suspension itself must feed");
+
+    /* Back, and nothing has completed yet because the thread has only just been started. This is
+     * the sample that used to latch. */
+    h.in.acquisition_expected = true;
+    zassert_true(h.tick(1, advance{.acq = false, .send_acq = false, .l7 = false}),
+                 "the first sample after the pause judged the pause: why 0x%08x", h.st.why);
+
+    /* And it stays fed while the resumed activity gets going. */
+    for (int i{0}; i < 5; ++i)
+        zassert_true(h.tick(100, advance{.l7 = false}), "why 0x%08x", h.st.why);
+    zassert_equal(h.st.current, wd::phase::armed);
+}
+
+/* THE CONTROL, because the case above would also pass if the suspension simply disarmed the
+ * watchdog. An acquisition that comes back on paper and then does nothing is still a fault, and it
+ * must be caught on the resumed activity's own clock. */
+ZTEST(tof_task_watchdog, test_an_acquisition_that_resumes_and_then_dies_is_still_caught)
+{
+    harness h;
+    h.arm();
+
+    h.in.acquisition_expected = false;
+    for (int i{0}; i < 8; ++i)
+        (void)h.tick(1000, advance{.acq = false, .send_acq = false, .l7 = false});
+
+    h.in.acquisition_expected = true;
+    const bool stopped = h.run_until_stopped(
+        40, 500, advance{.acq = false, .send_acq = false, .l7 = false});
+    zassert_true(stopped, "a resumed acquisition that completed nothing was fed forever");
+    zassert_true((h.st.why & wd::silent_cycle) != 0, "why 0x%08x", h.st.why);
+}
+
+/* A LONG OPERATION LEAVES THE SAME GAP, and it is suspended by a different path. Both halves of the
+ * cycle and the L7 are masked by a declaration, so both of their clocks are held. */
+ZTEST(tof_task_watchdog, test_a_declared_operation_does_not_leave_a_gap_behind_it)
+{
+    harness h;
+    h.arm();
+
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+    for (int i{0}; i < 8; ++i)
+        zassert_true(h.tick(1000, advance{.acq = false, .l7 = false}),
+                     "the declaration itself must feed: why 0x%08x", h.st.why);
+
+    h.in.long_operation = false;
+    zassert_true(h.tick(1, advance{.acq = false, .l7 = false}),
+                 "the first sample after the operation judged the operation: why 0x%08x", h.st.why);
+}
+
+/* THE IN-FLIGHT BOUND BELONGS TO THE OPERATION THAT IS INSIDE, not to the gap before it.
+ *
+ * Both halves of the judgement used to read the same clock -- the last completion -- so an activity
+ * that had legitimately completed nothing for longer than its in-flight bound declared the next
+ * operation stuck the instant it began. On the sender that is not a corner case: a quiet bus
+ * completes nothing for seconds, and then one frame goes out and is immediately a hang. */
+ZTEST(tof_task_watchdog, test_the_in_flight_bound_measures_this_operation_not_the_gap_before_it)
+{
+    harness h;
+    h.arm();
+
+    /* A quiet sender: nothing completes for longer than send_ms, but still inside send_silence_ms
+     * so the silence half has nothing to say yet. */
+    zassert_true(h.tick(h.b.send_ms + 500, advance{.send_acq = false, .l7 = false}),
+                 "why 0x%08x", h.st.why);
+
+    /* Now one send goes in. It is one millisecond old. */
+    ++h.in.send_acq.begun;
+    zassert_true(h.tick(1, advance{.send_acq = false, .l7 = false}),
+                 "a send one millisecond old was judged on the gap before it: why 0x%08x",
+                 h.st.why);
+
+    /* It completes, the way an ordinary send does. */
+    ++h.in.send_acq.ended;
+    zassert_true(h.tick(1, advance{.send_acq = false, .l7 = false}), "why 0x%08x", h.st.why);
+    zassert_equal(h.st.current, wd::phase::armed);
+}
+
+/* AND THE CONTROL FOR THAT ONE: a send that really does not come out is still caught, on its own
+ * clock. Without this the case above is satisfied by never judging a sender at all. */
+ZTEST(tof_task_watchdog, test_a_send_that_never_returns_is_still_caught_on_its_own_clock)
+{
+    harness h;
+    h.arm();
+
+    ++h.in.send_acq.begun;  // in, and never out
+    const bool stopped =
+        h.run_until_stopped(40, 500, advance{.send_acq = false, .l7 = false});
+    zassert_true(stopped, "a send that never returned was fed forever");
+    zassert_true((h.st.why & wd::stuck_send_acq) != 0, "why 0x%08x", h.st.why);
 }
