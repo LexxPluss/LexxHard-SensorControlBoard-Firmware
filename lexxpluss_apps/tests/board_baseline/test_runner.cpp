@@ -115,6 +115,9 @@ inline const device* stubDeviceFromLabel(const char*) {
 namespace {
     namespace bc = lexxhard::board_controller;
 
+    // Set before setupInputs(): OSSD1/OSSD2 low, as on a machine without a lidar.
+    bool lidar_absent = false;
+
     // Pin ids (see zephyr_stubs.hpp label map)
     constexpr int PIN_BP_LEFT = 3;
     constexpr int PIN_ES_LEFT = 6;
@@ -193,8 +196,8 @@ namespace {
         zephyr_stubs::set_pin_input(PIN_BP_LEFT, 1);
         zephyr_stubs::set_pin_input(PIN_MC_DIN, 1);
         zephyr_stubs::set_pin_input(PIN_RESUME_SW_IN, 1);
-        zephyr_stubs::set_pin_input(PIN_OSSD1, 1);
-        zephyr_stubs::set_pin_input(PIN_OSSD2, 1);
+        zephyr_stubs::set_pin_input(PIN_OSSD1, lidar_absent ? 0 : 1);
+        zephyr_stubs::set_pin_input(PIN_OSSD2, lidar_absent ? 0 : 1);
         zephyr_stubs::set_pin_input(PIN_PS_SW_IN, 1);
     }
 
@@ -912,12 +915,12 @@ namespace {
     // Push-mode specification scenarios (expectations are the spec, not the old code).
 
     // P1 (R5): running, wp=1 during ESW SUSPEND keeps v_wheel on; standard decision returns after release.
-    bool scenarioP1() {
+    bool scenarioP1(const std::string& title) {
         Checker c;
         c.setExpected("wp ignored in SUSPEND (level 1, no 0 write); level 0 five polls after ESW release");
         setupInputs();
         if (!bootAndSettle(c)) {
-            return c.finishSpec("P1 running: wp ignored in ESW SUSPEND");
+            return c.finishSpec(title);
         }
         pressEsw(true);
         c.expect(stepUntilState(POWER_STATE::SUSPEND, 40), "SUSPEND not reached");
@@ -933,17 +936,17 @@ namespace {
         c.expect(stepUntilStateLeaves(POWER_STATE::SUSPEND, 40), "SUSPEND not left");
         stepPolls(5);
         c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level after ESW release");
-        return c.finishSpec("P1 running: wp ignored in ESW SUSPEND");
+        return c.finishSpec(title);
     }
 
     // P2 (Q2/C-1): maintenance, ESW SUSPEND turns v_wheel on; release returns to the maintenance cut.
-    bool scenarioP2() {
+    bool scenarioP2(const std::string& title) {
         Checker c;
         c.setExpected("level 0 in NORMAL; 1 in ESW SUSPEND without 0 writes; 0 five polls after release");
         setupInputs();
         setMaintenanceKey();
         if (!bootAndSettle(c)) {
-            return c.finishSpec("P2 maintenance: ESW SUSPEND");
+            return c.finishSpec(title);
         }
         c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level in maintenance NORMAL");
         pressEsw(true);
@@ -959,16 +962,16 @@ namespace {
         c.expect(stepUntilStateLeaves(POWER_STATE::SUSPEND, 40), "SUSPEND not left");
         stepPolls(5);
         c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level after ESW release");
-        return c.finishSpec("P2 maintenance: ESW SUSPEND");
+        return c.finishSpec(title);
     }
 
     // P3: wp held, then ESW assert/release.
-    bool scenarioP3() {
+    bool scenarioP3(const std::string& title) {
         Checker c;
         c.setExpected("level 0 with wp=1; 1 in ESW SUSPEND; 0 five polls after release");
         setupInputs();
         if (!bootAndSettle(c)) {
-            return c.finishSpec("P3 wp held then ESW");
+            return c.finishSpec(title);
         }
         ros_wheel_power_off = true;
         stepPolls(5);
@@ -981,7 +984,54 @@ namespace {
         c.expect(stepUntilStateLeaves(POWER_STATE::SUSPEND, 40), "SUSPEND not left");
         stepPolls(5);
         c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level after ESW release");
-        return c.finishSpec("P3 wp held then ESW");
+        return c.finishSpec(title);
+    }
+
+    // P1-P3 on a machine without a lidar (bypass builds).
+    bool scenarioP1LidarAbsent() {
+        lidar_absent = true;
+        return scenarioP1("P1 running: wp ignored in ESW SUSPEND (lidar absent)");
+    }
+    bool scenarioP2LidarAbsent() {
+        lidar_absent = true;
+        return scenarioP2("P2 maintenance: ESW SUSPEND (lidar absent)");
+    }
+    bool scenarioP3LidarAbsent() {
+        lidar_absent = true;
+        return scenarioP3("P3 wp held then ESW (lidar absent)");
+    }
+#endif
+
+#ifdef BC_NEW_BUILD
+    // B1: power-on of a machine without a lidar (OSSD1/OSSD2 both low).
+    bool scenarioB1() {
+        Checker c;
+#ifdef BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST
+        const std::string title = "B1 lidar absent: boots to NORMAL (bypass)";
+        c.setExpected("NORMAL reached and held for 2 s, sl not asserted, no NORMAL -> SUSPEND");
+#else
+        const std::string title = "B1 lidar absent: stalls in STANDBY (no bypass, reproduces the field issue)";
+        c.setExpected("NORMAL not reached; stays in STANDBY with sl asserted");
+#endif
+        lidar_absent = true;
+        setupInputs();
+        const bool reached = bootToNormal();
+#ifdef BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST
+        c.expect(reached, "NORMAL not reached");
+        if (reached) {
+            stepUntil(zephyr_stubs::virtual_time_ms + 2000);
+            c.expect(bc::impl.state == POWER_STATE::NORMAL, "not in NORMAL 2 s after reaching it");
+            c.expect(!bc::impl.sl.is_asserted(), "sl asserted");
+            for (const Transition& t : transitions) {
+                c.expect(!(t.from == POWER_STATE::NORMAL && t.to == POWER_STATE::SUSPEND), "NORMAL->SUSPEND observed");
+            }
+        }
+#else
+        c.expect(!reached, "NORMAL reached");
+        c.expect(bc::impl.state == POWER_STATE::STANDBY, "not stalled in STANDBY");
+        c.expect(bc::impl.sl.is_asserted(), "sl not asserted");
+#endif
+        return c.finishSpec(title);
     }
 #endif
 
@@ -1003,15 +1053,23 @@ namespace {
             case 12: return scenario12();
             case 13: return scenario13();
 #ifdef ENABLE_PUSH_MODE
-            case 14: return scenarioP1();
-            case 15: return scenarioP2();
-            case 16: return scenarioP3();
+            case 14: return scenarioP1("P1 running: wp ignored in ESW SUSPEND");
+            case 15: return scenarioP2("P2 maintenance: ESW SUSPEND");
+            case 16: return scenarioP3("P3 wp held then ESW");
 #else
             case 14:
             case 15:
             case 16:
                 std::cout << "SKIP - Push scenario P" << index - 13 << " (ENABLE_PUSH_MODE not set)" << std::endl;
                 return true;
+#endif
+#ifdef BC_NEW_BUILD
+            case 17: return scenarioB1();
+#endif
+#if defined(ENABLE_PUSH_MODE) && defined(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
+            case 18: return scenarioP1LidarAbsent();
+            case 19: return scenarioP2LidarAbsent();
+            case 20: return scenarioP3LidarAbsent();
 #endif
             default: return false;
         }
@@ -1050,12 +1108,17 @@ int main(int argc, char** argv) {
 #ifdef BC_NEW_BUILD
     std::cout << "=== Board Controller Baseline Test Suite (new source, " << BC_NEW_BUILD_NAME << ") ===" << std::endl;
     int same = 0, diff = 0, spec_pass = 0, spec_fail = 0, harness_errors = 0;
-#ifdef ENABLE_PUSH_MODE
-    constexpr int LAST_SCENARIO = 16;
+#if defined(ENABLE_PUSH_MODE) && defined(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
+    constexpr int LAST_SCENARIO = 20;
 #else
-    constexpr int LAST_SCENARIO = LAST_BASELINE_SCENARIO;
+    constexpr int LAST_SCENARIO = 17;
 #endif
     for (int index = 1; index <= LAST_SCENARIO; ++index) {
+#ifndef ENABLE_PUSH_MODE
+        if (index >= 14 && index <= 16) {
+            continue;
+        }
+#endif
         const int variants = index == 5 ? static_cast<int>(scenario5Variants().size()) : 1;
         for (int variant = 0; variant < variants; ++variant) {
             const int status = runInChild(argv[0], index, variant);
@@ -1073,9 +1136,7 @@ int main(int argc, char** argv) {
         }
     }
     std::cout << std::endl << "RESULT: SAME=" << same << " DIFF=" << diff;
-#ifdef ENABLE_PUSH_MODE
     std::cout << " SPEC_PASS=" << spec_pass << " SPEC_FAIL=" << spec_fail;
-#endif
     std::cout << std::endl;
     return harness_errors == 0 ? 0 : 2;
 #else
