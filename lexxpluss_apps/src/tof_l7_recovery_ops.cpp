@@ -25,11 +25,26 @@ namespace lexxhard::tof_l7_recovery {
 namespace {
 
 /* Both entry points begin here. Zeroing is not hygiene: it is what puts is_auto_stop_enabled at 0
- * and sends stop_ranging down the path that can end a session this firmware did not start. */
+ * and sends stop_ranging down the path that can end a session this firmware did not start.
+ *
+ * AND BECAUSE IT ZEROES, IT HAS TO REFUSE ANYTHING BUT AN UNOPENED SENSOR. The header has always
+ * said the scratch must not be open, and only the null pointer was checked -- so an opened,
+ * `running` or `stop_unconfirmed` sensor was silently re-pointed at another address with its whole
+ * ULD configuration wiped, the firmware pointer included, while `current` went on saying running.
+ * The next stop() or read_once() in tof_l7_sensor would then talk to a different device through an
+ * empty configuration, which is exactly the guarantee stop_unconfirmed exists to provide and this
+ * was quietly stepping around.
+ *
+ * Checked on every call rather than once in uld_ops(), because uld_ops() only stores the pointer:
+ * the lifecycle can change between binding the ops and calling them, and a check that ran at
+ * binding time would describe a state that no longer holds. A caller that wants to hand a used
+ * sensor to this pass has tof_l7::close() for it. */
 VL53L7CX_Configuration *addressed(void *ctx, uint8_t addr_7bit)
 {
     auto *const s{static_cast<tof_l7::sensor *>(ctx)};
     if (s == nullptr)
+        return nullptr;
+    if (s->current != tof_l7::lifecycle::empty)
         return nullptr;
     memset(&s->uld, 0, sizeof(s->uld));
     s->uld.platform.address = static_cast<uint16_t>(addr_7bit) << 1;
@@ -51,11 +66,35 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     const uint8_t uld_status{vl53l7cx_is_alive(dev, &answered)};
     const int port_errno{vl53l7cx_port_error()};
 
-    /* A clean NACK is an answer, and on a cold boot it is the answer every address gives. It is
-     * reported as a completed probe with nobody there rather than as a failure, because a pass
-     * that called every cold boot a failure would say nothing about the boots that matter. */
+    /* A CLEAN NACK WITH NOTHING ACKNOWLEDGED is the cold boot, and on a cold boot it is the answer
+     * every address gives. Reported as a completed probe with nobody there rather than as a
+     * failure, because a pass that called every cold boot a failure would say nothing about the
+     * boots that matter.
+     *
+     * BUT ONLY WITH NOTHING ACKNOWLEDGED, and that qualifier was missing. The port keeps the FIRST
+     * error it sees -- atomic_cas(&first_error, 0, rc) in platform.c -- and vl53l7cx_is_alive()
+     * issues all four of its transfers regardless, ORing their statuses with no early return. So a
+     * survivor whose page-select write NACKs while its two ID reads answer 0xF0 and 0x02 arrives
+     * here with -ENXIO AND an answer, and returning early threw the answer away: the address was
+     * reported empty, nothing was stopped, and no failure was recorded. The header reads "all
+     * absent on a warm reset" as evidence against the hypothesis this pass exists to test, so that
+     * case did not merely lose a sensor -- it argued for the wrong conclusion.
+     *
+     * ASKED OF THE TRANSPORT, NOT OF THE IDENTITY, and that is a correction to a first attempt
+     * that used `answered`. The ULD sets its alive flag only when BOTH identity bytes match, so
+     * zero does not mean "nothing answered": a device whose device-id read returns 0xF0 and whose
+     * revision-id read NACKs leaves the flag at zero -- patch 0003 makes sure it is a written zero
+     * -- and would have been filed as an empty address all over again, which is the same partial
+     * exchange hidden one layer down. The question is whether anything on the bus completed a
+     * transaction, and only the port can answer it.
+     *
+     * So: nothing completed and a NACK is the cold boot, reported as a completed probe with nobody
+     * there. Anything completed alongside a NACK is a partial exchange and a failed probe, -EIO,
+     * classed with the non-OK status below rather than with "nobody there". Whether an L7 actually
+     * NACKs mid-sequence on hardware is unverified; the classification does not depend on it,
+     * because the early return was discarding evidence either way. */
     if (port_errno == -ENXIO)
-        return 0;
+        return vl53l7cx_port_completed_transfers() != 0U ? -EIO : 0;
 
     /* -EIO or -ETIMEDOUT. The question did not reach the bus, so no answer was heard, and the
      * caller must not treat this as an empty address. */

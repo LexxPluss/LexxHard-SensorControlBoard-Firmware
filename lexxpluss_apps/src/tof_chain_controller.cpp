@@ -314,14 +314,6 @@ const char *stage_label(tof_commissioning::stage st)
     return "?";
 }
 
-/* THE PRODUCTION RETIME, and the one place the two speeds become register values.
- *
- * It does not take the chain lock: commissioning calls it while holding it, and a lock in here
- * would deadlock that caller.
- *
- * Nor does it check whether acquisition is running. That check belongs to the caller, which is in a
- * position to know -- commissioning has already quiesced and holds the chain -- and repeating it
- * here would be a third opinion about the same fact. */
 const char *bus_label(tof_commissioning::bus_state b)
 {
     switch (b) {
@@ -346,7 +338,15 @@ const char *recheck_label(tof_commissioning::recheck_fault f)
     return "?";
 }
 
-/* Commissioning's vocabulary, and it stays behind the cliff guard because the type does. */
+/* COMMISSIONING'S VOCABULARY, and it stays behind the cliff guard because the type does. The
+ * register write itself is set_chain_bus_speed() above, outside every feature guard.
+ *
+ * Neither takes the chain lock: commissioning calls this while holding it, and a lock in here
+ * would deadlock that caller.
+ *
+ * Nor does either check whether acquisition is running. That check belongs to the caller, which is
+ * in a position to know -- commissioning has already quiesced and holds the chain -- and repeating
+ * it here would be a third opinion about the same fact. */
 #if defined(ENABLE_TOF_CLIFF_ULD)
 int set_bus_speed_hw(tof_commissioning::bus_speed s)
 {
@@ -523,7 +523,56 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
  * has turned `commission-profile-enabled` on. Until both are true, deleting them would remove the
  * only way to bring a chain up and would not remove any capability the automatic path does not
  * already have. */
+/* READ-ONLY, AND THAT IS A REQUIREMENT RATHER THAN A DESCRIPTION.
+ *
+ * It exists because tof_acquisition's overrun counter had no reader outside the tests: the one
+ * number that separates "running at the configured rate" from "running as fast as the work allows"
+ * could not be read on a board at all. A degradation nobody can observe is not reported, whatever
+ * the firmware counts internally.
+ *
+ * SO IT ASKS FOR NOTHING AND CHANGES NOTHING. No proven mapping is required -- the question "is the
+ * cadence being met" is worth answering on a board that has not proven anything, and refusing to
+ * answer it would put a precondition on a diagnostic. It does not start, stop or prove, and it does
+ * NOT take chain_lock(): the lock is held across a cycle, so waiting for it would make reading a
+ * status cost up to a full period and would turn a diagnostic into something that can hang behind
+ * the thing it is diagnosing.
+ *
+ * THE TWO FIGURES ARE SAMPLED INDEPENDENTLY and are not a snapshot. They are separate atomic
+ * words, so each is individually sound but the pair is not taken together: a read that straddles a
+ * reconfiguration can show one period with the other period's count. Nothing here needs them to be
+ * atomic as a pair -- reconfiguring is an operator action, not something that happens underneath a
+ * status command -- but a reader must not treat the line as a consistent instant.
+ *
+ * THE PERIOD IS PRINTED BESIDE THE COUNT because the count alone does not say what cadence it was
+ * measured against. And a zero period is not a fast cadence, it is no cadence: init() refuses a
+ * zero, so the only way to read one back is that no configuration has been accepted yet. */
+int cmd_cliff_status(const struct shell *shell, size_t, char **)
+{
+    const uint32_t period_ms{tof_acq::configured_cycle_period_ms()};
+
+    if (period_ms == 0) {
+        /* Said rather than implied. Printing "period 0 ms, overruns 0" would read as a configured
+         * cadence that is being met perfectly. */
+        shell_print(shell, "acquisition not configured: init() has not accepted a cadence");
+        shell_print(shell, "thread_running=%d", tof_acq::thread_running());
+        return 0;
+    }
+
+    shell_print(shell, "thread_running=%d", tof_acq::thread_running());
+    shell_print(shell, "cycle_period_ms=%u", period_ms);
+    shell_print(shell, "cycle_overruns=%u (since init)", tof_acq::cycle_overruns());
+    /* The reading rule, next to the reading. An operator who sees a non-zero count needs to know
+     * that one is not a verdict and that the question is whether it keeps moving. */
+    shell_print(shell, "note: a rising count indicates repeated deadline misses; a single overrun "
+                       "can be scheduling latency or one slow transfer");
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+    SHELL_CMD(status, NULL,
+              "read the acquisition cadence: thread state, configured period, overrun count "
+              "(read-only, requires nothing, takes no lock)",
+              cmd_cliff_status),
     SHELL_CMD(start, NULL,
               "start the acquisition thread (requires a proven, installed mapping)",
               cmd_cliff_start),

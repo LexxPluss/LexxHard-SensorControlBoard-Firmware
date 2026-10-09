@@ -76,6 +76,23 @@ struct fake_dev {
     int read_calls{0};
     int stop_calls{0};
     int grid_stop_calls{0};
+    /* Counted apart from grid_stop_calls because the configure-failure case is entirely about
+     * which of the two the bring-up chose: a stop would be wrong (nothing is ranging and the
+     * sensor is not in a state stop accepts) and a close is the recovery. */
+    int grid_close_calls{0};
+    /* COUNTED, because the bring-up closes TWICE for different reasons -- once before open, to
+     * return a stopped-but-configured sensor to unopened, and once after a configure that failed.
+     * A blanket injection would always hit the first and could never reach the second. */
+    int close_rc{0};
+    int close_fail_on_call{0};   // 0 = never
+    /* THE REAL ADAPTER'S STATE MACHINE, mirrored here because without it this fake accepted call
+     * orders tof_l7_sensor refuses -- and a re-bring-up case that passed against a fake which lets
+     * open() be called twice proves nothing about the board. tof_l7::lifecycle is not reachable
+     * from this suite, so the states are named again rather than imported. */
+    enum class life { empty, opened, configured, running, stop_unconfirmed } grid_life{life::empty};
+    /* Refusals the adapter made, so a test can tell "the fake said no" from "the fake was never
+     * called". */
+    int grid_state_refusals{0};
     /* A device that will not stop. The interesting case, because the facts must keep saying
      * it is started rather than quietly recording a quiescence that never happened. */
     int stop_rc{0};
@@ -223,10 +240,19 @@ int fake_grid_open(void *dev, uint8_t, l7f::operation_status *st)
     ++d.open_calls;
     record_caller();
     *st = l7f::operation_status{};
+    /* open() requires an unopened sensor, exactly as tof_l7::open does. This is the check whose
+     * absence made the re-bring-up cases green while the board returned -EPERM. */
+    if (d.grid_life != fake_dev::life::empty) {
+        ++d.grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d.open_delay_ms != 0)
         k_msleep(d.open_delay_ms);
     if (d.open_rc != 0)
         st->failed_stage = l7f::stage::address;
+    if (d.open_rc == 0)
+        d.grid_life = fake_dev::life::opened;
     return d.open_rc;
 }
 
@@ -236,8 +262,15 @@ int fake_grid_configure(void *dev, uint8_t, l7f::operation_status *st)
 
     record_caller();
     *st = l7f::operation_status{};
+    if (d.grid_life != fake_dev::life::opened) {
+        ++d.grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d.configure_rc != 0)
         st->failed_stage = l7f::stage::frequency;
+    if (d.configure_rc == 0)
+        d.grid_life = fake_dev::life::configured;
     return d.configure_rc;
 }
 
@@ -248,8 +281,16 @@ int fake_grid_start(void *dev, l7f::operation_status *st)
     ++d.start_calls;
     record_caller();
     *st = l7f::operation_status{};
+    if (d.grid_life != fake_dev::life::configured) {
+        ++d.grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d.start_rc != 0)
         st->failed_stage = l7f::stage::start;
+    /* A failed start leaves the debt, which is the adapter's rule and the reason cleanup_pending
+     * exists. */
+    d.grid_life = d.start_rc == 0 ? fake_dev::life::running : fake_dev::life::stop_unconfirmed;
     return d.start_rc;
 }
 
@@ -288,15 +329,51 @@ int fake_grid_stop(void *dev, l7f::operation_status *st)
      * like a correct one. */
     ++d->grid_stop_calls;
     *st = l7f::operation_status{};
+    if (d->grid_life != fake_dev::life::running &&
+        d->grid_life != fake_dev::life::stop_unconfirmed) {
+        ++d->grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
     if (d->stop_rc != 0) {
         st->failed_stage = l7f::stage::stop;
         st->port_errno = d->stop_rc;
     }
+    /* ONLY A CONFIRMED STOP DISCHARGES THE DEBT, and a confirmed stop lands on `configured` --
+     * NOT on `empty`. That is the whole defect this fake now models: the next bring-up has to
+     * close before it can open. */
+    d->grid_life = d->stop_rc == 0 ? fake_dev::life::configured
+                                   : fake_dev::life::stop_unconfirmed;
     return d->stop_rc;
 }
 
+/* Counted apart from stop for the same reason stop is counted apart from the cliff path: the whole
+ * question in the configure-failure case is which of the two the bring-up called. */
+int fake_grid_close(void *dev, l7f::operation_status *st)
+{
+    record_caller();
+    auto *const d{static_cast<fake_dev *>(dev)};
+
+    ++d->grid_close_calls;
+    *st = l7f::operation_status{};
+    /* close() refuses a sensor that is or may be ranging, and returns the rest to `empty`. Closing
+     * an already-empty sensor succeeds and does nothing. */
+    if (d->grid_life == fake_dev::life::running ||
+        d->grid_life == fake_dev::life::stop_unconfirmed) {
+        ++d->grid_state_refusals;
+        st->failed_stage = l7f::stage::state;
+        return -EPERM;
+    }
+    if (d->close_rc != 0 && d->grid_close_calls == d->close_fail_on_call) {
+        st->failed_stage = l7f::stage::state;
+        return d->close_rc;
+    }
+    d->grid_life = fake_dev::life::empty;
+    return 0;
+}
+
 const acq::grid_source_ops kFakeGridOps{fake_grid_open, fake_grid_configure, fake_grid_start,
-                                        fake_grid_read, fake_grid_stop};
+                                        fake_grid_read, fake_grid_stop, fake_grid_close};
 
 /* THE WRONG TABLE, AS A TRAP. The fixture used to give every descriptor both tables with one
  * shared stop counter, which is exactly the arrangement under which a mis-dispatch is invisible:
@@ -2818,6 +2895,118 @@ ZTEST(tof_acquisition, test_the_overrun_count_belongs_to_one_configuration)
                   "the new configuration inherited %u misses from the old one", before);
 }
 
+/* WHAT A READER ON A BOARD CAN SEE. Review pointed out that the overrun counter had no reader
+ * outside these tests: nothing in the firmware read it, so the degradation it exists to reveal was
+ * invisible without a debugger. The readers added for that are a log line on the first miss and a
+ * `tof cliff status` subcommand, and both need the period beside the count -- a count means nothing
+ * without the cadence it was measured against. These cases pin the published period, because the
+ * shell handler is a printf over exactly these two accessors and has nothing else to get wrong. */
+ZTEST(tof_acquisition, test_the_published_period_is_the_one_init_accepted)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::configured_cycle_period_ms(), kCyclePeriodMs,
+                  "a reader must see the cadence that was configured, not a default");
+}
+
+/* A REFUSED init() MUST NOT MOVE THE ANSWER. The status reader has no way to tell "this is the
+ * cadence in force" from "this is a cadence somebody tried to install", so a rejected
+ * configuration that overwrote the published period would make the report describe a cadence the
+ * thread is not running at -- and zero the count that belongs to the one it is. */
+ZTEST(tof_acquisition, test_a_refused_init_leaves_the_published_cadence_and_the_count_standing)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;   /* longer than the 50 ms period: unschedulable by construction */
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(300);
+    zassert_equal(acq::try_stop(), 0);
+
+    const uint32_t count{acq::cycle_overruns()};
+    zassert_true(count > 0U, "the fixture must actually produce overruns, or this proves nothing");
+
+    /* teardown() first, because init() answers -EALREADY while the subsystem is live and would
+     * never reach the validation this case is about. teardown() itself touches neither the count
+     * nor the published period: retiring the subsystem is not a statement about what the last
+     * cadence was or how it did. */
+    zassert_equal(acq::teardown(), 0);
+    zassert_equal(acq::cycle_overruns(), count, "teardown() must not be the thing that clears it");
+
+    acq::config bad{make_config(1)};
+    bad.periods.cycle_period_ms = 0;
+    zassert_equal(acq::init(bad), -EINVAL, "and it must really be refused");
+
+    zassert_equal(acq::configured_cycle_period_ms(), kCyclePeriodMs,
+                  "a refused configuration published its period anyway");
+    zassert_equal(acq::cycle_overruns(), count,
+                  "a refused configuration cleared the count that belongs to the live one");
+}
+
+/* THE WARNING IS RATE-LIMITED BY THE COUNTER, so what has to hold is that the edge recurs per
+ * configuration. The loop logs when atomic_inc() returns 0 -- the transition from "has met every
+ * deadline" to "has missed one" -- which is why a board that cannot keep up gets one line and not
+ * one per cycle. The log call itself is not observable from a host suite; the condition it is
+ * gated on is, and it is this: non-zero, then zero again after a new cadence is accepted, then
+ * non-zero again. A counter that only ever rose would warn once per boot and stay silent about
+ * every later cadence. */
+ZTEST(tof_acquisition, test_a_new_cadence_re_arms_the_first_miss_warning)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(300);
+    zassert_equal(acq::try_stop(), 0);
+    zassert_true(acq::cycle_overruns() > 0U, "the first cadence missed, as the fixture intends");
+
+    zassert_equal(acq::teardown(), 0);
+    zassert_equal(acq::init(make_config(1)), 0);
+    zassert_equal(acq::cycle_overruns(), 0U, "so the edge is available again");
+
+    devs[0].fresh = true;
+    devs[0].read_delay_ms = 70;
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(300);
+    zassert_equal(acq::try_stop(), 0);
+    zassert_true(acq::cycle_overruns() > 0U,
+                 "and the second cadence can report its own first miss");
+}
+
+/* READING IT CHANGES NOTHING, which is the one promise a diagnostic has to keep. The status handler
+ * asks these accessors while the thread is running, so a read that reset a counter, or that waited
+ * on the lock the cycle holds, would turn looking at the cadence into interfering with it. */
+ZTEST(tof_acquisition, test_reading_the_cadence_does_not_disturb_the_thread)
+{
+    zassert_equal(acq::init(make_config(1)), 0);
+    devs[0].fresh = true;
+
+    zassert_equal(acq::start(thread_cfg(1000)), 0);
+    k_msleep(200);
+
+    const int cycles_before{rec.cycles};
+    const uint32_t overruns_before{acq::cycle_overruns()};
+
+    /* Read far more often than any operator would, from a thread that is not the acquisition
+     * thread -- the shell's position exactly. */
+    for (int i{0}; i < 200; ++i) {
+        (void)acq::thread_running();
+        (void)acq::configured_cycle_period_ms();
+        (void)acq::cycle_overruns();
+    }
+
+    zassert_equal(acq::configured_cycle_period_ms(), kCyclePeriodMs, "the period survived reading");
+    zassert_true(acq::cycle_overruns() >= overruns_before,
+                 "reading the count must not reset it (%u before, %u after)", overruns_before,
+                 acq::cycle_overruns());
+    zassert_true(acq::thread_running(), "and the thread is still running");
+
+    k_msleep(200);
+    zassert_true(rec.cycles > cycles_before,
+                 "cycles kept advancing across the reads (%d then %d)", cycles_before, rec.cycles);
+    zassert_equal(acq::try_stop(), 0);
+}
+
 ZTEST(tof_acquisition, test_a_stop_request_ends_the_cycles_and_the_thread_stops_the_devices)
 {
     /* The first acceptance boundary: after a stop request nothing enters a new cycle, and the STOP
@@ -3424,3 +3613,274 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         zassert_equal(after_bring_up.sources[i].role_id, 255,
                       "a grid source has no cliff role to key");
 }
+
+/* ---- a configure that fails must not cost the source the rest of the boot ---- */
+
+/* THE DEFECT. A failed configure left the adapter open and owed nothing: started stays false and
+ * cleanup_pending stays clear, because nothing is ranging. With nothing owed the next bring-up
+ * skipped its pre-stop and called open() on a sensor that was already open -- which the adapter
+ * refuses -- so the source was gone until reboot, one configure failure deep.
+ *
+ * The recovery is a close, not a stop. stop() refuses a sensor that is not ranging, and reaching
+ * for it here would have swapped one refusal for another. */
+ZTEST(tof_acquisition, test_a_grid_source_comes_back_after_a_failed_configure)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+
+    devs[4].configure_rc = -EIO;
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[4].open_calls, 1, "it opened");
+    zassert_equal(devs[4].start_calls, 0, "and never armed");
+    /* Twice: once before the open, which is a no-op on an empty sensor, and once after the failed
+     * configure, which is the recovery. */
+    zassert_equal(devs[4].grid_close_calls, 2, "the open session was closed, not left behind");
+    zassert_equal(devs[4].grid_stop_calls, 0,
+                  "and not through stop, which refuses a sensor that is not ranging");
+
+    acq::run_cycle();
+    {
+        const acq::source_facts &f{rec.last.sources[4]};
+        zassert_false(f.started, "");
+        zassert_false(f.cleanup_pending, "nothing is ranging, so no stop is owed");
+        /* rearm_failed is NOT set here, and that is the existing design rather than an oversight:
+         * it is the start path's sticky, raised when a device may have been left ranging. A
+         * configure failure leaves nothing ranging, so the failure is carried by the error domain
+         * instead. */
+        zassert_true(f.transport_error, "the -EIO is recorded against this source");
+    }
+
+    /* The next attempt, with the device now behaving. Before the fix this open() was refused and
+     * every later one too. */
+    devs[4].configure_rc = 0;
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[4].open_calls, 2, "it could be opened again");
+    zassert_equal(devs[4].start_calls, 1, "and armed this time");
+    zassert_equal(devs[4].grid_close_calls, 3, "with its own close before the open");
+    zassert_equal(devs[4].grid_state_refusals, 0,
+                  "and the adapter refused nothing: every call was legal in its state");
+    zassert_false(wrong_table_called, "all of it through the grid table");
+
+    acq::run_cycle();
+    {
+        const acq::source_facts &f{rec.last.sources[4]};
+        zassert_true(f.started, "the source is back");
+        zassert_false(f.transport_error, "and the cycle's facts are clean again");
+    }
+}
+
+/* A CLOSE THAT ITSELF FAILS AFTER A FAILED CONFIGURE changes nothing, which is worth pinning
+ * rather than assuming: the bring-up has no second recovery to offer. The failure injected is the
+ * SECOND close -- the recovery one -- because the bring-up now closes before opening as well, and
+ * a blanket injection would never get past that first call. */
+ZTEST(tof_acquisition, test_a_failed_close_after_a_failed_configure_is_reported_and_no_more)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+
+    devs[4].configure_rc = -EIO;
+    devs[4].close_rc = -EPERM;
+    devs[4].close_fail_on_call = 2;   /* the recovery close, not the pre-open one */
+    zassert_equal(acq::bring_up(), 0, "one source failing must not fail the bring-up");
+
+    zassert_equal(devs[4].grid_close_calls, 2, "closed before open, and again after configure");
+    zassert_equal(devs[4].grid_stop_calls, 0, "never through stop");
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+    zassert_false(f.started, "");
+    zassert_true(f.transport_error, "the configure failure is still what is reported");
+}
+
+/* ---- closed before opened, which is the ordinary path and not a failure path ---- */
+
+/* A SUCCESSFUL STOP LEAVES THE ADAPTER CONFIGURED, NOT UNOPENED, and open() requires unopened. So
+ * the re-bring-up has to close first. This is the case that was green against a fake which did not
+ * model the lifecycle: every call order was accepted, so open() being illegal here was invisible.
+ *
+ * The fake now refuses what tof_l7_sensor refuses, and grid_state_refusals counts those refusals,
+ * so "the adapter said no" is distinguishable from "it was never called". */
+ZTEST(tof_acquisition, test_a_re_bring_up_closes_before_it_opens_again)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    zassert_equal(devs[4].grid_close_calls, 1, "the first bring-up closed an empty sensor: a no-op");
+    zassert_equal(devs[4].open_calls, 1, "");
+
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[4].grid_stop_calls, 1, "the previous session was stopped");
+    zassert_equal(devs[4].grid_close_calls, 2, "and then closed, which is what open() requires");
+    zassert_equal(devs[4].open_calls, 2, "so the second open was accepted");
+    zassert_equal(devs[4].start_calls, 2, "and the source armed again");
+    zassert_equal(devs[4].grid_state_refusals, 0,
+                  "the adapter refused nothing: the call order was legal throughout");
+    zassert_false(wrong_table_called, "all of it through the grid table");
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+    zassert_true(f.started, "");
+    zassert_false(f.cleanup_pending, "");
+}
+
+/* AND A CLOSE THAT REFUSES BEFORE THE OPEN STOPS THE BRING-UP. close() refuses only a sensor that
+ * is or may be ranging, so this means the adapter disagrees that the previous session ended --
+ * opening on top of that is the two-drivers-on-one-part case the pre-stop exists to prevent.
+ *
+ * Reaching it needs the facts and the adapter to disagree, which the bring-up itself does not
+ * produce: a failed start sets cleanup_pending, so they agree. The state is therefore injected
+ * directly, and the case is a guard on the branch rather than a reachable scenario. */
+ZTEST(tof_acquisition, test_a_refused_close_before_open_opens_nothing)
+{
+    zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
+
+    /* Facts say nothing is running, so no pre-stop happens; the adapter says otherwise. */
+    devs[4].grid_life = fake_dev::life::running;
+
+    zassert_equal(acq::bring_up(), 0, "one source failing must not fail the bring-up");
+
+    zassert_equal(devs[4].grid_close_calls, 1, "the close was attempted");
+    zassert_equal(devs[4].grid_state_refusals, 1, "and refused");
+    zassert_equal(devs[4].open_calls, 0, "nothing was opened on top of a live session");
+    zassert_equal(devs[4].start_calls, 0, "");
+
+    acq::run_cycle();
+    const acq::source_facts &f{rec.last.sources[4]};
+    zassert_false(f.started, "the source stays out of the cycle");
+    zassert_true(f.cleanup_pending, "and the stop it may still owe is restored");
+}
+
+/* A grid descriptor that cannot be configured is refused at init rather than failing on every
+ * bring-up. The descriptor comment already said configure() refuses a zero; the caller who built
+ * the table now learns that once, instead of the source silently never ranging. */
+ZTEST(tof_acquisition, test_a_bound_grid_source_needs_a_frequency)
+{
+    acq::config c{make_config(acq::kMaxSources)};
+    const uint8_t had{four_cliff_two_grid[4].grid_frequency_hz};
+    zassert_not_equal(had, 0, "the fixture must bind a real frequency for this to mean anything");
+
+    four_cliff_two_grid[4].grid_frequency_hz = 0;
+    zassert_equal(acq::init(c), -EINVAL, "zero is not a frequency");
+
+    four_cliff_two_grid[4].grid_frequency_hz = had;
+    zassert_equal(acq::init(c), 0, "and the restored table is still accepted");
+}
+
+/* The close entry is required of a bound table, like the other five: a table accepted without it
+ * would reach the configure-failure path and dereference null in the acquisition thread. */
+ZTEST(tof_acquisition, test_a_bound_grid_table_must_carry_close)
+{
+    acq::config c{make_config(acq::kMaxSources)};
+    static acq::grid_source_ops incomplete{kFakeGridOps};
+    incomplete.close = nullptr;
+
+    four_cliff_two_grid[4].grid_ops = &incomplete;
+    zassert_equal(acq::init(c), -EINVAL, "a half-filled grid table is refused at init");
+
+    four_cliff_two_grid[4].grid_ops = &kFakeGridOps;
+    zassert_equal(acq::init(c), 0, "and the complete one is accepted");
+}
+
+
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_grid_publisher.hpp"
+namespace grid_wire_probe {
+namespace gp = lexxhard::tof_grid_pub;
+int port_error;
+int frames;
+uint8_t last_frame[8];
+int send(uint16_t, const uint8_t *data, uint8_t len) {
+    ++frames;
+    memcpy(last_frame, data, len);
+    return 0;
+}
+gp::authorisation authorise() {
+    gp::authorisation a{};
+    a.state = acq::mapping_state::proven;
+    a.epoch = 7;
+    a.source_allowed[0] = a.source_allowed[1] = true;
+    return a;
+}
+int readiness_timeout(void *, void *, l7f::sample *out, l7f::operation_status *st) {
+    *out = l7f::sample{};
+    *st = l7f::operation_status{};
+    st->failed_stage = l7f::stage::ready_check;
+    st->uld_status = l7f::kUldTimeoutStatus;
+    st->port_errno = port_error;
+    return port_error != 0 ? port_error : -ETIMEDOUT;
+}
+}
+
+ZTEST(tof_acquisition, test_a_bound_grid_descriptor_without_scratch_is_refused) {
+    auto c = make_config(6);
+    auto *saved = four_cliff_two_grid[4].scratch;
+    four_cliff_two_grid[4].scratch = nullptr;
+    const int rc = acq::init(c);
+    four_cliff_two_grid[4].scratch = saved;
+    zassert_equal(rc, -EINVAL, "bound grid with null scratch was accepted");
+}
+
+static void exercise_grid_timeout_wire_flags(int port_error, uint8_t expected_flags) {
+    grid_wire_probe::port_error = port_error;
+    namespace gp = lexxhard::tof_grid_pub;
+    auto c = make_config(6);
+    static auto ops = kFakeGridOps;
+    ops.read_grid_sample = grid_wire_probe::readiness_timeout;
+    four_cliff_two_grid[4].role_id = 0;
+    four_cliff_two_grid[5].role_id = 1;
+    four_cliff_two_grid[4].grid_ops = &ops;
+    zassert_ok(acq::init(c));
+    zassert_ok(acq::bring_up());
+    acq::run_cycle();
+    auto failed = rec.last;
+    zassert_equal(failed.sources[4].status.uld_status, l7f::kUldTimeoutStatus);
+    zassert_equal(failed.sources[4].status.port_errno, port_error);
+    zassert_equal(failed.sources[4].status.stage, static_cast<uint8_t>(l7f::stage::ready_check));
+    zassert_true(failed.sources[4].started);
+    // Feed the actual scheduler's facts to the actual publisher, without constructing
+    // a transport_error=false fixture that skips the integration defect.
+    gp::config pc{};
+    pc.sink.send = grid_wire_probe::send;
+    pc.sources = c.sources;
+    pc.source_count = c.source_count;
+    pc.authorise = grid_wire_probe::authorise;
+    zassert_ok(gp::init(pc));
+    grid_wire_probe::frames = 0;
+    gp::on_cycle_begin(failed.cycle_seq);
+    gp::on_cycle_complete(failed);
+    zassert_equal(grid_wire_probe::frames, 0);
+
+    // The wire flags report faults recovered since the preceding successful grid.
+    auto recovered = failed;
+    recovered.cycle_seq++;
+    auto good = failed.sources[4];
+    good.transport_error = good.protocol_error = good.usage_error = good.unsupported = false;
+    good.status = acq::source_status{};
+    good.status.domain = acq::status_domain::l7;
+    good.sample_produced = true;
+    recovered.sources[4] = good;
+    l7f::sample sample{};
+    sample.fresh = true;
+    for (size_t i = 0; i < l7f::kZoneCount; ++i) {
+        sample.distance_mm[i] = 1000;
+        sample.target_status[i] = 5;
+        sample.target_count[i] = 1;
+    }
+    gp::on_cycle_begin(recovered.cycle_seq);
+    gp::on_grid_sample(4, recovered.cycle_seq, good, sample);
+    gp::on_cycle_complete(recovered);
+    zassert_equal(grid_wire_probe::frames, 17);
+    zassert_equal(grid_wire_probe::last_frame[3] & 0x03, expected_flags,
+                  "wrong recovery flags for readiness status with port errno %d", port_error);
+    zassert_ok(acq::try_stop());
+}
+ZTEST(tof_acquisition, test_a_readiness_timeout_does_not_claim_an_i2c_failure) {
+    exercise_grid_timeout_wire_flags(0, 0x02);
+}
+ZTEST(tof_acquisition, test_an_i2c_timeout_at_ready_check_stays_an_i2c_failure) {
+    exercise_grid_timeout_wire_flags(-ETIMEDOUT, 0x01);
+}
+ZTEST(tof_acquisition, test_an_i2c_error_at_ready_check_stays_an_i2c_failure) {
+    exercise_grid_timeout_wire_flags(-EIO, 0x01);
+}
+#endif

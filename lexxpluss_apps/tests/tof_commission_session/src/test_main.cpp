@@ -50,9 +50,18 @@ struct fakes {
     cm::stage prove_stage{cm::stage::none};
     pf::refusal prove_refusal{pf::refusal::none};
 
+    /* WHAT THE AUTHORITY WOULD SAY, which the session now asks instead of remembering. A successful
+     * prove() installs a mapping in production, so the fake does the same by default and the
+     * existing cases behave as they did. The cases that matter are the ones that make this disagree
+     * with the session's own memory -- another epoch installed from the shell, or a mapping that
+     * went LOST -- and those set these directly. */
+    bool installed_proven{false};
+    uint8_t installed_epoch{0};
+
     int draws{0};
     int proves{0};
     int starts{0};
+    int installed_queries{0};
     uint32_t last_epoch{0xFFFFFFFFU};
 };
 
@@ -99,7 +108,20 @@ int fake_prove(void *, uint32_t epoch, cm::outcome *out)
     f_.last_epoch = epoch;
     out->failed_at = f_.prove_stage;
     out->proof = f_.prove_refusal;
+    if (f_.prove_rc == 0) {
+        f_.installed_proven = true;
+        f_.installed_epoch = static_cast<uint8_t>(epoch);
+    }
     return f_.prove_rc;
+}
+
+bool fake_installed(void *, uint8_t *epoch)
+{
+    ++f_.installed_queries;
+    if (!f_.installed_proven)
+        return false;
+    *epoch = f_.installed_epoch;
+    return true;
 }
 
 int fake_start(void *)
@@ -110,7 +132,7 @@ int fake_start(void *)
 
 cs::hooks wired()
 {
-    return cs::hooks{fake_draw, fake_permitted, fake_prove, fake_start, nullptr};
+    return cs::hooks{fake_draw, fake_permitted, fake_installed, fake_prove, fake_start, nullptr};
 }
 
 bool enable(uint8_t proofs = 3, uint8_t starts = 3, bool profile = true)
@@ -337,41 +359,80 @@ ZTEST(tof_commission_session, test_an_earlier_request_is_still_replayable_later)
     zassert_equal(f_.proves, 2, "and it did not run again");
 }
 
-ZTEST(tof_commission_session, test_the_table_refuses_when_full_rather_than_evicting)
+/* THE TABLE COVERS THE WHOLE SEQUENCE SPACE, so it cannot fill before the host has used every
+ * identity available to it. What this case still pins is the part that was always the point: no
+ * entry is ever evicted, because evicting one re-opens replay of exactly the request it described.
+ *
+ * It used to assert that the table filled after a few dozen requests. That was the defect rather
+ * than the design -- the table was consumed by requests while its size was justified against
+ * attempts -- so the assertion is replaced rather than relaxed. */
+ZTEST(tof_commission_session, test_every_sequence_number_has_a_slot_and_none_is_ever_evicted)
 {
     zassert_true(enable(255, 255), "");
     uint8_t frame[wire::kFrameLen]{};
-    int accepted{0};
-    for (int i = 0; i < 40; ++i) {
-        build_request(frame, static_cast<uint8_t>(i + 1), static_cast<uint8_t>(i + 1), 0x11223344U);
+
+    /* Every sequence number a host can address, each one a distinct request. The proof budget runs
+     * out partway through and the later ones come back attempts_exhausted; they still take their own
+     * slot, which is the behaviour under test. */
+    for (int i = 0; i < 256; ++i) {
+        build_request(frame, static_cast<uint8_t>(i), static_cast<uint8_t>(i), 0x11223344U);
         const cs::rx_action a{cs::handle_request(frame, sizeof frame)};
-        if (a.status.res == wire::result::seq_space_exhausted)
-            break;
-        zassert_true(a.queued, "accepted while there is room");
-        ++accepted;
-        (void)run_to_terminal();
+        zassert_not_equal(a.status.res, wire::result::seq_space_exhausted,
+                          "seq %d was refused for want of a slot", i);
+        if (a.queued)
+            (void)run_to_terminal();
     }
-    zassert_true(accepted > 0 && accepted < 40, "it filled up");
 
-    /* And it stays refused: evicting would re-open replay of exactly the request evicted. */
-    build_request(frame, 99, 99, 0x11223344U);
-    zassert_true(cs::handle_request(frame, sizeof frame).status.res ==
-                     wire::result::seq_space_exhausted,
-                 "still refused");
-
-    /* The earliest entry is still replayable, which is what eviction would have destroyed. Asserted
-     * on the CONTENT, not merely that something came back: a refusal also sets send_status, so a
-     * weaker check here passed against a store that had evicted entry 1 -- found by mutating the
-     * eviction rule and watching this test stay green. */
+    /* The first one is still replayable, which is what eviction would have destroyed. Asserted on
+     * the CONTENT: a refusal also sets send_status, so a weaker check here passed against a store
+     * that had evicted entry 0 -- found by mutating the eviction rule and watching it stay green. */
     const uint32_t replays_before{cs::stats().replayed_from_table};
-    build_request(frame, 1, 1, 0x11223344U);
+    build_request(frame, 0, 0, 0x11223344U);
     const cs::rx_action survivor{cs::handle_request(frame, sizeof frame)};
     zassert_true(survivor.send_status, "answered");
-    zassert_equal(survivor.status.seq, 1, "it is request 1's own status");
-    zassert_equal(survivor.status.wire_epoch, 1, "with request 1's epoch");
-    zassert_true(survivor.status.ph == wire::phase::done, "replayed, not refused");
+    zassert_equal(survivor.status.seq, 0, "it is request 0's own status");
+    zassert_equal(survivor.status.wire_epoch, 0, "with request 0's epoch");
     zassert_equal(cs::stats().replayed_from_table, replays_before + 1,
                   "and counted as a replay rather than a fresh refusal");
+
+    /* A host that has used every identity and wants another distinct request has nowhere to go, and
+     * the answer it gets is that the sequence is taken -- not an eviction, and not the board
+     * declaring itself finished. */
+    build_request(frame, 0, 99, 0x11223344U);
+    zassert_equal(cs::handle_request(frame, sizeof frame).status.res, wire::result::seq_conflict,
+                  "reusing a sequence for a different request is a conflict");
+}
+
+/* THE DEFECT THE SIZING CHANGE IS FOR. Refusals that never ran take slots too -- a `busy_chain`
+ * entry has to be recorded, or the identical frame retransmitted after the in-flight transaction
+ * finishes is treated as new and RUNS. With sixteen slots, sixteen retries against a machine that
+ * is not quiescent ended commissioning for the boot with no proof having been attempted. */
+ZTEST(tof_commission_session, test_many_busy_refusals_do_not_end_commissioning_for_the_boot)
+{
+    zassert_true(enable(), "");
+    uint8_t frame[wire::kFrameLen]{};
+
+    /* One request queued and deliberately not run: running_ is set by handle_request(), so every
+     * further request is busy_chain while this one sits there. */
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+
+    for (int i = 2; i <= 60; ++i) {
+        build_request(frame, static_cast<uint8_t>(i), 7, 0x11223344U);
+        const cs::rx_action a{cs::handle_request(frame, sizeof frame)};
+        zassert_equal(a.status.res, wire::result::busy_chain,
+                      "retry %d answered %d instead of busy", i, static_cast<int>(a.status.res));
+    }
+
+    /* Now let the queued one finish, and commission on a fresh sequence. Before the change this
+     * request was refused seq_space_exhausted until reboot. */
+    zassert_true(run_to_terminal().res == wire::result::ok, "the queued transaction still runs");
+    zassert_equal(f_.proves, 1, "exactly one proof ran through all of that");
+
+    build_request(frame, 200, 7, 0x11223344U);
+    const cs::rx_action after{cs::handle_request(frame, sizeof frame)};
+    zassert_not_equal(after.status.res, wire::result::seq_space_exhausted,
+                      "sixty refusals ended commissioning for the boot");
 }
 
 /* ---- the RX path does no work ---- */
@@ -455,7 +516,10 @@ ZTEST(tof_commission_session, test_a_failed_proof_reports_its_stage_and_detail)
     zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
     const wire::transaction_status t{run_to_terminal()};
 
-    zassert_true(t.ph == wire::phase::refused, "refused");
+    /* DONE, NOT REFUSED, and this assertion was changed deliberately. The wire says `refused`
+     * carries why a transaction never ran; this one ran a walk and the host's ordinal went with it.
+     * `done` carries the outcome, and a failure is an outcome. */
+    zassert_true(t.ph == wire::phase::done, "a proof that ran and failed is an outcome");
     zassert_true(t.res == wire::result::proof_failed, "");
     zassert_true(t.stage == wire::wire_stage::second_walk, "the stage the transaction reached");
     zassert_true(t.detail == wire::wire_detail::walk_mismatch, "and why it stopped there");
@@ -766,4 +830,253 @@ ZTEST(tof_commission_session, test_a_second_worker_takes_nothing_and_runs_nothin
     /* Nothing is claimed any more: the next step finds an empty slot rather than a job it may not
      * touch. */
     zassert_true(cs::worker_step().state == cs::worker_state::idle, "idle");
+}
+
+/* ---- the gate reads the authority, not this session's memory of it ---- */
+
+/* SOMEBODY ELSE INSTALLED A MAPPING. `tof cliff prove <epoch>` from the shell goes straight to
+ * tof_commissioning::prove() and never touches this session, so the session's own has_proven_ /
+ * proven_epoch_ still name the epoch IT proved. A request for that epoch used to pass the gate,
+ * ac::step() answered already_started, and the host was told done/ok -- while a different epoch was
+ * the one in force. The gate now asks what is installed, so the same request is a disagreement. */
+ZTEST(tof_commission_session, test_an_epoch_installed_outside_the_session_is_not_reported_as_done)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "epoch 7 is commissioned");
+
+    /* The shell proves epoch 9 behind the session's back. Nothing in the session changes. */
+    f_.installed_epoch = 9;
+
+    uint8_t again[wire::kFrameLen]{};
+    build_request(again, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(again, sizeof again).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+    zassert_equal(t.res, wire::result::epoch_mismatch,
+                  "the session answered for an epoch that is no longer installed");
+    zassert_equal(t.ph, wire::phase::refused, "and not done");
+    zassert_equal(f_.proves, 1, "nothing re-proved");
+}
+
+/* A MAPPING THAT WENT LOST. Same defect from the other side: the session remembers proving epoch 7,
+ * the authority holds nothing at all, and a request for epoch 7 must not come back done. */
+ZTEST(tof_commission_session, test_a_lost_mapping_is_not_reported_as_done_for_the_epoch_it_had)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "");
+
+    f_.installed_proven = false;  // LOST
+
+    uint8_t again[wire::kFrameLen]{};
+    build_request(again, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(again, sizeof again).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+    zassert_equal(t.res, wire::result::epoch_mismatch,
+                  "a lost mapping was reported as a commissioned one");
+    zassert_equal(t.ph, wire::phase::refused, "");
+    zassert_equal(f_.proves, 1, "nothing re-proved");
+}
+
+/* The gate must actually consult the hook rather than happening to agree with it. */
+ZTEST(tof_commission_session, test_the_installed_mapping_is_asked_and_is_required_at_init)
+{
+    zassert_true(enable(), "");
+    uint8_t req[wire::kFrameLen]{};
+    build_request(req, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(req, sizeof req).queued, "");
+    (void)run_to_terminal();
+    zassert_true(f_.installed_queries > 0, "the authority view was never consulted");
+
+    /* And a session that cannot ask is not a session. */
+    cs::config c{};
+    c.profile_enabled = true;
+    c.max_proof_attempts = 3;
+    c.max_start_attempts = 3;
+    cs::hooks h{wired()};
+    h.installed_mapping = nullptr;
+    zassert_false(cs::init(c, h), "a missing authority view must refuse the session");
+}
+
+/* ---- the phase says whether the transaction ran, and the failure keeps its reason ---- */
+
+/* THE RESULT CODE CANNOT ANSWER "DID IT RUN", which is why the phase is set from the sequencer's
+ * counters. attempts_exhausted comes back from two different situations: a proof that just failed as
+ * the last of its budget, and a step that found the budget already spent and did nothing at all.
+ * The host must be able to tell those apart -- the first consumed its ordinal, the second did not. */
+ZTEST(tof_commission_session, test_a_last_attempt_proof_failure_is_done_and_keeps_its_reason)
+{
+    zassert_true(enable(1, 3), "one proof in the budget");
+    f_.prove_rc = -5;
+    f_.prove_stage = cm::stage::evidence_refused;
+    f_.prove_refusal = pf::refusal::fingerprint_mismatch;
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 1, "the walk ran");
+    zassert_equal(t.res, wire::result::attempts_exhausted, "the budget is what the host must act on");
+    zassert_equal(t.ph, wire::phase::done, "but it ran, so it is not a refusal");
+    /* THE REASON THAT USED TO BE DROPPED. #112 returns attempts_exhausted instead of proof_failed
+     * for the last attempt, and this branch did not read last_outcome_ -- so with
+     * max_proof_attempts = 1 no proof-failure reason ever reached the host. */
+    zassert_equal(t.stage, wire::wire_stage::second_walk, "the stage the transaction reached");
+    zassert_equal(t.detail, wire::wire_detail::walk_mismatch, "and why it stopped there");
+}
+
+/* THE OTHER attempts_exhausted. The budget was spent by the request before this one, so this
+ * transaction ran nothing, consumed nothing, and is a refusal with no stage to report. */
+ZTEST(tof_commission_session, test_a_budget_already_spent_is_refused_with_nothing_to_report)
+{
+    zassert_true(enable(1, 3), "");
+    f_.prove_rc = -5;
+    f_.prove_stage = cm::stage::evidence_refused;
+    f_.prove_refusal = pf::refusal::fingerprint_mismatch;
+
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_equal(run_to_terminal().ph, wire::phase::done, "the first one ran");
+
+    uint8_t second[wire::kFrameLen]{};
+    build_request(second, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(second, sizeof second).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 1, "no second walk");
+    zassert_equal(t.res, wire::result::attempts_exhausted, "");
+    zassert_equal(t.ph, wire::phase::refused, "nothing ran, so nothing was consumed");
+    zassert_equal(t.stage, wire::wire_stage::not_started, "");
+    zassert_equal(t.detail, wire::wire_detail::none, "");
+}
+
+/* A start that ran and refused is also an outcome: the proof is installed and its epoch is spent. */
+ZTEST(tof_commission_session, test_a_failed_start_is_done_because_the_epoch_was_already_spent)
+{
+    zassert_true(enable(), "");
+    f_.start_rc = -1;
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 1, "");
+    zassert_equal(f_.starts, 1, "the start was attempted");
+    zassert_equal(t.res, wire::result::start_failed, "");
+    zassert_equal(t.ph, wire::phase::done, "the mapping is installed and the epoch is gone");
+}
+
+/* And the cases that never reach a hook stay refusals, which is what the phase is for. */
+ZTEST(tof_commission_session, test_a_machine_that_is_not_quiescent_never_ran_and_is_refused)
+{
+    zassert_true(enable(), "");
+    f_.permitted = false;
+
+    uint8_t frame[wire::kFrameLen]{};
+    build_request(frame, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(frame, sizeof frame).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_equal(f_.proves, 0, "nothing ran");
+    zassert_equal(t.res, wire::result::not_permitted, "");
+    zassert_equal(t.ph, wire::phase::refused, "and the phase says so");
+}
+
+/* EVERY HOOK IS REQUIRED, and the reason is that #112's own wiring check cannot see them: the
+ * sequencer is handed this file's adapters, which are never null, so ac::wired() is satisfied
+ * however little is bound underneath. Each missing hook used to produce a plausible operational
+ * answer instead of a fault -- not_permitted forever, an attempt spent on -ENODEV, or a start
+ * failure discovered only after a real proof had installed a mapping and spent the epoch. */
+ZTEST(tof_commission_session, test_a_session_refuses_to_start_with_any_hook_missing)
+{
+    cs::config c{};
+    c.profile_enabled = true;
+    c.max_proof_attempts = 3;
+    c.max_start_attempts = 3;
+
+    {
+        cs::hooks h{wired()};
+        h.enumeration_permitted = nullptr;
+        zassert_false(cs::init(c, h), "a missing quiescence hook read as not_permitted forever");
+    }
+    {
+        cs::hooks h{wired()};
+        h.prove = nullptr;
+        zassert_false(cs::init(c, h), "a missing prove spent an attempt on a wiring bug");
+    }
+    {
+        cs::hooks h{wired()};
+        h.start = nullptr;
+        zassert_false(cs::init(c, h), "a missing start was found only after the epoch was spent");
+    }
+    {
+        cs::hooks h{wired()};
+        h.draw_token = nullptr;
+        zassert_false(cs::init(c, h), "");
+    }
+    /* And the fully wired one still starts, so this is not just asserting that init() fails. */
+    zassert_true(cs::init(c, wired()), "a complete wiring must still produce a session");
+}
+
+/* THE PATH THE FIRST VERSION OF THE GATE LEFT OPEN, and the reason the gate compares two facts
+ * rather than one.
+ *
+ * The session proves and starts epoch 7, so the sequencer sits in `started`. The shell then proves
+ * epoch 9 outside the session, silencing acquisition on its way through. The host asks for epoch 9.
+ * Checking only "does the authority hold this request's epoch" says yes -- and ac::step() then
+ * answers already_started from a state that belongs to epoch 7, with nothing re-started, so the
+ * host is told done/ok for a mapping that was never started.
+ *
+ * Note which direction this differs in from the other two cases: there the request named a STALE
+ * epoch, here it names the CURRENT one. That is why those two cases did not catch it. */
+ZTEST(tof_commission_session, test_a_request_for_the_authoritys_new_epoch_is_not_endorsed_by_an_old_start)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "epoch 7 is commissioned and started");
+    zassert_equal(f_.starts, 1, "");
+
+    /* The shell proves epoch 9 behind the session's back. The authority now holds 9; the sequencer
+     * still holds a `started` that belongs to 7. */
+    f_.installed_epoch = 9;
+
+    uint8_t newer[wire::kFrameLen]{};
+    build_request(newer, 2, 9, 0x11223344U);
+    zassert_true(cs::handle_request(newer, sizeof newer).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+
+    zassert_not_equal(t.res, wire::result::ok,
+                      "the host was told its epoch was accepted by a start that predates it");
+    zassert_equal(t.res, wire::result::epoch_mismatch, "");
+    zassert_equal(t.ph, wire::phase::refused, "and not done");
+    zassert_equal(f_.proves, 1, "nothing re-proved");
+    zassert_equal(f_.starts, 1, "and nothing was started for the wrong mapping");
+}
+
+/* The gate must not over-refuse either: the ordinary case, where the session proved the epoch that
+ * is in force and the host asks for it again, is still answered. */
+ZTEST(tof_commission_session, test_the_agreeing_case_is_still_answered_as_done)
+{
+    zassert_true(enable(), "");
+    uint8_t first[wire::kFrameLen]{};
+    build_request(first, 1, 7, 0x11223344U);
+    zassert_true(cs::handle_request(first, sizeof first).queued, "");
+    zassert_true(run_to_terminal().res == wire::result::ok, "");
+
+    uint8_t again[wire::kFrameLen]{};
+    build_request(again, 2, 7, 0x11223344U);
+    zassert_true(cs::handle_request(again, sizeof again).queued, "");
+    const wire::transaction_status t{run_to_terminal()};
+    zassert_equal(t.res, wire::result::ok, "the epoch in force is the one this session proved");
+    zassert_equal(t.ph, wire::phase::done, "");
+    zassert_equal(f_.proves, 1, "and it was not re-proved to answer that");
 }

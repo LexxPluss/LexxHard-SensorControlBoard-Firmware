@@ -808,7 +808,10 @@ int grid_read(void *, void *, l7i::sample *out, l7i::operation_status *st)
 }
 int grid_stop(void *, l7i::operation_status *st) { *st = l7i::operation_status{}; return 0; }
 
-const acq::grid_source_ops kGridOps{grid_open, grid_configure, grid_start, grid_read, grid_stop};
+int grid_close(void *, l7i::operation_status *st) { *st = l7i::operation_status{}; return 0; }
+
+const acq::grid_source_ops kGridOps{grid_open,  grid_configure, grid_start,
+                                    grid_read,  grid_stop,      grid_close};
 
 /* The L4 table a grid source must never reach. Handing it the working kOps is what would let a
  * mis-dispatch pass as a correct run. */

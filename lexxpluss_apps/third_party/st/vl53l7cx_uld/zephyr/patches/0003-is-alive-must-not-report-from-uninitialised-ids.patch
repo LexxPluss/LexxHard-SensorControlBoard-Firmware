@@ -1,0 +1,41 @@
+vl53l7cx_is_alive() must not decide from uninitialised memory.
+
+`device_id` and `revision_id` are plain locals, and the function issues all four of
+its transfers unconditionally -- it ORs their statuses and never returns early. The
+Zephyr port does not clear the destination on a failed read: read_chunk() hands the
+buffer straight to i2c_transfer() and returns its error, leaving the caller's bytes
+untouched. So when the ID reads do not happen, or happen and fail, *p_is_alive is
+computed by comparing whatever was on the stack against 0xF0 and 0x02.
+
+WHY THAT IS NOT MERELY UNTIDY HERE. The boot-time recovery pass probes six addresses
+in a loop, through the same call frame at the same depth. A sensor that really is
+present leaves 0xF0 and 0x02 in those two slots; the next address in the loop, with
+nobody on it and every transfer NACKed, can read its own answer out of the previous
+one's leftovers and be reported alive. The pass would then issue a five-second stop
+sequence to an empty address, and -- worse for what the pass is for -- the census it
+produces is evidence, so a false positive argues for a hypothesis nobody tested.
+
+It also makes `answered` trustworthy enough to classify on, which the adapter now
+does: a cold boot gives a clean NACK with nothing acknowledged, while a survivor that
+NACKs one transfer and still answers the ID reads gives a NACK with an answer. Those
+are different observations and the adapter has to tell them apart. It cannot, if the
+value it reads was never written.
+
+Initialising to zero rather than to a sentinel: zero is not 0xF0, so an unanswered
+probe reports not-alive, which is the same conclusion the uninitialised version
+reached by luck on nearly every boot.
+
+Applied to the copy in the build directory, never in place, so SHA256SUMS continues
+to answer whether upstream changed.
+diff --git a/modules/vl53l7cx_api.c b/modules/vl53l7cx_api.c
+--- a/modules/vl53l7cx_api.c
++++ b/modules/vl53l7cx_api.c
+@@ -219,7 +219,7 @@
+ 		uint8_t				*p_is_alive)
+ {
+ 	uint8_t status = VL53L7CX_STATUS_OK;
+-	uint8_t device_id, revision_id;
++	uint8_t device_id = 0, revision_id = 0;
+ 
+ 	status |= VL53L7CX_WrByte(&(p_dev->platform), 0x7fff, 0x00);
+ 	status |= VL53L7CX_RdByte(&(p_dev->platform), 0, &device_id);

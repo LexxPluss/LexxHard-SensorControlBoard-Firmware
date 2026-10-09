@@ -82,6 +82,11 @@ void note_progress(state &st, const input &in)
  * grace period about work that began before anybody was watching. */
 bool baseline_ready(const input &in)
 {
+    /* The baseline still requires every watched activity to have finished once, INCLUDING the
+     * senders. That is not in tension with the host gate: the gate stops an armed board resetting
+     * when the host goes away, and this requires the host to have been there once before arming at
+     * all. A board that has never reached its host simply stays in `waiting`, which is the
+     * documented behaviour and the one the post-DFU boot needs. */
     if (in.acquisition.ended == 0 || in.send_acq.ended == 0 || in.send_workq.ended == 0 ||
         in.health.ended == 0 || in.zcan_loops == 0)
         return false;
@@ -166,6 +171,13 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
     /* No inside to be stuck in, so silence is the whole symptom. */
     if (longer_than(in.now_ms, st.zcan_seen_ms, b.zcan_silence_ms))
         why |= silent_zcan;
+
+    /* A STOPPED ACQUISITION, which is what a commissioning pass produces -- and what a FAILED proof
+     * leaves behind, with no end-of-operation to wait for. Applied to the reasons rather than to
+     * the judgements, so note_progress() keeps its bookkeeping and an activity that resumes is
+     * seen to resume. */
+    if (!in.acquisition_expected)
+        why &= ~kAcquisitionStoppedSuspends;
 
     if (in.long_operation) {
         /* A declared operation holds the chain, so it holds acquisition and the L7 -- and NOTHING

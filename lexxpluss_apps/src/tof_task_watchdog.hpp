@@ -34,13 +34,64 @@
  * requires every watched activity to have actually finished once on this boot. Before that the
  * answer is always feed.
  *
+ * THAT COVERS BOOT AND NOT A HOST THAT LEAVES LATER, AND THIS LAYER CANNOT COVER IT. The baseline
+ * is a one-time arming condition; after it, a host that goes away used to block the senders again
+ * and reset the board about ten seconds later, once per host restart, on a product whose other half
+ * treats host loss as ordinary (ros_heartbeat_timeout in board_controller.cpp).
+ *
+ * It is not fixable here, and an earlier version of this file tried. The reason is the shape of the
+ * call chain rather than a missing condition: runtime_progress::end(acquisition) is the LAST statement
+ * of run_cycle(), after the hook that sends, and end(health) is after the send in the health work.
+ * So a sender that cannot return freezes the CYCLE and HEALTH counters too, not just the send ones.
+ * Suspending the send reasons while the host is away therefore changes nothing: stuck_cycle and
+ * stuck_health latch anyway. Widening the suspension to cover them would hide a genuinely broken
+ * acquisition, which is most of what this layer is for.
+ *
+ * THE FIX IS IN THE SEND PATH, AND IT TOOK TWO PARTS. An earlier version of this comment claimed
+ * one, and it was wrong in a way worth recording rather than quietly correcting.
+ *
+ * The first part is a bounded send: the callback form of can_send(), or any completion wait that
+ * can expire. Without it a sender parks in k_sem_take(&ctx.done, K_FOREVER), with the timeout
+ * bounding only the wait for a free mailbox. That is zcan_bounded_send::send(), with all fifteen
+ * senders converted to it.
+ *
+ * THAT ALONE WAS NOT ENOUGH, which is the correction. Bounding one send does not bound a pass: every
+ * poller in zcan_main::run() drained its queue with `while (k_msgq_get(..., K_NO_WAIT) == 0)`, so
+ * with nothing acknowledging and all three mailboxes occupied, each send waits out its mailbox
+ * timeout before returning -EAGAIN and the drain rate falls to a few messages per second -- below
+ * what the producers generate (the IMU alone runs at 40 Hz), so the queue never empties and the pass
+ * never ends. A beacon at the bottom of that loop stops being updated exactly as before. Worse, and
+ * independently of any watchdog: in zcan_board::poll() and zcan_actuator::poll() the transmit drain
+ * runs BEFORE the receive drain that feeds the controller queues, so a pass that never finishes its
+ * transmit half never consumes the host's control frames -- including after the host comes back.
+ *
+ * The second part is therefore a per-pass budget, zcan_poll_budget: a bounded number of messages per
+ * queue per pass, so a pass completes in bounded time whether or not anything is acknowledging, and
+ * the receive drains behind the transmit drains always run. Together with calling end() on a refused
+ * send (see runtime_progress.hpp), host loss keeps every counter moving and is not a reset condition
+ * here at all -- no gate needed anywhere, and the safe state for a missing host stays where it
+ * already is, in board_controller.
+ *
+ * WHAT IS STILL TRUE REGARDLESS: this layer does not survive an unbounded sender, and nothing here
+ * makes it do so. It judges progress; a thread parked forever inside its own work cycle has no
+ * progress to judge, and no suspension set can tell that apart from a dead one. If a sender is ever
+ * added that waits on completion without a timeout, the reset comes back, and it comes back as a
+ * watchdog bug rather than as the send bug it is. The CMake gate in lexxpluss_apps/CMakeLists.txt
+ * exists to stop that at configure time rather than on a vehicle.
+ *
  * The second is bring-up work that legitimately takes far longer than a cycle. Exactly ONE such
  * operation is declared today and the comment says which rather than gesturing at a category:
  * verifying the stored L7 blob, which hashes 86 KB on the main stack before any baseline exists.
  * The other two candidates do not need declaring and are named here so nobody adds them by reflex.
  * The ULD download at open() takes about two seconds per sensor and is covered by the L7 in-flight
- * bound, which is longer than that. Commissioning runs over CAN with the host and blocks no thread,
- * so the periodic work continues throughout it.
+ * bound, which is longer than that.
+ *
+ * Commissioning is NOT one of them, and an earlier version of this header said it was harmless on
+ * the grounds that it "blocks no thread, so the periodic work continues". That was wrong:
+ * commissioning stops acquisition, and acquisition is the thread that sends 0x214-0x216 and the
+ * cycle health frame. It is handled by `acquisition_expected` instead of by a declaration, because
+ * a proof that fails leaves acquisition stopped by design and a declaration has no end to wait
+ * for.
  *
  * A declaration suspends a FIXED, NAMED set of activities and nothing else -- this is the part an
  * earlier version got wrong. Hashing a blob says nothing about whether the CAN heartbeat is still
@@ -118,6 +169,21 @@ struct progress {
  * constant means no call site can widen it. */
 inline constexpr uint32_t kLongOperationSuspends{stuck_cycle | silent_cycle | stuck_l7 | silent_l7};
 
+/* What a stopped acquisition suspends.
+ *
+ * send_acq is in here because it IS the acquisition thread: runtime_progress attributes 0x214-0x216 and
+ * the cycle health frame to that slot, so an acquisition that is not running cannot be sending.
+ *
+ * silent_l7 is in here because a stopped acquisition is also what stops asking the L7 for grids, so
+ * "it has completed nothing lately" is the expected state rather than a fault. stuck_l7 is NOT:
+ * an operation that was already in flight when acquisition stopped is still in flight, and that is
+ * a hang whoever asked for it. The two halves of the L7 judgement answer different questions and
+ * only one of them is suspended.
+ *
+ * The workqueue heartbeat and the health work are NOT in here: different threads, still judged. */
+inline constexpr uint32_t kAcquisitionStoppedSuspends{stuck_cycle | silent_cycle | stuck_send_acq |
+                                                      silent_send_acq | silent_l7};
+
 struct bounds {
     /* After the baseline, before anything is judged. Covers the first cycle of each activity. */
     uint32_t grace_ms{2000};
@@ -146,6 +212,19 @@ struct input {
     /* Does this image expect an L7 at all? False for a build without the ULD or with no grid
      * position, and then no L7 progress is ever required or judged. */
     bool l7_expected{false};
+
+    /* IS ACQUISITION SUPPOSED TO BE RUNNING? Same shape as l7_expected, and for a sharper reason.
+     *
+     * Commissioning STOPS acquisition: `tof cliff prove` quiesces it and tof_acq::try_stop() joins
+     * that thread, which is also the thread that sends 0x214-0x216 and the cycle health frame. So a
+     * commissioning pass silences `acquisition` AND `send_acq`, and the header used to claim that
+     * commissioning "blocks no thread, so the periodic work continues", which is wrong.
+     *
+     * Declaring the pass as a long operation does not cover it either: a proof that FAILS leaves
+     * acquisition stopped by design, and then the silence never ends -- there is no end-of-operation
+     * to wait for. The question the watchdog has to ask is not "has acquisition progressed" but "is
+     * acquisition supposed to be progressing", which only the caller knows. */
+    bool acquisition_expected{false};
     progress acquisition{};
     /* The two senders, watched separately. `send_acq` carries 0x214/0x215/0x216 and the cycle
      * health frame from the acquisition slot; `send_workq` carries the 0x217 heartbeat from the

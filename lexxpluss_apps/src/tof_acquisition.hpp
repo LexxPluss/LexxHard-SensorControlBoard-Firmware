@@ -191,6 +191,17 @@ struct grid_source_ops {
     int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
                             tof_l7::operation_status *st);
     int (*stop)(void *dev, tof_l7::operation_status *st);
+    /* RETURNS AN OPENED-BUT-UNUSABLE SENSOR TO UNOPENED, which the bring-up needs and had no way
+     * to do. tof_l7::close() in production.
+     *
+     * Without it a configure() that failed left the adapter `opened` with nothing owed -- no
+     * cleanup_pending, started false -- so the next bring-up skipped the pre-stop, called open()
+     * on a sensor that was already open, and got -EPERM for the rest of the boot. One source lost
+     * until reboot because one configure call failed once.
+     *
+     * It is not the stop path. close() refuses a sensor that is or may be ranging; the obligation
+     * after a failed start() is still a stop, and that is what cleanup_pending is for. */
+    int (*close)(void *dev, tof_l7::operation_status *st);
 };
 #else
 /* An image without the grid driver still has the descriptor field, so a build that does not carry
@@ -487,8 +498,22 @@ k_timeout_t cadence_timeout(const schedule_decision &step);
  * cannot be met is not an error -- no sensor failed and no frame was lost -- so it is counted
  * rather than logged per cycle. But it is the ONE fact that distinguishes "running at the
  * configured rate" from "running as fast as the work allows", and without it a period set too short
- * for the work degrades silently while every other indicator stays healthy. Cleared by init(). */
+ * for the work degrades silently while every other indicator stays healthy. Cleared by init().
+ *
+ * READABLE ON A BOARD, which it was not when this counter was added. Review pointed out that
+ * nothing outside the tests read it, so the degradation it exists to reveal was still invisible
+ * without a debugger -- the counter was the fix's own blind spot. There are two readers now: the
+ * loop logs once on the transition from zero, and `tof cliff status` prints the running total
+ * beside the period it is measured against. */
 uint32_t cycle_overruns();
+
+/* The cadence init() was last given, or 0 when none has been accepted.
+ *
+ * Exists so a reader does not have to reach into the configuration the acquisition thread is
+ * using: this is one atomic word, written only on a successful init(), and a refused init() leaves
+ * the previous answer standing. 0 is not a period -- init() rejects it -- so 0 means "no cadence
+ * has been configured", which is the distinction a status reader needs first. */
+uint32_t configured_cycle_period_ms();
 
 /* Starts the acquisition thread: bring-up, then one cycle per cadence period until asked to stop.
  *

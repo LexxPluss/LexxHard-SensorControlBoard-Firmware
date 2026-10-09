@@ -142,14 +142,16 @@ uint8_t flags_for(uint8_t src, const authorisation &auth)
 {
     uint8_t flags{static_cast<uint8_t>(pending_flags_[src] & 0x03)};
 
-    /* Bits 2 and 3 are chain-level and come from the mapping snapshot, so they are a statement
-     * about this cycle rather than something accumulated: the binding is either trustworthy now
-     * or it is not. (It said "the expected length" here, which was the pre-i reading of bit 2.) */
-    /* Bit 2 under contract 2026-08-02i is "the binding cannot be trusted", NOT "the chain is a
-     * different length". The old name said the latter, which co-fired with bit 3 and said nothing
-     * about whether these zones belong to the source id they are labelled with. */
-    if (auth.binding_untrusted)
-        flags |= 1U << 2;
+    /* BIT 2 IS NEVER SET FROM HERE. It says the chain_position -> source_id binding cannot be
+     * trusted, and the publisher has no way to say that which does not contradict itself: the
+     * packer refuses a read that asserts source_allowed beside bit 2, the publisher reads that
+     * refusal as structural, and the cycle -- including the source that WAS permitted -- goes
+     * dark. Distrust of a binding is expressed by source_allowed being clear for that source,
+     * which is the enumerator's verdict and suppresses exactly one grid. See the authorisation
+     * struct for the case this used to break.
+     *
+     * Bit 3 is chain-level and genuinely so: it is a statement about another position's
+     * enumeration, which is the same fact for every source in the cycle. */
     if (auth.other_position_enumeration_failed)
         flags |= 1U << 3;
     return flags;
@@ -207,10 +209,18 @@ void accumulate_failures(const tof_acq::cycle_facts &facts)
 
         const uint8_t src{f.role_id};
 
+        const bool readiness_timeout{
+            f.status.domain == tof_acq::status_domain::l7 &&
+            f.status.stage == static_cast<uint8_t>(tof_l7::stage::ready_check) &&
+            f.status.port_errno == 0 &&
+            f.status.uld_status == static_cast<int>(tof_l7::kUldTimeoutStatus)};
+
         /* Bit 0 is the I2C transfer error. The two sources of that truth are the scheduler's
          * classification of the return code and the port's own errno, and either alone would
-         * miss half the cases. */
-        if (f.transport_error || f.status.port_errno != 0)
+         * miss half the cases. The scheduler also maps a pure ULD readiness timeout into its
+         * generic transport category; that is bit 1, not evidence of an I2C failure. A port
+         * errno remains an I2C fault, even when the ULD status happens to be the timeout code. */
+        if (f.status.port_errno != 0 || (f.transport_error && !readiness_timeout))
             pending_flags_[src] |= 1U << 0;
         /* Bit 1 is the data-ready TIMEOUT, and the stage alone does not say that.
          *
@@ -223,10 +233,7 @@ void accumulate_failures(const tof_acq::cycle_facts &facts)
          *
          * The timeout fact is explicit: the ULD's own timeout status, or the errno it maps to. A
          * bus error at the same stage carries neither and stays what it is -- bit 0. */
-        if (f.status.domain == tof_acq::status_domain::l7 &&
-            f.status.stage == static_cast<uint8_t>(tof_l7::stage::ready_check) &&
-            f.status.port_errno == 0 &&
-            f.status.uld_status == static_cast<int>(tof_l7::kUldTimeoutStatus))
+        if (readiness_timeout)
             pending_flags_[src] |= 1U << 1;
 
         if (f.status.domain == tof_acq::status_domain::l7)

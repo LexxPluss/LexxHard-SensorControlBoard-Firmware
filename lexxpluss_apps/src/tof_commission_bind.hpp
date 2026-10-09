@@ -73,6 +73,15 @@ struct config {
 
     /* Required. See the note above: there is no default and no constant `true` here. */
     bool (*enumeration_permitted)(void *ctx){nullptr};
+
+    /* Required, and for the same kind of reason. Returns true when a mapping is in force -- PROVEN,
+     * not merely once proven -- and then writes the epoch it is in force under; production passes
+     * tof_authority::current(). #116's session refuses to start without it, because a session that
+     * answered from its own memory of what it proved told the host done/ok for an epoch the shell
+     * had since replaced. Carried through the config rather than called in the runtime because
+     * none of these suites link the authority. */
+    bool (*installed_mapping)(void *ctx, uint8_t *epoch){nullptr};
+
     void *ctx{nullptr};
 };
 

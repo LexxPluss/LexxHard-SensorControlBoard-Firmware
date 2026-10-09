@@ -105,10 +105,22 @@ struct fake_chain final : enm::chain_ops {
     char trace[64]{};
     size_t trace_len{0};
 
-    /* THE IDENTITY RE-CHECK'S TWO FAULTS, injected by the retime rather than by a call count. The
+    /* THE IDENTITY RE-CHECK'S FOUR FAULTS, injected by the retime rather than by a call count. The
      * re-check is the only thing that touches the chain after the bus moves to 400 kHz, so arming
      * these at the retime arms exactly it -- and that is also what they are modelling: a chain that
-     * worked at 100 kHz and does not answer, or answers as something else, at the product speed. */
+     * worked at 100 kHz and then, at the product speed, fails in one of the four ways the re-check
+     * has to keep apart.
+     *
+     *   silence_after_retime      a clean NACK: nothing answers at that address any more
+     *   probe_error_after_retime  the probe does not complete: the bus itself stopped working, and
+     *                             nothing is known about whether a part is there
+     *   read_error_after_retime   it ACKs and the id read then fails: something IS there and the
+     *                             transport to it did not survive the retime -- NOT a wrong part
+     *   wrong_id_after_retime     it answers, completely, as something else
+     *
+     * The last one is the only fault that means the part is wrong, which is why the fixture can
+     * arm the other three separately: a model that could only produce silence and a wrong id could
+     * not tell a transport fault reported as itself from one reported as a wrong part. */
     bool silence_after_retime{false};
     bool wrong_id_after_retime{false};
     bool probe_error_after_retime{false};

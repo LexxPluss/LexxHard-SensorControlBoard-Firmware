@@ -20,8 +20,14 @@
  *   1. quiesce acquisition and wait for it to stop -- but NOT teardown()
  *   2. take the chain lock with K_NO_WAIT
  *   3. begin the attempt WHILE HOLDING the lock
- *   4. walk 1 -> isolation -> walk 2, then evaluate and commit, all in the same session
- *   5. release, and only then may acquisition be restarted
+ *   4. SET the bus to the proof speed, 100 kHz
+ *   5. walk 1 -> isolation -> walk 2, then evaluate -- all at that speed
+ *   6. retime to the product speed, 400 kHz, and re-check every position's identity at it
+ *   7. commit, and only now; steps 4 to 7 are all in the same session
+ *   8. release, and only then may acquisition be restarted
+ *
+ * A failure anywhere after step 4 puts the bus back to 100 kHz, best effort, and reports where it
+ * ended up either way.
  *
  * Step 1 is stop(), never teardown(). They differ in exactly the thing that matters here: teardown()
  * stops the health timer, cancels the pending work and clears the configuration, and commissioning
@@ -43,8 +49,28 @@
  * same mutex from inside the session. That is a documented property of the API, not a coincidence,
  * and a test holds the session while driving both calls.
  *
- * Step 4 keeps evaluation and installation inside the session. Releasing between walk 2 and the
- * commit would open a window for anything else to re-address the chain the proof just described.
+ * Step 4 SETS the speed rather than confirming or assuming it. The bus can be at 400 kHz for
+ * reasons that have nothing to do with a previous proof succeeding -- an earlier run may have
+ * retimed, failed its re-check and failed again putting it back -- so a transaction that trusted
+ * that restore would walk at a speed nobody characterised the walks at, and would report success
+ * for a mapping whose evidence means nothing.
+ *
+ * Step 6 is BEFORE step 7, and that ordering is the design rather than a convenience. The proof
+ * establishes what the chain is at 100 kHz and says nothing about whether the same chain answers at
+ * 400 kHz, which is the only speed the acquisition schedule fits in. Committing first and
+ * re-checking afterwards would publish PROVEN and then withdraw it, and the health timer runs on
+ * its own cadence: a consumer can sample that window and act on a PROVEN it was never meant to see.
+ * So the authority is told nothing until the chain has answered at the speed it will be read at.
+ *
+ * WHAT THE RE-CHECK ESTABLISHES IS NARROW. It shows that the chain proven at 100 kHz still answers
+ * at 400 kHz. It is not a second proof and cannot distinguish two devices of the same model that
+ * have swapped addresses -- the two walks and the tail isolation are what do that, and they have
+ * already run. It probes and reads an id; it does not open, readdress, move an enable line or start
+ * anything ranging, because those are the things that would change the chain it exists to inspect.
+ *
+ * Steps 4 to 7 keep the speeds, the evaluation and the installation inside one session. Releasing
+ * anywhere between the first walk and the commit would open a window for anything else to re-address
+ * the chain the proof just described, or to retime the bus under it.
  *
  * WALK 2 RUNS EVEN WHEN THE ISOLATION FAILED
  *

@@ -17,10 +17,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "runtime_progress.hpp"
 #include "tof_acquisition.hpp"
 #include "tof_cliff_contract.h"
 #include "tof_mapping_authority.hpp"
-#include "tof_progress.hpp"
+#include "zcan_bounded_send.hpp"
 
 namespace lexxhard::tof_cliff_can {
 
@@ -47,17 +48,22 @@ const device *dev_{nullptr};
  * controller to finish a frame already in flight at 1 Mbit/s.
  *
  * WHAT THIS TIMEOUT ACTUALLY BOUNDS, because the obvious reading is wrong: it bounds only
- * "wait for a free TX mailbox". z_impl_can_send() implements the callback == NULL form as
- * api->send(...) followed by k_sem_take(&ctx.done, K_FOREVER) -- so waiting for the send to
- * COMPLETE is unconditional and this value does not constrain it at all.
+ * "wait for a free TX mailbox". Waiting for the frame to COMPLETE on the wire is a separate
+ * thing, and it used to be unbounded here -- z_impl_can_send() implements the
+ * callback == NULL form as api->send(...) followed by k_sem_take(&ctx.done, K_FOREVER).
+ * This layer now goes through zcan_bounded_send::send(), which passes a callback and so
+ * returns once the frame is in a mailbox; see that header for why every sender in this
+ * application was changed. With that, this 1 ms is the whole bound on the call.
  *
- * That was not academic. Before the bxCAN mailbox-overwrite backport
+ * That unbounded completion was not academic. Before the bxCAN mailbox-overwrite backport
  * (patches/zephyr/0002-*), a second concurrent synchronous sender could have its completion
  * object overwritten and then never wake up; on DS20001 that left zcan_main pending forever
  * and took the whole legacy CAN telemetry plus the 0x20F control-frame consumer down with
- * it. The patch removes the overwrite. What remains bounded-but-lossy is mailbox exhaustion:
- * with all three busy, this 1 ms elapses and the frame is dropped with -EAGAIN, which the
- * publisher counts as a send failure and answers by withholding that cycle's health frame. */
+ * it. The patch removed the overwrite; the bounded send removes the wait.
+ *
+ * What remains bounded-but-lossy is mailbox exhaustion: with all three busy, this 1 ms
+ * elapses and the frame is dropped with -EAGAIN, which the publisher counts as a send
+ * failure and answers by withholding that cycle's health frame. */
 constexpr k_timeout_t kSendTimeout{K_MSEC(1)};
 
 int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
@@ -72,20 +78,31 @@ int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
     frame.dlc = dlc;
     memcpy(frame.data, data, dlc);
 
-    /* Blocking form rather than the callback form: the publisher has already left every lock,
-     * and a completion callback would put the counter update in yet another context for no
-     * gain. Note that "blocking" here is unbounded on the completion side -- see kSendTimeout
-     * above for what the 1 ms does and does not cover. */
     /* WHICH SENDER THIS IS, decided from the calling thread rather than from the CAN id: the id
      * says what the frame is, the thread says who would be stuck in it. The acquisition slot
      * carries 0x214, 0x215, 0x216 and the cycle health frame; the system work queue carries the
      * 0x217 heartbeat. They wedge independently, so the watchdog watches them independently. */
-    const tof_progress::activity slot{tof_progress::current_send_slot()};
-    tof_progress::begin(slot);
-    const int rc{can_send(dev_, &frame, kSendTimeout, nullptr, nullptr)};
-    /* Counted on return whatever the result. A send that failed is a sender that is alive; a sender
-     * that never returns is the thing being watched for, and it never reaches this line. */
-    tof_progress::end(slot);
+    const runtime_progress::activity slot{runtime_progress::current_send_slot()};
+    runtime_progress::begin(slot);
+
+    /* THE BOUNDED SEND, not can_send() directly, and WHAT A ZERO FROM HERE NOW MEANS, because it
+     * changed: the controller accepted the frame, not that a node acknowledged it. The publisher's
+     * send_failed_measurement and send_failed_health therefore count transport REFUSALS -- no
+     * mailbox, bus off, bus not started -- and no longer count frames that went out and were never
+     * answered. On a bus with nobody listening the first three frames are accepted and only the
+     * fourth is refused, so the withholding starts three frames later than it used to; the
+     * alternative was the previous behaviour, where that bus blocked this thread forever and the
+     * withholding never happened at all. Delivery evidence lives in zcan_bounded_send::snapshot(),
+     * where a silent bus reads as `refused` rising while `queued` is frozen -- NOT as a rising
+     * `failed`, since frames still being retransmitted into silence never complete at all. */
+    const int rc{zcan_bounded_send::send(dev_, &frame, kSendTimeout)};
+
+    /* ENDED ON RETURN WHATEVER THE RESULT, and a refusal is a return. A send that failed is a
+     * sender that is alive; a sender that never returns is the thing being watched for, and it
+     * never reaches this line. Ending only on a zero would leave `begun` permanently ahead of
+     * `ended` once the bus went quiet, which is exactly the shape of a wedged sender -- so a host
+     * that went away would be indistinguishable from the fault this pair exists to detect. */
+    runtime_progress::end(slot);
     return rc;
 }
 

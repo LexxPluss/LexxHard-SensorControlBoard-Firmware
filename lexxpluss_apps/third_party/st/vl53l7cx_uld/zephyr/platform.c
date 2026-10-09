@@ -26,6 +26,7 @@ _Static_assert(VL53L7CX_MAX_RESULTS_SIZE <= VL53L7CX_PORT_MAX_TRANSFER,
 
 static const struct device *const l7_bus = DEVICE_DT_GET(DT_NODELABEL(i2c2));
 static atomic_t first_error;
+static atomic_t completed_transfers;
 
 static void remember_error(int rc)
 {
@@ -34,14 +35,29 @@ static void remember_error(int rc)
     }
 }
 
+/* Only where a transaction actually completed. Deliberately not "attempted": the caller uses a
+ * non-zero count as evidence that something on the bus answered. */
+static void remember_completion(void)
+{
+    (void)atomic_inc(&completed_transfers);
+}
+
 void vl53l7cx_port_clear_error(void)
 {
     atomic_set(&first_error, 0);
+    atomic_set(&completed_transfers, 0);
 }
 
 int vl53l7cx_port_error(void)
 {
     return (int)atomic_get(&first_error);
+}
+
+uint32_t vl53l7cx_port_completed_transfers(void)
+{
+    const atomic_val_t seen = atomic_get(&completed_transfers);
+
+    return seen < 0 ? UINT32_MAX : (uint32_t)seen;
 }
 
 static int address7(const VL53L7CX_Platform *platform, uint16_t *out)
@@ -108,6 +124,7 @@ static uint8_t transfer(VL53L7CX_Platform *platform, uint16_t register_address, 
             remember_error(rc);
             return VL53L7CX_STATUS_ERROR;
         }
+        remember_completion();
         return VL53L7CX_STATUS_OK;
     }
 
@@ -125,6 +142,7 @@ static uint8_t transfer(VL53L7CX_Platform *platform, uint16_t register_address, 
             remember_error(rc);
             return VL53L7CX_STATUS_ERROR;
         }
+        remember_completion();
         done += take;
     } while (done < size);
 

@@ -27,7 +27,7 @@
 /* The watchdog's heartbeats, which this file raises from the acquisition cycle, the health work and
  * every L7 operation -- so it is NOT under the grid guard: an image with no L7 still has a cycle and
  * a health path to be watched. */
-#include "tof_progress.hpp"
+#include "runtime_progress.hpp"
 
 LOG_MODULE_REGISTER(tof_acq, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -102,6 +102,17 @@ atomic_t thread_stop_rc_{ATOMIC_INIT(0)};
  * thread may read it; see cycle_overruns() in the header for why this one number is here and no
  * others are. */
 atomic_t tally_overruns_{ATOMIC_INIT(0)};
+
+/* The cadence a reader is allowed to see, published rather than read out of cfg_.
+ *
+ * cfg_ is a plain struct written by init() and read by the acquisition thread, so a shell thread
+ * reaching into it would be reading a structure nobody synchronises for the benefit of readers. The
+ * alternative -- taking chain_lock() to answer -- is worse: it parks the shell behind a cycle in
+ * progress, which is the wait thread_running() already refuses to pay for a fact. One atomic word
+ * carries the only field a reader needs, and the fact it is 0 until a successful init() is itself
+ * the answer to "is a cadence configured". Written on the success path only, so a refused init
+ * leaves the previous answer standing. */
+atomic_t published_period_ms_{ATOMIC_INIT(0)};
 
 /* True when the caller is allowed to drive the ULD: either no thread owns it, or this IS that
  * thread. Counting the refusals rather than only rejecting them, because a foreign call is a wiring
@@ -217,9 +228,9 @@ const source_ops kCliffOps{
  * an open that never returns visible as the pair standing apart. */
 int l7_real_open(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st)
 {
-    tof_progress::begin(tof_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7);
     const int rc{tof_l7::open(static_cast<tof_l7::sensor *>(dev), addr_7bit, st)};
-    tof_progress::end(tof_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7);
     return rc;
 }
 
@@ -228,17 +239,17 @@ int l7_real_configure(void *dev, uint8_t frequency_hz, tof_l7::operation_status 
     /* The frequency arrives from the descriptor, which took it from the deployment's devicetree.
      * Nothing in this file has a default for it, and the adapter refuses anything outside 1..15 on
      * its own account. */
-    tof_progress::begin(tof_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7);
     const int rc{tof_l7::configure(static_cast<tof_l7::sensor *>(dev), frequency_hz, st)};
-    tof_progress::end(tof_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7);
     return rc;
 }
 
 int l7_real_start(void *dev, tof_l7::operation_status *st)
 {
-    tof_progress::begin(tof_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7);
     const int rc{tof_l7::start(static_cast<tof_l7::sensor *>(dev), st)};
-    tof_progress::end(tof_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7);
     return rc;
 }
 
@@ -250,18 +261,18 @@ int l7_real_read_grid_sample(void *dev, void *scratch, tof_l7::sample *out,
      * against a 50 ms cycle, nine out of ten. That is the ordinary case and the adapter reports it
      * as rc 0 with a non-fresh sample, which records no outcome at all: counting it as an I/O
      * failure would make a working sensor look broken nine times out of ten. */
-    tof_progress::begin(tof_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7);
     const int rc{tof_l7::read_once(static_cast<tof_l7::sensor *>(dev),
                                    static_cast<tof_l7::scratch *>(scratch), out, st)};
-    tof_progress::end(tof_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7);
     return rc;
 }
 
 int l7_real_stop(void *dev, tof_l7::operation_status *st)
 {
-    tof_progress::begin(tof_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7);
     const int rc{tof_l7::stop(static_cast<tof_l7::sensor *>(dev), st)};
-    tof_progress::end(tof_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7);
     return rc;
 }
 
@@ -342,11 +353,11 @@ void health_work_handler(k_work *)
 {
     // Reads one atomic word. Takes no lock and touches no device, so a stalled bring-up
     // cannot silence it.
-    tof_progress::begin(tof_progress::activity::health);
+    runtime_progress::begin(runtime_progress::activity::health);
     if (cfg_.hooks.on_cliff_health != nullptr)
         cfg_.hooks.on_cliff_health(static_cast<uint32_t>(atomic_get(&snapshot_)),
                                    effective_mapping_state());
-    tof_progress::end(tof_progress::activity::health);
+    runtime_progress::end(runtime_progress::activity::health);
 }
 
 void health_timer_handler(k_timer *)
@@ -476,9 +487,38 @@ void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
 
     if (d.grid_ops == nullptr || d.grid_ops->open == nullptr ||
         d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
-        d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr) {
+        d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr ||
+        d.grid_ops->close == nullptr) {
         f.usage_error = true;
         LOG_ERR("source %d is an l7_grid with no grid_ops table", i);
+        return;
+    }
+
+    /* CLOSED BEFORE IT IS OPENED, because open() requires an UNOPENED sensor and almost nothing
+     * leaves it that way. A successful stop() lands the adapter on `configured`, not `empty` -- so
+     * a re-bring-up that quiesced correctly still met -EPERM from open(), every time, which is the
+     * same dead end the configure path had and reached by the ordinary route rather than by a
+     * failure. (I had claimed the configure fix covered this. It did not: that one closes after a
+     * failed configure, and this is a successful stop.)
+     *
+     * Unconditional because the state here is not knowable from the facts: `empty` on the first
+     * bring-up or after an open that failed, `configured` after a stop. close() succeeds and does
+     * nothing on the first, which is why it is safe to call blind.
+     *
+     * A REFUSAL IS NOT IGNORED. close() refuses only a sensor that is or may be ranging, and the
+     * caller has just quiesced -- so a refusal means the adapter disagrees that the previous
+     * session ended. Opening on top of that is the two-drivers-on-one-part case the pre-stop
+     * exists to prevent, so nothing is opened, the debt is restored, and the source stays out of
+     * the cycle. */
+    tof_l7::operation_status cst{};
+    if (const int crc{d.grid_ops->close(d.dev, &cst)}; crc != 0) {
+        record_l7(f, crc, cst);
+        f.started = false;
+        f.cleanup_pending = true;
+        f.rearm_failed = true;
+        LOG_ERR("grid source %d would not close before open at %s rc %d -- the previous session is "
+                "unaccounted for and nothing will be opened", i,
+                tof_l7::stage_name(cst.failed_stage), crc);
         return;
     }
 
@@ -494,6 +534,20 @@ void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
     rc = d.grid_ops->configure(d.dev, d.grid_frequency_hz, &st);
     if (rc != 0) {
         record_l7(f, rc, st);
+        /* CLOSED, OR THIS SOURCE IS GONE UNTIL REBOOT. The sensor is open and unconfigured:
+         * nothing is ranging, so no stop is owed and cleanup_pending stays clear -- and that is
+         * exactly what made this unrecoverable. With nothing owed the next bring-up skips the
+         * pre-stop and calls open() on a sensor that is already open, which refuses, every time,
+         * for the rest of the boot. One configure failure cost the source permanently.
+         *
+         * A close that itself fails is reported and nothing else: it can only fail on state, this
+         * state is closeable, and inventing a second recovery for it would be inventing a path
+         * that cannot be reached. */
+        tof_l7::operation_status cst{};
+        const int crc{d.grid_ops->close(d.dev, &cst)};
+        LOG_WRN("grid source %d configure failed at %s rc %d errno %d (freq %u); close rc %d", i,
+                tof_l7::stage_name(st.failed_stage), rc, st.port_errno,
+                static_cast<unsigned>(d.grid_frequency_hz), crc);
         return;
     }
 
@@ -864,8 +918,17 @@ int init(const config &cfg)
                 d.grid_ops->configure == nullptr || d.grid_ops->start == nullptr ||
                 d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr)
                 return -EINVAL;
-            /* The adapter is handed this as its device object on every call. */
-            if (d.dev == nullptr)
+            if (d.grid_ops->close == nullptr)
+                return -EINVAL;
+            /* The adapter needs both its device and the per-read work object. */
+            if (d.dev == nullptr || d.scratch == nullptr)
+                return -EINVAL;
+            /* ZERO IS NOT A FREQUENCY, and the descriptor comment already says configure()
+             * refuses rather than picking something. Refused HERE as well, because a descriptor
+             * that cannot be configured reaches the failure path on every single bring-up: the
+             * caller who built the table learns about it once, at init, instead of the source
+             * silently never ranging and the reason living in a log line. */
+            if (d.grid_frequency_hz == 0)
                 return -EINVAL;
             continue;
         }
@@ -919,8 +982,11 @@ int init(const config &cfg)
 
     facts_ = cycle_facts{};
     /* The overrun count describes a cadence, and init() is where the cadence is chosen. Carrying it
-     * across would attribute the old period's misses to the new one. */
+     * across would attribute the old period's misses to the new one. Clearing it is also what
+     * re-arms the one warning the loop emits, which is correct for the same reason: the new period
+     * has not missed anything yet, and whether it can be met is a fresh question. */
     atomic_clear(&tally_overruns_);
+    atomic_set(&published_period_ms_, static_cast<atomic_val_t>(cfg.periods.cycle_period_ms));
     /* A fresh start is a fresh epoch, so the first cycle must carry 0. */
     next_cycle_seq_ = 0;
     facts_.source_count = cfg.source_count;
@@ -1191,7 +1257,7 @@ void run_cycle()
 
     facts_.cycle_seq = next_cycle_seq_;
     facts_.began_ms = now();
-    tof_progress::begin(tof_progress::activity::acquisition);
+    runtime_progress::begin(runtime_progress::activity::acquisition);
 
     /* Before the first sensor is touched. A cycle that produces no sample at all still has to be
      * announced, and this is the only point at which that is possible: every later hook is
@@ -1268,7 +1334,7 @@ void run_cycle()
     /* THE LAST STATEMENT, so a cycle counts as finished only once its sinks have returned. Ending
      * at the counter increment a few lines up would call the cycle done while a hook that never
      * returns was still holding the thread -- which is the stall this heartbeat exists to see. */
-    tof_progress::end(tof_progress::activity::acquisition);
+    runtime_progress::end(runtime_progress::activity::acquisition);
 }
 
 int teardown()
@@ -1417,6 +1483,11 @@ uint32_t cycle_overruns()
     return static_cast<uint32_t>(atomic_get(&tally_overruns_));
 }
 
+uint32_t configured_cycle_period_ms()
+{
+    return static_cast<uint32_t>(atomic_get(&published_period_ms_));
+}
+
 static void thread_entry(void *, void *, void *)
 {
     /* The whole ULD lifecycle, on one thread, in one place.
@@ -1454,8 +1525,22 @@ static void thread_entry(void *, void *, void *)
             next_cycle_due(due_ms, k_uptime_get(), cfg_.periods.cycle_period_ms)};
 
         due_ms = step.next_due_ms;
-        if (step.overran)
-            atomic_inc(&tally_overruns_);
+        if (step.overran) {
+            /* ONCE PER CONFIGURED CADENCE, and the rate limit is the counter itself rather than a
+             * timer: atomic_inc() returns the value before the increment, so this is the edge from
+             * "has met every deadline" to "has missed one". A board that cannot keep up misses
+             * every cycle, and a line per cycle would bury the log that is supposed to reveal it.
+             * init() clears the count, so choosing a new cadence asks the question again.
+             *
+             * WHAT IT SAYS AND WHAT IT DOES NOT. A missed deadline is not by itself a verdict on
+             * the hardware: scheduling latency or one slow transfer produces the same miss, and so
+             * does sustained interference from elsewhere in the system. The line reports the miss
+             * and the period it was measured against and stops there. Whether the misses keep
+             * happening is a different question, and `tof cliff status` is where it is asked. */
+            if (atomic_inc(&tally_overruns_) == 0)
+                LOG_WRN("acquisition missed its cycle deadline; configured period %u ms",
+                        cfg_.periods.cycle_period_ms);
+        }
 
         /* The cadence, and the stop signal, in one wait. Sleeping for the period and checking the
          * flag afterwards would make every stop request cost up to a full period before it was even

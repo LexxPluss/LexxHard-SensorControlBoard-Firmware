@@ -7,6 +7,8 @@
 
 #include "tof_commission_entropy.hpp"
 
+#include "tof_commission_entropy_poll.hpp"
+
 #if defined(ENABLE_TOF_AUTO_COMMISSION)
 
 #include <errno.h>
@@ -15,6 +17,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/entropy.h>
+#include <zephyr/kernel.h>
 
 namespace lexxhard::tof_commission_entropy {
 
@@ -66,8 +69,41 @@ int draw_token(void *, uint32_t *out)
     if (!device_is_ready(rng()))
         return -ENODEV;
 
+    /* POLLED WITH A DEADLINE RATHER THAN ASKED TO BLOCK, and the blocking version is not a style
+     * choice this replaces -- it is a hang. entropy_get_entropy() lands on
+     * entropy_stm32_rng_get_entropy(), which loops `if (bytes == 0) k_sem_take(&sem_sync,
+     * K_FOREVER)` and then returns 0 unconditionally; it has no failure return at all. And the
+     * interrupt that refills the pool begins `byte = random_byte_get(); if (byte < 0) return;`, so
+     * a seed or clock error leaves without giving that semaphore. An RNG that stops refilling did
+     * not fail this call: it parked the caller for ever, silently, taking the bootstrap thread with
+     * it -- and this file's own contract, that a read which fails ends in no session, could never
+     * be honoured because the read never returned.
+     *
+     * entropy_get_entropy_isr() with no flags is the non-blocking half: it returns how many bytes
+     * it could take from the ISR pool, zero included, and never waits. The loop that accumulates
+     * them and gives up lives in tof_commission_entropy_poll.hpp, because this translation unit is
+     * nailed to the st,stm32-rng node and cannot be compiled by a host suite.
+     *
+     * THE DEADLINE, with its basis rather than a round number. The driver refills from the RNG
+     * interrupt and the peripheral produces a 32-bit word roughly every 42 RNG clock cycles, so on
+     * working hardware the pool is filled in well under a millisecond. 50 ms is three orders of
+     * magnitude above that, which is the margin that makes a timeout mean "this RNG is not
+     * producing" rather than "the board was busy". It is spent once, at init, before any session
+     * exists, so the cost of the pessimistic value is a boot that takes 50 ms longer to decide it
+     * has no session -- on a board that then announces none anyway. */
+    constexpr int64_t kDeadlineMs{50};
+
+    const detail::poll_io io{
+        [](void *, uint8_t *dst, uint16_t len) {
+            return entropy_get_entropy_isr(rng(), dst, len, 0);
+        },
+        [](void *) { return k_uptime_get(); },
+        [](void *) { k_sleep(K_MSEC(1)); },
+        nullptr,
+    };
+
     uint8_t buf[sizeof(uint32_t)]{};
-    if (const int rc{entropy_get_entropy(rng(), buf, sizeof buf)}; rc != 0)
+    if (const int rc{detail::fill(io, buf, sizeof buf, kDeadlineMs)}; rc != 0)
         return rc;
 
     /* Assembled byte by byte rather than memcpy'd into a uint32_t: the token is compared as a number
