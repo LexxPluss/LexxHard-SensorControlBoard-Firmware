@@ -209,10 +209,18 @@ void accumulate_failures(const tof_acq::cycle_facts &facts)
 
         const uint8_t src{f.role_id};
 
+        const bool readiness_timeout{
+            f.status.domain == tof_acq::status_domain::l7 &&
+            f.status.stage == static_cast<uint8_t>(tof_l7::stage::ready_check) &&
+            f.status.port_errno == 0 &&
+            f.status.uld_status == static_cast<int>(tof_l7::kUldTimeoutStatus)};
+
         /* Bit 0 is the I2C transfer error. The two sources of that truth are the scheduler's
          * classification of the return code and the port's own errno, and either alone would
-         * miss half the cases. */
-        if (f.transport_error || f.status.port_errno != 0)
+         * miss half the cases. The scheduler also maps a pure ULD readiness timeout into its
+         * generic transport category; that is bit 1, not evidence of an I2C failure. A port
+         * errno remains an I2C fault, even when the ULD status happens to be the timeout code. */
+        if (f.status.port_errno != 0 || (f.transport_error && !readiness_timeout))
             pending_flags_[src] |= 1U << 0;
         /* Bit 1 is the data-ready TIMEOUT, and the stage alone does not say that.
          *
@@ -225,10 +233,7 @@ void accumulate_failures(const tof_acq::cycle_facts &facts)
          *
          * The timeout fact is explicit: the ULD's own timeout status, or the errno it maps to. A
          * bus error at the same stage carries neither and stays what it is -- bit 0. */
-        if (f.status.domain == tof_acq::status_domain::l7 &&
-            f.status.stage == static_cast<uint8_t>(tof_l7::stage::ready_check) &&
-            f.status.port_errno == 0 &&
-            f.status.uld_status == static_cast<int>(tof_l7::kUldTimeoutStatus))
+        if (readiness_timeout)
             pending_flags_[src] |= 1U << 1;
 
         if (f.status.domain == tof_acq::status_domain::l7)

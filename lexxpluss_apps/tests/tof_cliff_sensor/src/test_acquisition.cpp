@@ -3222,3 +3222,107 @@ ZTEST(tof_acquisition, test_a_bound_grid_table_must_carry_close)
     four_cliff_two_grid[4].grid_ops = &kFakeGridOps;
     zassert_equal(acq::init(c), 0, "and the complete one is accepted");
 }
+
+
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_grid_publisher.hpp"
+namespace grid_wire_probe {
+namespace gp = lexxhard::tof_grid_pub;
+int port_error;
+int frames;
+uint8_t last_frame[8];
+int send(uint16_t, const uint8_t *data, uint8_t len) {
+    ++frames;
+    memcpy(last_frame, data, len);
+    return 0;
+}
+gp::authorisation authorise() {
+    gp::authorisation a{};
+    a.state = acq::mapping_state::proven;
+    a.epoch = 7;
+    a.source_allowed[0] = a.source_allowed[1] = true;
+    return a;
+}
+int readiness_timeout(void *, void *, l7f::sample *out, l7f::operation_status *st) {
+    *out = l7f::sample{};
+    *st = l7f::operation_status{};
+    st->failed_stage = l7f::stage::ready_check;
+    st->uld_status = l7f::kUldTimeoutStatus;
+    st->port_errno = port_error;
+    return port_error != 0 ? port_error : -ETIMEDOUT;
+}
+}
+
+ZTEST(tof_acquisition, test_a_bound_grid_descriptor_without_scratch_is_refused) {
+    auto c = make_config(6);
+    auto *saved = four_cliff_two_grid[4].scratch;
+    four_cliff_two_grid[4].scratch = nullptr;
+    const int rc = acq::init(c);
+    four_cliff_two_grid[4].scratch = saved;
+    zassert_equal(rc, -EINVAL, "bound grid with null scratch was accepted");
+}
+
+static void exercise_grid_timeout_wire_flags(int port_error, uint8_t expected_flags) {
+    grid_wire_probe::port_error = port_error;
+    namespace gp = lexxhard::tof_grid_pub;
+    auto c = make_config(6);
+    static auto ops = kFakeGridOps;
+    ops.read_grid_sample = grid_wire_probe::readiness_timeout;
+    four_cliff_two_grid[4].role_id = 0;
+    four_cliff_two_grid[5].role_id = 1;
+    four_cliff_two_grid[4].grid_ops = &ops;
+    zassert_ok(acq::init(c));
+    zassert_ok(acq::bring_up());
+    acq::run_cycle();
+    auto failed = rec.last;
+    zassert_equal(failed.sources[4].status.uld_status, l7f::kUldTimeoutStatus);
+    zassert_equal(failed.sources[4].status.port_errno, port_error);
+    zassert_equal(failed.sources[4].status.stage, static_cast<uint8_t>(l7f::stage::ready_check));
+    zassert_true(failed.sources[4].started);
+    // Feed the actual scheduler's facts to the actual publisher, without constructing
+    // a transport_error=false fixture that skips the integration defect.
+    gp::config pc{};
+    pc.sink.send = grid_wire_probe::send;
+    pc.sources = c.sources;
+    pc.source_count = c.source_count;
+    pc.authorise = grid_wire_probe::authorise;
+    zassert_ok(gp::init(pc));
+    grid_wire_probe::frames = 0;
+    gp::on_cycle_begin(failed.cycle_seq);
+    gp::on_cycle_complete(failed);
+    zassert_equal(grid_wire_probe::frames, 0);
+
+    // The wire flags report faults recovered since the preceding successful grid.
+    auto recovered = failed;
+    recovered.cycle_seq++;
+    auto good = failed.sources[4];
+    good.transport_error = good.protocol_error = good.usage_error = good.unsupported = false;
+    good.status = acq::source_status{};
+    good.status.domain = acq::status_domain::l7;
+    good.sample_produced = true;
+    recovered.sources[4] = good;
+    l7f::sample sample{};
+    sample.fresh = true;
+    for (size_t i = 0; i < l7f::kZoneCount; ++i) {
+        sample.distance_mm[i] = 1000;
+        sample.target_status[i] = 5;
+        sample.target_count[i] = 1;
+    }
+    gp::on_cycle_begin(recovered.cycle_seq);
+    gp::on_grid_sample(4, recovered.cycle_seq, good, sample);
+    gp::on_cycle_complete(recovered);
+    zassert_equal(grid_wire_probe::frames, 17);
+    zassert_equal(grid_wire_probe::last_frame[3] & 0x03, expected_flags,
+                  "wrong recovery flags for readiness status with port errno %d", port_error);
+    zassert_ok(acq::try_stop());
+}
+ZTEST(tof_acquisition, test_a_readiness_timeout_does_not_claim_an_i2c_failure) {
+    exercise_grid_timeout_wire_flags(0, 0x02);
+}
+ZTEST(tof_acquisition, test_an_i2c_timeout_at_ready_check_stays_an_i2c_failure) {
+    exercise_grid_timeout_wire_flags(-ETIMEDOUT, 0x01);
+}
+ZTEST(tof_acquisition, test_an_i2c_error_at_ready_check_stays_an_i2c_failure) {
+    exercise_grid_timeout_wire_flags(-EIO, 0x01);
+}
+#endif

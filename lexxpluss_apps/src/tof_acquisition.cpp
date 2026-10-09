@@ -811,8 +811,8 @@ int init(const config &cfg)
                 return -EINVAL;
             if (d.grid_ops->close == nullptr)
                 return -EINVAL;
-            /* The adapter is handed this as its device object on every call. */
-            if (d.dev == nullptr)
+            /* The adapter needs both its device and the per-read work object. */
+            if (d.dev == nullptr || d.scratch == nullptr)
                 return -EINVAL;
             /* ZERO IS NOT A FREQUENCY, and the descriptor comment already says configure()
              * refuses rather than picking something. Refused HERE as well, because a descriptor
