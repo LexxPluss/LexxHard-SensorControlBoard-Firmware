@@ -45,7 +45,10 @@ clean:
 	        build-test-tof-commission-wire build-test-tof-commission-session \
 	        build-test-runtime-progress build-test-tof-task-watchdog \
 	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder \
-	        build-test-zcan-bounded-send build-test-zcan-poll-budget
+	        build-test-zcan-bounded-send build-test-zcan-poll-budget \
+	        build-test-tof-commission-runtime build-test-tof-commission-worker \
+	        build-test-tof-commission-bind build-test-tof-commission-bind-session \
+	        build-test-tof-commission-entropy-poll build-auto-commission
 
 .PHONY: distclean
 distclean: clean
@@ -141,6 +144,40 @@ test_tof_mapping_authority:
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+.PHONY: test_tof_commission_runtime
+test_tof_commission_runtime:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_runtime -d build-test-tof-commission-runtime -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Its own binary on purpose: it creates the worker thread, which outlives the case that made it.
+.PHONY: test_tof_commission_worker
+test_tof_commission_worker:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_worker -d build-test-tof-commission-worker -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+.PHONY: test_tof_commission_bind
+test_tof_commission_bind:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind -d build-test-tof-commission-bind -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The cases that draw a session, in their own binary and as ONE ordered scenario. Separate from
+# tof_commission_bind for the same reason the worker suite is separate: a session creates the worker,
+# the worker outlives the case that made it, and bind::start() initialises the session layer every
+# time it is called. One session per binary is how the suites keep the ONE INIT PER BOOT
+# precondition that tof_commission_runtime.hpp states and nothing inside the runtime enforces.
+.PHONY: test_tof_commission_bind_session
+test_tof_commission_bind_session:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_bind_session -d build-test-tof-commission-bind-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The deadline-bounded entropy read. Header-only over injected seams, because the production
+# translation unit is nailed to the st,stm32-rng devicetree node and a host suite cannot compile it
+# -- which is why the decision it makes had no test before the loop was separated out.
+.PHONY: test_tof_commission_entropy_poll
+test_tof_commission_entropy_poll:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_entropy_poll -d build-test-tof-commission-entropy-poll -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # Host-side tests for the prove-then-start sequencer: every path that must NOT reach start(), the
 # bounded retry, and the hooks that refuse before anything is attempted. No device, no bus, no proof.
@@ -398,6 +435,21 @@ firmware_tof_cliff:
 	mv build-tof-cliff/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_cliff.signed.confirmed.bin
 	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
 	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
+
+# The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
+# hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
+# only things enabling that peripheral.
+#
+# NOTHING STARTS IT. No caller invokes tof_commission_bind::start() on this branch, so this image
+# installs no CAN filter, draws no token and proves nothing -- it is here so the flag-on image can
+# be built and measured, not so a board can be commissioned by it. It carries NO bypass and no
+# diagnostic flag; the bench decisions that govern what a started downlink may do arrive with the
+# caller.
+.PHONY: firmware_auto_commission
+firmware_auto_commission:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
 #
 # The `tof enum` command is present but is NOT expected to complete on this
