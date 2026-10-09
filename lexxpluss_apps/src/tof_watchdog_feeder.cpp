@@ -15,11 +15,14 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/watchdog.h>
+#if defined(CONFIG_HWINFO)
+#include <zephyr/drivers/hwinfo.h>
+#endif
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
-#include "tof_progress.hpp"
+#include "runtime_progress.hpp"
 #include "tof_task_watchdog.hpp"
 #include "tof_watchdog_tombstone.hpp"
 
@@ -40,10 +43,52 @@ constexpr int32_t kFeedPeriodMs{500};
  * that expiring here leaves time for the log line to be read before the reset it implies. */
 constexpr int32_t kFirstFeedWaitMs{2000};
 
-/* Above the acquisition thread (7 in the devicetree) so a loaded but healthy board cannot starve
- * the feeder into resetting itself, and preemptible and mostly asleep so it cannot be why a watched
- * thread does not run. */
-constexpr int kPriority{5};
+/* COOPERATIVE, AT THE TOP, AND THAT IS A CHOICE WITH A STATED LIMIT.
+ *
+ * An earlier value of 5 was justified against the acquisition thread (7) alone, and that was the
+ * wrong comparison: in Zephyr a smaller number is HIGHER priority, and main.cpp starts thirteen
+ * threads above 5 -- led, pgv and shutter at 1, actuator, actuator_service, adc, imu, uss, gpio and
+ * tug at 2, bmu, can, board and runaway at 4 -- with zcan_main equal at 5. Any one of them spinning
+ * starves the feeder, commit_tombstone() is never called, and the IWDG resets with no record: once
+ * the wiring removes the unconditional timer feed, that is exactly the "first trip leaves nothing"
+ * this layer exists to end.
+ *
+ * K_PRIO_COOP(0) is -CONFIG_NUM_COOP_PRIORITIES, which is -16 in this build: COOPERATIVE, not
+ * preemptible. A previous comment here said "the highest preemptible priority" while using
+ * K_HIGHEST_APPLICATION_THREAD_PRIO, which is the same negative value -- the description was simply
+ * wrong. Cooperative is wanted because every application thread in main.cpp is preemptible, so none
+ * of them can hold the CPU against this one, and this one yields every pass by sleeping, so it
+ * cannot hold the CPU either.
+ *
+ * WHAT COOPERATIVE DOES NOT BUY, stated carefully because two earlier versions of this comment got
+ * it wrong in two different directions. Zephyr's rule is that a cooperative thread, once it becomes
+ * the current thread, REMAINS the current thread until it does something that makes itself unready
+ * (doc/kernel/services/threads/index.rst). Priority decides who is selected among threads that are
+ * READY; it does not let anyone interrupt a cooperative thread that is already running. So a
+ * cooperative thread that spins without yielding starves this feeder whatever its priority is --
+ * ABOVE OR BELOW. The system workqueue sits at CONFIG_SYSTEM_WORKQUEUE_PRIORITY = -1, numerically
+ * below -16, and a work item there that loops without yielding starves the feeder anyway; the
+ * assertions below cannot prevent that and are not claimed to. What they do is narrower and still
+ * worth having: they keep the feeder the first cooperative thread SELECTED when several are ready,
+ * and they fail the build if someone moves either priority, which is the kind of change that should
+ * be noticed deliberately rather than measured later in resets.
+ *
+ * Nor does any priority cover a sustained interrupt storm or a region with interrupts locked,
+ * because priority does not order a thread against an ISR. So the honest claim is narrow: this
+ * makes a record LIKELY, not guaranteed, and the reset cause reported at boot is what remains when
+ * it is not. */
+constexpr int kPriority{K_PRIO_COOP(0)};
+
+/* The top cooperative slot: nothing can be created above it without raising NUM_COOP_PRIORITIES,
+ * which would move this one and should be noticed here. */
+BUILD_ASSERT(kPriority == -CONFIG_NUM_COOP_PRIORITIES,
+             "the feeder must hold the highest cooperative priority");
+/* A smaller number is higher priority, so the workqueue must stay numerically greater. This does
+ * NOT prevent a workqueue item from starving the feeder -- a running cooperative thread cannot be
+ * preempted at all, see above -- it only keeps the feeder ahead of it in the selection order and
+ * makes a change to either priority a deliberate one. */
+BUILD_ASSERT(CONFIG_SYSTEM_WORKQUEUE_PRIORITY > kPriority,
+             "the system workqueue would outrank the watchdog feeder");
 constexpr size_t kStackSize{1024};
 
 K_THREAD_STACK_DEFINE(stack_, kStackSize);
@@ -57,6 +102,18 @@ int channel_{0};
 
 atomic_t baseline_point_{};
 atomic_t l7_expected_{};
+
+/* DEFAULTS TO EXPECTED, and the default is the decision rather than an accident.
+ *
+ * If this defaulted to "not expected" a wiring that never calls the setter would leave the
+ * production feeder permanently suspending the cycle reasons and send_acq -- a watchdog that is
+ * silently blind to most of what it watches, which is the failure this layer exists to prevent and
+ * the one nobody would ever find. Defaulting to expected makes the same omission produce a false
+ * reset during the first commissioning pass: loud, reproducible on a bench, and found immediately.
+ *
+ * An earlier version of this file added the input and did not wire it at all, which is exactly the
+ * first failure. */
+atomic_t acquisition_expected_{ATOMIC_INIT(1)};
 atomic_t long_operation_{};
 atomic_t long_began_ms_{};
 atomic_t feeds_{};
@@ -173,22 +230,23 @@ void feeder(void *, void *, void *)
     int consecutive_failures{0};
     for (;;) {
         if (!stopped) {
-            const tof_progress::snapshot p{tof_progress::read()};
+            const runtime_progress::snapshot p{runtime_progress::read()};
 
             wd::input in{};
             in.now_ms = now_ms();
             in.baseline_point = atomic_get(&baseline_point_) != 0;
             in.l7_expected = atomic_get(&l7_expected_) != 0;
-            in.acquisition = {p.at[static_cast<size_t>(tof_progress::activity::acquisition)].begun,
-                              p.at[static_cast<size_t>(tof_progress::activity::acquisition)].ended};
-            in.send_acq = {p.at[static_cast<size_t>(tof_progress::activity::send_acq)].begun,
-                           p.at[static_cast<size_t>(tof_progress::activity::send_acq)].ended};
-            in.send_workq = {p.at[static_cast<size_t>(tof_progress::activity::send_workq)].begun,
-                             p.at[static_cast<size_t>(tof_progress::activity::send_workq)].ended};
-            in.health = {p.at[static_cast<size_t>(tof_progress::activity::health)].begun,
-                         p.at[static_cast<size_t>(tof_progress::activity::health)].ended};
-            in.l7 = {p.at[static_cast<size_t>(tof_progress::activity::l7)].begun,
-                     p.at[static_cast<size_t>(tof_progress::activity::l7)].ended};
+            in.acquisition_expected = atomic_get(&acquisition_expected_) != 0;
+            in.acquisition = {p.at[static_cast<size_t>(runtime_progress::activity::acquisition)].begun,
+                              p.at[static_cast<size_t>(runtime_progress::activity::acquisition)].ended};
+            in.send_acq = {p.at[static_cast<size_t>(runtime_progress::activity::send_acq)].begun,
+                           p.at[static_cast<size_t>(runtime_progress::activity::send_acq)].ended};
+            in.send_workq = {p.at[static_cast<size_t>(runtime_progress::activity::send_workq)].begun,
+                             p.at[static_cast<size_t>(runtime_progress::activity::send_workq)].ended};
+            in.health = {p.at[static_cast<size_t>(runtime_progress::activity::health)].begun,
+                         p.at[static_cast<size_t>(runtime_progress::activity::health)].ended};
+            in.l7 = {p.at[static_cast<size_t>(runtime_progress::activity::l7)].begun,
+                     p.at[static_cast<size_t>(runtime_progress::activity::l7)].ended};
             in.zcan_loops = p.zcan_loops;
             in.long_operation = atomic_get(&long_operation_) != 0;
             in.long_operation_began_ms = static_cast<uint32_t>(atomic_get(&long_began_ms_));
@@ -276,6 +334,11 @@ void set_l7_expected(bool expected)
     atomic_set(&l7_expected_, expected ? 1 : 0);
 }
 
+void set_acquisition_expected(bool expected)
+{
+    atomic_set(&acquisition_expected_, expected ? 1 : 0);
+}
+
 void long_operation_begin()
 {
     atomic_set(&long_began_ms_, static_cast<atomic_val_t>(now_ms()));
@@ -292,14 +355,65 @@ tomb::status read_record(tomb::record &out)
     return tomb::read(tombstone_region(), out);
 }
 
+namespace {
+
+/* WHY THIS BOOT HAPPENED, so a watchdog reset with no record can be told from a clean start.
+ *
+ * It is the question the record cannot answer when the record is missing or stale: "no retained
+ * record" reads identically on a board that has never tripped and on one that tripped and lost its
+ * record. The reset cause distinguishes them, and it comes from the hardware rather than from
+ * anything this subsystem wrote.
+ *
+ * Reported rather than acted on. Nothing here decides anything from it; a reset cause that drove
+ * behaviour would be a second, weaker copy of the record. */
+void report_reset_cause()
+{
+#if defined(CONFIG_HWINFO)
+    uint32_t cause{0};
+    if (hwinfo_get_reset_cause(&cause) != 0) {
+        LOG_WRN("  reset cause unavailable");
+        return;
+    }
+    if ((cause & RESET_WATCHDOG) != 0)
+        LOG_ERR("  reset cause 0x%08x INCLUDES THE WATCHDOG", static_cast<unsigned>(cause));
+    else
+        LOG_INF("  reset cause 0x%08x (not the watchdog)", static_cast<unsigned>(cause));
+#else
+    /* Said once rather than left silent: a reader looking for the cause should learn that this
+     * image cannot tell them, not that the cause was benign. */
+    LOG_INF("  reset cause not available (CONFIG_HWINFO is off)");
+#endif
+}
+
+}  // namespace
+
 void report_previous_stop()
 {
     tomb::record r{};
     const tomb::status st{read_record(r)};
-    if (st != tomb::status::valid) {
-        /* Not a warning. A board that has never tripped the watchdog reads exactly like this, and
-         * so does one whose battery was pulled, and neither is news. */
+
+    if (st == tomb::status::not_committed) {
+        /* THE ONLY ONE THAT IS NOT NEWS. No commit magic means either nothing was ever written or a
+         * reset landed mid-write: a board that has never tripped the watchdog reads exactly like
+         * this, and so does one whose battery was pulled. */
         LOG_INF("no retained watchdog record (%s)", tomb::status_name(st));
+        /* REPORTED HERE TOO, and this is the branch that needs it most: "no retained record" reads
+         * identically on a board that has never tripped and on one that tripped and lost its
+         * record. The cause is the only thing that tells those apart, and an earlier version
+         * returned before reaching it. */
+        report_reset_cause();
+        return;
+    }
+    if (st != tomb::status::valid) {
+        /* WRITTEN AND NOW UNREADABLE, WHICH IS A DIFFERENT THING. wrong_version, wrong_size,
+         * bad_end_magic and bad_checksum are only reachable with the commit magic PRESENT, so they
+         * all mean "a stop was recorded and cannot be read back": the overwrite the DTCM
+         * reservation exists to prevent, or an MCUboot revert leaving an old image reading a newer
+         * record. They used to go out as the same LOG_INF as not_committed, under a comment about
+         * boards that never tripped -- which describes only that one case and buried these. */
+        LOG_ERR("RETAINED WATCHDOG RECORD IS UNREADABLE (%s): a stop WAS recorded and cannot be "
+                "read back", tomb::status_name(st));
+        report_reset_cause();
         return;
     }
     /* RETAINED, not necessarily the previous boot. Nothing clears this record after reporting it,
@@ -313,6 +427,7 @@ void report_previous_stop()
             static_cast<unsigned>(r.send_workq_ended));
     LOG_ERR("  last fed at %u ms, feed rc %d", static_cast<unsigned>(r.last_fed_ms),
             static_cast<int>(r.feed_rc));
+    report_reset_cause();
     LOG_ERR("  health %u/%u  l7 %u/%u  zcan %u  long %u since %u ms",
             static_cast<unsigned>(r.health_begun), static_cast<unsigned>(r.health_ended),
             static_cast<unsigned>(r.l7_begun), static_cast<unsigned>(r.l7_ended),

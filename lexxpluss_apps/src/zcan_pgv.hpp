@@ -31,6 +31,8 @@
 #include <cstdio>
 #include "common.hpp"
 #include "pgv_controller.hpp"
+#include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_PGV_1 0x200
 #define CAN_ID_PGV_2 0x201
@@ -55,7 +57,8 @@ public:
 
     void poll() {
         pgv_controller::msg message;
-        while (k_msgq_get(&pgv_controller::msgq, &message, K_NO_WAIT) == 0)
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&pgv_controller::msgq, &message, K_NO_WAIT) == 0; ++n)
         {
             can_frame frame_pgv[3]{{
                 .id = CAN_ID_PGV_1,
@@ -78,9 +81,9 @@ public:
             memcpy(frame_pgv[2].data,message.rawdata + 14 ,7);
             frame_pgv[2].data[7] = ring_counter;
 
-            can_send(dev, &frame_pgv[0], K_MSEC(100), nullptr, nullptr);
-            can_send(dev, &frame_pgv[1], K_MSEC(100), nullptr, nullptr);
-            can_send(dev, &frame_pgv[2], K_MSEC(100), nullptr, nullptr);
+            zcan_bounded_send::send(dev, &frame_pgv[0], zcan_poll_budget::kMailboxWait);
+            zcan_bounded_send::send(dev, &frame_pgv[1], zcan_poll_budget::kMailboxWait);
+            zcan_bounded_send::send(dev, &frame_pgv[2], zcan_poll_budget::kMailboxWait);
 
             ring_counter++;
         }

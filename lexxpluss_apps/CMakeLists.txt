@@ -23,6 +23,13 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
+# The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
+# nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
+# find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
+# carries the record must not be configurable without it. See overlays/forensics_dtcm.overlay, and
+# src/tof_watchdog_tombstone.cpp for the compile-time check that this line is what satisfies.
+list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_dtcm.overlay)
+
 # An L7 image verifies the stored blob on the main stack at boot, which does not fit the default
 # main stack: see overlays/tof_l7.conf for the per-frame measurement. Kconfig is fixed by
 # find_package(Zephyr) below, so the fragment is added here, and only for L7 builds -- every other
@@ -31,19 +38,35 @@ if(ENABLE_TOF_L7_ULD)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
 endif()
 
-# The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
-# nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
-# find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
-# carries the record must not be configurable without it. See overlays/forensics_dtcm.overlay, and
-# src/tof_watchdog_tombstone.cpp for the compile-time check that this line is what satisfies.
-list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/forensics_dtcm.overlay)
-
 find_package(Zephyr)
 project(lexxpluss_apps)
 
 FILE(GLOB app_sources src/*.cpp)
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
 target_sources(app PRIVATE ${app_sources} ${ros_sources})
+
+# LOAD-BEARING, NOT TIDY, AND -Werror=switch-enum ALONE DID NOT DO IT.
+#
+# tof_commission_map.cpp translates the firmware's internal enums into wire values. A switch that
+# does not handle an enumerator is not an error in C++; it falls through, and the wire silently
+# gains a meaning nobody wrote.
+#
+# The guard used to be -Werror=switch-enum on its own, with a comment claiming a new enumerator
+# would fail the build. It does not. GCC reports a missing enumerator in a switch with no `default`
+# under -Wswitch, and -Werror=switch-enum promotes only -Wswitch-enum -- so the diagnostic that
+# actually fires stayed a warning. Three enumerators this baseline has were unmapped underneath it
+# and fell through to internal_error: begin_refusal::nonce_exhausted, commit_refusal::wrong_issuer
+# and proof refusal::challenge_foreign.
+#
+# Both are needed, and they catch different mistakes. -Werror=switch catches the missing enumerator.
+# -Werror=switch-enum catches the next person silencing it with a `default:` label, which would make
+# -Wswitch go quiet while the fall-through came back.
+#
+# IT HAS TO BE HERE AS WELL AS IN THE SUITES. A suite can only fail for a tree it compiles, and the
+# obligation -- "a new enumerator must be mapped" -- belongs to the production image, where the
+# mapper actually ships.
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/tof_commission_map.cpp
+    PROPERTIES COMPILE_OPTIONS "-Werror=switch;-Werror=switch-enum")
 # docs/can holds the generated production half of the CAN wire contracts --
 # identifiers, field encodings and the cliff status classification table. Production
 # code includes it directly, exactly as the tests do, so there is no vendored copy to
@@ -52,6 +75,32 @@ target_sources(app PRIVATE ${app_sources} ${ros_sources})
 # separate artefacts and are not on this path by accident.
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ros_msgs
                                        ${CMAKE_CURRENT_SOURCE_DIR}/../docs/can)
+
+# ONE BOUNDED WAY TO TRANSMIT, enforced here because the unbounded way looks identical at the
+# call site. can_send() with a null callback waits for acknowledgement with K_FOREVER whatever
+# timeout is passed to it (see src/zcan_bounded_send.hpp), so a bus with no other node awake
+# stops the calling thread for good. Every sender goes through zcan_bounded_send::send(); this
+# refuses to configure if a null-callback call comes back, in a new module or a merge, rather
+# than letting it ship and be found on a vehicle whose host was switched off.
+file(GLOB_RECURSE _can_send_sources ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp)
+set(_blocking_can_send "")
+foreach(_f ${_can_send_sources})
+    if(_f STREQUAL ${CMAKE_CURRENT_SOURCE_DIR}/src/zcan_bounded_send.cpp)
+        continue()  # the one place allowed to call can_send at all
+    endif()
+    file(STRINGS ${_f} _hits REGEX "can_send[ \t]*\\(.*(nullptr|NULL)[ \t]*,[ \t]*(nullptr|NULL)")
+    if(_hits)
+        get_filename_component(_name ${_f} NAME)
+        list(APPEND _blocking_can_send ${_name})
+    endif()
+endforeach()
+if(_blocking_can_send)
+    message(FATAL_ERROR
+        "can_send() with a null callback waits for acknowledgement forever, whatever timeout "
+        "it is given: a bus with no other node awake stops the caller permanently. Use "
+        "zcan_bounded_send::send() instead. Found in: ${_blocking_can_send}")
+endif()
 
 if(ENABLE_INTERLOCK)
     add_definitions(-DENABLE_INTERLOCK)

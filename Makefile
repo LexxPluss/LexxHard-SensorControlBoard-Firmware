@@ -38,11 +38,14 @@ clean:
 	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
 	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
-	        build-test-tof-enumerator build-tof-chain build-tof-l7 \
-	        build-test-tof-l7-port build-test-tof-l7-sensor build-test-tof-l7-blob \
-	        build-test-tof-l7-uld-stop build-test-tof-progress \
-	        build-test-tof-task-watchdog build-test-tof-watchdog-tombstone \
-	        build-test-tof-watchdog-feeder
+	        build-test-tof-enumerator build-test-tof-auto-commission build-tof-chain \
+	        build-tof-l7 build-test-tof-l7-port build-test-tof-l7-sensor \
+	        build-test-tof-l7-blob build-test-tof-l7-uld-stop \
+	        build-test-tof-l7-recovery \
+	        build-test-tof-commission-wire build-test-tof-commission-session \
+	        build-test-runtime-progress build-test-tof-task-watchdog \
+	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder \
+	        build-test-zcan-bounded-send build-test-zcan-poll-budget
 
 .PHONY: distclean
 distclean: clean
@@ -139,6 +142,35 @@ test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# Host-side tests for the prove-then-start sequencer: every path that must NOT reach start(), the
+# bounded retry, and the hooks that refuse before anything is attempted. No device, no bus, no proof.
+.PHONY: test_tof_auto_commission
+test_tof_auto_commission:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_auto_commission -d build-test-tof-auto-commission -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the automatic-commissioning downlink. Two suites, and the split is the point:
+# one is about bytes and the other about transactions, and a PR that only proved the byte layout
+# would have proved nothing about what a second request does.
+
+# The codec and the internal-to-wire mapper, against fixed byte vectors. GOLDEN MEANS BYTE-EXACT:
+# every positive case asserts the actual eight bytes rather than round-tripping through the encoder,
+# which would agree with whatever layout the encoder chose. The mapper is compiled with
+# -Werror=switch-enum by its own CMakeLists, so adding an enumerator to any mapped enum fails the
+# build until it is given a wire meaning.
+.PHONY: test_tof_commission_wire
+test_tof_commission_wire:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_wire -d build-test-tof-commission-wire -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The protocol state machine: sessions, duplicate requests, retransmission, sequence and epoch
+# checks, and the attempt budget. It links the real sequencer from the prove-then-start PR, so what
+# it drives is the production call order rather than a stand-in for it.
+.PHONY: test_tof_commission_session
+test_tof_commission_session:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commission_session -d build-test-tof-commission-session -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # Host-side tests for tail isolation: the sequence that proves the tail answers and its neighbour is silent, without destroying the evidence it just gathered.
 .PHONY: test_tof_tail_isolation
 test_tof_tail_isolation:
@@ -196,15 +228,42 @@ test_tof_l7_uld_stop:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_uld_stop -d build-test-tof-l7-uld-stop -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
-# Host-side tests for the runtime monitoring layer. Four suites, listed separately because they
-# fail for different reasons: the counters, the decision, the record and the wiring around them.
+# The boot-time L7 recovery pass, its ULD adapter and the boot ordering around them. Pure logic over
+# injected calls, so it links the production sources directly and needs no bus, no Zephyr device and
+# no ULD. Three suites in one binary on purpose: the ordering, the pass and the translation between
+# them are proven together rather than in two binaries that agree by assumption.
+.PHONY: test_tof_l7_recovery
+test_tof_l7_recovery:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_recovery -d build-test-tof-l7-recovery -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Host-side tests for the runtime monitoring layer. Six suites, listed separately because they fail
+# for different reasons: the transmit path, the per-pass budget, the counters, the decision, the
+# record and the wiring around them.
+
+# The transmit path that cannot wait forever: what a zero means, what a refusal means, and the
+# counter signature of a bus with nobody acknowledging. Needs CONFIG_CAN for the frame type only;
+# the device is a fake.
+.PHONY: test_zcan_bounded_send
+test_zcan_bounded_send:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_bounded_send -d build-test-zcan-bounded-send -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# What one pass of the zcan loop may do, run through the production pollers with real kernel queues
+# and a send that can be told to refuse. Covers the two properties a count-based suite cannot get at
+# from outside: that a pass terminates while its producer keeps refilling, and that a request/reply
+# path holds a refused reply instead of losing it.
+.PHONY: test_zcan_poll_budget
+test_zcan_poll_budget:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/zcan_poll_budget -d build-test-zcan-poll-budget -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The six heartbeats. Needs a real kernel rather than a host stub: which of the two CAN sender slots
 # a send belongs to is decided by comparing against the system work queue's thread.
-.PHONY: test_tof_progress
-test_tof_progress:
+.PHONY: test_runtime_progress
+test_runtime_progress:
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_progress -d build-test-tof-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/runtime_progress -d build-test-runtime-progress -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
 # The decision itself: may the hardware watchdog be fed right now. Pure logic over counters and a
 # clock, so it links the production source directly and needs no board and no watchdog driver.
