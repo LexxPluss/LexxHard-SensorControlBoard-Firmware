@@ -21,6 +21,7 @@
 #include <zephyr/ztest.h>
 
 #include "tof_acquisition.hpp"
+#include "tof_cliff_sensor.h"
 
 namespace lexxhard::tof_chain_controller {
 
@@ -42,6 +43,10 @@ namespace {
 
 namespace acq = lexxhard::tof_acq;
 
+/* Deliberately NOT the overlay's 15000/2: a suite using the deployed values could not tell a
+ * descriptor that carries the profile from one with it baked in somewhere. */
+constexpr uint32_t kTestBudgetUs{21000};
+constexpr uint8_t kTestMode{3};   /* LONG */
 constexpr uint32_t kCyclePeriodMs{50};
 constexpr uint32_t kHealthPeriodMs{20};
 
@@ -64,6 +69,9 @@ struct fake_dev {
     uint32_t read_delay_ms{0};
 
     int open_calls{0};
+    int configure_calls{0};
+    uint32_t configured_budget_us{0};
+    uint8_t configured_mode{0};
     int start_calls{0};
     int read_calls{0};
     int stop_calls{0};
@@ -151,10 +159,18 @@ int fake_open(void *dev, uint8_t, acq::op_status *st)
     return d.open_rc;
 }
 
-int fake_configure(void *dev, acq::op_status *st)
+int fake_configure(void *dev, uint32_t timing_budget_us, uint8_t distance_mode,
+                   acq::op_status *st)
 {
+    auto &d{*static_cast<fake_dev *>(dev)};
+
+    /* RECORDED, because "configure() returned success" and "the sensor was given the profile the
+     * deployment chose" are different claims, and only the second one is worth making. */
+    ++d.configure_calls;
+    d.configured_budget_us = timing_budget_us;
+    d.configured_mode = distance_mode;
     memset(st, 0, sizeof(*st));
-    return static_cast<fake_dev *>(dev)->configure_rc;
+    return d.configure_rc;
 }
 
 int fake_start(void *dev, void *, acq::op_status *st)
@@ -372,7 +388,7 @@ int trap_open(void *, uint8_t, acq::op_status *st)
     memset(st, 0, sizeof(*st));
     return -EIO;
 }
-int trap_configure(void *, acq::op_status *st)
+int trap_configure(void *, uint32_t, uint8_t, acq::op_status *st)
 {
     wrong_table_called = true;
     memset(st, 0, sizeof(*st));
@@ -506,6 +522,11 @@ acq::config make_config(int count)
     for (int i{0}; i < acq::kMaxSources; ++i) {
         auto &d{four_cliff_two_grid[i]};
 
+        /* ZEROED FIRST. These descriptors are file-scope and every field below is assigned, but a
+         * case that overrides one and then fails leaves it behind for whatever runs next -- which
+         * is how a refusal case made two unrelated grid cases fail. Rebuilding from a default costs
+         * nothing and makes make_config() mean what its name says. */
+        d = acq::source_desc{};
         d.kind = (i < 4) ? acq::model::l4_cliff : acq::model::l7_grid;
         d.addr_7bit = static_cast<uint8_t>(0x30 + i);
         d.role_id = static_cast<uint8_t>(i);
@@ -524,9 +545,15 @@ acq::config make_config(int count)
         } else {
             d.ops = &kFakeOps;
             d.grid_ops = nullptr;
+            d.cliff_timing_budget_us = kTestBudgetUs;
+            d.cliff_distance_mode = kTestMode;
         }
 #else
         d.ops = &kFakeOps;
+        if (d.kind == acq::model::l4_cliff) {
+            d.cliff_timing_budget_us = kTestBudgetUs;
+            d.cliff_distance_mode = kTestMode;
+        }
 #endif
     }
     c.sources = four_cliff_two_grid;
@@ -1223,6 +1250,166 @@ ZTEST(tof_acquisition, test_the_cadence_timeout_is_never_a_busy_wait)
 /* The counter is cleared by init(), because it describes a cadence and init() is where the cadence
  * is chosen -- carrying it across would attribute the old period's misses to the new one. */
 
+/* ----------------------------------------------------------- the ranging profile ---- */
+/*
+ * configure() was a no-op that returned success, so the four cliff sensors ranged on whatever
+ * VL53LX_DataInit had left them -- MEDIUM at 33,333 us -- and the one number that decides the
+ * achievable rate was the one number nobody had written down. It is now carried per descriptor,
+ * from the devicetree.
+ *
+ * WHAT THESE CASES CAN AND CANNOT SHOW. They show that the value a deployment chose arrives at the
+ * device, unchanged, for every cliff source and no other, and that a descriptor without one is
+ * refused rather than defaulted. They do NOT show what the sensor then does: the sampling
+ * frequency, the maximum distance at a shorter budget and the error and timeout rates over the
+ * installed harness are hardware observations, and no host fake can stand in for them.
+ */
+
+/* AND THE PRODUCTION TABLE CARRIES IT TO THE ULD. The cases around this one drive fake ops, so the
+ * one line of glue in cliff_configure() is not executed by any of them -- reverting it to the no-op
+ * it used to be left the whole suite green, which is the defect this project keeps finding in other
+ * people's code.
+ *
+ * So this one calls acq::l4_cliff_ops() itself. The ULD entry points are the suite's own fakes
+ * (test_read_once.c), and they record what they were handed. */
+extern "C" uint32_t uld_last_timing_budget_us(void);
+extern "C" int uld_last_distance_mode(void);
+
+ZTEST(tof_acquisition, test_the_production_table_hands_the_profile_to_the_uld)
+{
+    const acq::source_ops &ops{acq::l4_cliff_ops()};
+    acq::op_status st{};
+    /* The object is only ever passed through: the suite's ULD fakes ignore Dev. */
+    VL53L4CX_Object_t obj{};
+
+    zassert_equal(ops.configure(&obj, 17000, 3, &st), 0, "the real adapter must accept it");
+    zassert_equal(uld_last_timing_budget_us(), 17000U,
+                  "the budget the caller chose did not reach VL53LX_SetMeasurementTimingBudget...");
+    zassert_equal(uld_last_distance_mode(), 3, "nor did the distance mode");
+
+    /* A second, different pair, so the case cannot pass against a value that is merely constant. */
+    zassert_equal(ops.configure(&obj, 33333, 2, &st), 0);
+    zassert_equal(uld_last_timing_budget_us(), 33333U, "");
+    zassert_equal(uld_last_distance_mode(), 2, "");
+}
+
+ZTEST(tof_acquisition, test_the_ranging_profile_reaches_every_cliff_sensor_unchanged)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    for (int i = 0; i < 4; ++i) {
+        zassert_equal(devs[i].configure_calls, 1, "source %d was configured exactly once", i);
+        zassert_equal(devs[i].configured_budget_us, kTestBudgetUs,
+                      "source %d got budget %u, not the descriptor's %u", i,
+                      devs[i].configured_budget_us, kTestBudgetUs);
+        zassert_equal(devs[i].configured_mode, kTestMode,
+                      "source %d got mode %u, not the descriptor's %u", i,
+                      devs[i].configured_mode, kTestMode);
+    }
+}
+
+/* PER DESCRIPTOR, NOT PER BUILD. The value travels with the source, so a deployment that wanted one
+ * corner to differ would not have to change the driver -- and, more to the point here, a test that
+ * passed against a value baked in anywhere would pass against the wrong thing. */
+ZTEST(tof_acquisition, test_each_source_is_configured_from_its_own_descriptor)
+{
+    acq::config c{make_config(4)};
+
+    four_cliff_two_grid[2].cliff_timing_budget_us = 44000;
+    four_cliff_two_grid[2].cliff_distance_mode = 2;
+
+    zassert_equal(acq::init(c), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    zassert_equal(devs[2].configured_budget_us, 44000U, "");
+    zassert_equal(devs[2].configured_mode, 2, "");
+    zassert_equal(devs[0].configured_budget_us, kTestBudgetUs, "and its neighbours are untouched");
+    zassert_equal(devs[1].configured_budget_us, kTestBudgetUs, "");
+    zassert_equal(devs[3].configured_budget_us, kTestBudgetUs, "");
+}
+
+/* REFUSED RATHER THAN DEFAULTED. A zero budget reaching the ULD is
+ * VL53LX_SetMeasurementTimingBudgetMicroSeconds failing on every sensor at bring-up; a budget
+ * invented at this layer would become the specification by being the only value anybody could
+ * find. */
+ZTEST(tof_acquisition, test_a_cliff_descriptor_without_a_profile_is_refused)
+{
+    acq::config c{make_config(4)};
+
+    four_cliff_two_grid[1].cliff_timing_budget_us = 0;
+    zassert_equal(acq::init(c), -EINVAL, "a zero budget must not be defaulted");
+
+    /* The control: the same descriptor with a budget configures. */
+    four_cliff_two_grid[1].cliff_timing_budget_us = kTestBudgetUs;
+    zassert_equal(acq::init(c), 0);
+}
+
+/* SHORT IS REFUSED HERE, where it can be named, rather than at bring-up on every sensor with the
+ * reason buried in a vendor error code. The ULD declines SHORT for an L4 part outright -- the
+ * IsL4() check in VL53LX_SetDistanceMode -- so a descriptor carrying it is a configuration that
+ * cannot work, not one that works badly. */
+ZTEST(tof_acquisition, test_only_the_two_distance_modes_an_l4_supports_are_accepted)
+{
+    acq::config c{make_config(4)};
+
+    const struct {
+        uint8_t mode;
+        int expected;
+    } cases[]{
+        {0, -EINVAL},   /* absent */
+        {1, -EINVAL},   /* SHORT: defined by the enumeration, refused by the part */
+        {2, 0},         /* MEDIUM */
+        {3, 0},         /* LONG */
+        {4, -EINVAL},   /* beyond the enumeration */
+    };
+
+    for (const auto &k : cases) {
+        four_cliff_two_grid[0].cliff_distance_mode = k.mode;
+        zassert_equal(acq::init(c), k.expected, "distance mode %u", k.mode);
+        if (k.expected == 0)
+            zassert_equal(acq::teardown(), 0);
+    }
+    four_cliff_two_grid[0].cliff_distance_mode = kTestMode;
+}
+
+/* AND NO L4 PROFILE ON A GRID DESCRIPTOR. The grid path never reads these two, so a descriptor
+ * carrying them would range exactly as if they were absent -- a wiring mistake with no symptom,
+ * which is the kind this layer refuses rather than tolerates. */
+ZTEST(tof_acquisition, test_a_grid_descriptor_may_not_carry_an_l4_profile)
+{
+    acq::config c{make_config(acq::kMaxSources)};
+
+    four_cliff_two_grid[4].cliff_timing_budget_us = kTestBudgetUs;
+    zassert_equal(acq::init(c), -EINVAL, "a budget on a grid source is refused");
+    four_cliff_two_grid[4].cliff_timing_budget_us = 0;
+
+    four_cliff_two_grid[4].cliff_distance_mode = kTestMode;
+    zassert_equal(acq::init(c), -EINVAL, "and so is a distance mode");
+    four_cliff_two_grid[4].cliff_distance_mode = 0;
+
+    zassert_equal(acq::init(c), 0, "with neither, it configures");
+}
+
+/* A CONFIGURE THAT FAILS IS A BRING-UP THAT FAILED, not a source that quietly ranges on the
+ * previous profile. The stage says where, so a bench engineer reading health knows it was the
+ * profile rather than the address or the start. */
+ZTEST(tof_acquisition, test_a_refused_profile_fails_that_source_and_only_that_source)
+{
+    zassert_equal(acq::init(make_config(4)), 0);
+    devs[1].configure_rc = -EIO;
+
+    zassert_equal(acq::bring_up(), 0, "one bad sensor must not stop the others");
+    acq::run_cycle();
+
+    zassert_false(rec.last.sources[1].started, "a source whose profile was refused is not ranging");
+    zassert_equal(devs[1].start_calls, 0, "and was never armed");
+    const int unaffected[]{0, 2, 3};
+    for (const int i : unaffected) {
+        zassert_true(rec.last.sources[i].started, "source %d is unaffected", i);
+        zassert_equal(devs[i].configured_budget_us, kTestBudgetUs, "");
+    }
+}
+
 ZTEST(tof_acquisition, test_a_stubbed_model_is_not_reported_as_a_sensor_fault)
 {
     zassert_equal(acq::init(make_config(acq::kMaxSources)), 0);
@@ -1794,7 +1981,7 @@ ZTEST(tof_acquisition, test_the_grid_ops_are_an_explicit_stub)
     // sensor, and an 8x8 zone frame cannot travel through it. That is prototype debt, and
     // this assertion is where it is visible.
     zassert_equal(ops.open(nullptr, 0x30, &st), -ENOSYS);
-    zassert_equal(ops.configure(nullptr, &st), -ENOSYS);
+    zassert_equal(ops.configure(nullptr, 15000, 2, &st), -ENOSYS);
     zassert_equal(ops.start(nullptr, nullptr, &st), -ENOSYS);
     zassert_equal(ops.read_cliff_sample(nullptr, nullptr, nullptr, &sample, &st), -ENOSYS);
     zassert_equal(ops.stop(nullptr, &st), -ENOSYS);
@@ -3380,9 +3567,15 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         } else {
             d.ops = &kFakeOps;
             d.grid_ops = nullptr;
+            d.cliff_timing_budget_us = kTestBudgetUs;
+            d.cliff_distance_mode = kTestMode;
         }
 #else
         d.ops = &kFakeOps;
+        if (d.kind == acq::model::l4_cliff) {
+            d.cliff_timing_budget_us = kTestBudgetUs;
+            d.cliff_distance_mode = kTestMode;
+        }
 #endif
     }
 

@@ -79,3 +79,40 @@ properties:
       Zephyr priority for the acquisition thread. Every value is legal,
       including 0, so nothing can range-check this; being required is the only
       guarantee that it was chosen rather than inherited.
+
+  cliff-timing-budget-us:
+    type: int
+    required: true
+    description: |
+      VL53L4CX measurement timing budget for the four cliff sensors.
+
+      Required, and this is a BEHAVIOUR CHANGE rather than a value being
+      written down: until the acquisition layer could inject one, configure()
+      was a no-op that reported success and the parts ran on whatever
+      VL53LX_DataInit had left them, which is 33333 at MEDIUM.
+
+      15000 is the value the E3 rate experiment ran at, and the per-corner
+      rate recorded for that experiment belongs to it. That rate is a
+      historical measurement on a different image; it is not a property of
+      this one and not a guarantee.
+
+      A shorter budget buys rate and the ranging performance at it cannot be
+      inferred from the rate it allows: maximum distance, ambient-light
+      behaviour and error rate over the installed harness have to be measured
+      on the robot, and have not been at this value.
+
+  cliff-distance-mode:
+    type: int
+    required: true
+    description: |
+      VL53LX_DISTANCEMODE_* for the four cliff sensors. Only 2 (MEDIUM) and
+      3 (LONG) are accepted; 2 is what DataInit leaves.
+
+      1 (SHORT) is defined by the enumeration but is refused for an L4 part by
+      the ULD itself -- VL53LX_SetDistanceMode returns INVALID_PARAMS when
+      IsL4(Dev) -- so it is rejected at bootstrap and again at acquisition
+      init() rather than allowed to fail at bring-up on every sensor with the
+      reason buried in a vendor error code.
+
+      The ULD's own numbering rather than a private enumeration, because a
+      mapping onto three integers is only a chance to get it wrong.

@@ -104,7 +104,7 @@ uint32_t now_ms()
  *
  * role_id is deliberately NOT set here. It is the key the contract's source_id and per-cycle masks
  * are built from, and the only legitimate source for it is a mapping a proof installed. */
-void build_descriptors()
+void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode)
 {
     int cliff_index{0};
 
@@ -122,6 +122,10 @@ void build_descriptors()
             d.scratch = &scratch_;
             d.stream = &streams_[cliff_index];
             d.ops = &acq::l4_cliff_ops();
+            /* Carried per source rather than read from a global, so a descriptor is a complete
+             * description of what one sensor will do. */
+            d.cliff_timing_budget_us = cliff_timing_budget_us;
+            d.cliff_distance_mode = cliff_distance_mode;
             ++cliff_index;
         } else {
             /* The grid path, and the explicit stub rather than a null table or a copy of the cliff
@@ -228,7 +232,9 @@ config config_from_devicetree()
     return config{DT_PROP(DT_PATH(tof_chain), cycle_period_ms),
                   DT_PROP(DT_PATH(tof_chain), health_period_ms),
                   DT_PROP(DT_PATH(tof_chain), stop_join_timeout_ms),
-                  DT_PROP(DT_PATH(tof_chain), acq_thread_priority)};
+                  DT_PROP(DT_PATH(tof_chain), acq_thread_priority),
+                  DT_PROP(DT_PATH(tof_chain), cliff_timing_budget_us),
+                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode)};
 }
 #endif
 
@@ -243,6 +249,23 @@ int bootstrap(const config &cfg)
 
     if (cfg.cycle_period_ms == 0 || cfg.health_period_ms == 0 || cfg.stop_join_timeout_ms == 0)
         return -EINVAL;
+
+    /* The ranging profile is checked HERE as well as in tof_acq::init(), and deliberately: this is
+     * the stage that knows it is reading a deployment's devicetree, so it can NAME the property.
+     * The same descriptor refused inside acquisition is a bare -EINVAL, and a bring-up engineer
+     * reading a console would have no way to tell it from any other malformed configuration --
+     * which is why the refusal below logs rather than only returning. */
+    if (cfg.cliff_timing_budget_us == 0) {
+        LOG_ERR("cliff-timing-budget-us is 0: the ranging profile is required and is not defaulted");
+        return -EINVAL;
+    }
+    if (cfg.cliff_distance_mode < 2 || cfg.cliff_distance_mode > 3) {
+        /* 1 is SHORT, which the ULD refuses for an L4 part outright; 0 is absent. Named here
+         * because the same value refused inside the ULD surfaces as a vendor error code. */
+        LOG_ERR("cliff-distance-mode is %u: only 2 (MEDIUM) and 3 (LONG) are supported by an L4",
+                cfg.cliff_distance_mode);
+        return -EINVAL;
+    }
 
 #if DT_NODE_EXISTS(DT_PATH(tof_chain))
     stack_ = acq_stack_;
@@ -262,7 +285,7 @@ int bootstrap(const config &cfg)
         return -ENODEV;
     }
 
-    build_descriptors();
+    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode);
 
     if (const int rc{init_authority()}; rc != 0) {
         stage_ = stage::authority_failed;
@@ -395,7 +418,7 @@ const acq::source_desc *descriptors_for_test()
 
 int force_rebuild_descriptors_for_test()
 {
-    build_descriptors();
+    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode);
     keyed_ = false;
     return 0;
 }

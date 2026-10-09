@@ -172,15 +172,14 @@ int cliff_open(void *dev, uint8_t addr_7bit, op_status *st)
     return tof_cliff_sensor_open(static_cast<VL53L4CX_Object_t *>(dev), addr_7bit, st);
 }
 
-int cliff_configure(void *dev, op_status *st)
+int cliff_configure(void *dev, uint32_t timing_budget_us, uint8_t distance_mode, op_status *st)
 {
-    // The mode and budget are the caller's business, not this layer's, and both are
-    // still unresolved in the wire contract. Until the injection point for them exists
-    // the configure step is a no-op that reports success without touching the device -
-    // deliberately visible as "not configured yet" rather than as a frozen value.
-    ARG_UNUSED(dev);
-    memset(st, 0, sizeof(*st));
-    return 0;
+    /* It used to be a no-op that reported success, so the four cliff sensors ran on whatever
+     * VL53LX_DataInit had left: MEDIUM at 33,333 us, written down nowhere. The values now come from
+     * the descriptor, which refuses to be built without them. */
+    return tof_cliff_sensor_configure(static_cast<VL53L4CX_Object_t *>(dev),
+                                      static_cast<VL53LX_DistanceModes>(distance_mode),
+                                      timing_budget_us, st);
 }
 
 int cliff_start(void *dev, void *stream, op_status *st)
@@ -213,7 +212,7 @@ int l7_open(void *, uint8_t, op_status *st)
     memset(st, 0, sizeof(*st));
     return -ENOSYS;
 }
-int l7_configure(void *, op_status *st)
+int l7_configure(void *, uint32_t, uint8_t, op_status *st)
 {
     memset(st, 0, sizeof(*st));
     return -ENOSYS;
@@ -814,6 +813,15 @@ int init(const config &cfg)
          * grid descriptor whose grid_ops was null or half-filled, which then dereferenced null on
          * the first lifecycle operation: a crash in the acquisition thread rather than an -EINVAL
          * to the caller who built the table. */
+        /* NO L4 PROFILE ON A GRID DESCRIPTOR, and checked BEFORE any of the grid branches below,
+         * because a bound grid source leaves this loop through them and would otherwise never be
+         * asked. A field belonging to the other model, quietly carried, is a wiring mistake nothing
+         * else would catch -- the grid path never reads these two, so a descriptor carrying them
+         * would range exactly as if they were absent. */
+        if (d.kind == model::l7_grid &&
+            (d.cliff_timing_budget_us != 0 || d.cliff_distance_mode != 0))
+            return -EINVAL;
+
 #if defined(ENABLE_TOF_L7_ULD)
         /* A BOUND grid source, not every grid source. Until a production table binds the real L7
          * adapter, a grid descriptor carries the complete -ENOSYS stub in d.ops and no grid_ops,
@@ -862,6 +870,24 @@ int init(const config &cfg)
         if (d.kind == model::l4_cliff &&
             (d.dev == nullptr || d.scratch == nullptr || d.stream == nullptr))
             return -EINVAL;
+
+        /* THE RANGING PROFILE, REFUSED RATHER THAN DEFAULTED. A zero budget reaching the ULD is
+         * VL53LX_SetMeasurementTimingBudgetMicroSeconds failing on every sensor at bring-up; a
+         * budget invented here would become the specification by being the only value anybody
+         * could find.
+         *
+         * MEDIUM or LONG, and SHORT is not among them even though the enumeration defines it: the
+         * vendored ULD refuses SHORT for an L4 part outright -- the IsL4() check in
+         * VL53LX_SetDistanceMode -- so accepting it would produce a descriptor that passes
+         * validation and then fails at bring-up on every sensor, with the reason buried in a
+         * vendor error code. */
+        if (d.kind == model::l4_cliff &&
+            (d.cliff_timing_budget_us == 0 ||
+             d.cliff_distance_mode < VL53LX_DISTANCEMODE_MEDIUM ||
+             d.cliff_distance_mode > VL53LX_DISTANCEMODE_LONG))
+            return -EINVAL;
+
+
     }
 
     cfg_ = cfg;
@@ -1061,7 +1087,7 @@ int bring_up()
             continue;
         }
 
-        rc = d.ops->configure(d.dev, &st);
+        rc = d.ops->configure(d.dev, d.cliff_timing_budget_us, d.cliff_distance_mode, &st);
         if (rc != 0) {
             record(f, rc, st);
             continue;

@@ -168,6 +168,20 @@ VL53LX_Error VL53LX_SetMeasurementTimingBudgetMicroSeconds(VL53LX_DEV Dev, uint3
 	return f.budget_rc;
 }
 
+/* FOR THE ACQUISITION SUITE, which proves the PRODUCTION ops table carries a descriptor's ranging
+ * profile all the way down. That suite drives fake ops, so without these the one-line glue in
+ * cliff_configure() is never executed by anything -- reverting it to the no-op it used to be left
+ * every case green. */
+uint32_t uld_last_timing_budget_us(void)
+{
+	return f.seen_budget_us;
+}
+
+int uld_last_distance_mode(void)
+{
+	return (int)f.seen_mode;
+}
+
 VL53LX_Error VL53LX_StartMeasurement(VL53LX_DEV Dev)
 {
 	ARG_UNUSED(Dev);

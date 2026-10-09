@@ -155,7 +155,10 @@ const char *operation_stage_name(const source_status &status);
 // this signature has to change, rather than a claim that it is already general.
 struct source_ops {
     int (*open)(void *dev, uint8_t addr_7bit, op_status *st);
-    int (*configure)(void *dev, op_status *st);
+    /* The ranging profile is an ARGUMENT, not something the adapter decides. It comes from the
+     * descriptor, which comes from the devicetree, so the value a board ranges at is visible in a
+     * diff of the deployment rather than buried in a driver. */
+    int (*configure)(void *dev, uint32_t timing_budget_us, uint8_t distance_mode, op_status *st);
     // start() takes the stream state because a successful start begins a new numbering
     // and the replay guard's history has to be dropped inside the same call, not by a
     // caller that might forget.
@@ -216,6 +219,22 @@ struct source_desc {
      * only one available. Zero means the caller has not configured this source, and configure()
      * refuses rather than picking something. Unused by an l4_cliff source. */
     uint8_t grid_frequency_hz{0};
+    /* THE L4 RANGING PROFILE, and it is required rather than defaulted on an l4_cliff source.
+     *
+     * configure() used to be a no-op that reported success, so the four cliff sensors ranged on
+     * whatever VL53LX_DataInit had left them: MEDIUM at 33,333 us. Nothing anywhere said so, and
+     * the one number that decides the achievable rate was the one number not written down.
+     *
+     * MEDIUM (2) or LONG (3). SHORT (1) is defined by the ULD's own enumeration and refused for an
+     * L4 part by the ULD itself -- see the IsL4() check in VL53LX_SetDistanceMode -- so it is
+     * rejected at init() rather than allowed to fail at bring-up on every sensor with the reason
+     * buried in a vendor error code. The ULD's numbering rather than a private enumeration,
+     * because a mapping onto three integers is only a chance to get it wrong.
+     *
+     * Both must be zero on an l7_grid source: a field belonging to the other model, quietly
+     * carried, is a wiring mistake the compiler cannot see. */
+    uint32_t cliff_timing_budget_us{0};
+    uint8_t cliff_distance_mode{0};
     void *dev{nullptr};      // VL53L4CX_Object_t* for l4_cliff
     void *scratch{nullptr};  // tof_cliff_scratch* for l4_cliff, deliberately SHARED
     // tof_cliff_stream_state* for l4_cliff, and deliberately NOT shared: the replay
