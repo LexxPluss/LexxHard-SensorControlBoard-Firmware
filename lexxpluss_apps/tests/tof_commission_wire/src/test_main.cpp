@@ -276,16 +276,22 @@ ZTEST(tof_commission_wire, test_every_commissioning_stage_maps)
         {cm::stage::chain_busy, wire::result::busy_chain, wire::wire_stage::quiesce, wire::wire_detail::chain_busy},
         {cm::stage::attempt_refused, wire::result::proof_failed, wire::wire_stage::proof_evaluation, wire::wire_detail::commit_refused},
         {cm::stage::evidence_refused, wire::result::proof_failed, wire::wire_stage::proof_evaluation, wire::wire_detail::walk_mismatch},
+        {cm::stage::proof_speed_refused, wire::result::proof_failed, wire::wire_stage::first_walk, wire::wire_detail::proof_speed_refused},
+        {cm::stage::product_speed_refused, wire::result::proof_failed, wire::wire_stage::retime, wire::wire_detail::product_speed_refused},
+        {cm::stage::identity_recheck_failed, wire::result::proof_failed, wire::wire_stage::identity_recheck, wire::wire_detail::identity_disagreed},
         {cm::stage::commit_refused, wire::result::proof_failed, wire::wire_stage::commit, wire::wire_detail::commit_refused},
     };
-    /* EIGHT, not the eleven the development branch has. The three missing ones --
-     * proof_speed_refused, product_speed_refused, identity_recheck_failed -- belong to the dual-rate
-     * retime, which is not on this baseline, so `tof_commissioning::stage` does not declare them and
-     * the mapper has no case for them. Their wire values are still reserved; see map_stage().
+    /* ELEVEN. The three the dual-rate retime adds -- proof_speed_refused, product_speed_refused and
+     * identity_recheck_failed -- map onto wire values that were already reserved in the frozen
+     * contract, so this change invents no protocol number.
+     *
+     * identity_recheck_failed is the FALLBACK detail here; map_result() refines it to
+     * position_silent when the position did not answer at all, which map_stage() cannot see because
+     * it is handed a stage and not an outcome. The case below pins that.
      *
      * The count is asserted rather than derived so that adding a stage shows up HERE as well as at
-     * the mapper's -Werror=switch-enum. */
-    zassert_equal(sizeof rows / sizeof rows[0], 8u, "all eight stages this baseline has");
+     * the mapper's -Werror=switch. */
+    zassert_equal(sizeof rows / sizeof rows[0], 11u, "all eleven stages this baseline has");
     for (const auto &r : rows) {
         const map::outcome o{map::map_stage(r.s)};
         zassert_true(o.res == r.res, "stage %u result", static_cast<unsigned>(r.s));
@@ -388,6 +394,63 @@ ZTEST(tof_commission_wire, test_the_mapper_never_emits_unknown)
         zassert_false(o.stage == wire::wire_stage::unknown, "proof refusal %u", i);
         zassert_false(o.detail == wire::wire_detail::unknown, "proof refusal %u", i);
     }
+}
+
+/* SILENCE AND DISAGREEMENT ARE DIFFERENT FAULTS ON THE WIRE, and the contract already carried both
+ * values. A position that did not ACK is a bus or a missing part; one that answered with the wrong
+ * id is the WRONG part, and they send an operator to different places. map_stage() is handed a
+ * stage and cannot tell them apart; map_result() has the outcome and must. */
+ZTEST(tof_commission_wire, test_a_silent_position_and_a_wrong_one_do_not_map_to_the_same_detail)
+{
+    cm::outcome r{};
+    r.failed_at = cm::stage::identity_recheck_failed;
+
+    /* THREE WAYS NOTHING USABLE CAME BACK, and none of them is an identity disagreement. The read
+     * failure is the one the mapper got wrong: an ACK followed by a failed id read was being sent
+     * as identity_disagreed, which tells an operator the sensor is the wrong model when what
+     * actually happened is that the bus to it stopped working after the retime. */
+    const cm::recheck_fault nothing_useful[]{
+        cm::recheck_fault::no_answer,
+        cm::recheck_fault::probe_failed,
+        cm::recheck_fault::read_failed,
+    };
+    for (const cm::recheck_fault f : nothing_useful) {
+        r.recheck.fault = f;
+        const map::outcome o{map::map_result(r)};
+        zassert_true(o.res == wire::result::proof_failed, "fault %d", static_cast<int>(f));
+        zassert_true(o.stage == wire::wire_stage::identity_recheck, "fault %d",
+                     static_cast<int>(f));
+        zassert_true(o.detail == wire::wire_detail::position_silent,
+                     "fault %d was sent as an identity disagreement", static_cast<int>(f));
+        zassert_false(o.detail == wire::wire_detail::identity_disagreed, "fault %d",
+                      static_cast<int>(f));
+    }
+
+    /* And the only one that means the part is wrong. */
+    r.recheck.fault = cm::recheck_fault::wrong_identity;
+    const map::outcome wrong{map::map_result(r)};
+    zassert_true(wrong.stage == wire::wire_stage::identity_recheck, "");
+    zassert_true(wrong.detail == wire::wire_detail::identity_disagreed,
+                 "a position that answered, completely, as something else");
+}
+
+/* The two speed refusals carry their own details, and they are not the same step: one happened
+ * before anything was walked, the other after the proof held. */
+ZTEST(tof_commission_wire, test_the_two_speed_refusals_are_told_apart_on_the_wire)
+{
+    cm::outcome before{};
+    before.failed_at = cm::stage::proof_speed_refused;
+    const map::outcome b{map::map_result(before)};
+    zassert_true(b.stage == wire::wire_stage::first_walk, "nothing had been walked");
+    zassert_true(b.detail == wire::wire_detail::proof_speed_refused, "");
+
+    cm::outcome after{};
+    after.failed_at = cm::stage::product_speed_refused;
+    const map::outcome a{map::map_result(after)};
+    zassert_true(a.stage == wire::wire_stage::retime, "the proof had held");
+    zassert_true(a.detail == wire::wire_detail::product_speed_refused, "");
+
+    zassert_false(b.stage == a.stage, "and they are not the same step");
 }
 
 ZTEST(tof_commission_wire, test_map_result_consults_the_right_sub_enum)

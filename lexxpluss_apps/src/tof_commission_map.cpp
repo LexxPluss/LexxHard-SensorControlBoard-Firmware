@@ -183,21 +183,25 @@ outcome map_stage(cm::stage s)
         return {result::proof_failed, wire_stage::proof_evaluation, wire_detail::commit_refused};
     case cm::stage::evidence_refused:
         return {result::proof_failed, wire_stage::proof_evaluation, wire_detail::walk_mismatch};
-    /* THREE STAGES THIS BASELINE DOES NOT HAVE, and the absence is deliberate.
+    /* THE DUAL-RATE RETIME'S THREE STAGES. This mapper carried a note saying they were absent from
+     * the baseline and that whichever change brought the retime over would add them back; this is
+     * that change, and -Werror=switch made it mechanical rather than remembered.
      *
-     * The development branch this mapper comes from also carries the dual-rate retime: the walks at
-     * 100 kHz, a retime to 400 kHz afterwards and a per-position identity re-check at the new speed,
-     * with proof_speed_refused, product_speed_refused and identity_recheck_failed for its three ways
-     * of failing. That extension is NOT on this baseline -- `tof_commissioning::stage` here has
-     * eight enumerators, not eleven -- so there is nothing to map and mapping it would be inventing
-     * a stage the transaction cannot report.
-     *
-     * The corresponding WIRE values stay where they are: wire_stage::retime and
-     * identity_recheck, and wire_detail::proof_speed_refused, product_speed_refused and
-     * identity_disagreed are reserved and simply never produced here. That is the right asymmetry --
-     * the wire vocabulary is what a decoder may have to understand from some firmware, and removing
-     * values from it would renumber the rest. Whichever change brings the retime over adds these
-     * three cases back, and -Werror=switch-enum makes that mechanical rather than remembered. */
+     * NO NEW PROTOCOL NUMBERS. Every value below was already reserved in the frozen contract --
+     * wire_stage::retime and identity_recheck, wire_detail::proof_speed_refused,
+     * product_speed_refused, identity_disagreed and position_silent -- and that asymmetry was the
+     * right one: the wire vocabulary is what a decoder may have to understand from some firmware,
+     * and removing values from it would renumber the rest. */
+    case cm::stage::proof_speed_refused:
+        /* first_walk, because that is the step it was preparing for: nothing had been walked. */
+        return {result::proof_failed, wire_stage::first_walk, wire_detail::proof_speed_refused};
+    case cm::stage::product_speed_refused:
+        return {result::proof_failed, wire_stage::retime, wire_detail::product_speed_refused};
+    case cm::stage::identity_recheck_failed:
+        /* The detail a stage alone cannot carry -- which of the two it was -- is chosen in
+         * map_result(), where the outcome is in hand. This is the fallback for a caller that has
+         * only the stage. */
+        return {result::proof_failed, wire_stage::identity_recheck, wire_detail::identity_disagreed};
     case cm::stage::commit_refused:
         return {result::proof_failed, wire_stage::commit, wire_detail::commit_refused};
     }
@@ -220,7 +224,22 @@ outcome map_result(const cm::outcome &r)
     case cm::stage::epoch_out_of_range:
     case cm::stage::quiesce_failed:
     case cm::stage::chain_busy:
+    case cm::stage::proof_speed_refused:
+    case cm::stage::product_speed_refused:
         return map_stage(r.failed_at);
+    case cm::stage::identity_recheck_failed:
+        /* SILENCE AND DISAGREEMENT ARE DIFFERENT FAULTS, and the contract already has both values.
+         * A position that did not ACK is a bus or a missing part; one that answered with the wrong
+         * id is the WRONG part. tof_commissioning says so in its own header, and collapsing them
+         * here would send an operator to the wrong place with no way to tell. */
+        /* identity_disagreed ONLY when the position answered, completely, as something else. A
+         * NACK, a probe that did not complete and a read that failed after an ACK are all "nothing
+         * usable came back" -- the contract has one value for that, and saying the part is wrong
+         * instead would send an operator to replace a sensor over a bus fault. Which of the three
+         * it was is in the outcome and in the log. */
+        return {result::proof_failed, wire_stage::identity_recheck,
+                r.recheck.answered_nothing() ? wire_detail::position_silent
+                                             : wire_detail::identity_disagreed};
     }
     return {result::internal_error, wire_stage::not_started, wire_detail::none};
 }

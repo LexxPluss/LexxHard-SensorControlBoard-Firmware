@@ -94,6 +94,73 @@ struct fake_chain final : enm::chain_ops {
         return 0;
     }
 
+    /* A TRACE, BECAUSE THE DUAL-RATE TRANSACTION IS ABOUT ORDER. Call counts cannot tell a correct
+     * sequence from a reversed one: 100 kHz must come before the walks, 400 kHz after them and
+     * before the identity re-check, and nothing may re-address the chain once the re-check has
+     * begun. Consecutive repeats are collapsed, so a walk's hundreds of probes read as one `p` and
+     * the whole run fits in a string a failure message can print.
+     *
+     *   1  set 100 kHz      4  set 400 kHz
+     *   p  probe            r  read_id            d  readdress            e  enable pulse */
+    char trace[64]{};
+    size_t trace_len{0};
+
+    /* THE IDENTITY RE-CHECK'S FOUR FAULTS, injected by the retime rather than by a call count. The
+     * re-check is the only thing that touches the chain after the bus moves to 400 kHz, so arming
+     * these at the retime arms exactly it -- and that is also what they are modelling: a chain that
+     * worked at 100 kHz and then, at the product speed, fails in one of the four ways the re-check
+     * has to keep apart.
+     *
+     *   silence_after_retime      a clean NACK: nothing answers at that address any more
+     *   probe_error_after_retime  the probe does not complete: the bus itself stopped working, and
+     *                             nothing is known about whether a part is there
+     *   read_error_after_retime   it ACKs and the id read then fails: something IS there and the
+     *                             transport to it did not survive the retime -- NOT a wrong part
+     *   wrong_id_after_retime     it answers, completely, as something else
+     *
+     * The last one is the only fault that means the part is wrong, which is why the fixture can
+     * arm the other three separately: a model that could only produce silence and a wrong id could
+     * not tell a transport fault reported as itself from one reported as a wrong part. */
+    bool silence_after_retime{false};
+    bool wrong_id_after_retime{false};
+    bool probe_error_after_retime{false};
+    bool read_error_after_retime{false};
+    /* WHICH POSITION, 1-based, or 0 for "the first one reached". A fault that always lands on
+     * position 1 cannot tell a loop that checks every position from one that checks only the
+     * first. */
+    uint8_t fault_position{0};
+    bool retimed{false};
+
+    /* What the re-check looked at, in order. The whole claim is PER POSITION, and a test that only
+     * counts reads cannot tell six checks from one. */
+    uint8_t rechecked_addr[kStages]{};
+    size_t rechecked_count{0};
+
+    void note_recheck(uint8_t addr7)
+    {
+        if (rechecked_count < kStages)
+            rechecked_addr[rechecked_count++] = addr7;
+    }
+
+    /* 1-based index of the position this address occupies, for the fault selector. */
+    bool is_fault_position(uint8_t addr7) const
+    {
+        if (fault_position == 0)
+            return true;
+        const int i{answerer(addr7)};
+        return i >= 0 && static_cast<uint8_t>(i + 1) == fault_position;
+    }
+
+    void note(char c)
+    {
+        if (trace_len > 0 && trace[trace_len - 1] == c)
+            return;
+        if (trace_len + 1 >= sizeof trace)
+            return;
+        trace[trace_len++] = c;
+        trace[trace_len] = '\0';
+    }
+
     int answerer(uint8_t addr7) const
     {
         for (size_t i{0}; i < kStages; ++i) {
@@ -105,6 +172,16 @@ struct fake_chain final : enm::chain_ops {
 
     enm::probe_result probe(uint8_t addr7) override
     {
+        note('p');
+        if (retimed) {
+            note_recheck(addr7);
+            if (is_fault_position(addr7)) {
+                if (probe_error_after_retime)
+                    return {enm::probe_state::transport_error, -ETIMEDOUT};
+                if (silence_after_retime)
+                    return {enm::probe_state::nack, 0};
+            }
+        }
         if (error_probes_at_pulse_count >= 0 && pulses_seen == error_probes_at_pulse_count)
             return {enm::probe_state::transport_error, -EIO};
         return answerer(addr7) >= 0 ? enm::probe_result{enm::probe_state::ack, 0}
@@ -113,15 +190,28 @@ struct fake_chain final : enm::chain_ops {
 
     int read_id(enm::model, uint8_t addr7, enm::id_bytes &out) override
     {
+        note('r');
         const int i{answerer(addr7)};
         if (i < 0)
             return -ENXIO;
+        /* IT ANSWERED AND THEN THE READ FAILED. Something is there; the transport to it did not
+         * survive the retime. Not a wrong part. */
+        if (retimed && read_error_after_retime && is_fault_position(addr7))
+            return -EIO;
+
+        /* Answered, as the wrong thing. The read SUCCEEDS -- that is what separates this from a
+         * transport failure, and what makes it an identity disagreement rather than silence. */
+        if (retimed && wrong_id_after_retime && is_fault_position(addr7)) {
+            out = l7[i] ? kL4Id : kL7Id;
+            return 0;
+        }
         out = l7[i] ? kL7Id : kL4Id;
         return 0;
     }
 
     enm::readdress_result readdress(enm::model, uint8_t old7, uint8_t new7) override
     {
+        note('d');
         const int i{answerer(old7)};
         if (i < 0)
             return {-ENXIO, enm::readdress_stage::collision};
