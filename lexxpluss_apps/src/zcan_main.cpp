@@ -37,6 +37,8 @@
 #include "zcan_tug_encoder.hpp"
 #include "zcan_main.hpp"
 
+#include "runtime_progress.hpp"
+
 namespace lexxhard::zcan_main {
 
 LOG_MODULE_REGISTER(zcan_main);
@@ -81,6 +83,7 @@ public:
             uss.poll();
             gpio.poll();
             tug_encoder.poll();
+            runtime_progress::zcan_pass_completed();
             k_usleep(1);
         }
     }

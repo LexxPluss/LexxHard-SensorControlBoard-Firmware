@@ -25,49 +25,53 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(tof_commissioning_test)
+project(tof_integration_wiring_test)
 
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
+set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
+set(L7_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld)
+set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
 
-# The whole transaction, with a REAL k_mutex for the chain and the real authority, proof, enumerator
-# and isolation behind it. Only the bus and the quiesce hook are faked, because everything this
-# commit is about -- lock ordering, recursion, which exit paths release, what stays open on failure --
-# is a property of the real components' interaction and a fake of any of them would assume the
-# answer.
-# tof_acquisition.cpp is linked because the quiesce is now the real one: the step before the session
-# takes the chain used to block on it, and only the real acquisition layer can show that it no longer
-# does. Its dependency on the vendor sensor entry points is stubbed in the test rather than satisfied
-# by linking the ULD, which belongs to the sensor suite.
-# Two suites in one binary, sharing the chain fake: the commissioning transaction and the runtime
-# bootstrap. They share it because a second copy of a fake that models the flip-flop chain, the L4/L7
-# reset-class asymmetry and the tail-races-ahead defect would drift, and the verdicts depend on
-# exactly those details. The runtime suite also links the publisher and packer, because the bootstrap
-# it tests is the production one -- wiring the modules up in the test would be a third wiring.
+# THE WIRING ITSELF, WITH THE GRID FLAG ON. Every other suite that links tof_cliff_runtime.cpp
+# builds it WITHOUT ENABLE_TOF_L7_ULD, so the grid publisher's init, the two-publisher fan-out and
+# the grid sink are compiled in neither direction there: 20 green cases said nothing about them.
+#
+# This binary is the flag-on build of the same production sources. Both vendor ULDs are stubbed --
+# the L7 one answering, the L4 one refusing -- because what is under test is which modules are
+# connected to which, not what ST's drivers do. See the two stub files for why they differ.
 target_sources(app PRIVATE
     src/test_main.cpp
-    src/test_runtime.cpp
-    src/test_wiring.cpp
+    src/l4_silent_stubs.cpp
+    src/l7_answering_stubs.cpp
     ${APP_SRC_DIR}/tof_acquisition.cpp
     # The watchdog heartbeats live in the hooked sources, so any suite that links them links this.
     ${APP_SRC_DIR}/runtime_progress.cpp
     ${APP_SRC_DIR}/tof_cliff_packer.cpp
     ${APP_SRC_DIR}/tof_cliff_publisher.cpp
     ${APP_SRC_DIR}/tof_cliff_runtime.cpp
-    ${APP_SRC_DIR}/tof_commission_wiring.cpp
+    ${APP_SRC_DIR}/tof_cliff_can.cpp
+    # tof_cliff_can sends through the bounded send rather than can_send() directly, so the real one
+    # is linked rather than stubbed: a stub here would let the suite pass against a send that does
+    # not exist, and the file depends on nothing but atomics and errno.
+    ${APP_SRC_DIR}/zcan_bounded_send.cpp
     ${APP_SRC_DIR}/tof_commissioning.cpp
+    ${APP_SRC_DIR}/tof_enumerator.cpp
+    ${APP_SRC_DIR}/tof_grid_packer.cpp
+    ${APP_SRC_DIR}/tof_grid_publisher.cpp
+    ${APP_SRC_DIR}/tof_l7_sensor.cpp
     ${APP_SRC_DIR}/tof_mapping_authority.cpp
     ${APP_SRC_DIR}/tof_mapping_proof.cpp
     ${APP_SRC_DIR}/tof_tail_isolation.cpp
-    ${APP_SRC_DIR}/tof_enumerator.cpp
 )
-target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
-set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
-set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
+target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE
     ${APP_SRC_DIR}
     ${CONTRACT_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tof_commissioning/src
     ${ULD_DIR}/zephyr
     ${ULD_DIR}/upstream
     ${ULD_DIR}/upstream/modules
     ${ULD_DIR}/upstream/porting
+    ${L7_DIR}/zephyr
+    ${L7_DIR}/upstream/modules
 )

@@ -173,6 +173,7 @@ struct source_ops {
 // deliberate act rather than an oversight.
 const source_ops &l7_stub_ops();
 
+
 // The cliff ops, bound to the real tof_cliff_sensor functions.
 const source_ops &l4_cliff_ops();
 
@@ -248,6 +249,14 @@ struct source_desc {
      * for its kind is a configuration error the bring-up refuses rather than works around. */
     const grid_source_ops *grid_ops{nullptr};
 };
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE REAL GRID TABLE. Until this existed, every grid descriptor carried the -ENOSYS stub and the
+ * grid lifecycle the acquisition layer gained was reachable only from a test -- which is why the PR
+ * that added it said "acquisition supports the grid lifecycle" rather than "the real ops are
+ * bound". This is what binds them. */
+const grid_source_ops &l7_grid_ops();
+#endif
 
 // What happened to one source in one cycle. No classification, no reduction, no alarm.
 struct source_facts {

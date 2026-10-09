@@ -241,6 +241,17 @@ struct config {
 
 int init(const config &cfg);
 
+#ifdef CONFIG_ZTEST
+/* Returns the module to its unconfigured state, where prove() refuses with `not_configured`. For
+ * tests only, and compiled out of a product image rather than merely documented as such: a reset
+ * entry point that exists on a board is a way to unconfigure a commissioned machine at runtime.
+ *
+ * It exists because the configuration is a static that outlives a test case, so a suite checking
+ * that THE BOOT configures the transaction would otherwise be reading what a case before it left
+ * behind -- which is the shape of the defect the boot wiring was written for. */
+void reset_for_test();
+#endif
+
 // Carries out the whole transaction. `host_epoch` is mandatory and has no default: under the
 // commissioning profile the host owns the epoch, and a firmware-invented one would be a value no
 // operator recorded. Taken as uint32_t so that a value outside 0-255 is REFUSED rather than

@@ -111,7 +111,10 @@ namespace {
 /* The last two are the cliff ranging profile, which bootstrap() now requires. Deliberately not the
  * overlay's 15000/2: this suite is about the runtime's sequence, and values matching the deployment
  * would let a bootstrap that ignored its argument pass. */
-constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5), 21000, 3};
+/* The last three are the cliff ranging profile and the grid rate, all of which bootstrap() now
+ * requires. Deliberately not the overlay's values: this suite is about the runtime's sequence, and
+ * values matching the deployment would let a bootstrap that ignored its argument pass. */
+constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5), 21000, 3, 7};
 
 /* The acquisition thread's stack. The runtime sizes its own from a devicetree property; there is no
  * devicetree here, and a fallback compiled into the module for tests would be a size nobody chose
@@ -220,6 +223,24 @@ ZTEST(tof_cliff_runtime, test_bootstrap_copies_the_profile_onto_the_cliff_descri
  * point rather than an oversight. This is the stage that knows it is reading a deployment's
  * devicetree; the same descriptor reaching acquisition is refused there as a generic -EINVAL with
  * nothing to say which of the two layers was misconfigured. */
+/* THE GRID RATE IS REFUSED RATHER THAN CLAMPED. A rate silently moved to the nearest legal value
+ * is a rate nobody chose, and the devicetree would stop being the place it is written down. 15 is
+ * the ULD's ceiling at 8x8; zero is the absence of a choice. */
+ZTEST(tof_cliff_runtime, test_a_bootstrap_without_a_grid_rate_is_refused)
+{
+    const uint8_t bad_rates[]{0, 16, 255};
+
+    for (const uint8_t hz : bad_rates) {
+        rt::config bad{kTiming};
+        bad.grid_frequency_hz = hz;
+        zassert_equal(rt::bootstrap(bad), -EINVAL, "grid-frequency-hz %u", hz);
+    }
+
+    rt::config edge{kTiming};
+    edge.grid_frequency_hz = 15;
+    zassert_equal(rt::bootstrap(edge), 0, "15 is the ceiling and is legal");
+}
+
 ZTEST(tof_cliff_runtime, test_a_bootstrap_without_a_ranging_profile_is_refused)
 {
     rt::config no_budget{kTiming};

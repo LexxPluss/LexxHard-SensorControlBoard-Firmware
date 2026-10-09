@@ -38,18 +38,18 @@
  * Wiring it to a constant `true` on a bench is a decision to write down where the bench is
  * configured, not something this file may assume.
  *
- * WHO CALLS IT: NOTHING, ON THIS BRANCH. This note used to name a tof_commission_boot that does not
- * exist here, which is a reference a reader cannot follow -- so it says what is true instead. The
- * caller belongs in the chain controller's bootstrap, once, in a build that defines
- * ENABLE_TOF_AUTO_COMMISSION, and it arrives with the boot-wiring change. Until it does, a flag-on
- * image carries this code and starts none of it: no filter is installed, no token is drawn and
- * nothing is proved.
+ * WHO CALLS IT: tof_chain_controller::init(), once per boot, through tof_commission_wiring -- which
+ * is where the order and the once-ness live, because a second can_add_rx_filter() on the request
+ * identifier does not fail, it delivers every request twice. It runs after the cliff runtime's
+ * bootstrap has returned, because the worker's prove and start hooks reach that runtime.
  *
- * WHAT THE CALLER WILL STILL HAVE TO DECIDE, so that adding it is not mistaken for a formality:
- * whether the board may entertain a commissioning request at all, and whether it may re-enumerate
- * the chain when it gets one. Both are deployment acts rather than consequences of linking, both
- * are off unless an image says otherwise, and neither may be changeable at runtime. `config` above
- * is where the second one enters; the first is `profile_enabled`.
+ * WHAT THE CALLER STILL DOES NOT DECIDE FOR THE BOARD, so that being wired is not mistaken for
+ * being enabled: whether the board may entertain a commissioning request at all, and whether it may
+ * re-enumerate the chain when it gets one. Both are deployment acts rather than consequences of
+ * linking, both are off unless an image says otherwise, and neither may be changeable at runtime.
+ * They enter as the devicetree properties commission-profile-enabled and
+ * commission-enumeration-permitted, absent by default and absent from the auto-commission overlay;
+ * `config` above is where they reach this file.
  */
 
 #pragma once

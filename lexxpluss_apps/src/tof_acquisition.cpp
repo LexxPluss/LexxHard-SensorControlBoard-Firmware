@@ -17,11 +17,17 @@
 #include <zephyr/sys/atomic.h>
 
 #if defined(ENABLE_TOF_L7_ULD)
-/* Only for the stage vocabulary. An image without the grid driver has no l7 domain to name. */
+/* The stage vocabulary, and the driver the grid table is an adapter over. An image without the
+ * grid driver has neither. */
+#include "tof_l7_sensor.hpp"
 #include "tof_l7_status.hpp"
 #endif
 
 #include "tof_chain_controller.hpp"
+/* The watchdog's heartbeats, which this file raises from the acquisition cycle, the health work and
+ * every L7 operation -- so it is NOT under the grid guard: an image with no L7 still has a cycle and
+ * a health path to be watched. */
+#include "runtime_progress.hpp"
 
 LOG_MODULE_REGISTER(tof_acq, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -205,6 +211,102 @@ const source_ops kCliffOps{
     cliff_open, cliff_configure, cliff_start, cliff_read_sample, cliff_stop,
 };
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* --------------------------------------------------------------- the grid adapter ---- */
+/*
+ * The same shape as the cliff adapters and for the same reason: this layer knows the lifecycle and
+ * nothing about either vendor's object, so the cast is the one place the scheduler's void pointer
+ * becomes a tof_l7::sensor. A descriptor pointing the grid table at an L4 object is prevented by
+ * the TYPE of the table, not by a check here.
+ */
+/* EVERY ULD OPERATION IS A HEARTBEAT, and the first open is the reason.
+ *
+ * Downloading 86 KB of device firmware over I2C is the operation most likely to hang on this board
+ * -- it is where this investigation started -- and it happens once, at bring-up, before the L7 has
+ * ever completed anything. A heartbeat that counted only successful reads would begin after the
+ * risky part was over. So `begun` goes up before the call and `ended` after it returns, which makes
+ * an open that never returns visible as the pair standing apart. */
+int l7_real_open(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st)
+{
+    runtime_progress::begin(runtime_progress::activity::l7);
+    const int rc{tof_l7::open(static_cast<tof_l7::sensor *>(dev), addr_7bit, st)};
+    runtime_progress::end(runtime_progress::activity::l7);
+    return rc;
+}
+
+int l7_real_configure(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st)
+{
+    /* The frequency arrives from the descriptor, which took it from the deployment's devicetree.
+     * Nothing in this file has a default for it, and the adapter refuses anything outside 1..15 on
+     * its own account. */
+    runtime_progress::begin(runtime_progress::activity::l7);
+    const int rc{tof_l7::configure(static_cast<tof_l7::sensor *>(dev), frequency_hz, st)};
+    runtime_progress::end(runtime_progress::activity::l7);
+    return rc;
+}
+
+int l7_real_start(void *dev, tof_l7::operation_status *st)
+{
+    runtime_progress::begin(runtime_progress::activity::l7);
+    const int rc{tof_l7::start(static_cast<tof_l7::sensor *>(dev), st)};
+    runtime_progress::end(runtime_progress::activity::l7);
+    return rc;
+}
+
+int l7_real_read_grid_sample(void *dev, void *scratch, tof_l7::sample *out,
+                             tof_l7::operation_status *st)
+{
+    /* ONE non-blocking readiness check per cycle, never a poll. The L7 ranges at its own frequency
+     * and the scheduler runs at its own period, so MOST CYCLES FIND NOTHING READY -- at 5 Hz
+     * against a 50 ms cycle, nine out of ten. That is the ordinary case and the adapter reports it
+     * as rc 0 with a non-fresh sample, which records no outcome at all: counting it as an I/O
+     * failure would make a working sensor look broken nine times out of ten. */
+    runtime_progress::begin(runtime_progress::activity::l7);
+    const int rc{tof_l7::read_once(static_cast<tof_l7::sensor *>(dev),
+                                   static_cast<tof_l7::scratch *>(scratch), out, st)};
+    runtime_progress::end(runtime_progress::activity::l7);
+    return rc;
+}
+
+int l7_real_stop(void *dev, tof_l7::operation_status *st)
+{
+    runtime_progress::begin(runtime_progress::activity::l7);
+    const int rc{tof_l7::stop(static_cast<tof_l7::sensor *>(dev), st)};
+    runtime_progress::end(runtime_progress::activity::l7);
+    return rc;
+}
+
+/* THE WAY BACK TO `empty`, and the table is refused without it. open() accepts only an unopened
+ * sensor and almost nothing leaves it that way -- a successful stop() lands on `configured` -- so
+ * bring_up_grid_locked() closes unconditionally before it opens, and a table whose close is null
+ * would dereference nothing: init() refuses it instead. The real table was bound with five entries
+ * and this sixth left at nullptr, which refused the whole descriptor set and took acquisition down
+ * with it in every image that has the grid driver.
+ *
+ * Bracketed like the rest even though it does no transport I/O. It cannot fail for any reason but
+ * state, so it cannot hang on a bus -- but it runs on the acquisition thread, and a call on that
+ * thread that does not return is worth seeing whatever the reason. */
+int l7_real_close(void *dev, tof_l7::operation_status *st)
+{
+    runtime_progress::begin(runtime_progress::activity::l7);
+    const int rc{tof_l7::close(static_cast<tof_l7::sensor *>(dev), st)};
+    runtime_progress::end(runtime_progress::activity::l7);
+    return rc;
+}
+
+/* DESIGNATED, not positional. The positional form is what left close at nullptr: the struct gained
+ * a member and the five-entry initialiser stayed valid, silently. Named members cannot drift that
+ * way -- a new member is either named here or it is visibly absent. */
+const grid_source_ops kL7GridOps{
+    .open = l7_real_open,
+    .configure = l7_real_configure,
+    .start = l7_real_start,
+    .read_grid_sample = l7_real_read_grid_sample,
+    .stop = l7_real_stop,
+    .close = l7_real_close,
+};
+#endif
+
 /* -------------------------------------------------------------------- L7 stub ------ */
 
 int l7_open(void *, uint8_t, op_status *st)
@@ -277,9 +379,11 @@ void health_work_handler(k_work *)
 {
     // Reads one atomic word. Takes no lock and touches no device, so a stalled bring-up
     // cannot silence it.
+    runtime_progress::begin(runtime_progress::activity::health);
     if (cfg_.hooks.on_cliff_health != nullptr)
         cfg_.hooks.on_cliff_health(static_cast<uint32_t>(atomic_get(&snapshot_)),
                                    effective_mapping_state());
+    runtime_progress::end(runtime_progress::activity::health);
 }
 
 void health_timer_handler(k_timer *)
@@ -648,6 +752,13 @@ const source_ops &l7_stub_ops()
 {
     return kL7StubOps;
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+const grid_source_ops &l7_grid_ops()
+{
+    return kL7GridOps;
+}
+#endif
 
 const source_ops &l4_cliff_ops()
 {
@@ -1172,6 +1283,7 @@ void run_cycle()
 
     facts_.cycle_seq = next_cycle_seq_;
     facts_.began_ms = now();
+    runtime_progress::begin(runtime_progress::activity::acquisition);
 
     /* Before the first sensor is touched. A cycle that produces no sample at all still has to be
      * announced, and this is the only point at which that is possible: every later hook is
@@ -1245,6 +1357,10 @@ void run_cycle()
 
     publish_snapshot();
     cfg_.hooks.on_cycle(facts_);
+    /* THE LAST STATEMENT, so a cycle counts as finished only once its sinks have returned. Ending
+     * at the counter increment a few lines up would call the cycle done while a hook that never
+     * returns was still holding the thread -- which is the stall this heartbeat exists to see. */
+    runtime_progress::end(runtime_progress::activity::acquisition);
 }
 
 int teardown()

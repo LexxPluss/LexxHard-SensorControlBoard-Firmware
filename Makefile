@@ -34,21 +34,20 @@ all: bootloader firmware
 
 .PHONY: clean
 clean:
-	rm -rf build-mcuboot build build-bypass-safety-lidar build-test-tof-packer \
-	        build-test-tof-cliff-packer build-test-tof-mapping-authority \
+	rm -rf build-mcuboot build build-bypass-safety-lidar \
+	        build-test-tof-packer build-test-tof-cliff-packer build-test-tof-mapping-authority \
 	        build-test-tof-commissioning build-test-tof-tail-isolation build-test-tof-mapping-proof \
-	        build-tof-cliff twister-out* build-test-tof-cliff-sensor build-test-tof-uld-status \
-	        build-test-tof-enumerator build-test-tof-auto-commission build-tof-chain \
-	        build-tof-l7 build-test-tof-l7-port build-test-tof-l7-sensor \
-	        build-test-tof-l7-blob build-test-tof-l7-uld-stop \
-	        build-test-tof-l7-recovery \
-	        build-test-tof-commission-wire build-test-tof-commission-session \
-	        build-test-runtime-progress build-test-tof-task-watchdog \
-	        build-test-tof-watchdog-tombstone build-test-tof-watchdog-feeder \
-	        build-test-zcan-bounded-send build-test-zcan-poll-budget \
-	        build-test-tof-commission-runtime build-test-tof-commission-worker \
-	        build-test-tof-commission-bind build-test-tof-commission-bind-session \
-	        build-test-tof-commission-entropy-poll build-auto-commission
+	        build-tof-cliff twister-out* build-test-tof-cliff-sensor \
+	        build-test-tof-uld-status build-test-tof-enumerator build-test-tof-auto-commission \
+	        build-tof-chain build-tof-l7 build-test-tof-l7-port \
+	        build-test-tof-l7-sensor build-test-tof-l7-blob build-test-tof-l7-uld-stop \
+	        build-test-tof-l7-recovery build-test-tof-commission-wire build-test-tof-commission-session \
+	        build-test-runtime-progress build-test-tof-task-watchdog build-test-tof-watchdog-tombstone \
+	        build-test-tof-watchdog-feeder build-test-zcan-bounded-send build-test-zcan-poll-budget \
+	        build-test-tof-commission-runtime build-test-tof-commission-worker build-test-tof-commission-bind \
+	        build-test-tof-commission-bind-session build-test-tof-commission-entropy-poll build-auto-commission \
+	        build-test-tof-l7-boot-order-no-grid build-test-tof-integration-wiring build-tof-full \
+	        build-check-l7-no-cliff build-tof-integration
 
 .PHONY: distclean
 distclean: clean
@@ -324,6 +323,23 @@ test_tof_watchdog_feeder:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_watchdog_feeder -d build-test-tof-watchdog-feeder -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
 
+# THE SAME CASES WITHOUT THE GRID DRIVER. steps_for_image() drops the recovery steps in an image
+# that has none, and the suite above -- which always builds with the flag on -- compiles that
+# branch in neither direction.
+.PHONY: test_tof_l7_boot_order_no_grid
+test_tof_l7_boot_order_no_grid:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_l7_boot_order_no_grid -d build-test-tof-l7-boot-order-no-grid -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# THE WIRING, WITH THE GRID FLAG ON. Every other suite that links tof_cliff_runtime.cpp builds it
+# without ENABLE_TOF_L7_ULD, so the grid publisher's init, the two-publisher fan-out and the grid
+# authorisation are compiled in neither direction there. This target is the flag-on build of those
+# same production sources, with the vendor ULDs stubbed.
+.PHONY: test_tof_integration_wiring
+test_tof_integration_wiring:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_integration_wiring -d build-test-tof-integration-wiring -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
 # The golden-vector generators are Python and live in docs/can/ as offline tooling, so
 # they do enter the production Git branch. This gate is what keeps that from becoming
 # Python in the product: it fails if any .py appears outside docs/can/, or if any build
@@ -426,6 +442,27 @@ firmware_tof_l7:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
+# THE INTEGRATION IMAGE: the L7 build with everything wired, slimmed so it fits.
+#
+# overlays/tof_integration_slim.conf removes the SD/FAT filesystem and its shell -- and only from
+# this image. Every other target above keeps what prj.conf gives it. The fragment says what that
+# costs and why it is acceptable here; the short version is that nothing in the application calls
+# the filesystem API, and firmware update and the L7 blob both go through flash_area_*.
+.PHONY: firmware_tof_integration
+firmware_tof_integration:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-integration -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
+# A CONFIGURATION CHECK, NOT A SHIPPED IMAGE. CMake permits the grid driver without the cliff one,
+# and that combination is the one the boot recovery most needs -- it was also the one nobody built,
+# which is how a feature-guarded bus-speed primitive reached a caller outside its guard. It builds
+# only; nothing is signed or kept.
+.PHONY: check_tof_l7_without_cliff
+check_tof_l7_without_cliff:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-check-l7-no-cliff -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
 .PHONY: firmware_tof_cliff
 firmware_tof_cliff:
 	./scripts/manage_zephyr_patches.sh verify
@@ -436,15 +473,35 @@ firmware_tof_cliff:
 	cp out/zephyr_tof_cliff.signed.confirmed.bin out/zephyr_tof_cliff.test.bin
 	printf '\377' | dd of=out/zephyr_tof_cliff.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_cliff.test.bin) - 24)) conv=notrunc status=none
 
+# THE COMBINED CONFIGURATION: the cliff path, the hanging-object grid, the commissioning downlink
+# and the hardware entropy, in ONE image. This is the only target whose size answers "does the whole
+# feature fit" -- firmware_tof_integration has the grid and no downlink, firmware_auto_commission has
+# the downlink and no grid, and neither number is the combination's.
+#
+# It carries the slim fragment, so the SD/FAT filesystem and its shell are OUT: no application code
+# calls FAT, and firmware update and the L7 blob both go through flash_area_*. MCUboot, signing, the
+# flash map, the update path and the partition layout are unchanged.
+#
+# IT COMMISSIONS NOTHING. commission-profile-enabled and commission-enumeration-permitted are absent
+# from overlays/auto_commission.overlay, so the downlink answers `disabled`; and the PROVEN clamp
+# still refuses every grid. Being wired is not being enabled.
+.PHONY: firmware_tof_full
+firmware_tof_full:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-full -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
 # The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
 # only things enabling that peripheral.
 #
-# NOTHING STARTS IT. No caller invokes tof_commission_bind::start() on this branch, so this image
-# installs no CAN filter, draws no token and proves nothing -- it is here so the flag-on image can
-# be built and measured, not so a board can be commissioned by it. It carries NO bypass and no
-# diagnostic flag; the bench decisions that govern what a started downlink may do arrive with the
-# caller.
+# IT IS STARTED NOW, AND IT STILL COMMISSIONS NOTHING. tof_chain_controller::init() runs the boot
+# sequence through tof_commission_wiring, so this image installs the receive filter, draws a session
+# token, announces it and answers every request -- with `disabled`. The two deployment decisions
+# that would change that, commission-profile-enabled and commission-enumeration-permitted, are both
+# ABSENT from overlays/auto_commission.overlay: this image does not prove and does not touch the
+# chain's enable lines. Adding either is a bench or a deployment act and belongs in a diff of that
+# overlay. The image carries NO bypass and no diagnostic flag.
 .PHONY: firmware_auto_commission
 firmware_auto_commission:
 	./scripts/manage_zephyr_patches.sh verify

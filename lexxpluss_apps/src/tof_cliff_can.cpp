@@ -17,6 +17,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "runtime_progress.hpp"
 #include "tof_acquisition.hpp"
 #include "tof_cliff_contract.h"
 #include "tof_mapping_authority.hpp"
@@ -77,18 +78,32 @@ int send(uint16_t can_id, const uint8_t *data, uint8_t dlc)
     frame.dlc = dlc;
     memcpy(frame.data, data, dlc);
 
-    /* WHAT A ZERO FROM HERE NOW MEANS, because it changed: the controller accepted the frame,
-     * not that a node acknowledged it. The publisher's send_failed_measurement and
-     * send_failed_health therefore count transport REFUSALS -- no mailbox, bus off, bus not
-     * started -- and no longer count frames that went out and were never answered. On a bus
-     * with nobody listening the first three frames are accepted and only the fourth is
-     * refused, so the withholding starts three frames later than it used to; the alternative
-     * was the previous behaviour, where that bus blocked this thread forever and the
-     * withholding never happened at all. Delivery evidence lives in
-     * zcan_bounded_send::snapshot(), where a silent bus reads as `refused` rising while
-     * `queued` is frozen -- NOT as a rising `failed`, since frames still being
-     * retransmitted into silence never complete at all. */
-    return zcan_bounded_send::send(dev_, &frame, kSendTimeout);
+    /* WHICH SENDER THIS IS, decided from the calling thread rather than from the CAN id: the id
+     * says what the frame is, the thread says who would be stuck in it. The acquisition slot
+     * carries 0x214, 0x215, 0x216 and the cycle health frame; the system work queue carries the
+     * 0x217 heartbeat. They wedge independently, so the watchdog watches them independently. */
+    const runtime_progress::activity slot{runtime_progress::current_send_slot()};
+    runtime_progress::begin(slot);
+
+    /* THE BOUNDED SEND, not can_send() directly, and WHAT A ZERO FROM HERE NOW MEANS, because it
+     * changed: the controller accepted the frame, not that a node acknowledged it. The publisher's
+     * send_failed_measurement and send_failed_health therefore count transport REFUSALS -- no
+     * mailbox, bus off, bus not started -- and no longer count frames that went out and were never
+     * answered. On a bus with nobody listening the first three frames are accepted and only the
+     * fourth is refused, so the withholding starts three frames later than it used to; the
+     * alternative was the previous behaviour, where that bus blocked this thread forever and the
+     * withholding never happened at all. Delivery evidence lives in zcan_bounded_send::snapshot(),
+     * where a silent bus reads as `refused` rising while `queued` is frozen -- NOT as a rising
+     * `failed`, since frames still being retransmitted into silence never complete at all. */
+    const int rc{zcan_bounded_send::send(dev_, &frame, kSendTimeout)};
+
+    /* ENDED ON RETURN WHATEVER THE RESULT, and a refusal is a return. A send that failed is a
+     * sender that is alive; a sender that never returns is the thing being watched for, and it
+     * never reaches this line. Ending only on a zero would leave `begun` permanently ahead of
+     * `ended` once the bus went quiet, which is exactly the shape of a wedged sender -- so a host
+     * that went away would be indistinguishable from the fault this pair exists to detect. */
+    runtime_progress::end(slot);
+    return rc;
 }
 
 } // namespace
@@ -112,6 +127,73 @@ struct tof_cliff_pub::can_sink sink()
     s.send = send;
     return s;
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE GRID PAIR SHARE THIS BUS AND THIS SENDER. Same device, same behaviour -- and deliberately
+ * the same function, because two senders would be two places for the device handle and the timeout
+ * to drift apart. The identifiers differ and that is the publisher's business, not this layer's.
+ *
+ * THE 1 ms BOUNDS THE WAIT FOR A FREE MAILBOX, NOT THE SEND. can_send()'s synchronous form returns
+ * when transmission COMPLETES, and nothing here bounds that; what the timeout covers is how long a
+ * caller waits when all three mailboxes are busy, after which the frame is dropped with -EAGAIN. */
+struct tof_grid_pub::can_sink grid_sink()
+{
+    struct tof_grid_pub::can_sink s{};
+    s.send = send;
+    return s;
+}
+
+struct tof_grid_pub::authorisation grid_production_authorisation()
+{
+    /* ONE read of the authority, then the clamp applied to that snapshot -- the same rule and for
+     * the same reason as the cliff gate above: reading twice can yield a pair that never existed,
+     * and the publisher latches this per cycle. The single read is this line; everything derived
+     * from it is derived from this one value.
+     *
+     * THE CLAMP IS WHY NOTHING IS PUBLISHED. clamp_mapping_state() makes PROVEN unreachable by
+     * construction, the packer refuses anything that is not PROVEN, and so wiring this sender
+     * changes what the board CAN do and not what it does. Lifting the clamp is a release decision
+     * and is not made by connecting a function pointer. */
+    return grid_authorisation_from(tof_authority::current());
+}
+
+struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::snapshot &now)
+{
+    struct tof_grid_pub::authorisation a{};
+    a.state = tof_acq::clamp_mapping_state(now.state);
+    a.epoch = now.epoch;
+    /* DIAGNOSTICS ONLY, and the authority does not carry it. There is no boards_detected in the
+     * snapshot, so it is left at zero rather than derived from something that is not it: the
+     * contract says this nibble is for diagnostics, and a plausible-looking wrong number is worse
+     * for a diagnostic than an honest zero. Whatever eventually owns it is its own change. */
+    a.boards_detected = 0;
+
+    /* PER SOURCE, from THIS snapshot, so a grid is admitted by the permission read for the source
+     * id it is labelled with as one step -- the obligation tof_grid_packer states on the producer.
+     * Taking them from two reads is exactly what that rule forbids.
+     *
+     * FROM grid_source_mask AND NOT enumerated_mask. The latter is keyed by source_id_of(l4_role),
+     * so its bits 0 and 1 are the front_left and rear_left CLIFF sensors; they agree with the grid
+     * pair's permission only by coincidence of the current chain profile, and under the clamp that
+     * coincidence would never have been noticed. grid_source_mask is the authority's statement
+     * about grid sources, published in this same snapshot. */
+    for (int i{0}; i < tof_grid_pub::kGridSources; ++i)
+        a.source_allowed[i] = (now.grid_source_mask & (1U << i)) != 0U;
+
+    /* BIT 2 IS NOT SET FROM HERE, and there is no field for it to be set through. It says "the
+     * chain_position -> source_id binding cannot be trusted", and authorisation carried a
+     * chain-level binding_untrusted until #118 removed it: its only effect was to set the bit on
+     * every source, which the packer reads as a contradiction against source_allowed and refuses,
+     * taking a whole cycle down over one position. source_allowed[] above already says this per
+     * source and says it as the enumerator's verdict. Nothing in this snapshot establishes bit 2
+     * either way, so nothing here claims it; the packer's own check still guards the wire against
+     * a non-conforming caller. */
+    /* kNoFailingPosition is 0xFF, not 0. Comparing against zero would have reported a failure on
+     * every healthy chain -- the default IS the no-failure value. */
+    a.other_position_enumeration_failed = now.failing_position != tof_authority::kNoFailingPosition;
+    return a;
+}
+#endif
 
 struct tof_cliff_pub::authorisation production_authorisation()
 {

@@ -7,6 +7,10 @@
 
 #include "tof_cliff_runtime.hpp"
 
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_sensor.hpp"
+#endif
+
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
 
 #include <errno.h>
@@ -20,8 +24,12 @@
 #include "tof_chain_spec.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_grid_publisher.hpp"
+#endif
 #include "tof_mapping_authority.hpp"
 #include "tof_mapping_proof.hpp"
+#include "tof_watchdog_feeder.hpp"
 
 namespace lexxhard::tof_cliff_runtime {
 
@@ -35,6 +43,9 @@ namespace can = lexxhard::tof_cliff_can;
 namespace enm = lexxhard::tof_enum;
 namespace pf = lexxhard::tof_proof;
 namespace pub = lexxhard::tof_cliff_pub;
+#if defined(ENABLE_TOF_L7_ULD)
+namespace gpub = lexxhard::tof_grid_pub;
+#endif
 
 /* ALL of the subsystem's saved state lives here, at file scope.
  *
@@ -59,6 +70,21 @@ struct tof_cliff_scratch scratch_;
  * lives here, beside the device objects, for the same reason they do: acquisition keeps the pointer
  * and the storage has to outlive every cycle. */
 struct tof_cliff_stream_state streams_[kCliffSensors];
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* The grid pair's device objects and their shared scratch.
+ *
+ * SHARED, like the cliff scratch and for the same reason: it holds one in-flight transfer, and the
+ * acquisition thread is the only thing that reads a sensor. A second reader would be a second
+ * caller inside the ULD, whose port keeps one transport record -- which is what the chain lock and
+ * the single-thread rule exist to prevent, not something a second buffer would fix.
+ *
+ * NOT the object the boot recovery uses. That one runs before any open and is zeroed on every
+ * call; these hold live sessions from bring-up onwards. */
+constexpr int kGridSensors{2};
+tof_l7::sensor grid_objs_[kGridSensors];
+tof_l7::scratch grid_scratch_;
+#endif
 /* The acquisition thread's stack, sized from the devicetree.
  *
  * It lives here rather than in tof_acquisition because a Zephyr thread stack is a compile-time sized
@@ -104,9 +130,14 @@ uint32_t now_ms()
  *
  * role_id is deliberately NOT set here. It is the key the contract's source_id and per-cycle masks
  * are built from, and the only legitimate source for it is a mapping a proof installed. */
-void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode)
+void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_mode,
+                       uint8_t grid_frequency_hz)
 {
     int cliff_index{0};
+    int grid_index{0};
+
+    ARG_UNUSED(grid_frequency_hz);
+    ARG_UNUSED(grid_index);
 
     for (size_t i{0}; i < spec_.positions; ++i) {
         const enm::position_spec &ps{spec_.at[i]};
@@ -128,9 +159,29 @@ void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_m
             d.cliff_distance_mode = cliff_distance_mode;
             ++cliff_index;
         } else {
-            /* The grid path, and the explicit stub rather than a null table or a copy of the cliff
-             * ops: wiring L7 to the L4 driver has to be a deliberate act, not an oversight. */
+#if defined(ENABLE_TOF_L7_ULD)
+            /* THE REAL TABLE. Until now every grid position carried the -ENOSYS stub, so the grid
+             * lifecycle the acquisition layer gained was reachable only from a test. This is the
+             * binding, and it is why the flag-on image's capacity moves. */
+            if (grid_index < kGridSensors) {
+                d.dev = &grid_objs_[grid_index];
+                d.scratch = &grid_scratch_;
+                d.grid_ops = &acq::l7_grid_ops();
+                d.grid_frequency_hz = grid_frequency_hz;
+                ++grid_index;
+            } else {
+                /* More grid positions than objects. The spec and the storage disagree, which is a
+                 * build-time mistake; leaving the stub makes it visible as "unsupported" rather
+                 * than as a sensor fault, and init() refuses an l7_grid source whose table is
+                 * neither bound nor the named stub. */
+                d.ops = &acq::l7_stub_ops();
+            }
+#else
+            /* The grid path in an image without the driver, and the explicit stub rather than a
+             * null table or a copy of the cliff ops: wiring L7 to the L4 driver has to be a
+             * deliberate act, not an oversight. */
             d.ops = &acq::l7_stub_ops();
+#endif
         }
     }
 }
@@ -174,6 +225,16 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
     keyed_ = true;
     keyed_epoch_ = epoch;
     LOG_INF("descriptors keyed from the installed mapping under epoch %u", epoch);
+
+    /* COMMISSIONING IS FINISHED, and this is the moment -- inside the commit, after the last thing
+     * that could refuse it. It is the signal the watchdog waits for before it judges anything:
+     * until a mapping is installed the chain is still being enumerated and every activity is
+     * legitimately irregular. An atomic store, so holding the chain lock costs nothing here.
+     *
+     * It is not, by itself, "before the first L7 open". The L7 monitor starts at the first open
+     * wherever that falls, which is what makes this safe to set from the one place that knows
+     * commissioning succeeded rather than from a place that also knows what happens next. */
+    tof_watchdog_feeder::set_baseline_point(true);
     return 0;
 }
 
@@ -188,6 +249,26 @@ int init_authority()
     return au::init(cfg);
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+int init_grid_publisher()
+{
+    gpub::config cfg{};
+
+    cfg.sink = can::grid_sink();
+    cfg.sources = descs_;
+    cfg.source_count = static_cast<int>(spec_.positions);
+    /* THE SAME STRUCTURALLY SHUT GATE as the cliff path, and that is what makes wiring this safe:
+     * the clamp inside it makes PROVEN unreachable, and the packer refuses anything that is not
+     * PROVEN. So this connects the path without opening it. */
+    cfg.authorise = can::grid_production_authorisation;
+    /* NO DEFAULT INVENTED HERE. VL53L7CX target_status 6 and 9 are the low-confidence verdicts, and
+     * whether a hanging-object detector should trust them is a product decision nobody has taken.
+     * False is the conservative reading and is stated rather than assumed. */
+    cfg.accept_low_confidence = false;
+    return gpub::init(cfg);
+}
+#endif
+
 int init_publisher()
 {
     pub::config cfg{};
@@ -201,6 +282,24 @@ int init_publisher()
     return pub::init(cfg);
 }
 
+/* The fan-out. Deliberately not a loop over a table: there are two publishers, both known at
+ * compile time, and a registry would be a mechanism for a variability that does not exist. */
+void on_cycle_begin_all(uint32_t cycle_seq)
+{
+    pub::on_cycle_begin(cycle_seq);
+#if defined(ENABLE_TOF_L7_ULD)
+    gpub::on_cycle_begin(cycle_seq);
+#endif
+}
+
+void on_cycle_complete_all(const acq::cycle_facts &facts)
+{
+    pub::on_cycle_complete(facts);
+#if defined(ENABLE_TOF_L7_ULD)
+    gpub::on_cycle_complete(facts);
+#endif
+}
+
 int init_acquisition(const config &cfg)
 {
     acq::config c{};
@@ -209,10 +308,19 @@ int init_acquisition(const config &cfg)
     c.source_count = static_cast<int>(spec_.positions);
     c.periods.cycle_period_ms = cfg.cycle_period_ms;
     c.periods.health_period_ms = cfg.health_period_ms;
-    c.hooks.on_cycle_begin = pub::on_cycle_begin;
-    c.hooks.on_cycle = pub::on_cycle_complete;
+    /* TWO CONSUMERS, ONE HOOK. Acquisition has one on_cycle_begin and one on_cycle, and both
+     * publishers need both: each latches its authorisation at the start of a cycle and flushes at
+     * the end, and a publisher that missed either would send under a stale snapshot or hold a
+     * packed frame past the cycle it belongs to. The fan-out lives here rather than in acquisition
+     * because which publishers an image has is this layer's business. */
+    c.hooks.on_cycle_begin = on_cycle_begin_all;
+    c.hooks.on_cycle = on_cycle_complete_all;
     c.hooks.on_cliff_sample = pub::on_cliff_sample;
     c.hooks.on_cliff_health = pub::on_cliff_health;
+#if defined(ENABLE_TOF_L7_ULD)
+    /* The grid sink, which until now went nowhere: acquisition fired it only in a test. */
+    c.hooks.on_grid_sample = gpub::on_grid_sample;
+#endif
     c.mapping_state_provider = au::state_provider;
     c.now_ms = now_ms;
     return acq::init(c);
@@ -234,7 +342,8 @@ config config_from_devicetree()
                   DT_PROP(DT_PATH(tof_chain), stop_join_timeout_ms),
                   DT_PROP(DT_PATH(tof_chain), acq_thread_priority),
                   DT_PROP(DT_PATH(tof_chain), cliff_timing_budget_us),
-                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode)};
+                  DT_PROP(DT_PATH(tof_chain), cliff_distance_mode),
+                  DT_PROP(DT_PATH(tof_chain), grid_frequency_hz)};
 }
 #endif
 
@@ -257,6 +366,16 @@ int bootstrap(const config &cfg)
      * which is why the refusal below logs rather than only returning. */
     if (cfg.cliff_timing_budget_us == 0) {
         LOG_ERR("cliff-timing-budget-us is 0: the ranging profile is required and is not defaulted");
+        return -EINVAL;
+    }
+    /* The grid rate, checked here for the same reason as the cliff profile: this is the stage that
+     * knows it is reading a deployment's devicetree and can name the property. Refused rather than
+     * clamped -- a rate silently moved to the nearest legal value is a rate nobody chose, and the
+     * one place it is written down would stop being the one in force. Required of every image, so
+     * the deployment states it once and does not have to know which drivers this build carries. */
+    if (cfg.grid_frequency_hz == 0 || cfg.grid_frequency_hz > 15) {
+        LOG_ERR("grid-frequency-hz is %u: 1..15, and the ULD's ceiling at 8x8 is 15",
+                cfg.grid_frequency_hz);
         return -EINVAL;
     }
     if (cfg.cliff_distance_mode < 2 || cfg.cliff_distance_mode > 3) {
@@ -285,7 +404,8 @@ int bootstrap(const config &cfg)
         return -ENODEV;
     }
 
-    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode);
+    build_descriptors(cfg.cliff_timing_budget_us, cfg.cliff_distance_mode,
+                      cfg.grid_frequency_hz);
 
     if (const int rc{init_authority()}; rc != 0) {
         stage_ = stage::authority_failed;
@@ -298,6 +418,16 @@ int bootstrap(const config &cfg)
      * frames plus the presence of the board -- and the publisher counts every failed send. */
     if (const int rc{can::init()}; rc != 0)
         LOG_WRN("CAN glue not available (%d): frames will be counted as send failures", rc);
+
+#if defined(ENABLE_TOF_L7_ULD)
+    /* Before the cliff publisher only because one of them has to be first; neither depends on the
+     * other, and acquisition is not configured until after both. */
+    if (const int rc{init_grid_publisher()}; rc != 0) {
+        stage_ = stage::publisher_failed;
+        LOG_ERR("grid publisher init failed (%d)", rc);
+        return rc;
+    }
+#endif
 
     if (const int rc{init_publisher()}; rc != 0) {
         stage_ = stage::publisher_failed;
@@ -385,7 +515,19 @@ int start_acquisition()
     tcfg.stack_size = stack_size_;
     tcfg.priority = cfg_.thread_priority;
     tcfg.join_timeout_ms = cfg_.stop_join_timeout_ms;
-    return acq::start(tcfg);
+
+    const int rc{acq::start(tcfg)};
+
+    /* EXPECTED AGAIN, and only now that the thread is actually running. The watchdog suspends the
+     * cycle and the acquisition sender while acquisition is stopped, and this is the other end of
+     * that: commissioning's quiesce says "stopped", a successful start says "expected".
+     *
+     * Not on the failure path, deliberately. A start that was refused leaves acquisition stopped,
+     * and claiming otherwise would put the cycle back under bounds it cannot meet -- which is a
+     * reset for a board whose only fault is that it has nothing proven to acquire with. */
+    if (rc == 0)
+        tof_watchdog_feeder::set_acquisition_expected(true);
+    return rc;
 }
 
 #ifdef CONFIG_ZTEST
@@ -418,7 +560,8 @@ const acq::source_desc *descriptors_for_test()
 
 int force_rebuild_descriptors_for_test()
 {
-    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode);
+    build_descriptors(cfg_.cliff_timing_budget_us, cfg_.cliff_distance_mode,
+                      cfg_.grid_frequency_hz);
     keyed_ = false;
     return 0;
 }

@@ -69,6 +69,14 @@ int init(const config &cfg)
     return 0;
 }
 
+#ifdef CONFIG_ZTEST
+void reset_for_test()
+{
+    cfg_ = config{};
+    ready_ = false;
+}
+#endif
+
 /* Best effort, and deliberately not allowed to change WHICH failure is reported. A proof that
  * failed its identity re-check and then failed to put the bus back still reports the re-check --
  * that is what went wrong -- but the restore is recorded either way, because an operator who is not

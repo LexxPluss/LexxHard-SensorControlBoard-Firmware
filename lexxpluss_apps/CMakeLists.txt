@@ -38,6 +38,35 @@ if(ENABLE_TOF_L7_ULD)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_l7.conf)
 endif()
 
+# THE HARDWARE WATCHDOG HAS EXACTLY ONE FEEDER, AND THIS IS WHAT KEEPS IT THAT WAY.
+#
+# The property is not checkable in the binary: wdt_feed() is a Zephyr syscall that, without
+# userspace, inlines into an indirect call through the driver's API table, so there is no symbol to
+# count call sites of. What IS checkable is the source, and this is where a second call site would
+# be introduced -- most plausibly by somebody restoring the old one-second timer feed while chasing
+# an unrelated reset, which is exactly the change that would silently undo all of this.
+file(GLOB_RECURSE wdt_feed_sources ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp ${CMAKE_CURRENT_LIST_DIR}/src/*.hpp)
+set(wdt_feed_callers "")
+foreach(f ${wdt_feed_sources})
+    file(READ ${f} contents)
+    # A real call, not the name in prose. Every actual call passes a device, so it opens with an
+    # identifier or an address-of; the comments that discuss this rule write `wdt_feed()` with
+    # nothing between the parentheses. That difference is what separates them.
+    if(contents MATCHES "[^a-zA-Z_]wdt_feed[ \t]*\\([ \t]*[A-Za-z_&]")
+        get_filename_component(base ${f} NAME)
+        if(NOT base STREQUAL "tof_watchdog_feeder.cpp")
+            list(APPEND wdt_feed_callers ${base})
+        endif()
+    endif()
+endforeach()
+if(wdt_feed_callers)
+    message(FATAL_ERROR
+        "wdt_feed() is called outside tof_watchdog_feeder.cpp: ${wdt_feed_callers}. "
+        "The hardware watchdog has exactly one feeder, it is a thread, and it feeds only while the "
+        "watched work keeps finishing. A second call site -- especially one reachable from an "
+        "interrupt -- restores the failure this was built to end. See tof_watchdog_feeder.hpp.")
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
@@ -133,13 +162,15 @@ endif()
 # needs. A separate flag, a separate overlay and a separate Kconfig fragment, so that every other
 # image -- product, chain, cliff -- comes out byte for byte as it did before this existed.
 #
-# WHAT THIS FLAG DOES AND DOES NOT DO IN THIS BRANCH. It compiles the downlink runtime, the bus
-# binding and the entropy module. It does not start any of them: nothing calls
-# tof_commission_bind::start(), so a build with the flag on carries the code, installs no CAN
-# filter, draws no token and proves nothing. The caller, and the two deployment decisions that
-# govern what it may do -- entertain a request at all, and re-enumerate the chain when it gets one
-# -- belong to the boot-wiring change and are deliberately not here. A flag nothing reads is worse
-# than a flag that does not exist yet.
+# WHAT THIS FLAG DOES AND DOES NOT DO. It compiles the downlink runtime, the bus binding and the
+# entropy module, and tof_chain_controller::init() now starts them through tof_commission_wiring: the
+# receive filter goes in, a session token is drawn and announced, and every request is answered.
+#
+# WHAT IT STILL DOES NOT DO is commission anything. The two deployment decisions that govern that --
+# entertain a request at all, and re-enumerate the chain when one arrives -- are the devicetree
+# properties commission-profile-enabled and commission-enumeration-permitted, absent by default and
+# absent from the auto-commission overlay. An image acquires neither by linking the code that could
+# perform them.
 if(ENABLE_TOF_AUTO_COMMISSION)
     if(NOT ENABLE_TOF_CLIFF_ULD)
         message(FATAL_ERROR "ENABLE_TOF_AUTO_COMMISSION requires ENABLE_TOF_CLIFF_ULD")

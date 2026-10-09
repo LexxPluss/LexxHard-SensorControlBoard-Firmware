@@ -37,6 +37,11 @@ constexpr int kEnumeratedShift{10};
 constexpr int kModelVerifiedShift{14};
 constexpr int kFlagsShift{18};
 constexpr int kFailingShift{21};
+/* THE GRID PERMISSION, two bits, 29..30. The snapshot is ONE 32-bit atomic on purpose -- that is
+ * what makes a single read a coherent pair -- so a field that is not packed here is a field that is
+ * silently dropped, which is how this one first read back as zero on every proof. 8+2+4+4+3+8+2 =
+ * 31 bits used, one spare. */
+constexpr int kGridMaskShift{29};
 
 atomic_t published_{};
 
@@ -111,7 +116,8 @@ uint32_t pack(const snapshot &s)
            (static_cast<uint32_t>(s.enumerated_mask & 0xF) << kEnumeratedShift) |
            (static_cast<uint32_t>(s.model_verified_mask & 0xF) << kModelVerifiedShift) |
            (static_cast<uint32_t>(s.chain_flags & 0x7) << kFlagsShift) |
-           (static_cast<uint32_t>(s.failing_position) << kFailingShift);
+           (static_cast<uint32_t>(s.failing_position) << kFailingShift) |
+           (static_cast<uint32_t>(s.grid_source_mask & 0x3) << kGridMaskShift);
 }
 
 snapshot unpack(uint32_t w)
@@ -123,6 +129,7 @@ snapshot unpack(uint32_t w)
     s.model_verified_mask = static_cast<uint8_t>((w >> kModelVerifiedShift) & 0xF);
     s.chain_flags = static_cast<uint8_t>((w >> kFlagsShift) & 0x7);
     s.failing_position = static_cast<uint8_t>((w >> kFailingShift) & 0xFF);
+    s.grid_source_mask = static_cast<uint8_t>((w >> kGridMaskShift) & 0x3);
     return s;
 }
 
@@ -166,6 +173,24 @@ bool matches_runtime(const pf::fingerprint &fp, const enm::chain_spec &spec)
  * AND carries a known, distinct role. So the four bits are exactly the four positions the
  * fingerprint describes. Deriving them from the fingerprint rather than writing 0xF keeps the
  * derivation honest if the profile ever admits a chain with fewer cliff sources. */
+/* THE GRID PERMISSION, from the grid's own source ids. Deliberately a second function rather than
+ * another output of masks_from(): that one keys on source_id_of(l4_role), which is the CLIFF table,
+ * and the two happen to agree on bits 0 and 1 under the current chain profile only because the
+ * profile puts the grid pair first. Deriving one from the other would be a coincidence written
+ * down as a rule. */
+void grid_mask_from(const pf::fingerprint &fp, uint8_t &grid)
+{
+    grid = 0;
+    for (size_t i{0}; i < fp.positions; ++i) {
+        const int8_t src{fp.at[i].source_id};
+        /* The fingerprint carries the grid source id the SPEC assigned to that position, and the
+         * proof's own verified flag. A position with no grid source carries -1. */
+        if (src < 0 || src >= 8 || !fp.at[i].verified)
+            continue;
+        grid |= static_cast<uint8_t>(1U << src);
+    }
+}
+
 void masks_from(const pf::fingerprint &fp, uint8_t &enumerated, uint8_t &model_verified)
 {
     enumerated = 0;
@@ -436,6 +461,7 @@ commit_refusal commit_proof(pf::proof_token &&token, uint8_t host_epoch)
      * masks a consumer reads are now derived from evidence rather than left at zero -- which
      * they were only for as long as nothing had proved a role at all. */
     masks_from(installed_, proven.enumerated_mask, proven.model_verified_mask);
+    grid_mask_from(installed_, proven.grid_source_mask);
     proven.failing_position = kNoFailingPosition;
     publish(proven);
 
@@ -490,6 +516,19 @@ void note_mapping_lost()
 
     snapshot next{now};
     next.state = tof_acq::mapping_state::lost;
+    /* THE GRID PERMISSION IS REVOKED HERE, unlike the enumeration masks a few functions down.
+     *
+     * The two look alike and are not. enumerated_mask is an OBSERVATION -- the contract defines it
+     * as the last enumeration result -- so carrying it through a loss keeps a true statement true.
+     * grid_source_mask is a PERMISSION: it says the committed proof verified that grid source, and
+     * the mapping it rested on is exactly what was just lost. Copying it forward would leave the
+     * gate holding a permission issued by a proof that no longer stands.
+     *
+     * The state gate refuses every grid while non-PROVEN, so this is not a publishing hole today.
+     * It is the invariant the header states -- zero while non-PROVEN -- and a field that is only
+     * correct because a second check happens to cover it is a field that will be wrong the day
+     * that check moves. */
+    next.grid_source_mask = 0;
     publish(next);
     installed_ = kNoMapping;
 }
@@ -540,7 +579,13 @@ bool note_chain_fault(uint8_t chain_flags, uint8_t failing_position)
     /* The enumeration masks are deliberately NOT cleared, in either branch. The contract defines
      * them as the last enumeration result, so zeroing them to satisfy the encoder would report
      * "nothing enumerated" -- a different claim, and a false one. With no position named they
-     * cannot make the frame contradictory anyway. */
+     * cannot make the frame contradictory anyway.
+     *
+     * The grid permission IS cleared, for the same reason it is cleared on a loss: it is not an
+     * observation of what was seen but a statement that a committed proof verified that grid
+     * source, and this fault says the chain is not the one that proof measured. See the note in
+     * note_mapping_lost(). */
+    next.grid_source_mask = 0;
     publish(next);
     installed_ = kNoMapping;
     return acceptable;

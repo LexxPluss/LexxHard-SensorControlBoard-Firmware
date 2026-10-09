@@ -108,6 +108,17 @@ struct snapshot {
     // ids and known, distinct roles.
     uint8_t enumerated_mask{0};
     uint8_t model_verified_mask{0};
+    /* THE GRID PAIR'S PERMISSION, keyed by GRID source_id and nothing else.
+     *
+     * enumerated_mask is built from source_id_of(l4_role), which maps the four CLIFF roles onto
+     * 0..3. Its bits 0 and 1 are front_left and rear_left -- they are not grid sources, and reading
+     * them as grid permission is only ever right by coincidence of the current chain profile. This
+     * is the separate statement: bit N is set when the committed proof verified the position whose
+     * spec carries grid source N.
+     *
+     * Published in the SAME snapshot, so a consumer that reads this and `state` together reads a
+     * pair that existed. Zero while non-PROVEN, because nothing has proved a grid source either. */
+    uint8_t grid_source_mask{0};
     uint8_t chain_flags{0};        // contract flags bits 0-2
     uint8_t failing_position{0xFF}; // 1-6, or 0xFF for none
 };
