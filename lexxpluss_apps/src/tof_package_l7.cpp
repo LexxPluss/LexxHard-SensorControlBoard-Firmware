@@ -185,16 +185,28 @@ int lifecycle::read_once(bool *fresh)
 
 int lifecycle::stop()
 {
-    if (!initialised_)
+    if (!initialised_) {
+        status_.last_stop_refusal = stop_refusal::not_initialised;
         return -EPERM;
+    }
     /* Accepts both, and that is the point: stop_owed exists so that cleanup is possible after an
-     * outcome nobody could confirm, and refusing it here would make the state a dead end. */
-    if (status_.current != state::ranging && status_.current != state::stop_owed)
+     * outcome nobody could confirm, and refusing it here would make the state a dead end.
+     *
+     * AND THE REFUSAL IS RECORDED, because the three -EPERM paths here are not the same event and
+     * the caller cannot tell them apart from the return value. Reaching this one means NO DEVICE
+     * CALL IS MADE and the budget is untouched -- see stop_refusal for the run where that was
+     * reported as a spent budget. */
+    if (status_.current != state::ranging && status_.current != state::stop_owed) {
+        status_.last_stop_refusal = stop_refusal::wrong_state;
         return -EPERM;
+    }
 
-    if (status_.stop_attempts_used >= config_.stop_attempts)
+    if (status_.stop_attempts_used >= config_.stop_attempts) {
+        status_.last_stop_refusal = stop_refusal::budget_spent;
         return -EPERM;
+    }
 
+    status_.last_stop_refusal = stop_refusal::none;
     ++status_.stop_attempts_used;
     const int rc{hooks_.stop(hooks_.ctx)};
     if (rc == 0) {

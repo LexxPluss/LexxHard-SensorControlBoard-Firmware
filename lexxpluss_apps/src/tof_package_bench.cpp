@@ -57,6 +57,7 @@ extern "C" {
 #include "vl53l7cx_port.h"
 
 #include "tof_l7_probe_verdict.hpp"
+#include "tof_l7_quiesce.hpp"
 #include "tof_l7_runtime.hpp"
 #include "tof_l7_sensor.hpp"
 #include "tof_package_bench_deadman.hpp"
@@ -141,6 +142,13 @@ int hook_probe(void *, uint8_t addr_7bit, bool *present, bool *wrong_identity)
     return v.rc;
 }
 
+/* The timeout code is pinned on both sides rather than trusted on one: the pure classifier cannot
+ * include the vendor header, so it names the value and this is where the two are compared. */
+static_assert(tof_l7_quiesce::kUldTimeout == VL53L7CX_STATUS_TIMEOUT_ERROR,
+              "the pure classifier's timeout code no longer matches the ULD's");
+static_assert(tof_l7_quiesce::kUldOk == VL53L7CX_STATUS_OK,
+              "the pure classifier's OK code no longer matches the ULD's");
+
 int hook_quiesce(void *, uint8_t addr_7bit)
 {
     /* Stops a device that answered before this run began, using calls that need only an address.
@@ -149,12 +157,27 @@ int hook_quiesce(void *, uint8_t addr_7bit)
     VL53L7CX_Configuration *const probe_dev{addressed(addr_7bit)};
 
     vl53l7cx_port_clear_error(&port_ctx);
+    const uint32_t started{k_cycle_get_32()};
     const uint8_t uld_status{vl53l7cx_stop_ranging(probe_dev)};
-    if (const int fault{vl53l7cx_port_argument_fault()}; fault != 0)
-        return fault;
-    if (const int rc{vl53l7cx_port_error(&port_ctx)}; rc != 0)
-        return rc;
-    return uld_status == VL53L7CX_STATUS_OK ? 0 : -EIO;
+    const uint32_t elapsed_us{k_cyc_to_us_floor32(k_cycle_get_32() - started)};
+
+    /* READ ONCE, RECORDED ONCE, AND EVERY FIELD FROM THIS CALL.
+     *
+     * The earlier version returned from three places and kept nothing, so a -5 could not be placed
+     * in a layer. It also must not become a version that reads these back later: the port's errno
+     * and completed count are sticky per context, so whatever runs next owns them. They are taken
+     * here, between the ULD's return and anything else touching the bus.
+     *
+     * ONE RETURN, so "every path records" is structural rather than a thing to remember -- success
+     * included, which is what makes a successful quiesce followed by a later failure legible. */
+    const tof_l7_quiesce::inputs observed{
+        .argument_fault = vl53l7cx_port_argument_fault(),
+        .port_errno = vl53l7cx_port_error(&port_ctx),
+        .completed = vl53l7cx_port_completed_transfers(&port_ctx),
+        .uld_status = uld_status,
+    };
+    tof_l7_quiesce::remember(observed, elapsed_us);
+    return tof_l7_quiesce::last().rc;
 }
 
 int hook_close(void *)
@@ -483,15 +506,65 @@ int cmd_stop(const struct shell *sh, size_t, char **)
     report(sh);
     if (rc != 0) {
         shell_error(sh, "stop failed: %d", rc);
-        if (lifecycle_.current().current == tof_package::state::stop_owed)
+        /* REPORTED FROM THE REFUSAL, NOT FROM THE STATE. This read `current == blocked` and called
+         * it a spent budget; on 2026-10-12 that printed "the retry budget is spent. The device may
+         * still be measuring" for a stop that never reached the device, because the state was
+         * `blocked` from bring_up's survivor refusal and stop() returned at its state guard. A
+         * state is not a reason. */
+        switch (lifecycle_.current().last_stop_refusal) {
+        case tof_package::stop_refusal::wrong_state:
+            /* NOTHING OWED A STOP, SO THIS CALL ASKED NOTHING -- but whether an EARLIER call did is
+             * a different question, and it is the one that matters. The step answers it: a `stop`
+             * step is a device that was asked and gave up on, anything else was never asked. The
+             * old message read the state alone and could not tell them apart. */
+            if (lifecycle_.current().failed_step == tof_package::step::stop) {
+                shell_error(sh, "the stop was asked as many times as configured and never "
+                                "acknowledged. The device may still be measuring and this tool "
+                                "cannot stop it; report it rather than re-binding.");
+            } else {
+                shell_error(sh, "nothing here owes a stop, so the device was NOT asked and the "
+                                "retry budget is untouched. State %s, blocked at step %s -- that "
+                                "step is what to report.",
+                            tof_package::state_name(lifecycle_.current().current),
+                            tof_package::step_name(lifecycle_.current().failed_step));
+            }
+            break;
+        case tof_package::stop_refusal::budget_spent:
+            /* Unreachable while the state guard precedes the budget guard; see stop_refusal. Kept
+             * so that making it reachable is a compile-time choice rather than a silent fallthrough
+             * into one of the messages above. */
+            shell_error(sh, "the retry budget is spent.");
+            break;
+        case tof_package::stop_refusal::not_initialised:
+            shell_error(sh, "the lifecycle is not initialised; bind first.");
+            break;
+        case tof_package::stop_refusal::none:
+            /* The device was asked and refused. The debt stands and a retry is the way out. */
             shell_warn(sh, "the stop was not acknowledged. Retry it: reads and a reopen stay "
                            "refused until one succeeds.");
-        else if (lifecycle_.current().current == tof_package::state::blocked)
-            shell_error(sh, "the retry budget is spent. The device may still be measuring and "
-                            "this tool cannot stop it; report it rather than re-binding.");
+            break;
+        }
         return rc;
     }
     return 0;
+}
+
+const char *quiesce_layer_name(tof_l7_quiesce::layer which)
+{
+    switch (which) {
+    case tof_l7_quiesce::layer::ok:
+        return "ok";
+    case tof_l7_quiesce::layer::image_fault:
+        return "image_fault";
+    case tof_l7_quiesce::layer::transport:
+        return "transport";
+    case tof_l7_quiesce::layer::handshake:
+        return "handshake_timeout";
+    case tof_l7_quiesce::layer::device_status:
+        return "device_status";
+    }
+    /* No default above, so adding a layer is a compile error here rather than a silent "unknown". */
+    return "unnamed";
 }
 
 int cmd_status(const struct shell *sh, size_t, char **)
@@ -499,6 +572,26 @@ int cmd_status(const struct shell *sh, size_t, char **)
     shell_print(sh, "bound %s", bound_ ? "yes" : "no");
     if (bound_)
         report(sh);
+
+    /* THE QUIESCE RECORD, PRINTED WHENEVER THERE IS ONE. This is the half of a survivor refusal
+     * that the 2026-10-12 run could not report: the -5 it printed was four observations folded into
+     * one errno. `taken` is printed as its own line rather than as zeroes, because a run that never
+     * quiesced must not read as one that quiesced cleanly. */
+    if (const tof_l7_quiesce::record &q{tof_l7_quiesce::last()}; q.taken) {
+        shell_print(sh, "quiesce #%u: %s  rc %d  uld_status 0x%02x  port_errno %d  completed %u  "
+                        "%u us",
+                    q.sequence, quiesce_layer_name(q.which), q.rc, q.raw.uld_status,
+                    q.raw.port_errno, q.raw.completed, q.elapsed_us);
+        if (q.which == tof_l7_quiesce::layer::handshake)
+            shell_print(sh, "  every transfer succeeded and the MCU stop was never confirmed. The "
+                            "duration alone does not say this -- a failing transport spends the "
+                            "same five seconds -- the port errno of 0 does.");
+        else if (q.which == tof_l7_quiesce::layer::transport)
+            shell_print(sh, "  the port recorded a transport error, so the ULD status byte is not "
+                            "interpreted. Look at the bus before the device.");
+    } else {
+        shell_print(sh, "quiesce: none recorded since boot");
+    }
 
     const tof_l7_runtime::snapshot blob{tof_l7_runtime::current()};
 

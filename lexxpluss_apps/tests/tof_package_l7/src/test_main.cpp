@@ -377,6 +377,102 @@ ZTEST(tof_package_l7, test_a_survivor_that_cannot_be_quiesced_blocks_the_run)
     zassert_true(s.survivor_found);
 }
 
+ZTEST(tof_package_l7, test_a_stop_after_a_survivor_refusal_is_a_state_refusal_and_asks_no_device)
+{
+    /* THE MISREPORT THIS CASE EXISTS FOR. On 2026-10-12 a bench run refused at the survivor step and
+     * the operator then ran `stop`, which printed "the retry budget is spent. The device may still
+     * be measuring and this tool cannot stop it". None of that had happened: stop() returned -EPERM
+     * at its state guard, the device was never asked, and the budget was untouched. The shell had
+     * inferred the reason from `current == blocked`, and `blocked` is reached by every refusal
+     * earlier than a stop as well as by a spent budget.
+     *
+     * So this pins the three things the message got wrong, at the layer that knows them. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.probe_present = true;
+    spy_.quiesce_rc = -ETIMEDOUT;
+    zassert_equal(lc_.bring_up(), -ETIMEDOUT);
+    zassert_equal(lc_.current().current, pkg::state::blocked);
+
+    const int stop_calls_before{spy_.stop_calls};
+    const uint8_t budget_before{lc_.current().stop_attempts_used};
+
+    zassert_equal(lc_.stop(), -EPERM, "nothing here owes a stop");
+    zassert_equal(spy_.stop_calls, stop_calls_before, "the device must not be asked");
+    zassert_equal(lc_.current().stop_attempts_used, budget_before, "the budget must not move");
+    zassert_equal(lc_.current().last_stop_refusal, pkg::stop_refusal::wrong_state,
+                  "and the refusal must say which one it was, not leave it to be guessed from the "
+                  "state");
+
+    /* Repeating it does not accumulate anything either: still a state refusal, still no device
+     * call. A reader who tries twice must not end up with a spent-looking budget. */
+    zassert_equal(lc_.stop(), -EPERM);
+    zassert_equal(spy_.stop_calls, stop_calls_before);
+    zassert_equal(lc_.current().stop_attempts_used, budget_before);
+    zassert_equal(lc_.current().last_stop_refusal, pkg::stop_refusal::wrong_state);
+}
+
+ZTEST(tof_package_l7, test_a_spent_budget_is_told_apart_by_the_step_not_by_the_refusal)
+{
+    /* THE OTHER SIDE OF THE SAME DISTINCTION, and it does not live where the first attempt at this
+     * case assumed. `stop_refusal::budget_spent` is unreachable: the attempt that spends the budget
+     * also sets the state to `blocked`, so the next stop() answers at the state guard. Writing the
+     * case that expected `budget_spent` is what surfaced that -- see stop_refusal for why the
+     * guards are not reordered to make it reachable.
+     *
+     * What IS observable, and what the shell has to report from, is the pair: `blocked` with
+     * `failed_step == step::stop` is the device-was-asked case. Here the device really is asked, as
+     * many times as configured. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.start_rc = -EIO;
+    zassert_equal(lc_.bring_up(), -EIO);
+    zassert_equal(lc_.current().current, pkg::state::stop_owed, "a failed start owes a stop");
+
+    spy_.stop_rc = -ETIMEDOUT;
+    int asked{0};
+    while (lc_.stop() == -ETIMEDOUT)
+        ++asked;
+
+    zassert_true(asked > 0, "the device was asked at least once");
+    zassert_equal(spy_.stop_calls, asked, "every attempt reached the device");
+    zassert_equal(lc_.current().current, pkg::state::blocked);
+    zassert_equal(lc_.current().failed_step, pkg::step::stop,
+                  "and the step says the stop is what gave up -- this is the pair that means a "
+                  "device may still be measuring");
+
+    /* The refusal after that is a state refusal, reaching no device -- so the reason an operator
+     * needs is in the step, not in this field. */
+    const int reached{spy_.stop_calls};
+    zassert_equal(lc_.stop(), -EPERM);
+    zassert_equal(spy_.stop_calls, reached, "the refused attempt after exhaustion reached nothing");
+    zassert_equal(lc_.current().last_stop_refusal, pkg::stop_refusal::wrong_state);
+    zassert_equal(lc_.current().failed_step, pkg::step::stop, "the step still names the stop");
+}
+
+ZTEST(tof_package_l7, test_the_two_blocked_cases_are_distinguishable_from_what_is_recorded)
+{
+    /* The whole point, stated as one comparison: both runs end `blocked` with a `wrong_state`
+     * refusal, and only `failed_step` separates "asked and gave up" from "never asked". A reporter
+     * that looks at the state alone -- which is what printed the wrong message on 2026-10-12 --
+     * cannot tell these two apart. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.probe_present = true;
+    spy_.quiesce_rc = -ETIMEDOUT;
+    zassert_equal(lc_.bring_up(), -ETIMEDOUT);
+    zassert_equal(lc_.stop(), -EPERM);
+
+    zassert_equal(lc_.current().current, pkg::state::blocked);
+    zassert_equal(lc_.current().last_stop_refusal, pkg::stop_refusal::wrong_state);
+    zassert_equal(lc_.current().failed_step, pkg::step::survivor, "never asked for a stop");
+    zassert_equal(spy_.stop_calls, 0, "and the device confirms it");
+}
+
+ZTEST(tof_package_l7, test_a_stop_before_init_names_that_rather_than_a_budget)
+{
+    pkg::lifecycle fresh;
+    zassert_equal(fresh.stop(), -EPERM);
+    zassert_equal(fresh.current().last_stop_refusal, pkg::stop_refusal::not_initialised);
+}
+
 /* ---- something answered and is not an L7 -------------------------------------------------- */
 
 /* A WRONG IDENTITY IS NOT A COLD DEVICE, and this is the case that separates the Package sensor from

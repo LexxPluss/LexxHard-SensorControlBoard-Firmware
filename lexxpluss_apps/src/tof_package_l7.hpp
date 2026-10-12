@@ -107,6 +107,44 @@ struct config {
     uint8_t stop_attempts{3};
 };
 
+/* WHY A STOP WAS REFUSED, reported rather than inferred.
+ *
+ * `stop()` returns -EPERM from three unrelated places -- not initialised, a state that owes no
+ * stop, and a spent retry budget -- and the shell used to tell them apart by looking at the state
+ * afterwards, reading `blocked` as "the budget is spent". On 2026-10-12 that printed "the retry
+ * budget is spent. The device may still be measuring" for a run whose budget was untouched: the
+ * state was `blocked` because bring_up had refused at the survivor step, so `stop()` returned at
+ * its state guard without calling the device at all. The message named the wrong cause AND implied
+ * a device interaction that never happened.
+ *
+ * A state is not a reason. Three refusals that share a return value have to say which one they
+ * were. */
+enum class stop_refusal : uint8_t {
+    none = 0,
+    /* init() has not run, or ran and failed. */
+    not_initialised,
+    /* Nothing owes a stop: the state is neither `ranging` nor `stop_owed`. `blocked` from any
+     * refusal EARLIER than a stop lands here, and no device call is made. */
+    wrong_state,
+    /* The device was asked and did not acknowledge, as many times as configured.
+     *
+     * UNREACHABLE WHILE THE STATE GUARD COMES FIRST, and the ordering is deliberate. The attempt
+     * that spends the budget also sets the state to `blocked`, so every stop() after it answers at
+     * the state guard and records `wrong_state`. Writing the test that expected this value is what
+     * surfaced it.
+     *
+     * The guards are NOT reordered to make it reachable, because "does anything owe a stop" is the
+     * prior question and reordering mis-answers a real case: a run that spends attempts and then
+     * succeeds leaves the state `idle` with the counter still at the budget, where the truthful
+     * answer is "nothing owes a stop" and a budget-first order would say "the budget is spent".
+     *
+     * So this enumerator is kept for the guard that produces it and the OBSERVABLE distinction
+     * lives elsewhere: `blocked` with `failed_step == step::stop` is the device-was-asked case,
+     * `blocked` with any earlier step is the device-was-never-asked case. That pair is what the
+     * shell reports and what the regression pins. */
+    budget_spent,
+};
+
 struct status {
     state current{state::idle};
     step failed_step{step::none};
@@ -116,6 +154,9 @@ struct status {
      * able to say so. */
     bool survivor_found{false};
     uint8_t stop_attempts_used{0};
+    /* Set by every stop() that refuses, cleared by one that succeeds. Never inferred from
+     * `current`. */
+    stop_refusal last_stop_refusal{stop_refusal::none};
 };
 
 class lifecycle {

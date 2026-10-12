@@ -188,6 +188,55 @@ ZTEST(tof_l7_uld_stop, test_a_stop_that_never_confirms_is_a_failure_not_a_timeou
 	zassert_true(polls_seen > 500, "the full poll budget was spent: %d", polls_seen);
 }
 
+/* A TRANSPORT FAILURE MUST NOT BE REPORTED AS A HANDSHAKE TIMEOUT, which is the half of the
+ * layer rule that lives in this patch rather than in the adapter.
+ *
+ * The 2026-10-12 bench run returned -5 from the quiesce and nothing else, and the first reading of
+ * it was "the MCU stop was not confirmed". These two cases pin why the status byte cannot be read
+ * that way on its own: a read that fails leaves the polled byte untouched, so the loop runs to its
+ * bound exactly as a silent device would, and the patch's `status == OK` guard is the only thing
+ * keeping the transport error from being overwritten with TIMEOUT_ERROR.
+ *
+ * THEY ALSO PIN WHY THE DURATION IS NOT A DISCRIMINATOR: the poll budget is spent in full here too,
+ * so "it took five seconds" is true of both layers and separates neither. */
+ZTEST(tof_l7_uld_stop, test_a_failed_poll_read_reports_the_transport_error_not_a_timeout)
+{
+	confirm_after_polls = -1;
+	status0_before = 0x00;
+	fail_read_reg = REG_G02_STATUS_0;   /* the polled status read NACKs; everything else answers */
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR,
+		      "a stop whose poll could not be read is a transport failure and keeps that value");
+	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR,
+			  "the patch's `status == OK` guard is what stops the timeout from overwriting "
+			  "an error that had already been recorded");
+	/* COUNTED THROUGH THE WAIT, NOT THROUGH THE POLL. `polls_seen` is incremented on
+	 * read_register()'s SUCCESS path, so the read this case makes fail never reaches it -- the
+	 * first version of this assertion asked the one counter the scenario had just disabled. The
+	 * WaitMs fake is called once per iteration and does not fail, so it counts the iterations
+	 * that actually happened. */
+	zassert_equal(polls_seen, 0, "no poll read succeeded, so that counter cannot measure this");
+	zassert_true(waits_seen > 500,
+		     "and it still spent the whole five seconds, which is why the duration tells the "
+		     "two layers apart no better than the OR did: %d waits",
+		     waits_seen);
+}
+
+ZTEST(tof_l7_uld_stop, test_a_bus_that_answers_nothing_is_also_not_a_timeout)
+{
+	/* The blunter version: every read fails, including the auto-stop flag that decides whether the
+	 * MCU stop is provoked at all. Still an error, still not the timeout code. */
+	confirm_after_polls = -1;
+	fail_reads = 1;
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR);
+	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR);
+}
+
 /* The byte a silent device produces through a zeroing port is 0x00, and that is also the ordinary
  * "not stopped yet" reading -- which is exactly why `status |= tmp` could not see it. Pinned with a
  * second value that is equally invisible to an OR. */
