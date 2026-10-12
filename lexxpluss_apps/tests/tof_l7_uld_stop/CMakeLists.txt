@@ -29,7 +29,8 @@ configure_file(${L7_DIR}/upstream/modules/vl53l7cx_buffers.h ${PATCHED_DIR}/vl53
 find_program(PATCH_EXECUTABLE patch REQUIRED)
 foreach(l7_patch
     0001-use-verified-external-firmware.patch
-    0002-stop-ranging-timeout-is-a-failure.patch)
+    0002-stop-ranging-timeout-is-a-failure.patch
+    0004-mcu-boot-timeout-is-a-failure.patch)
   execute_process(
     COMMAND ${PATCH_EXECUTABLE} --silent -p1 -i ${L7_DIR}/zephyr/patches/${l7_patch}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/vl53l7cx_uld_patched

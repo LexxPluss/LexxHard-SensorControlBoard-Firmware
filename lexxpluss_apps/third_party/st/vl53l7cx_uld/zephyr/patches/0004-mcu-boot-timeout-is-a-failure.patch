@@ -1,0 +1,71 @@
+_vl53l7cx_poll_for_mcu_boot() must not report success for a boot it did not see.
+
+This is 0002's defect in the other place it lives, found by auditing what
+vl53l7cx_init() actually treats as success. The MCU boot wait polls GO2 status 0
+for bit 7 with a 1 ms wait, up to 500 times, and if the loop runs out it falls
+through to `return status` WITHOUT SETTING ANYTHING. Every read having succeeded,
+status is VL53L7CX_STATUS_OK -- so a device whose MCU never boots reports a
+successful boot wait.
+
+It also did `status |= go2_status1`, the same OR of a DEVICE REGISTER into a
+status byte that 0002 had to remove from vl53l7cx_stop_ranging(): the ULD's own
+codes live in those 8 bits, so a device byte of 0x01 is indistinguishable from
+TIMEOUT_ERROR and 0xFF from STATUS_ERROR.
+
+WHAT THIS DOES NOT CLAIM. init() checks `if(status != 0) goto exit` right after
+the call, and the next step polls UI_CMD_STATUS through
+_vl53l7cx_poll_for_answer(), which DOES report its timeout. So a non-booting MCU
+was probably still caught, one step later and 2 s further on, as a UI command
+that did not answer. The defect is therefore misattribution rather than silent
+success -- which is exactly the failure this driver's bench work has spent its
+rounds removing, and the reason a boot that did not happen must say so itself.
+
+ONLY LOOP EXHAUSTION BECOMES A TIMEOUT. The loop has three exits and they are not
+the same event: bit 7 set is a boot that answered, bit 0 set is upstream's
+separate "stop waiting" condition whose meaning is not changed here, and running
+out of iterations is the one that had no report. A `timeout >= 500` test after
+the loop would have mislabelled a bit-0 exit that happened on the last
+iteration, so the two early exits mark themselves instead.
+
+And an error already recorded is kept: a transport failure during polling stays
+the status rather than being overwritten by the timeout, which is the ordering
+0002 settled.
+
+--- a/modules/vl53l7cx_api.c
++++ b/modules/vl53l7cx_api.c
+@@ -63,24 +63,34 @@
+               VL53L7CX_Configuration      *p_dev)
+ {
+    uint8_t go2_status0, go2_status1, status = VL53L7CX_STATUS_OK;
++   uint8_t left_early = 0;
+    uint16_t timeout = 0;
+ 
+    do {
+ 		status |= VL53L7CX_RdByte(&(p_dev->platform), 0x06, &go2_status0);
+ 		if((go2_status0 & (uint8_t)0x80) != (uint8_t)0){
+ 			status |= VL53L7CX_RdByte(&(p_dev->platform), 0x07, &go2_status1);
+-			status |= go2_status1;
++			if((go2_status1 != (uint8_t)0)
++				&& (status == VL53L7CX_STATUS_OK)){
++				status = VL53L7CX_STATUS_ERROR;
++			}
++			left_early = 1;
+ 			break;
+ 		}
+ 		(void)VL53L7CX_WaitMs(&(p_dev->platform), 1);
+ 		timeout++;
+ 
+ 		if((go2_status0 & (uint8_t)0x1) != (uint8_t)0){
++			left_early = 1;
+ 			break;
+ 		}
+ 
+ 	}while (timeout < (uint16_t)500);
+ 
++   if((left_early == (uint8_t)0) && (status == VL53L7CX_STATUS_OK)){
++      status = VL53L7CX_STATUS_TIMEOUT_ERROR;
++   }
++
+    return status;
+ }
+ 
