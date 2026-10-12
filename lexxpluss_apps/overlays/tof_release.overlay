@@ -1,0 +1,78 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+/*
+ * THE DEPLOYMENT ACT, and it is only that. Stacked on tof_chain.overlay and
+ * auto_commission.overlay by firmware_tof_release and by nothing else, so every other image --
+ * the product firmware, the chain build, the cliff build, firmware_tof_full -- comes out exactly
+ * as it did before this file existed.
+ *
+ * auto_commission.overlay deliberately leaves the two permissions and the two budgets out and
+ * says why: "Adding either is a bench or a deployment act and belongs to whoever is making it, in
+ * a diff of this file." This is that diff, kept in its own file rather than written into that one,
+ * because the image that may commission and the image that may not have to remain separately
+ * buildable while the release is being accepted.
+ */
+
+&tof_chain {
+	/*
+	 * MAY THIS BOARD BE ADDRESSED AT ALL. Absent means no; present means the session layer
+	 * answers a request instead of answering `disabled`.
+	 */
+	commission-profile-enabled;
+
+	/*
+	 * MAY IT DRIVE THE ENABLE LINES AND RE-ADDRESS. The binding states the condition this
+	 * property stands in for: "There is no trustworthy stationary condition in this firmware --
+	 * nothing can currently tell a parked machine from a moving one -- so this answers the
+	 * question from the image rather than inventing a runtime signal that would be wrong."
+	 *
+	 * THE CONDITION THIS IMAGE ASSERTS, written out because the property cannot check it:
+	 *
+	 *   - Re-addressing happens only while a commissioning request is being served, and the
+	 *     only thing that issues one is the ROS host's commissioning node. So the deployment
+	 *     condition is a property of WHEN THE HOST ASKS, not of this firmware.
+	 *   - THE HOST MUST ENSURE the machine cannot move while it asks. This is a requirement on
+	 *     the deployment, not a property anything here provides: nothing in this firmware and
+	 *     nothing in the host gates task start on commissioning having finished, so "the request
+	 *     goes out during bring-up, before the vehicle is given a task" is what the integration
+	 *     has to arrange and keep true -- it is not enforced.
+	 *   - A chain being re-enumerated publishes no measurements: the mapping is not PROVEN
+	 *     until the transaction commits, and nothing downstream may act on a mapping that is
+	 *     not. So the window is observable from outside rather than silent.
+	 *   - What is NOT asserted: that the firmware will refuse a mid-motion request. It will
+	 *     not, because it cannot tell. If a consumer ever issues commissioning at runtime, that
+	 *     consumer owns the stationary condition and this comment stops being sufficient.
+	 */
+	commission-enumeration-permitted;
+
+	/*
+	 * FINITE AND NON-ZERO, and the two numbers are budgets PER BOOT rather than per request:
+	 * a new request_seq, a host restart and a start_only after a failed prove_and_start all
+	 * draw on the same two counters. That is what makes a bound meaningful at all -- a
+	 * per-request budget would hand out a fresh allowance every time a retry loop changed a
+	 * sequence number, which is unbounded retry nobody chose.
+	 *
+	 * A CEILING, NOT A RETRY POLICY, and the difference matters because nothing currently
+	 * spends the spare attempts. The ROS host runs ONE transaction per run and latches it:
+	 * tof_commission_host's own comment is "ONE TRANSACTION PER RUN, LATCHED SEPARATELY FROM
+	 * state_", and run_finished_ is set by any terminal status -- done or refused -- after
+	 * which "nothing a session says may clear it". So a failed proof ends that run, and a
+	 * retransmitted request does not re-run one. These numbers bound what a boot MAY spend if
+	 * something ever asks again; they do not make this deployment tolerant of a transient.
+	 * Automatic recovery after a failure, and after the SCB draws a new session, is a separate
+	 * capability and has to be verified on its own.
+	 *
+	 * THREE IS A JUDGEMENT AND NOT A MEASUREMENT, stated plainly because the file next door
+	 * labels acq-stack-size the same way: one clean boot needs exactly one proof, so a ceiling
+	 * of three leaves room for a retrying host without letting a board spend a whole boot
+	 * re-enumerating its chain. It is here rather than in code so that revisiting it after
+	 * acceptance is an overlay diff.
+	 */
+	commission-max-proof-attempts = <3>;
+	commission-max-start-attempts = <3>;
+};
