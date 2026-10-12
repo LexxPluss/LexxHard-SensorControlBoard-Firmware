@@ -491,6 +491,39 @@ firmware_tof_full:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-full -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
+# THE RELEASE CANDIDATE. firmware_tof_full plus the one thing that image deliberately leaves out:
+# the deployment act. overlays/tof_release.overlay sets commission-profile-enabled,
+# commission-enumeration-permitted and a finite non-zero attempt budget, and states the stationary
+# condition the permission stands in for -- the firmware cannot check it, so the overlay says who
+# owns it.
+#
+# ON TOP OF auto_commission.overlay, NOT INSTEAD OF IT. The cadences stay where they are; this file
+# carries only what a deployment decides. Keeping them apart is what leaves firmware_tof_full
+# buildable and byte-identical while this candidate is being accepted, so the two can be compared
+# on a bench rather than argued about.
+#
+# WHAT IT STILL DOES NOT DO: lift the PROVEN clamp. clamp_mapping_state() refuses PROVEN
+# unconditionally with no build flag, so this image commissions, installs a mapping and starts
+# acquisition, and then publishes no measurement frame. That is the point of building it first --
+# the commissioning sequence can be accepted on its own evidence (proof, identity recheck at the
+# product speed, mapping install, acquisition start, boot timing, stack watermark) before the clamp
+# is removed in its own commit. An image that did both at once would offer no way to tell which
+# half a failure came from.
+#
+# Delivered as a padded TEST image, for the reason firmware_tof_cliff states: the CAN DFU writes
+# raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer embedded in the file
+# can request a swap, and an unpadded signed.bin sits there doing nothing while the machine keeps
+# running the old firmware -- which looks identical to a revert.
+.PHONY: firmware_tof_release
+firmware_tof_release:
+	./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-release -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay;overlays/tof_release.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-release/zephyr/zephyr.signed.bin out/zephyr_tof_release.signed.bin
+	mv build-tof-release/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_release.signed.confirmed.bin
+	cp out/zephyr_tof_release.signed.confirmed.bin out/zephyr_tof_release.test.bin
+	printf '\377' | dd of=out/zephyr_tof_release.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_release.test.bin) - 24)) conv=notrunc status=none
+
 # The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
 # only things enabling that peripheral.
