@@ -10,6 +10,7 @@
 #if defined(ENABLE_TOF_L7_ULD)
 
 #include <errno.h>
+#include <stdint.h>
 
 namespace lexxhard::tof_l7_quiesce {
 
@@ -47,6 +48,16 @@ verdict classify(const inputs &in)
      * `handshake`. The two have different next steps and the -5 that prompted all this was exactly
      * the folding of several answers into one. */
     return {-EIO, layer::device_status};
+}
+
+uint32_t span_us(int64_t started_us, int64_t ended_us)
+{
+    if (ended_us <= started_us)
+        return 0U;
+    const int64_t span{ended_us - started_us};
+    if (span > static_cast<int64_t>(UINT32_MAX))
+        return UINT32_MAX;
+    return static_cast<uint32_t>(span);
 }
 
 void remember(const inputs &in, uint32_t elapsed_us)

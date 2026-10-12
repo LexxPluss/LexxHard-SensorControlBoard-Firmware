@@ -136,6 +136,42 @@ ZTEST(tof_l7_quiesce, test_the_returned_errno_is_the_one_the_adapter_always_retu
     zassert_equal(tof_l7_quiesce::classify(in).rc, -EFAULT);
 }
 
+ZTEST(tof_l7_quiesce, test_a_span_longer_than_the_old_wrap_is_reported_in_full)
+{
+    /* THE DEFECT, IN NUMBERS. The first version timed the call with `k_cycle_get_32()`, which wraps
+     * every 2^32 / 216e6 = 19.884 s at 216 MHz; review measured a 30-second call recorded as
+     * 10.116 s -- 30 s minus one wrap. The arithmetic is checked here across that boundary; that
+     * the adapter reads a 64-bit source at all is checked by the call-site gate, because it is a
+     * property of a call site. */
+    zassert_equal(tof_l7_quiesce::span_us(0, 30'000'000), 30'000'000U,
+                  "thirty seconds is thirty seconds, not thirty minus a wrap");
+    zassert_equal(tof_l7_quiesce::span_us(0, 19'884'000), 19'884'000U, "at the old wrap point");
+    zassert_equal(tof_l7_quiesce::span_us(0, 19'884'001), 19'884'001U, "just past it");
+
+    /* The length a quiesce reaches when every polled read spends the I2C driver's 500 ms timeout:
+     * 500 polls times 510 ms. Twelve wraps of the old counter. */
+    zassert_equal(tof_l7_quiesce::span_us(0, 255'000'000), 255'000'000U);
+
+    /* And it does not matter where on the clock the call started. */
+    zassert_equal(tof_l7_quiesce::span_us(987'654'321, 987'654'321 + 255'000'000), 255'000'000U);
+}
+
+ZTEST(tof_l7_quiesce, test_an_impossible_span_saturates_rather_than_looking_plausible)
+{
+    /* Unreachable in this image -- the deadman cold-reboots after ten minutes and UINT32_MAX us is
+     * 71 -- and the point is the DIRECTION of the failure. A wrap turns a long call into a short
+     * believable number, which is how the first version hid; a clamp turns it into an obviously
+     * maximal one. */
+    zassert_equal(tof_l7_quiesce::span_us(0, 5'000'000'000LL), UINT32_MAX);
+    zassert_equal(tof_l7_quiesce::span_us(0, 1LL << 40), UINT32_MAX);
+}
+
+ZTEST(tof_l7_quiesce, test_a_span_measured_backwards_is_zero_not_enormous)
+{
+    zassert_equal(tof_l7_quiesce::span_us(100, 100), 0U);
+    zassert_equal(tof_l7_quiesce::span_us(500, 100), 0U, "unsigned subtraction would say 4294966.9 s");
+}
+
 ZTEST(tof_l7_quiesce, test_nothing_recorded_is_its_own_answer_not_a_clean_one)
 {
     /* Zeroes would read as "quiesced, everything fine, no time taken". A run that never quiesced

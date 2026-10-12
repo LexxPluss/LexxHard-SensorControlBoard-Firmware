@@ -145,6 +145,22 @@ enum class stop_refusal : uint8_t {
     budget_spent,
 };
 
+/* WHAT TO TELL THE OPERATOR AFTER A FAILED STOP, decided once and testable.
+ *
+ * The shell used to choose this inline, and review found the choice wrong on the attempt that
+ * matters most: with a budget of one, a device that refuses the stop leaves `blocked` at step
+ * `stop` with no refusal recorded -- the attempt was made, so nothing refused it -- and the inline
+ * branch printed "Retry it". The next stop() is then certain to be refused. The operator is told to
+ * do the one thing that cannot work, on the one path where the device may still be measuring.
+ *
+ * So the decision is a function of the recorded state, and `retryable` is the part under test. */
+struct stop_report {
+    /* True only when another stop() can still reach the device. */
+    bool retryable{false};
+    /* Static text; the caller prints the state and step separately. */
+    const char *text{nullptr};
+};
+
 struct status {
     state current{state::idle};
     step failed_step{step::none};
@@ -158,6 +174,9 @@ struct status {
      * `current`. */
     stop_refusal last_stop_refusal{stop_refusal::none};
 };
+
+/* Only called after a stop() that returned non-zero. */
+stop_report report_for(const status &s);
 
 class lifecycle {
 public:

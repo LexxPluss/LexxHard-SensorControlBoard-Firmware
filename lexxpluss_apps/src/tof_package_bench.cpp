@@ -157,9 +157,14 @@ int hook_quiesce(void *, uint8_t addr_7bit)
     VL53L7CX_Configuration *const probe_dev{addressed(addr_7bit)};
 
     vl53l7cx_port_clear_error(&port_ctx);
-    const uint32_t started{k_cycle_get_32()};
+    /* A 64-BIT MONOTONIC SOURCE. This was `k_cycle_get_32()`, which wraps every 19.884 s at
+     * 216 MHz -- review measured a 30-second call recorded as 10.116 s -- and a quiesce whose polled
+     * reads each spend the I2C timeout runs far longer than that. `k_uptime_ticks()` is 64-bit and
+     * the subtraction is done in `span_us`, where it is tested. */
+    const int64_t started_us{k_ticks_to_us_floor64(k_uptime_ticks())};
     const uint8_t uld_status{vl53l7cx_stop_ranging(probe_dev)};
-    const uint32_t elapsed_us{k_cyc_to_us_floor32(k_cycle_get_32() - started)};
+    const uint32_t elapsed_us{
+        tof_l7_quiesce::span_us(started_us, k_ticks_to_us_floor64(k_uptime_ticks()))};
 
     /* READ ONCE, RECORDED ONCE, AND EVERY FIELD FROM THIS CALL.
      *
@@ -506,44 +511,14 @@ int cmd_stop(const struct shell *sh, size_t, char **)
     report(sh);
     if (rc != 0) {
         shell_error(sh, "stop failed: %d", rc);
-        /* REPORTED FROM THE REFUSAL, NOT FROM THE STATE. This read `current == blocked` and called
-         * it a spent budget; on 2026-10-12 that printed "the retry budget is spent. The device may
-         * still be measuring" for a stop that never reached the device, because the state was
-         * `blocked` from bring_up's survivor refusal and stop() returned at its state guard. A
-         * state is not a reason. */
-        switch (lifecycle_.current().last_stop_refusal) {
-        case tof_package::stop_refusal::wrong_state:
-            /* NOTHING OWED A STOP, SO THIS CALL ASKED NOTHING -- but whether an EARLIER call did is
-             * a different question, and it is the one that matters. The step answers it: a `stop`
-             * step is a device that was asked and gave up on, anything else was never asked. The
-             * old message read the state alone and could not tell them apart. */
-            if (lifecycle_.current().failed_step == tof_package::step::stop) {
-                shell_error(sh, "the stop was asked as many times as configured and never "
-                                "acknowledged. The device may still be measuring and this tool "
-                                "cannot stop it; report it rather than re-binding.");
-            } else {
-                shell_error(sh, "nothing here owes a stop, so the device was NOT asked and the "
-                                "retry budget is untouched. State %s, blocked at step %s -- that "
-                                "step is what to report.",
-                            tof_package::state_name(lifecycle_.current().current),
-                            tof_package::step_name(lifecycle_.current().failed_step));
-            }
-            break;
-        case tof_package::stop_refusal::budget_spent:
-            /* Unreachable while the state guard precedes the budget guard; see stop_refusal. Kept
-             * so that making it reachable is a compile-time choice rather than a silent fallthrough
-             * into one of the messages above. */
-            shell_error(sh, "the retry budget is spent.");
-            break;
-        case tof_package::stop_refusal::not_initialised:
-            shell_error(sh, "the lifecycle is not initialised; bind first.");
-            break;
-        case tof_package::stop_refusal::none:
-            /* The device was asked and refused. The debt stands and a retry is the way out. */
-            shell_warn(sh, "the stop was not acknowledged. Retry it: reads and a reopen stay "
-                           "refused until one succeeds.");
-            break;
-        }
+        /* REPORTED FROM THE RECORDED STATE BY ONE TESTED FUNCTION, not chosen here. This branched
+         * inline on the state and got the worst case wrong twice: a survivor refusal was reported
+         * as a spent budget, and the attempt that spends the budget was told to retry. */
+        const tof_package::stop_report what{tof_package::report_for(lifecycle_.current())};
+        if (what.retryable)
+            shell_warn(sh, "%s", what.text);
+        else
+            shell_error(sh, "%s", what.text);
         return rc;
     }
     return 0;

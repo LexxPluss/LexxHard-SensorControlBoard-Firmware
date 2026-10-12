@@ -466,6 +466,93 @@ ZTEST(tof_package_l7, test_the_two_blocked_cases_are_distinguishable_from_what_i
     zassert_equal(spy_.stop_calls, 0, "and the device confirms it");
 }
 
+ZTEST(tof_package_l7, test_the_attempt_that_spends_the_budget_is_not_reported_as_retryable)
+{
+    /* REVIEW'S REPRODUCTION, AT THE LAYER THAT DECIDES THE MESSAGE. With a budget of one, a device
+     * that refuses the stop leaves `blocked` at step `stop` with NO refusal recorded -- the attempt
+     * was made, so nothing refused it -- and the shell's inline branch printed "Retry it". The next
+     * stop() is then certain to be refused: the operator is told to do the one thing that cannot
+     * work, on the one path where the device may still be measuring.
+     *
+     * So the report is asserted on the attempt itself, not on the refusal after it. */
+    pkg::config one_attempt{good_config()};
+    one_attempt.stop_attempts = 1;
+    zassert_ok(lc_.init(all_hooks(), one_attempt));
+    spy_.start_rc = -EIO;
+    zassert_equal(lc_.bring_up(), -EIO);
+    zassert_equal(lc_.current().current, pkg::state::stop_owed);
+
+    spy_.stop_rc = -ETIMEDOUT;
+    zassert_equal(lc_.stop(), -ETIMEDOUT, "the device was asked and refused");
+    zassert_equal(spy_.stop_calls, 1);
+    zassert_equal(lc_.current().current, pkg::state::blocked, "and that was the only attempt allowed");
+    zassert_equal(lc_.current().failed_step, pkg::step::stop);
+    zassert_equal(lc_.current().last_stop_refusal, pkg::stop_refusal::none,
+                  "nothing REFUSED this one -- which is exactly why the state has to be consulted");
+
+    const pkg::stop_report what{pkg::report_for(lc_.current())};
+    zassert_false(what.retryable, "no further stop can reach the device, so it must not say retry");
+    zassert_not_null(what.text);
+    zassert_is_null(strstr(what.text, "Retry it"), "the text said: %s", what.text);
+    zassert_not_null(strstr(what.text, "may still be measuring"),
+                     "and it has to say the thing that matters: %s", what.text);
+}
+
+ZTEST(tof_package_l7, test_a_refused_stop_with_budget_left_is_the_only_retryable_report)
+{
+    /* The other side: more than one attempt allowed, so a retry really can reach the device, and
+     * this is the one case where saying so is correct. */
+    pkg::config several{good_config()};
+    several.stop_attempts = 3;
+    zassert_ok(lc_.init(all_hooks(), several));
+    spy_.start_rc = -EIO;
+    zassert_equal(lc_.bring_up(), -EIO);
+
+    spy_.stop_rc = -ETIMEDOUT;
+    zassert_equal(lc_.stop(), -ETIMEDOUT);
+    zassert_equal(lc_.current().current, pkg::state::stop_owed, "the debt stands and the budget has "
+                                                                "something left");
+
+    const pkg::stop_report what{pkg::report_for(lc_.current())};
+    zassert_true(what.retryable);
+    zassert_not_null(strstr(what.text, "Retry it"), "the text said: %s", what.text);
+}
+
+ZTEST(tof_package_l7, test_the_report_for_a_survivor_refusal_says_the_device_was_not_asked)
+{
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.probe_present = true;
+    spy_.quiesce_rc = -ETIMEDOUT;
+    zassert_equal(lc_.bring_up(), -ETIMEDOUT);
+    zassert_equal(lc_.stop(), -EPERM);
+
+    const pkg::stop_report what{pkg::report_for(lc_.current())};
+    zassert_false(what.retryable);
+    zassert_not_null(strstr(what.text, "NOT asked"), "the text said: %s", what.text);
+    zassert_is_null(strstr(what.text, "budget is spent"),
+                    "and it must not claim a budget that was never touched: %s", what.text);
+}
+
+ZTEST(tof_package_l7, test_the_report_after_an_exhausted_budget_still_names_the_device)
+{
+    /* One call later than the case above: the refusal is now `wrong_state`, and only `failed_step`
+     * keeps the fact that the device WAS asked. */
+    pkg::config one_attempt{good_config()};
+    one_attempt.stop_attempts = 1;
+    zassert_ok(lc_.init(all_hooks(), one_attempt));
+    spy_.start_rc = -EIO;
+    zassert_equal(lc_.bring_up(), -EIO);
+    spy_.stop_rc = -ETIMEDOUT;
+    zassert_equal(lc_.stop(), -ETIMEDOUT);
+    zassert_equal(lc_.stop(), -EPERM);
+
+    const pkg::stop_report what{pkg::report_for(lc_.current())};
+    zassert_false(what.retryable);
+    zassert_not_null(strstr(what.text, "may still be measuring"), "the text said: %s", what.text);
+    zassert_is_null(strstr(what.text, "NOT asked"),
+                    "the device was asked, one call earlier: %s", what.text);
+}
+
 ZTEST(tof_package_l7, test_a_stop_before_init_names_that_rather_than_a_budget)
 {
     pkg::lifecycle fresh;

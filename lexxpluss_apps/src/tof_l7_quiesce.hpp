@@ -119,6 +119,28 @@ struct record {
     uint32_t elapsed_us{0};
 };
 
+/* THE SPAN, IN 64-BIT ARITHMETIC, BECAUSE THE FIRST VERSION WRAPPED.
+ *
+ * It timed the call with `k_cycle_get_32()`, which at 216 MHz wraps every 2^32 / 216e6 = 19.884 s.
+ * Review reproduced it: a 30-second call was recorded as 10.116 s. That is not a corner -- the
+ * failure paths are exactly where it bites. The ULD polls 500 times with a 10 ms wait, and if each
+ * polled read spends the I2C driver's 500 ms timeout the call runs for about 255 s, which wraps
+ * twelve times and can land on any value at all.
+ *
+ * Takes microsecond timestamps from a 64-bit monotonic source and returns their difference,
+ * saturated rather than wrapped. Saturation is unreachable in this image -- the deadman cold-reboots
+ * after ten minutes and UINT32_MAX us is 71 -- and it is here so that the failure mode of an
+ * out-of-range span is a clamped maximum rather than a small plausible number, which is the whole
+ * lesson of the wrap.
+ *
+ * A span measured backwards returns 0 rather than a huge unsigned value, for the same reason.
+ *
+ * WHAT THIS DOES AND DOES NOT PIN. The arithmetic and the width are testable here, without a clock.
+ * That the ADAPTER reads a 64-bit monotonic source rather than the 32-bit cycle counter is a
+ * property of a call site, so it is checked where call sites are checked -- see the gate in
+ * tests/tof_l7_quiesce. Neither alone is the property. */
+uint32_t span_us(int64_t started_us, int64_t ended_us);
+
 /* Called once per quiesce, with the raw observations and the measured duration. It classifies,
  * stamps a sequence number and stores the result. There is exactly one caller, which is what makes
  * "no later probe or stop rewrites it" a property of the code rather than a convention. */

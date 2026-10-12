@@ -183,6 +183,39 @@ int lifecycle::read_once(bool *fresh)
     return 0;
 }
 
+stop_report report_for(const status &s)
+{
+    switch (s.last_stop_refusal) {
+    case stop_refusal::not_initialised:
+        return {false, "the lifecycle is not initialised; bind first."};
+    case stop_refusal::wrong_state:
+        /* NOTHING OWED A STOP, SO THIS CALL ASKED NOTHING. Whether an EARLIER one did is the
+         * question that matters, and the step answers it. */
+        if (s.failed_step == step::stop)
+            return {false, "the stop was asked as many times as configured and never acknowledged. "
+                           "The device may still be measuring and this tool cannot stop it; report "
+                           "it rather than re-binding."};
+        return {false, "nothing here owes a stop, so the device was NOT asked and the retry budget "
+                       "is untouched. The step it is blocked at is what to report."};
+    case stop_refusal::budget_spent:
+        /* Unreachable while the state guard precedes the budget guard; see stop_refusal. */
+        return {false, "the retry budget is spent."};
+    case stop_refusal::none:
+        /* THE DEVICE WAS ASKED AND REFUSED, and the two outcomes of that are not the same advice.
+         * `stop_owed` means the budget has something left, so a retry can still reach the device.
+         * `blocked` means THIS attempt was the last one allowed -- telling an operator to retry
+         * then is telling them to do the one thing that is certain to be refused. */
+        if (s.current == state::stop_owed)
+            return {true, "the stop was not acknowledged. Retry it: reads and a reopen stay refused "
+                          "until one succeeds."};
+        return {false, "that was the last attempt the retry budget allows and it was not "
+                       "acknowledged. No further stop will reach the device; it may still be "
+                       "measuring. Report it rather than re-binding."};
+    }
+    /* No default above, so a new refusal is a compile error here rather than a silent message. */
+    return {false, "unreported"};
+}
+
 int lifecycle::stop()
 {
     if (!initialised_) {

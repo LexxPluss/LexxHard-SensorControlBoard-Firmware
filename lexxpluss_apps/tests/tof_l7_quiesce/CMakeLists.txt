@@ -19,28 +19,17 @@ target_sources(app PRIVATE
 target_compile_definitions(app PRIVATE ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE ${APP_SRC_DIR})
 
-# "NO LATER PROBE OR STOP REWRITES THE RECORD" IS CHECKED, NOT PROMISED.
-#
-# The property review asked for is that a quiesce's snapshot survives whatever runs next. The code
-# achieves it by having exactly ONE writer, which is a claim about call sites rather than about a
-# function -- so no unit test can see it. This counts them at configure time, the same way this
-# directory's sibling suite refuses to build when a vendor patch stops applying.
-file(GLOB_RECURSE APP_SOURCES ${APP_SRC_DIR}/*.cpp)
-set(WRITERS 0)
-foreach(src ${APP_SOURCES})
-    file(STRINGS ${src} hits REGEX "tof_l7_quiesce::remember\\(")
-    list(LENGTH hits n)
-    math(EXPR WRITERS "${WRITERS} + ${n}")
-    if(n GREATER 0 AND NOT src MATCHES "tof_package_bench\\.cpp$")
-        message(FATAL_ERROR
-            "tof_l7_quiesce::remember() is called from ${src}. The record is written by the quiesce "
-            "hook and by nothing else -- a second writer is how a later probe or stop comes to "
-            "overwrite the observation the record exists to keep.")
-    endif()
-endforeach()
-if(NOT WRITERS EQUAL 1)
-    message(FATAL_ERROR
-        "expected exactly one tof_l7_quiesce::remember() call site, found ${WRITERS}. Zero means "
-        "nothing records the snapshot; more than one means something other than the quiesce can "
-        "write it.")
+# THE CALL-SITE GATE. Three of this round's properties are about WHERE something is called, which
+# no unit test can see; the checker says which and why, and it runs standalone so its own failures
+# can be demonstrated. The first version of this gate counted one call anywhere in the adapter and
+# would have passed a write moved into the probe hook -- review found that, and the checker now
+# locates the hook body.
+find_program(GATE_PYTHON NAMES python3 REQUIRED)
+execute_process(
+    COMMAND ${GATE_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/check_call_sites.py ${APP_SRC_DIR}
+    RESULT_VARIABLE GATE_RESULT
+    ERROR_VARIABLE GATE_OUTPUT
+)
+if(NOT GATE_RESULT EQUAL 0)
+    message(FATAL_ERROR "call-site gate failed:\n${GATE_OUTPUT}")
 endif()
