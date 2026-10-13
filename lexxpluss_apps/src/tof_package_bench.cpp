@@ -58,6 +58,7 @@ extern "C" {
 
 #include "tof_l7_probe_verdict.hpp"
 #include "tof_l7_quiesce.hpp"
+#include "tof_l7_step_record.hpp"
 #include "tof_l7_runtime.hpp"
 #include "tof_l7_sensor.hpp"
 #include "tof_package_bench_deadman.hpp"
@@ -191,25 +192,37 @@ int hook_close(void *)
      * exactly the state the assignment would have erased -- and from `empty` it succeeds and does
      * nothing, which is what lets the lifecycle call it before every open. */
     tof_l7::operation_status st{};
-    return tof_l7::close(&sensor_, &st);
+    const int rc{tof_l7::close(&sensor_, &st)};
+    tof_l7_steps::remember(tof_l7_steps::which::close, rc, st);
+    return rc;
 }
 
 int hook_open(void *, uint8_t addr_7bit)
 {
+    /* RECORDED FROM `st`, NEVER FROM THE PORT CONTEXT. open() refuses a null argument or a wrong
+     * lifecycle state before anything clears the port, so its sticky errno and completed count
+     * still belong to the previous operation -- in a bring-up, the quiesce and its 511 transfers.
+     * See tof_l7_step_record.hpp. */
     tof_l7::operation_status st{};
-    return tof_l7::open(&sensor_, &port_ctx, addr_7bit, &st);
+    const int rc{tof_l7::open(&sensor_, &port_ctx, addr_7bit, &st)};
+    tof_l7_steps::remember(tof_l7_steps::which::open, rc, st);
+    return rc;
 }
 
 int hook_configure(void *, uint8_t frequency_hz)
 {
     tof_l7::operation_status st{};
-    return tof_l7::configure(&sensor_, frequency_hz, &st);
+    const int rc{tof_l7::configure(&sensor_, frequency_hz, &st)};
+    tof_l7_steps::remember(tof_l7_steps::which::configure, rc, st);
+    return rc;
 }
 
 int hook_start(void *)
 {
     tof_l7::operation_status st{};
-    return tof_l7::start(&sensor_, &st);
+    const int rc{tof_l7::start(&sensor_, &st)};
+    tof_l7_steps::remember(tof_l7_steps::which::start, rc, st);
+    return rc;
 }
 
 int hook_read(void *, bool *fresh)
@@ -223,6 +236,9 @@ int hook_read(void *, bool *fresh)
      * and leaves it non-fresh on every refusal, so a stale grid cannot be reported as a new one. */
     tof_l7::operation_status st{};
     const int rc{tof_l7::read_once(&sensor_, &scratch_, &last_sample_, &st)};
+    /* Recorded before the early return, so a failed read is in the record too -- `sample_present`
+     * is the field that says whether anything came, and it is the sensor layer's answer. */
+    tof_l7_steps::remember(tof_l7_steps::which::read, rc, st);
     if (rc != 0)
         return rc;
     *fresh = last_sample_.fresh;
@@ -342,6 +358,12 @@ int cmd_up(const struct shell *sh, size_t, char **)
         shell_error(sh, "run `pkg_tof bind` first");
         return -EPERM;
     }
+
+    /* CLEARED HERE, so `attempted` is a statement about THIS bring-up: a step skipped because an
+     * earlier one refused must read as skipped rather than as a step that ran and reported zeroes.
+     * The quiesce record is a different module and is deliberately not cleared with them -- the
+     * quiesce happens inside this very call and its observation is the one the last window needed. */
+    tof_l7_steps::forget_all();
 
     const int rc{lifecycle_.bring_up()};
 
@@ -566,6 +588,21 @@ int cmd_status(const struct shell *sh, size_t, char **)
                             "interpreted. Look at the bus before the device.");
     } else {
         shell_print(sh, "quiesce: none recorded since boot");
+    }
+
+    /* EVERY STEP, INCLUDING THE ONES THAT DID NOT RUN. Printed in bring-up order so a reader sees
+     * where the run stopped without having to know the order. */
+    for (uint8_t i = 0; i < static_cast<uint8_t>(tof_l7_steps::which::count); ++i) {
+        const tof_l7_steps::which step{static_cast<tof_l7_steps::which>(i)};
+        const tof_l7_steps::record &s{tof_l7_steps::last(step)};
+        if (!s.attempted) {
+            shell_print(sh, "step %-9s not called", tof_l7_steps::name(step));
+            continue;
+        }
+        shell_print(sh, "step %-9s rc %d  stage %s  port_errno %d  argument_fault %d  "
+                        "uld_status 0x%02x  sample %s",
+                    tof_l7_steps::name(step), s.rc, tof_l7::stage_name(s.failed_stage), s.port_errno,
+                    s.argument_fault, s.uld_status, s.sample_present ? "yes" : "no");
     }
 
     const tof_l7_runtime::snapshot blob{tof_l7_runtime::current()};

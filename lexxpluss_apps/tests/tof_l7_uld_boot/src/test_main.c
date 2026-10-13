@@ -230,4 +230,48 @@ ZTEST(tof_l7_uld_boot, test_a_transport_error_is_not_overwritten_by_the_timeout)
 
 	zassert_equal(rc, VL53L7CX_STATUS_ERROR, "the transport failure stays the status");
 	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR);
+	/* COUNTED THROUGH THE WAIT. `polls_seen` is incremented on the fake's SUCCESS path, so the
+	 * scenario that makes every read fail has just disabled the counter that would measure it --
+	 * the same mistake the sibling suite's first version of this assertion made. WaitMs happens
+	 * once per iteration and does not fail. */
+	zassert_equal(polls_seen, 0, "no read succeeded, so that counter cannot measure this");
+	zassert_equal(waits_seen, 500, "and the loop still ran its whole budget: %d", waits_seen);
+}
+
+/* Leaves 0x80 and 0x01 adjacent on the stack -- the two bits that steer this loop -- so the frame
+ * the boot wait runs in is primed with values that would take an early exit if they were read as
+ * the device's answer. Runs and returns before the call under test, at a comparable depth. */
+static volatile uint8_t sink;
+
+static void leave_the_steering_bits_on_the_stack(void)
+{
+	uint8_t crumbs[64];
+	for (size_t i = 0; i + 1 < sizeof crumbs; i += 2) {
+		crumbs[i] = 0x80U;
+		crumbs[i + 1] = 0x01U;
+	}
+	sink = crumbs[0];
+}
+
+ZTEST(tof_l7_uld_boot, test_a_failed_read_cannot_steer_the_loop_from_the_stack)
+{
+	/* `go2_status0` and `go2_status1` were plain locals, and the port leaves a failed read's output
+	 * EXACTLY as it was -- the property patch 0003 had to deal with in vl53l7cx_is_alive(). So with
+	 * reads failing, the loop tested whatever the frame held: bit 7 takes the "the MCU answered"
+	 * branch and bit 0 takes upstream's early exit, either of which leaves after one iteration
+	 * through a path that looks like a device answering.
+	 *
+	 * The DETERMINISTIC half of this is the initialisation in the patch: the control flow is a
+	 * function of what was read, whatever the stack held. The priming below cannot be guaranteed to
+	 * land in the same slots and is not what the case rests on -- it is here because it costs
+	 * nothing and makes the mechanism legible. */
+	fail_reads = 1;
+	leave_the_steering_bits_on_the_stack();
+
+	const uint8_t rc = _vl53l7cx_poll_for_mcu_boot(&dev);
+
+	zassert_equal(waits_seen, 500,
+		      "the loop must run its whole budget rather than leaving on a bit nobody read: %d",
+		      waits_seen);
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR, "and report the transport failure");
 }

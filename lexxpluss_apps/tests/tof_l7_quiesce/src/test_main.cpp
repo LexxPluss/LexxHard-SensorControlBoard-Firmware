@@ -14,6 +14,7 @@
 #include <zephyr/ztest.h>
 
 #include <errno.h>
+#include <string.h>
 
 #include "tof_l7_quiesce.hpp"
 
@@ -243,4 +244,112 @@ ZTEST(tof_l7_quiesce, test_reading_the_record_does_not_consume_it)
         zassert_equal(q.sequence, 1U, "read %d", i);
         zassert_equal(q.which, tof_l7_quiesce::layer::handshake, "read %d", i);
     }
+}
+
+/* ---- the bring-up step records ------------------------------------------------------------- */
+
+#include "tof_l7_step_record.hpp"
+
+namespace {
+
+tof_l7::operation_status a_failure()
+{
+    tof_l7::operation_status s{};
+    s.failed_stage = tof_l7::stage::initialise;
+    s.port_errno = -EIO;
+    s.argument_fault = -EINVAL;
+    s.uld_status = 0x2AU;
+    s.sample_present = false;
+    return s;
+}
+
+void before_steps(void *)
+{
+    tof_l7_steps::forget_all();
+}
+
+}  // namespace
+
+ZTEST_SUITE(tof_l7_steps, NULL, NULL, before_steps, NULL, NULL);
+
+ZTEST(tof_l7_steps, test_nothing_attempted_is_its_own_answer)
+{
+    /* A step skipped because an earlier one refused must not read as a step that ran and reported
+     * zeroes -- which is the whole reason `attempted` is a field. */
+    for (uint8_t i = 0; i < static_cast<uint8_t>(tof_l7_steps::which::count); ++i) {
+        const tof_l7_steps::record &r{tof_l7_steps::last(static_cast<tof_l7_steps::which>(i))};
+        zassert_false(r.attempted, "step %u", i);
+        zassert_equal(r.rc, 0, "and its zeroes are not an observation");
+    }
+}
+
+ZTEST(tof_l7_steps, test_every_field_comes_straight_from_the_operation_status)
+{
+    /* Reused, not re-adjudicated: this module adds no verdict of its own, so each field must arrive
+     * unchanged. */
+    tof_l7_steps::remember(tof_l7_steps::which::open, -EIO, a_failure());
+
+    const tof_l7_steps::record &r{tof_l7_steps::last(tof_l7_steps::which::open)};
+    zassert_true(r.attempted);
+    zassert_equal(r.rc, -EIO);
+    zassert_equal(r.failed_stage, tof_l7::stage::initialise);
+    zassert_equal(r.port_errno, -EIO);
+    zassert_equal(r.argument_fault, -EINVAL);
+    zassert_equal(r.uld_status, 0x2AU);
+    zassert_false(r.sample_present);
+}
+
+ZTEST(tof_l7_steps, test_a_successful_step_is_recorded_too)
+{
+    tof_l7::operation_status ok{};
+    ok.sample_present = true;
+    tof_l7_steps::remember(tof_l7_steps::which::read, 0, ok);
+
+    const tof_l7_steps::record &r{tof_l7_steps::last(tof_l7_steps::which::read)};
+    zassert_true(r.attempted);
+    zassert_equal(r.rc, 0);
+    zassert_equal(r.failed_stage, tof_l7::stage::none);
+    zassert_true(r.sample_present, "whether anything came is the sensor layer's answer, not a guess");
+}
+
+ZTEST(tof_l7_steps, test_one_step_does_not_disturb_another)
+{
+    /* Separate slots, so the step that failed is still readable after the ones around it ran. */
+    tof_l7_steps::remember(tof_l7_steps::which::close, 0, tof_l7::operation_status{});
+    tof_l7_steps::remember(tof_l7_steps::which::open, -ENODEV, a_failure());
+    tof_l7_steps::remember(tof_l7_steps::which::configure, 0, tof_l7::operation_status{});
+
+    zassert_equal(tof_l7_steps::last(tof_l7_steps::which::open).rc, -ENODEV);
+    zassert_equal(tof_l7_steps::last(tof_l7_steps::which::open).uld_status, 0x2AU);
+    zassert_equal(tof_l7_steps::last(tof_l7_steps::which::close).rc, 0);
+    zassert_equal(tof_l7_steps::last(tof_l7_steps::which::configure).rc, 0);
+    zassert_false(tof_l7_steps::last(tof_l7_steps::which::start).attempted, "and start never ran");
+}
+
+ZTEST(tof_l7_steps, test_a_step_outside_the_range_answers_never_attempted)
+{
+    /* Rather than reading past the array: a reader must not be handed a neighbouring step's
+     * observation. */
+    const tof_l7_steps::record &r{tof_l7_steps::last(tof_l7_steps::which::count)};
+    zassert_false(r.attempted);
+    zassert_equal(r.rc, 0);
+}
+
+ZTEST(tof_l7_steps, test_forgetting_resets_every_slot)
+{
+    tof_l7_steps::remember(tof_l7_steps::which::start, -ETIMEDOUT, a_failure());
+    tof_l7_steps::forget_all();
+
+    for (uint8_t i = 0; i < static_cast<uint8_t>(tof_l7_steps::which::count); ++i)
+        zassert_false(tof_l7_steps::last(static_cast<tof_l7_steps::which>(i)).attempted, "step %u", i);
+}
+
+ZTEST(tof_l7_steps, test_every_step_has_a_name_and_the_bound_is_not_one)
+{
+    static const char *const expected[]{"close", "open", "configure", "start", "read"};
+    for (uint8_t i = 0; i < static_cast<uint8_t>(tof_l7_steps::which::count); ++i)
+        zassert_equal(strcmp(tof_l7_steps::name(static_cast<tof_l7_steps::which>(i)), expected[i]), 0,
+                      "step %u is named %s", i, tof_l7_steps::name(static_cast<tof_l7_steps::which>(i)));
+    zassert_not_equal(strcmp(tof_l7_steps::name(tof_l7_steps::which::count), "close"), 0,
+                      "the array bound is not a step");
 }

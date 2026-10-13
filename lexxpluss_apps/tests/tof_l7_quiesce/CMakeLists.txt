@@ -28,7 +28,8 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/app_sources.txt "${APP_CPP_LINES}\n")
 target_sources(app PRIVATE
     src/test_main.cpp
     src/test_call_sites.cpp
-    ${APP_SRC_DIR}/tof_l7_quiesce.cpp)
+    ${APP_SRC_DIR}/tof_l7_quiesce.cpp
+    ${APP_SRC_DIR}/tof_l7_step_record.cpp)
 target_compile_definitions(app PRIVATE
     ADAPTER_SOURCE=\"${APP_SRC_DIR}/tof_package_bench.cpp\"
     SOURCE_LIST_FILE=\"${CMAKE_CURRENT_BINARY_DIR}/app_sources.txt\")

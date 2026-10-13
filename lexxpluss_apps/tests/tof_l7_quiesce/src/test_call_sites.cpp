@@ -154,6 +154,29 @@ constexpr const char *kClearer{"tof_l7_quiesce::forget_all("};
  * demonstrated. Naming what is allowed catches every substitution rather than one. */
 constexpr const char *kApprovedClock{"k_ticks_to_us_floor64(k_uptime_ticks())"};
 
+constexpr const char *kStepWriter{"tof_l7_steps::remember("};
+constexpr const char *kStepClearer{"tof_l7_steps::forget_all("};
+/* The two port-context readers a step hook must NOT use. open() and configure() refuse early,
+ * before anything clears the port, so its sticky errno and completed count still belong to the
+ * previous operation -- the quiesce and its 511 transfers. Reading them in a step hook would
+ * attribute those to a call that never touched the bus. */
+constexpr const char *kPortErrno{"vl53l7cx_port_error("};
+constexpr const char *kPortCompleted{"vl53l7cx_port_completed_transfers("};
+
+struct hook_expectation {
+    const char *signature;
+    const char *step;
+};
+
+/* One writer per hook, each naming its own step. */
+const hook_expectation kStepHooks[]{
+    { "int hook_close(", "which::close" },
+    { "int hook_open(", "which::open" },
+    { "int hook_configure(", "which::configure" },
+    { "int hook_start(", "which::start" },
+    { "int hook_read(", "which::read" },
+};
+
 char body_[kBufferSize];
 
 void copy_quiesce_body()
@@ -240,4 +263,107 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_quiesce_is_timed_from_the_approved_six
                       "-- 19.884 s for the cycle counter at 216 MHz -- and a failing quiesce runs "
                       "far longer than that",
                       name);
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_each_bring_up_step_records_itself_once_and_names_its_own_step)
+{
+    read_and_strip(ADAPTER_SOURCE);
+
+    size_t writers_in_hooks{0};
+    for (const hook_expectation &expected : kStepHooks) {
+        size_t from{0}, to{0};
+        zassert_true(body_of(expected.signature, &from, &to), "%s not found", expected.signature);
+        const size_t len{to - from};
+        zassert_true(len < kBufferSize, "hook body does not fit");
+        memcpy(body_, stripped_ + from, len);
+        body_[len] = '\0';
+
+        zassert_equal(count_of(body_, kStepWriter), 1U,
+                      "%s must record its own outcome exactly once -- zero loses the step the next "
+                      "window needs, twice overwrites it within one call",
+                      expected.signature);
+        zassert_not_null(strstr(body_, expected.step),
+                         "%s records a step that is not its own, which puts one hook's observation "
+                         "in another's slot", expected.signature);
+        writers_in_hooks += 1U;
+    }
+
+    zassert_equal(count_of(stripped_, kStepWriter), writers_in_hooks,
+                  "the adapter writes a step record from somewhere other than the five hooks");
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_a_step_hook_never_reads_the_port_context)
+{
+    /* THE BOUNDARY THIS CASE EXISTS FOR, structural because it is about what a hook may touch. The
+     * step records come from `operation_status`, the adjudication the sensor layer already made.
+     * Reading the port here would look like an improvement and would import the previous
+     * operation's counters on every early refusal. */
+    read_and_strip(ADAPTER_SOURCE);
+
+    for (const hook_expectation &expected : kStepHooks) {
+        size_t from{0}, to{0};
+        zassert_true(body_of(expected.signature, &from, &to), "%s not found", expected.signature);
+        const size_t len{to - from};
+        memcpy(body_, stripped_ + from, len);
+        body_[len] = '\0';
+
+        zassert_equal(count_of(body_, kPortErrno), 0U,
+                      "%s reads %s; on an early refusal that errno is the previous operation's",
+                      expected.signature, kPortErrno);
+        zassert_equal(count_of(body_, kPortCompleted), 0U,
+                      "%s reads %s; on an early refusal that count is the quiesce's",
+                      expected.signature, kPortCompleted);
+    }
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_once_per_bring_up_and_only_there)
+{
+    /* `attempted` is only a statement about THIS run if something clears them at its start, and a
+     * clear anywhere else would erase a run's evidence while it is still the evidence. */
+    read_and_strip(ADAPTER_SOURCE);
+
+    zassert_equal(count_of(stripped_, kStepClearer), 1U,
+                  "exactly one clear: none makes `not called` meaningless after the first run, more "
+                  "than one erases a run that is still being read");
+
+    size_t from{0}, to{0};
+    zassert_true(body_of("int cmd_up(", &from, &to), "cmd_up() not found");
+    const size_t len{to - from};
+    memcpy(body_, stripped_ + from, len);
+    body_[len] = '\0';
+    zassert_equal(count_of(body_, kStepClearer), 1U, "and it is at the start of a bring-up");
+
+    /* AND THE QUIESCE RECORD IS NOT CLEARED WITH THEM. The quiesce happens inside bring_up, so a
+     * clear that took it too would discard the observation the last window needed. */
+    zassert_equal(count_of(body_, "tof_l7_quiesce::forget_all("), 0U,
+                  "cmd_up() clears the quiesce record, which is taken during the very call it is "
+                  "clearing for");
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clears_a_step_record)
+{
+    FILE *const f{fopen(SOURCE_LIST_FILE, "rb")};
+    zassert_not_null(f, "cannot read the generated source list");
+    const size_t got{fread(list_, 1, sizeof list_ - 1U, f)};
+    const bool whole{feof(f) != 0};
+    fclose(f);
+    zassert_true(whole, "the source list did not fit this gate's buffer");
+    list_[got] = '\0';
+
+    size_t seen{0};
+    char *saved{nullptr};
+    for (char *line = strtok_r(list_, "\n", &saved); line != nullptr;
+         line = strtok_r(nullptr, "\n", &saved)) {
+        if (*line == '\0')
+            continue;
+        ++seen;
+        read_and_strip(line);
+        const bool is_adapter{strstr(line, "tof_package_bench.cpp") != nullptr};
+        const bool is_module{strstr(line, "tof_l7_step_record.cpp") != nullptr};
+        if (is_adapter || is_module)
+            continue;
+        zassert_equal(count_of(stripped_, kStepWriter), 0U, "%s writes a step record", line);
+        zassert_equal(count_of(stripped_, kStepClearer), 0U, "%s clears the step records", line);
+    }
+    zassert_true(seen > 1U, "the generated source list had %zu entries", seen);
 }

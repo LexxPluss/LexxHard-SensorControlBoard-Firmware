@@ -27,16 +27,28 @@ out of iterations is the one that had no report. A `timeout >= 500` test after
 the loop would have mislabelled a bit-0 exit that happened on the last
 iteration, so the two early exits mark themselves instead.
 
+INITIALISED, BECAUSE A FAILED READ DOES NOT WRITE ITS OUTPUT.
+
+`go2_status0` and `go2_status1` were plain locals and the Zephyr port hands the caller's buffer
+straight to i2c_transfer(), returning its error and leaving those bytes exactly as they were -- the
+same property patch 0003 had to deal with in vl53l7cx_is_alive(). So with a read failing, the loop
+tested whatever the stack held: bit 7 set in old stack contents takes the "the MCU answered" branch,
+and bit 0 set takes upstream's early exit, so a transport failure could leave the loop after one
+iteration through a path that looks like a device answering. Zeroing them makes the control flow a
+function of what was actually read.
+
 And an error already recorded is kept: a transport failure during polling stays
 the status rather than being overwritten by the timeout, which is the ordering
 0002 settled.
 
 --- a/modules/vl53l7cx_api.c
 +++ b/modules/vl53l7cx_api.c
-@@ -63,24 +63,34 @@
+@@ -62,25 +62,35 @@
+ static uint8_t _vl53l7cx_poll_for_mcu_boot(
                VL53L7CX_Configuration      *p_dev)
  {
-    uint8_t go2_status0, go2_status1, status = VL53L7CX_STATUS_OK;
+-   uint8_t go2_status0, go2_status1, status = VL53L7CX_STATUS_OK;
++   uint8_t go2_status0 = 0, go2_status1 = 0, status = VL53L7CX_STATUS_OK;
 +   uint8_t left_early = 0;
     uint16_t timeout = 0;
  
