@@ -20,6 +20,7 @@ target_sources(app PRIVATE
     src/test_main.cpp
     ${APP_SRC_DIR}/tof_package_l7.cpp
     ${APP_SRC_DIR}/tof_l7_step_record.cpp
+    ${APP_SRC_DIR}/tof_l7_quiesce.cpp
 )
 # ENABLE_TOF_L7_ULD alone: this lifecycle names no bus and no chain, which is the premise the
 # Package configuration rests on.

@@ -14,11 +14,13 @@
 
 #include <zephyr/ztest.h>
 
+#include "tof_l7_quiesce.hpp"
 #include "tof_l7_step_record.hpp"
 #include "tof_package_l7.hpp"
 
 namespace pkg = lexxhard::tof_package;
 namespace steps = lexxhard::tof_l7_steps;
+namespace quiesce = lexxhard::tof_l7_quiesce;
 namespace tof_l7 = lexxhard::tof_l7;
 
 namespace {
@@ -283,6 +285,7 @@ void before(void *)
     /* The records are file-scope state in their module, so a case that did not clear them would be
      * reading the previous case's run. */
     steps::forget_all();
+    quiesce::forget_all();
 }
 
 }  // namespace
@@ -1158,4 +1161,53 @@ ZTEST(tof_package_l7, test_can_begin_round_answers_exactly_what_bring_up_accepts
 
     zassert_ok(lc_.stop());
     zassert_true(lc_.can_begin_round(), "idle again after a confirmed stop");
+}
+
+/* A ROUND BEGINS WHEN IT IS ACCEPTED, NOT WHEN THE VERIFICATION PASSES, which is the boundary
+ * review accepted on 2026-10-13 rather than pushing the clearing down into bring_up(). A round that
+ * is accepted and then refused by an in-flight verification has begun: it consulted something, its
+ * own steps are the truthful "none", and the state it leaves is still idle, so the next `up` runs.
+ *
+ * What it must NOT do is take the quiesce record with it. That record is a different module and a
+ * different lifetime -- the observation the last window needed survives rounds. */
+ZTEST(tof_package_l7, test_a_round_refused_by_an_in_flight_verification_still_counts_as_begun)
+{
+    zassert_ok(lc_.init(recording_hooks(), good_config()));
+
+    /* A survivor refusal from an earlier run, recorded the way the bench records it. */
+    quiesce::inputs observed{};
+    observed.port_errno = 0;
+    observed.completed = 511U;
+    observed.uld_status = quiesce::kUldTimeout;
+    quiesce::remember(observed, 5429600U);
+    const quiesce::record kept{quiesce::last()};
+    zassert_true(kept.taken);
+
+    const unsigned rounds_before{steps::rounds_begun()};
+    spy_.verified_rc = -EINPROGRESS;
+
+    zassert_equal(an_up(), -EINPROGRESS);
+
+    zassert_equal(steps::rounds_begun(), rounds_before + 1U,
+                  "the round was accepted, so it is counted -- `up #N` names what the records below "
+                  "belong to even when N reached no step");
+    for (uint8_t i = 0; i < static_cast<uint8_t>(steps::which::count); ++i)
+        zassert_false(steps::last(static_cast<steps::which>(i)).attempted,
+                      "step %u: nothing ran, and `not called` is the truthful answer for THIS round",
+                      i);
+
+    const pkg::status s{lc_.current()};
+    zassert_equal(s.current, pkg::state::idle,
+                  "an in-flight verification is `ask again`, not a verdict, so nothing is blocked");
+    zassert_equal(s.failed_step, pkg::step::firmware);
+    zassert_equal(spy_.probe_calls, 0, "and the bus was not touched");
+    zassert_true(lc_.can_begin_round(), "so the next up runs");
+
+    const quiesce::record &now{quiesce::last()};
+    zassert_true(now.taken, "the quiesce record is a different lifetime and must survive the round");
+    zassert_equal(now.sequence, kept.sequence);
+    zassert_equal(now.rc, kept.rc);
+    zassert_equal(now.which, kept.which);
+    zassert_equal(now.raw.completed, kept.raw.completed);
+    zassert_equal(now.elapsed_us, kept.elapsed_us);
 }
