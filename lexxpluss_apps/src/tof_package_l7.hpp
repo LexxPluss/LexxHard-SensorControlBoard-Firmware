@@ -189,6 +189,26 @@ public:
      * run instead of being treated as an empty address. */
     int bring_up();
 
+    /* WHETHER bring_up() WOULD ACCEPT A NEW ROUND, asked rather than predicted.
+     *
+     * bring_up() refuses from two places before it touches anything -- not initialised, and a
+     * state that is not idle -- and in both it leaves every earlier observation exactly as it
+     * found it. A caller that keeps per-round diagnostics has to know which of those happened,
+     * because clearing them for a round that never began destroys the evidence of the round that
+     * did. On 2026-10-13 review reproduced precisely that: a first `up` failed at open with a
+     * recorded port errno, a second `up` was refused for being in `blocked`, and the second had
+     * already wiped the first.
+     *
+     * THIS IS THE GUARD, not a copy of it. bring_up() asks this function, so the two cannot drift:
+     * a caller clearing on true clears exactly when a round starts. It is const and reads only the
+     * state, and nothing between the two calls can change that state -- every entry point here
+     * runs to completion on the caller's thread.
+     *
+     * It says nothing about whether the round will SUCCEED. A round that is accepted and then
+     * refused by the verification has still begun: it consulted something, and its diagnostics are
+     * its own. */
+    bool can_begin_round() const;
+
     /* One poll. Refused unless ranging. */
     int read_once(bool *fresh);
 

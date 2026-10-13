@@ -14,9 +14,12 @@
 
 #include <zephyr/ztest.h>
 
+#include "tof_l7_step_record.hpp"
 #include "tof_package_l7.hpp"
 
 namespace pkg = lexxhard::tof_package;
+namespace steps = lexxhard::tof_l7_steps;
+namespace tof_l7 = lexxhard::tof_l7;
 
 namespace {
 
@@ -204,10 +207,82 @@ pkg::config good_config()
 
 pkg::lifecycle lc_;
 
+/* THE BENCH'S HOOKS, in the shape the shell adapter gives them: each one runs the step and then
+ * records what it reported. The five below delegate to the fakes above, so the ordering cases and
+ * the round-boundary cases are driven by the same device model.
+ *
+ * The status is built here the way the adapter builds it -- out of what the call reported, with no
+ * second opinion -- because what is under test is WHEN the records are cleared, not what the
+ * sensor layer puts in them. */
+tof_l7::operation_status reported(int rc)
+{
+    tof_l7::operation_status st{};
+    st.failed_stage = rc == 0 ? tof_l7::stage::none : tof_l7::stage::initialise;
+    st.port_errno = rc;
+    return st;
+}
+
+int recording_close(void *c)
+{
+    const int rc{fake_close(c)};
+    steps::remember(steps::which::close, rc, reported(rc));
+    return rc;
+}
+
+int recording_open(void *c, uint8_t addr)
+{
+    const int rc{fake_open(c, addr)};
+    steps::remember(steps::which::open, rc, reported(rc));
+    return rc;
+}
+
+int recording_configure(void *c, uint8_t hz)
+{
+    const int rc{fake_configure(c, hz)};
+    steps::remember(steps::which::configure, rc, reported(rc));
+    return rc;
+}
+
+int recording_start(void *c)
+{
+    const int rc{fake_start(c)};
+    steps::remember(steps::which::start, rc, reported(rc));
+    return rc;
+}
+
+int recording_read(void *c, bool *fresh)
+{
+    const int rc{fake_read(c, fresh)};
+    steps::remember(steps::which::read, rc, reported(rc));
+    return rc;
+}
+
+pkg::hooks recording_hooks()
+{
+    pkg::hooks h{all_hooks()};
+    h.close = recording_close;
+    h.open = recording_open;
+    h.configure = recording_configure;
+    h.start = recording_start;
+    h.read = recording_read;
+    return h;
+}
+
+/* WHAT cmd_up() DOES, in its order and with nothing else between. The shell command adds only the
+ * printing; the gate beside the quiesce suite pins that this pair is what it runs. */
+int an_up()
+{
+    steps::begin_round(lc_.can_begin_round());
+    return lc_.bring_up();
+}
+
 void before(void *)
 {
     spy_ = spy{};
     lc_ = pkg::lifecycle{};
+    /* The records are file-scope state in their module, so a case that did not clear them would be
+     * reading the previous case's run. */
+    steps::forget_all();
 }
 
 }  // namespace
@@ -962,4 +1037,125 @@ ZTEST(tof_package_l7, test_bring_up_is_refused_unless_the_state_is_idle)
     zassert_equal(other.current().current, pkg::state::blocked);
     spy_.probe_rc = 0;
     zassert_equal(other.bring_up(), -EPERM, "blocked is not cleared by trying again");
+}
+
+/* ---- the round boundary: which `up` may clear the step records ----------------------------- */
+
+/* THE DEFECT REVIEW REPRODUCED ON 2026-10-13. A first `up` failed at open and recorded it; a second
+ * `up` was refused outright -- the state was `blocked`, so bring_up() returned at its guard having
+ * called nothing -- and yet the records came back empty, because the shell cleared them before
+ * asking. The call that performed no operation destroyed the only evidence of the one that did. */
+ZTEST(tof_package_l7, test_an_up_refused_from_blocked_keeps_the_previous_rounds_evidence)
+{
+    zassert_ok(lc_.init(recording_hooks(), good_config()));
+    spy_.open_rc = -EIO;
+
+    zassert_equal(an_up(), -EIO);
+    zassert_equal(lc_.current().current, pkg::state::blocked);
+    zassert_true(steps::last(steps::which::open).attempted);
+    zassert_equal(steps::last(steps::which::open).rc, -EIO);
+
+    zassert_false(lc_.can_begin_round(), "blocked is not a state a round may start from");
+    zassert_equal(an_up(), -EPERM, "and the second up is refused");
+
+    zassert_equal(spy_.open_calls, 1, "the refused call opened nothing");
+    zassert_equal(spy_.verified_calls, 1, "and consulted nothing");
+    const steps::record &r{steps::last(steps::which::open)};
+    zassert_true(r.attempted, "so it must not have cleared the failure that is still the evidence");
+    zassert_equal(r.rc, -EIO);
+    zassert_equal(r.port_errno, -EIO);
+    zassert_equal(r.failed_stage, tof_l7::stage::initialise);
+}
+
+/* THE SAME RULE FROM THE OTHER TWO REFUSING STATES. `ranging` and `stop_owed` reach the identical
+ * guard, and a bench operator who runs `up` again out of habit must not pay for it with the record
+ * of what is still running or still owed. */
+ZTEST(tof_package_l7, test_an_up_refused_while_ranging_keeps_the_round_that_is_running)
+{
+    zassert_ok(lc_.init(recording_hooks(), good_config()));
+    zassert_ok(an_up());
+    zassert_equal(lc_.current().current, pkg::state::ranging);
+
+    zassert_false(lc_.can_begin_round());
+    zassert_equal(an_up(), -EPERM);
+
+    zassert_equal(spy_.open_calls, 1, "no second session was stacked");
+    zassert_true(steps::last(steps::which::start).attempted, "the running round is still readable");
+    zassert_equal(steps::last(steps::which::start).rc, 0);
+}
+
+ZTEST(tof_package_l7, test_an_up_refused_while_a_stop_is_owed_keeps_the_failed_start)
+{
+    zassert_ok(lc_.init(recording_hooks(), good_config()));
+    spy_.start_rc = -ETIMEDOUT;
+
+    zassert_equal(an_up(), -ETIMEDOUT);
+    zassert_equal(lc_.current().current, pkg::state::stop_owed);
+
+    zassert_false(lc_.can_begin_round());
+    zassert_equal(an_up(), -EPERM);
+
+    zassert_equal(spy_.start_calls, 1);
+    const steps::record &r{steps::last(steps::which::start)};
+    zassert_true(r.attempted, "the start that owes the stop is the record that matters most here");
+    zassert_equal(r.rc, -ETIMEDOUT);
+}
+
+/* AND AN `up` BEFORE init() IS THE FOURTH REFUSAL, reached by a different member and on the same
+ * terms: nothing ran, so nothing is cleared. */
+ZTEST(tof_package_l7, test_an_up_before_init_clears_nothing_either)
+{
+    steps::remember(steps::which::open, -ENODEV, tof_l7::operation_status{});
+
+    zassert_false(lc_.can_begin_round(), "an uninitialised lifecycle accepts no round");
+    zassert_equal(an_up(), -EPERM);
+
+    zassert_true(steps::last(steps::which::open).attempted);
+    zassert_equal(steps::last(steps::which::open).rc, -ENODEV);
+}
+
+/* THE OTHER HALF OF THE RULE: an accepted round must not inherit. Clearing only after a successful
+ * bring-up would leave a failing round showing the previous round's later steps -- here, a round
+ * that stops at the close would still report an open, a configure and a start that belong to the
+ * run before it. */
+ZTEST(tof_package_l7, test_an_accepted_round_shows_its_own_steps_and_not_the_last_rounds)
+{
+    zassert_ok(lc_.init(recording_hooks(), good_config()));
+    zassert_ok(an_up());
+    zassert_ok(lc_.stop());
+    zassert_equal(lc_.current().current, pkg::state::idle);
+    zassert_true(steps::last(steps::which::start).attempted, "the first round reached the start");
+
+    spy_.close_rc = -EPERM;
+    zassert_true(lc_.can_begin_round(), "idle accepts a round");
+    zassert_equal(an_up(), -EPERM, "which then fails at its first step");
+
+    zassert_true(steps::last(steps::which::close).attempted);
+    zassert_equal(steps::last(steps::which::close).rc, -EPERM);
+    zassert_false(steps::last(steps::which::open).attempted,
+                  "the open belongs to the previous round and must not be read as this one's");
+    zassert_false(steps::last(steps::which::configure).attempted);
+    zassert_false(steps::last(steps::which::start).attempted);
+}
+
+/* THE PREDICATE IS THE GUARD, which is what keeps the two from drifting: the caller clears on the
+ * same answer bring_up() refuses on. Checked by consequence rather than by reading the code -- a
+ * false answer must be a call that reached no hook at all. */
+ZTEST(tof_package_l7, test_can_begin_round_answers_exactly_what_bring_up_accepts)
+{
+    zassert_false(lc_.can_begin_round(), "before init");
+    zassert_equal(lc_.bring_up(), -EPERM);
+    zassert_equal(spy_.verified_calls, 0, "a refused round consults nothing");
+
+    zassert_ok(lc_.init(recording_hooks(), good_config()));
+    zassert_true(lc_.can_begin_round(), "idle");
+    zassert_ok(lc_.bring_up());
+    zassert_equal(spy_.verified_calls, 1, "an accepted round begins with the verification");
+
+    zassert_false(lc_.can_begin_round(), "ranging");
+    zassert_equal(lc_.bring_up(), -EPERM);
+    zassert_equal(spy_.verified_calls, 1);
+
+    zassert_ok(lc_.stop());
+    zassert_true(lc_.can_begin_round(), "idle again after a confirmed stop");
 }

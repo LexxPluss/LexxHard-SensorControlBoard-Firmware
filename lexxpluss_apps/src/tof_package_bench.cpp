@@ -359,11 +359,18 @@ int cmd_up(const struct shell *sh, size_t, char **)
         return -EPERM;
     }
 
-    /* CLEARED HERE, so `attempted` is a statement about THIS bring-up: a step skipped because an
-     * earlier one refused must read as skipped rather than as a step that ran and reported zeroes.
+    /* CLEARED ONLY IF A ROUND REALLY BEGINS HERE, which is the lifecycle's answer and not this
+     * command's guess. An earlier version cleared on every cmd_up, before asking: review
+     * reproduced a first `up` failing at open with its port errno recorded, then a second `up`
+     * refused outright for being in `blocked` -- having already erased the first. The refused call
+     * started nothing and must take nothing away.
+     *
+     * Cleared on acceptance rather than after a successful bring-up, so a round that fails at its
+     * first step shows that step and nothing from the run before it.
+     *
      * The quiesce record is a different module and is deliberately not cleared with them -- the
      * quiesce happens inside this very call and its observation is the one the last window needed. */
-    tof_l7_steps::forget_all();
+    tof_l7_steps::begin_round(lifecycle_.can_begin_round());
 
     const int rc{lifecycle_.bring_up()};
 
@@ -589,6 +596,14 @@ int cmd_status(const struct shell *sh, size_t, char **)
     } else {
         shell_print(sh, "quiesce: none recorded since boot");
     }
+
+    /* WHOSE STEPS THESE ARE. An `up` the lifecycle refuses clears nothing -- that refusal is what
+     * used to destroy the previous failure -- so the records below belong to the last round that
+     * BEGAN, which need not be the last command typed. */
+    if (const unsigned rounds{tof_l7_steps::rounds_begun()}; rounds == 0U)
+        shell_print(sh, "steps: no bring-up has begun since boot");
+    else
+        shell_print(sh, "steps: from bring-up #%u", rounds);
 
     /* EVERY STEP, INCLUDING THE ONES THAT DID NOT RUN. Printed in bring-up order so a reader sees
      * where the run stopped without having to know the order. */

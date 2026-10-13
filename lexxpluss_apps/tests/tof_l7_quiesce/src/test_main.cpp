@@ -353,3 +353,53 @@ ZTEST(tof_l7_steps, test_every_step_has_a_name_and_the_bound_is_not_one)
     zassert_not_equal(strcmp(tof_l7_steps::name(tof_l7_steps::which::count), "close"), 0,
                       "the array bound is not a step");
 }
+
+/* ---- the round boundary -------------------------------------------------------------------- */
+
+/* A REFUSED ROUND TAKES NOTHING AWAY. This is the module half of the defect review reproduced on
+ * 2026-10-13: the shell cleared on every `up`, including the ones the lifecycle refused outright,
+ * so the second `up` erased the first one's failure before anybody could read it. */
+ZTEST(tof_l7_steps, test_a_round_that_was_not_accepted_keeps_the_previous_evidence)
+{
+    tof_l7_steps::remember(tof_l7_steps::which::open, -EIO, a_failure());
+
+    tof_l7_steps::begin_round(false);
+
+    const tof_l7_steps::record &r{tof_l7_steps::last(tof_l7_steps::which::open)};
+    zassert_true(r.attempted, "the refused call started nothing, so it must take nothing away");
+    zassert_equal(r.rc, -EIO);
+    zassert_equal(r.port_errno, -EIO);
+    zassert_equal(r.uld_status, 0x2AU);
+}
+
+/* AND AN ACCEPTED ONE STARTS EMPTY, which is the other half: a round that keeps the previous
+ * round's slots cannot say what IT did. */
+ZTEST(tof_l7_steps, test_an_accepted_round_starts_from_nothing_attempted)
+{
+    tof_l7_steps::remember(tof_l7_steps::which::open, -EIO, a_failure());
+    tof_l7_steps::remember(tof_l7_steps::which::close, 0, tof_l7::operation_status{});
+
+    tof_l7_steps::begin_round(true);
+
+    for (uint8_t i = 0; i < static_cast<uint8_t>(tof_l7_steps::which::count); ++i)
+        zassert_false(tof_l7_steps::last(static_cast<tof_l7_steps::which>(i)).attempted,
+                      "step %u survived a round that really began", i);
+}
+
+/* WHICH ROUND THE RECORDS BELONG TO. Once a refused `up` stops clearing them, what is on screen is
+ * the last round that BEGAN -- not the last command typed -- so the count that distinguishes the
+ * two has to come from the same place the clearing does. */
+ZTEST(tof_l7_steps, test_only_an_accepted_round_is_counted)
+{
+    const unsigned before{tof_l7_steps::rounds_begun()};
+
+    tof_l7_steps::begin_round(false);
+    zassert_equal(tof_l7_steps::rounds_begun(), before, "a refused up did not begin a round");
+
+    tof_l7_steps::begin_round(true);
+    zassert_equal(tof_l7_steps::rounds_begun(), before + 1U);
+
+    tof_l7_steps::forget_all();
+    zassert_equal(tof_l7_steps::rounds_begun(), before + 1U,
+                  "the count is of bring-ups, so clearing the records does not take one back");
+}

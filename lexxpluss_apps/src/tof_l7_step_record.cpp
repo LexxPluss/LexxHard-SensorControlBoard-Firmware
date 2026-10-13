@@ -16,6 +16,7 @@ namespace lexxhard::tof_l7_steps {
 namespace {
 
 record kept[static_cast<size_t>(which::count)]{};
+unsigned rounds{0};
 
 bool in_range(which step)
 {
@@ -44,6 +45,19 @@ const record &last(which step)
      * array: a reader must not be handed a neighbouring step's observation. */
     static const record nothing{};
     return in_range(step) ? kept[static_cast<size_t>(step)] : nothing;
+}
+
+void begin_round(bool accepted)
+{
+    if (!accepted)
+        return;
+    forget_all();
+    ++rounds;
+}
+
+unsigned rounds_begun()
+{
+    return rounds;
 }
 
 void forget_all()

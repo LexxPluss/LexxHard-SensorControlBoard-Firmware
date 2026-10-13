@@ -74,8 +74,30 @@ void remember(which step, int rc, const tof_l7::operation_status &status);
 
 const record &last(which step);
 
-/* Cleared at the start of a bring-up, so `attempted` is a statement about THIS run. The quiesce
- * record is a different module and is deliberately not touched. */
+/* THE ROUND BOUNDARY, and the only thing a caller should use.
+ *
+ * `accepted` is the lifecycle's own answer to whether this call begins a new round --
+ * `lifecycle::can_begin_round()`, which is the guard bring_up() itself asks. Clearing is what makes
+ * `attempted` a statement about THIS run; clearing when the round was REFUSED destroys the previous
+ * run's evidence while it is still the only evidence there is. Review reproduced that on
+ * 2026-10-13: a second `up`, refused outright for being in `blocked`, erased the first `up`'s
+ * failure at open.
+ *
+ * Deciding it here rather than at the call site is what makes the rule testable against the real
+ * lifecycle and the real records.
+ *
+ * Note what it does NOT wait for: the round's success. A round that is accepted and then fails at
+ * its first step must show that step and nothing from the run before it. */
+void begin_round(bool accepted);
+
+/* HOW MANY ROUNDS HAVE BEGUN SINCE BOOT, so a reader can tell which `up` the records below belong
+ * to. With a refused `up` no longer clearing them, the steps on screen are those of the last round
+ * that STARTED, which is not necessarily the last command the operator typed. Not reset by
+ * forget_all(): it counts bring-ups, not records. */
+unsigned rounds_begun();
+
+/* Unconditional. Reachable so a test can start from a known state; the application clears through
+ * begin_round(). The quiesce record is a different module and is deliberately not touched. */
 void forget_all();
 
 const char *name(which step);

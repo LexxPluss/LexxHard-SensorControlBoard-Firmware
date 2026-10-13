@@ -156,6 +156,12 @@ constexpr const char *kApprovedClock{"k_ticks_to_us_floor64(k_uptime_ticks())"};
 
 constexpr const char *kStepWriter{"tof_l7_steps::remember("};
 constexpr const char *kStepClearer{"tof_l7_steps::forget_all("};
+/* HOW THE APPLICATION CLEARS, and the whole expression, not just the call. The argument is the
+ * property under test: `lifecycle_.can_begin_round()` is the same guard bring_up() asks, so the
+ * records are cleared exactly when a round begins. A literal, a negation, or any other predicate
+ * would clear for rounds that never started -- which is the defect this replaced. */
+constexpr const char *kStepBegin{"tof_l7_steps::begin_round("};
+constexpr const char *kStepBeginGuarded{"tof_l7_steps::begin_round(lifecycle_.can_begin_round())"};
 /* The two port-context readers a step hook must NOT use. open() and configure() refuse early,
  * before anything clears the port, so its sticky errno and completed count still belong to the
  * previous operation -- the quiesce and its 511 transfers. Reading them in a step hook would
@@ -316,22 +322,41 @@ ZTEST(tof_l7_quiesce_call_sites, test_a_step_hook_never_reads_the_port_context)
     }
 }
 
-ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_once_per_bring_up_and_only_there)
+ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_only_when_a_round_is_accepted)
 {
-    /* `attempted` is only a statement about THIS run if something clears them at its start, and a
-     * clear anywhere else would erase a run's evidence while it is still the evidence. */
+    /* `attempted` is only a statement about THIS run if something clears them at its start -- and
+     * only if the run is one that started. Review reproduced the other case on 2026-10-13: an `up`
+     * refused for being in `blocked` cleared first and asked afterwards, so a call that performed
+     * no operation erased the failing open that preceded it. */
     read_and_strip(ADAPTER_SOURCE);
 
-    zassert_equal(count_of(stripped_, kStepClearer), 1U,
-                  "exactly one clear: none makes `not called` meaningless after the first run, more "
-                  "than one erases a run that is still being read");
+    zassert_equal(count_of(stripped_, kStepBegin), 1U,
+                  "exactly one round boundary: none makes `not called` meaningless after the first "
+                  "run, more than one erases a run that is still being read");
+    zassert_equal(count_of(stripped_, kStepClearer), 0U,
+                  "the adapter clears the step records directly. An unconditional clear is the "
+                  "defect itself -- whether a round begins is the lifecycle's answer, and "
+                  "begin_round() is where it is applied");
 
     size_t from{0}, to{0};
     zassert_true(body_of("int cmd_up(", &from, &to), "cmd_up() not found");
     const size_t len{to - from};
     memcpy(body_, stripped_ + from, len);
     body_[len] = '\0';
-    zassert_equal(count_of(body_, kStepClearer), 1U, "and it is at the start of a bring-up");
+    zassert_equal(count_of(body_, kStepBeginGuarded), 1U,
+                  "cmd_up() must clear through `%s`. The argument is the property: anything else "
+                  "clears for rounds the lifecycle refused",
+                  kStepBeginGuarded);
+
+    /* AND IT IS ASKED BEFORE THE ROUND RUNS, which the count alone does not say. Asked afterwards
+     * the answer is about the state the round LEFT -- `ranging` or `blocked`, never idle -- so the
+     * records would never be cleared and every run would show the first one's steps. */
+    const char *const boundary{strstr(body_, kStepBeginGuarded)};
+    const char *const brings_up{strstr(body_, "lifecycle_.bring_up()")};
+    zassert_not_null(brings_up, "cmd_up() does not call bring_up()");
+    zassert_true(boundary < brings_up,
+                 "the round boundary is applied after bring_up() has already run, so it reads the "
+                 "state the round left rather than the one it started from");
 
     /* AND THE QUIESCE RECORD IS NOT CLEARED WITH THEM. The quiesce happens inside bring_up, so a
      * clear that took it too would discard the observation the last window needed. */
@@ -364,6 +389,9 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clea
             continue;
         zassert_equal(count_of(stripped_, kStepWriter), 0U, "%s writes a step record", line);
         zassert_equal(count_of(stripped_, kStepClearer), 0U, "%s clears the step records", line);
+        zassert_equal(count_of(stripped_, kStepBegin), 0U,
+                      "%s opens a round. Only the command that drives a bring-up may, and only "
+                      "with the lifecycle's own answer", line);
     }
     zassert_true(seen > 1U, "the generated source list had %zu entries", seen);
 }

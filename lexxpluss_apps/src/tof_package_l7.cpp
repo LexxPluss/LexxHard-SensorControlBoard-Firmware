@@ -54,13 +54,20 @@ int lifecycle::init(const hooks &h, const config &c)
     return 0;
 }
 
+/* Only from idle, and only once initialised. ranging would stack a session, stop_owed cannot be
+ * left except by stop(), and blocked is waiting on a decision this module does not make. Both
+ * refusals return -EPERM having touched nothing, which is why a caller needs to be able to ask the
+ * question before calling: see the header. */
+bool lifecycle::can_begin_round() const
+{
+    return initialised_ && status_.current == state::idle;
+}
+
 int lifecycle::bring_up()
 {
-    if (!initialised_)
-        return -EPERM;
-    /* Only from idle. ranging would stack a session, stop_owed cannot be left except by stop(),
-     * and blocked is waiting on a decision this module does not make. */
-    if (status_.current != state::idle)
+    /* THE SAME QUESTION THE CALLER ASKS, so a caller that cleared its per-round records on a true
+     * answer cleared them for a round that really is starting here. */
+    if (!can_begin_round())
         return -EPERM;
 
     status_.failed_step = step::none;

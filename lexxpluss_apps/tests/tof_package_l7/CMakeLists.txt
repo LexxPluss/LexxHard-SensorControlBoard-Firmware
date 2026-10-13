@@ -13,9 +13,13 @@ project(tof_package_l7_test)
 
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 
+# THE STEP RECORD IS LINKED IN, not faked. The rule under test -- which `up` may clear it -- is an
+# interaction between the lifecycle's entry guard and that module's storage, and a stand-in for
+# either side would be testing the stand-in.
 target_sources(app PRIVATE
     src/test_main.cpp
     ${APP_SRC_DIR}/tof_package_l7.cpp
+    ${APP_SRC_DIR}/tof_l7_step_record.cpp
 )
 # ENABLE_TOF_L7_ULD alone: this lifecycle names no bus and no chain, which is the premise the
 # Package configuration rests on.
