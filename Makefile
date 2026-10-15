@@ -66,9 +66,9 @@ bootloader:
 	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=${WORKDIR}/extra
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
-# Optional: pass FEATURES_FILE=cmake/features_paco.cmake (or any other variant file)
-# to inject robot-variant-specific feature flags defined in that file.
-# Example: make firmware FEATURES_FILE=cmake/features_paco.cmake
+# Defaulted so CI, which passes nothing, builds the variant flags too.
+# Pass an empty value to build without them: make firmware FEATURES_FILE=
+FEATURES_FILE ?= cmake/features_dasher.cmake
 FEATURES_FILE_ARG:=$(if $(FEATURES_FILE),-DFEATURES_FILE=$(FEATURES_FILE))
 
 .PHONY: firmware
