@@ -136,6 +136,7 @@ namespace {
     constexpr int PIN_OSSD1 = 25;
     constexpr int PIN_OSSD2 = 26;
     constexpr int PIN_V_WHEEL = 30;
+    constexpr int PIN_WHEEL_EN = 31;
 
     constexpr int STEP_MS = 20;  // matches state_controller::run() k_msleep(20)
 
@@ -939,29 +940,27 @@ namespace {
         return c.finishSpec(title);
     }
 
-    // P2 (Q2/C-1): maintenance, ESW SUSPEND turns v_wheel on; release returns to the maintenance cut.
+    // P2 (change 7): maintenance, ESW does not keep the wheel supplied; v_wheel stays cut for the whole sequence.
     bool scenarioP2(const std::string& title) {
         Checker c;
-        c.setExpected("level 0 in NORMAL; 1 in ESW SUSPEND without 0 writes; 0 five polls after release");
+        c.setExpected("level 0 in NORMAL; 0 in ESW SUSPEND without 1 writes; 0 five polls after release");
         setupInputs();
         setMaintenanceKey();
         if (!bootAndSettle(c)) {
             return c.finishSpec(title);
         }
         c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level in maintenance NORMAL");
+        const size_t mark = zephyr_stubs::pin_write_log.size();
         pressEsw(true);
         c.expect(stepUntilState(POWER_STATE::SUSPEND, 40), "SUSPEND not reached");
-        stepPolls(5);
-        c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 1, "level in SUSPEND");
-        const size_t mark = zephyr_stubs::pin_write_log.size();
-        stepPolls(10);
-        const std::vector<int> levels = vWheelWritesSince(mark);
-        c.expectEq(std::count(levels.begin(), levels.end(), 0), 0, "level-0 writes in SUSPEND");
-        c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 1, "level after 10 more polls");
+        stepPolls(15);
+        c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level in SUSPEND");
         pressEsw(false);
         c.expect(stepUntilStateLeaves(POWER_STATE::SUSPEND, 40), "SUSPEND not left");
         stepPolls(5);
         c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level after ESW release");
+        const std::vector<int> levels = vWheelWritesSince(mark);
+        c.expectEq(std::count(levels.begin(), levels.end(), 1), 0, "level-1 writes during the whole sequence");
         return c.finishSpec(title);
     }
 
@@ -1033,6 +1032,282 @@ namespace {
 #endif
         return c.finishSpec(title);
     }
+    // Last wheel_en level written at or before t, -1 if none (wheel_switch::poll() writes it every poll).
+    int wheelEnAt(const int64_t t) {
+        int level = -1;
+        for (const auto& w : zephyr_stubs::pin_write_log) {
+            if (w.pin == PIN_WHEEL_EN && w.time <= t) {
+                level = w.level;
+            }
+        }
+        return level;
+    }
+
+    int wheelEnHighWritesFrom(const int64_t from_time) {
+        int count = 0;
+        for (const auto& w : pinWrites(PIN_WHEEL_EN, from_time)) {
+            count += w.level == 1 ? 1 : 0;
+        }
+        return count;
+    }
+
+    // Key switch to OFF (left 0 / right 1): should_turn_off() becomes true.
+    void setOffKey() {
+        zephyr_stubs::set_pin_input(PIN_KEY_SWITCH_LEFT, 0);
+        zephyr_stubs::set_pin_input(PIN_KEY_SWITCH_RIGHT, 1);
+    }
+
+    // W1 (H1): NORMAL -> OFF_WAIT by the key switch; wheel_en ends disabled, as in the old code.
+    bool scenarioW1() {
+        Checker c;
+        c.setExpected("wheel_en 1 in NORMAL; 0 five polls after entering OFF_WAIT");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("W1 NORMAL -> OFF_WAIT: wheel_en disabled");
+        }
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 1, "wheel_en in NORMAL");
+        setOffKey();
+        c.expect(stepUntilState(POWER_STATE::OFF_WAIT, 40), "OFF_WAIT not reached");
+        stepPolls(5);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 0, "wheel_en in OFF_WAIT");
+        return c.finishSpec("W1 NORMAL -> OFF_WAIT: wheel_en disabled");
+    }
+
+    // W2 (H2): NORMAL -> ESW SUSPEND (latch set) -> OFF_WAIT. The final value is disabled; in Push the disable is
+    // delayed by 5 s from the OFF_WAIT entry.
+    bool scenarioW2() {
+        Checker c;
+        c.setExpected("wheel_en 1 in SUSPEND; Push: still 1 4 s after OFF_WAIT entry; 0 5.5 s after");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("W2 SUSPEND -> OFF_WAIT: wheel_en disabled after the delay");
+        }
+        pressEsw(true);
+        c.expect(stepUntilState(POWER_STATE::SUSPEND, 40), "SUSPEND not reached");
+#ifdef ENABLE_PUSH_MODE
+        stepPolls(5);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 1, "wheel_en in SUSPEND");
+#endif
+        setOffKey();
+        c.expect(stepUntilState(POWER_STATE::OFF_WAIT, 40), "OFF_WAIT not reached");
+        const int64_t t_wait = transitionTime(POWER_STATE::OFF_WAIT);
+#ifdef ENABLE_PUSH_MODE
+        stepUntil(t_wait + 4000);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 1, "wheel_en 4 s after OFF_WAIT entry");
+#endif
+        stepUntil(t_wait + 5500);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 0, "wheel_en 5.5 s after OFF_WAIT entry");
+        return c.finishSpec("W2 SUSPEND -> OFF_WAIT: wheel_en disabled after the delay");
+    }
+
+    // W3 (H4): ESW SUSPEND -> OFF by a dcdc fault; wheel_en is disabled on entering OFF.
+    bool scenarioW3() {
+        Checker c;
+        c.setExpected("wheel_en 0 five polls after entering OFF");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("W3 SUSPEND -> OFF by dcdc fault: wheel_en disabled");
+        }
+        pressEsw(true);
+        c.expect(stepUntilState(POWER_STATE::SUSPEND, 40), "SUSPEND not reached");
+        stepPolls(5);
+        zephyr_stubs::set_pin_input(PIN_PGOOD_24V, 1);
+        c.expect(stepUntilState(POWER_STATE::OFF, 40), "OFF not reached");
+        stepPolls(5);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 0, "wheel_en after entering OFF");
+        return c.finishSpec("W3 SUSPEND -> OFF by dcdc fault: wheel_en disabled");
+    }
+
+    // W4 (H5): AUTO_CHARGE -> OFF_WAIT by the key switch; wheel_en ends disabled, as in the old code.
+    bool scenarioW4() {
+        Checker c;
+        c.setExpected("wheel_en 0 five polls after entering OFF_WAIT from AUTO_CHARGE");
+        setupInputs();
+        lexxhard::adc_reader::stub_adc3_mv = 2900;
+        bmu_rsoc = 50;
+        if (!bootToNormal()) {
+            c.expect(false, "NORMAL not reached");
+            return c.finishSpec("W4 AUTO_CHARGE -> OFF_WAIT: wheel_en disabled");
+        }
+        ros_wheel_power_off = true;
+        c.expect(stepUntilState(POWER_STATE::AUTO_CHARGE, 600), "AUTO_CHARGE not reached");
+        ros_wheel_power_off = false;
+        stepPolls(5);
+        setOffKey();
+        c.expect(stepUntilState(POWER_STATE::OFF_WAIT, 40), "OFF_WAIT not reached");
+        stepPolls(5);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 0, "wheel_en in OFF_WAIT");
+        return c.finishSpec("W4 AUTO_CHARGE -> OFF_WAIT: wheel_en disabled");
+    }
+
+    // W5 (H6): OFF_WAIT -> OFF -> WAIT_SW -> POST -> STANDBY; wheel_en is never enabled again on the way.
+    bool scenarioW5() {
+        Checker c;
+        c.setExpected("no wheel_en level-1 write from OFF_WAIT entry until STANDBY is reached");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("W5 restart after OFF_WAIT: wheel_en stays disabled");
+        }
+        setOffKey();
+        c.expect(stepUntilState(POWER_STATE::OFF_WAIT, 40), "OFF_WAIT not reached");
+        const int64_t t_wait = transitionTime(POWER_STATE::OFF_WAIT);
+        stepPolls(5);
+        const int64_t t_checked = zephyr_stubs::virtual_time_ms;
+        constexpr int64_t RESTART_TIMEOUT_MS = 200000;
+        c.expect(stepUntilState(POWER_STATE::OFF, 3200), "OFF not reached");
+        zephyr_stubs::set_pin_input(PIN_KEY_SWITCH_LEFT, 1);
+        zephyr_stubs::set_pin_input(PIN_KEY_SWITCH_RIGHT, 0);
+        while (bc::impl.state != POWER_STATE::STANDBY && zephyr_stubs::virtual_time_ms < t_wait + RESTART_TIMEOUT_MS) {
+            driveBootSwitch();
+            stepOnce();
+        }
+        c.expect(bc::impl.state == POWER_STATE::STANDBY, "STANDBY not reached");
+        c.expectEq(wheelEnHighWritesFrom(t_checked), 0, "wheel_en level-1 writes after OFF_WAIT entry");
+        return c.finishSpec("W5 restart after OFF_WAIT: wheel_en stays disabled");
+    }
+
+    void pressPsw(const bool pressed) { zephyr_stubs::set_pin_input(PIN_PS_SW_IN, pressed ? 0 : 1); }
+
+    // H6-1: NORMAL, psw held over 3000 ms -> SUSPEND (psw branch), then OFF_WAIT on a later poll.
+    bool scenarioH61() {
+        Checker c;
+        c.setExpected("NORMAL -> SUSPEND within 3.5 s of the psw press, then SUSPEND -> OFF_WAIT");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("H6-1 NORMAL, psw held: SUSPEND then OFF_WAIT");
+        }
+        pressPsw(true);
+        c.expect(stepUntilState(POWER_STATE::SUSPEND, 200), "SUSPEND not reached by the psw hold");
+        c.expect(stepUntilState(POWER_STATE::OFF_WAIT, 40), "OFF_WAIT not reached after SUSPEND");
+        return c.finishSpec("H6-1 NORMAL, psw held: SUSPEND then OFF_WAIT");
+    }
+
+    // H6-2: NORMAL, psw held 3000 ms or less, then released -> no transition.
+    bool scenarioH62() {
+        Checker c;
+        c.setExpected("stays NORMAL, no transition after NORMAL");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("H6-2 NORMAL, psw short press: stays NORMAL");
+        }
+        const size_t transitions_before = transitions.size();
+        pressPsw(true);
+        stepUntil(zephyr_stubs::virtual_time_ms + 2500);
+        pressPsw(false);
+        stepUntil(zephyr_stubs::virtual_time_ms + 2000);
+        c.expect(bc::impl.state == POWER_STATE::NORMAL, "state left NORMAL");
+        c.expect(transitions.size() == transitions_before, "a transition happened after NORMAL");
+        return c.finishSpec("H6-2 NORMAL, psw short press: stays NORMAL");
+    }
+
+    // H6-3: AUTO_CHARGE (as W4), psw held over 3000 ms -> STANDBY, then OFF_WAIT.
+    bool scenarioH63() {
+        Checker c;
+        c.setExpected("AUTO_CHARGE -> STANDBY by the psw hold, then OFF_WAIT");
+        setupInputs();
+        lexxhard::adc_reader::stub_adc3_mv = 2900;
+        bmu_rsoc = 50;
+        if (!bootToNormal()) {
+            c.expect(false, "NORMAL not reached");
+            return c.finishSpec("H6-3 AUTO_CHARGE, psw held: STANDBY then OFF_WAIT");
+        }
+        ros_wheel_power_off = true;
+        c.expect(stepUntilState(POWER_STATE::AUTO_CHARGE, 600), "AUTO_CHARGE not reached");
+        ros_wheel_power_off = false;
+        stepPolls(5);
+        pressPsw(true);
+        c.expect(stepUntilStateLeaves(POWER_STATE::AUTO_CHARGE, 300), "AUTO_CHARGE not left by the psw hold");
+        c.expect(bc::impl.state == POWER_STATE::STANDBY, "AUTO_CHARGE did not go to STANDBY");
+        c.expect(stepUntilState(POWER_STATE::OFF_WAIT, 400), "OFF_WAIT not reached after STANDBY");
+        return c.finishSpec("H6-3 AUTO_CHARGE, psw held: STANDBY then OFF_WAIT");
+    }
+
+    // H6-5: NORMAL, psw held over 3000 ms -> OFF_WAIT; the latch is false, so wheel_en is disabled with no 5 s delay.
+    bool scenarioH65() {
+        Checker c;
+        c.setExpected("wheel_en 1 in NORMAL; 0 five polls after entering OFF_WAIT");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("H6-5 NORMAL, psw held: wheel_en disabled at OFF_WAIT");
+        }
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 1, "wheel_en in NORMAL");
+        pressPsw(true);
+        c.expect(stepUntilState(POWER_STATE::OFF_WAIT, 300), "OFF_WAIT not reached by the psw hold");
+        stepPolls(5);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 0, "wheel_en five polls after OFF_WAIT entry");
+        return c.finishSpec("H6-5 NORMAL, psw held: wheel_en disabled at OFF_WAIT");
+    }
+#ifdef ENABLE_PUSH_MODE
+    // H7-2: running with ESW held (v_wheel supplied), then the key switch to maintenance cuts v_wheel at once.
+    bool scenarioH72() {
+        Checker c;
+        c.setExpected("level 1 in ESW SUSPEND (running); 0 one poll after ksw leaves running; no 1 write afterwards");
+        setupInputs();
+        if (!bootAndSettle(c)) {
+            return c.finishSpec("H7-2 running ESW held, then maintenance: v_wheel cut");
+        }
+        pressEsw(true);
+        c.expect(stepUntilState(POWER_STATE::SUSPEND, 40), "SUSPEND not reached");
+        stepPolls(5);
+        c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 1, "level in SUSPEND while running");
+        setMaintenanceKey();
+        for (int i = 0; i < 40 && bc::impl.ksw.is_running(); ++i) {
+            stepOnce();
+        }
+        c.expect(!bc::impl.ksw.is_running(), "ksw still running");
+        stepOnce();
+        c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level one poll after ksw left running");
+        const size_t mark = zephyr_stubs::pin_write_log.size();
+        stepPolls(15);
+        const std::vector<int> levels = vWheelWritesSince(mark);
+        c.expectEq(std::count(levels.begin(), levels.end(), 1), 0, "level-1 writes after the cut");
+        return c.finishSpec("H7-2 running ESW held, then maintenance: v_wheel cut");
+    }
+
+    // H7-3: maintenance with ESW asserted at power-on; bat_out_state at STANDBY+6000 writes 0.
+    bool scenarioH73() {
+        Checker c;
+        c.setExpected("STANDBY reached; level 0 from STANDBY+6000 with no level-1 write after it");
+        setupInputs();
+        setMaintenanceKey();
+        pressEsw(true);
+        bc::impl.init();
+        constexpr int64_t BOOT_TIMEOUT_MS = 60000;
+        while (transitionTime(POWER_STATE::STANDBY) < 0 && zephyr_stubs::virtual_time_ms < BOOT_TIMEOUT_MS) {
+            driveBootSwitch();
+            stepOnce();
+        }
+        const int64_t t_st = transitionTime(POWER_STATE::STANDBY);
+        c.expect(t_st >= 0, "STANDBY not reached");
+        if (t_st < 0) {
+            return c.finishSpec("H7-3 maintenance, ESW at power-on: v_wheel cut at STANDBY");
+        }
+        stepUntil(t_st + 6100);
+        c.expectEq(levelAt(zephyr_stubs::virtual_time_ms), 0, "level after STANDBY+6000");
+        int ones = 0;
+        for (const auto& w : pinWrites(PIN_V_WHEEL, t_st + 6000)) {
+            ones += w.level == 1 ? 1 : 0;
+        }
+        c.expectEq(ones, 0, "level-1 writes from STANDBY+6000");
+        return c.finishSpec("H7-3 maintenance, ESW at power-on: v_wheel cut at STANDBY");
+    }
+
+    // H7-4: maintenance, NORMAL entered; wheel_en stays disabled.
+    bool scenarioH74() {
+        Checker c;
+        c.setExpected("wheel_en 0 five polls after entering NORMAL in maintenance");
+        setupInputs();
+        setMaintenanceKey();
+        if (!bootToNormal()) {
+            c.expect(false, "NORMAL not reached");
+            return c.finishSpec("H7-4 maintenance NORMAL: wheel_en disabled");
+        }
+        stepPolls(5);
+        c.expectEq(wheelEnAt(zephyr_stubs::virtual_time_ms), 0, "wheel_en in maintenance NORMAL");
+        c.expectEq(wheelEnHighWritesFrom(transitionTime(POWER_STATE::NORMAL)), 0, "wheel_en level-1 writes");
+        return c.finishSpec("H7-4 maintenance NORMAL: wheel_en disabled");
+    }
+#endif
 #endif
 
     bool runScenario(const int index, const int variant) {
@@ -1065,6 +1340,20 @@ namespace {
 #endif
 #ifdef BC_NEW_BUILD
             case 17: return scenarioB1();
+            case 21: return scenarioW1();
+            case 22: return scenarioW2();
+            case 23: return scenarioW3();
+            case 24: return scenarioW4();
+            case 25: return scenarioW5();
+            case 26: return scenarioH61();
+            case 27: return scenarioH62();
+            case 28: return scenarioH63();
+            case 29: return scenarioH65();
+#ifdef ENABLE_PUSH_MODE
+            case 30: return scenarioH72();
+            case 31: return scenarioH73();
+            case 32: return scenarioH74();
+#endif
 #endif
 #if defined(ENABLE_PUSH_MODE) && defined(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
             case 18: return scenarioP1LidarAbsent();
@@ -1109,13 +1398,18 @@ int main(int argc, char** argv) {
     std::cout << "=== Board Controller Baseline Test Suite (new source, " << BC_NEW_BUILD_NAME << ") ===" << std::endl;
     int same = 0, diff = 0, spec_pass = 0, spec_fail = 0, harness_errors = 0;
 #if defined(ENABLE_PUSH_MODE) && defined(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
-    constexpr int LAST_SCENARIO = 20;
+    constexpr int LAST_SCENARIO = 32;
 #else
-    constexpr int LAST_SCENARIO = 17;
+    constexpr int LAST_SCENARIO = 32;
 #endif
     for (int index = 1; index <= LAST_SCENARIO; ++index) {
+#if !(defined(ENABLE_PUSH_MODE) && defined(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST))
+        if (index >= 18 && index <= 20) {
+            continue;
+        }
+#endif
 #ifndef ENABLE_PUSH_MODE
-        if (index >= 14 && index <= 16) {
+        if ((index >= 14 && index <= 16) || index >= 30) {
             continue;
         }
 #endif

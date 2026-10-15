@@ -43,11 +43,9 @@ auto_charge_decision eval_auto_charge_transitions(const auto_charge_inputs& in) 
     if (in.ksw_transition_to_running) {
         return makeDecision(POWER_STATE::OFF_WAIT, reason::KSW_TO_RUNNING, true);
     }
-#ifndef ENABLE_PUSH_MODE
     if (in.psw_pushed) {
         return makeDecision(POWER_STATE::STANDBY, reason::PSW);
     }
-#endif
     if (in.power_off_from_ros) {
         return makeDecision(POWER_STATE::STANDBY, reason::POWER_OFF_FROM_ROS);
     }
@@ -98,17 +96,29 @@ wheel_en_action plan_enter_wheel_en(const POWER_STATE s, const bool ksw_maintena
     switch (s) {
     case POWER_STATE::AUTO_CHARGE:
     case POWER_STATE::NORMAL:
-#ifdef ENABLE_PUSH_MODE
-        static_cast<void>(ksw_maintenance);
-        return wheel_en_action::ENABLE;
-#else
         return ksw_maintenance ? wheel_en_action::DISABLE_IMMEDIATE : wheel_en_action::ENABLE;
-#endif
     case POWER_STATE::STANDBY:
         return wheel_en_action::DISABLE_IMMEDIATE;
     default:
         return wheel_en_action::NONE;
     }
+}
+
+wheel_en_action plan_shutdown_wheel_en(const POWER_STATE entering, const bool use_software_brake) {
+#ifdef ENABLE_PUSH_MODE
+    switch (entering) {
+    case POWER_STATE::OFF_WAIT:
+        return use_software_brake ? wheel_en_action::DISABLE_DELAYED : wheel_en_action::DISABLE_IMMEDIATE;
+    case POWER_STATE::OFF:
+        return wheel_en_action::DISABLE_IMMEDIATE;
+    default:
+        return wheel_en_action::NONE;
+    }
+#else
+    static_cast<void>(entering);
+    static_cast<void>(use_software_brake);
+    return wheel_en_action::NONE;
+#endif
 }
 
 }  // namespace lexxhard::board_controller

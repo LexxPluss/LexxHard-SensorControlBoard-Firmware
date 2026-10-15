@@ -88,4 +88,7 @@ leave_auto_charge_plan plan_leave_auto_charge(bool use_software_brake);
 // wheel_en action on entering `s`. Only AUTO_CHARGE, NORMAL, STANDBY, SUSPEND and OFF_WAIT are handled.
 wheel_en_action plan_enter_wheel_en(POWER_STATE s, bool ksw_maintenance);
 
+// wheel_en action on entering OFF_WAIT or OFF. Push build only; the standard build never acts here.
+wheel_en_action plan_shutdown_wheel_en(POWER_STATE entering, bool use_software_brake);
+
 }  // namespace lexxhard::board_controller

@@ -516,8 +516,19 @@ private:
             return;
         }
 
+#ifdef ENABLE_PUSH_MODE
+        std::optional<bool> const previous{last_written_disable};
+        last_written_disable = disable;
+        if (previous != last_written_disable) {
+            LOG_INF("wheel_en: %d -> %d", previous.has_value() ? static_cast<int>(!previous.value()) : -1,
+                    static_cast<int>(!disable));
+        }
+#endif
         gpio_pin_set_dt(&gpio_dev, static_cast<int>(!disable));
     }
+#ifdef ENABLE_PUSH_MODE
+    std::optional<bool> last_written_disable{std::nullopt};
+#endif
 };
 
 class manual_charger { // Variables Implemented
@@ -1400,7 +1411,7 @@ private:
         auto wheel_relay_control = [&](){
 #ifdef ENABLE_PUSH_MODE
             // The ESW means the robot is pushed by hand, so an ROS cut must not drop the wheel supply.
-            bool wheel_poweroff{mbd.is_wheel_poweroff() && !esw.is_asserted()};
+            bool wheel_poweroff{mbd.is_wheel_poweroff() && !esw_keeps_wheel()};
 #else
             bool wheel_poweroff{mbd.is_wheel_poweroff()};
 #endif
@@ -1416,7 +1427,7 @@ private:
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
 #ifdef ENABLE_PUSH_MODE
-            if (esw.is_asserted()) {
+            if (esw_keeps_wheel()) {
                 // Keep the wheel supplied while the robot is pushed by hand.
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
                 if (!gpio_is_ready_dt(&gpio_dev)) {
@@ -1516,11 +1527,9 @@ private:
                 set_new_state(POWER_STATE::OFF_WAIT);
             } else if (should_lockdown()) {
                set_new_state(POWER_STATE::LOCKDOWN);
-#ifndef ENABLE_PUSH_MODE
             } else if (psw.get_state() != power_switch::STATE::RELEASED) {
                 LOG_DBG("detect power switch\n");
                 set_new_state(POWER_STATE::SUSPEND);
-#endif
             } else if (mbd.power_off_from_ros()) {
                 LOG_DBG("receive power off from ROS\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1804,7 +1813,7 @@ private:
 
 #ifdef ENABLE_PUSH_MODE
         // The ESW means the robot is pushed by hand, so the wheel stays supplied.
-        int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running() || esw.is_asserted())};
+        int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running() || esw_keeps_wheel())};
 #else
         int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running())};
 #endif
@@ -1812,6 +1821,7 @@ private:
         switch (newstate) {
         case POWER_STATE::OFF: {
             LOG_INF("enter OFF\n");
+            applyWheelEnAction(plan_shutdown_wheel_en(POWER_STATE::OFF, use_software_brake));
             poweron_by_switch = false;
             mbd.reset();
             psw.set_led(false);
@@ -1936,6 +1946,7 @@ private:
         } break;
         case POWER_STATE::OFF_WAIT: {
             LOG_INF("enter OFF_WAIT\n");
+            applyWheelEnAction(plan_shutdown_wheel_en(POWER_STATE::OFF_WAIT, use_software_brake));
             timer_shutdown = k_uptime_get();    // timer reset
             if (psw.get_state() == power_switch::STATE::PUSHED || should_turn_off() || should_manual_charge() || ksw.is_transition_to_running())
                 shutdown_reason = SHUTDOWN_REASON::SWITCH;
@@ -2015,6 +2026,10 @@ private:
     }
     bool should_lockdown() const {
         return (mbd.is_dead() || mbd.lockdown_from_ros()) && !esw.is_asserted();
+    }
+    // Pushing by hand keeps the wheel supplied only while the key switch is running; maintenance follows the standard build.
+    bool esw_keeps_wheel() const {
+        return esw.is_asserted() && ksw.is_running();
     }
     bool is_emergency_state() const {
         return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;

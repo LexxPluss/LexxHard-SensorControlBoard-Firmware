@@ -32,11 +32,13 @@
 namespace {
 
 using lexxhard::board_controller::auto_charge_decision;
+using lexxhard::board_controller::auto_charge_exit_reason;
 using lexxhard::board_controller::auto_charge_inputs;
 using lexxhard::board_controller::eval_auto_charge_transitions;
 using lexxhard::board_controller::leave_auto_charge_plan;
 using lexxhard::board_controller::plan_enter_wheel_en;
 using lexxhard::board_controller::plan_leave_auto_charge;
+using lexxhard::board_controller::plan_shutdown_wheel_en;
 using lexxhard::board_controller::wheel_en_action;
 
 using input_field = bool auto_charge_inputs::*;
@@ -47,7 +49,8 @@ auto_charge_inputs with(const input_field field, const bool value) {
     return in;
 }
 
-// Final wheel_en result of leaving AUTO_CHARGE for `in`: the enter action wins when it acts, else the leave action.
+// Final wheel_en result of leaving AUTO_CHARGE for `in`: the enter action wins when it acts, then the shutdown action,
+// else the leave action.
 struct exit_result {
     POWER_STATE next;
     wheel_en_action wheel_en;
@@ -57,7 +60,9 @@ exit_result composeExit(const auto_charge_inputs& in, const bool ksw_maintenance
     const auto_charge_decision decision = eval_auto_charge_transitions(in);
     const leave_auto_charge_plan leave = plan_leave_auto_charge(decision.use_software_brake);
     const wheel_en_action enter = plan_enter_wheel_en(decision.next, ksw_maintenance);
-    return exit_result{decision.next, enter != wheel_en_action::NONE ? enter : leave.wheel_en};
+    const wheel_en_action shutdown = plan_shutdown_wheel_en(decision.next, decision.use_software_brake);
+    const wheel_en_action final_action = enter != wheel_en_action::NONE ? enter : shutdown;
+    return exit_result{decision.next, final_action != wheel_en_action::NONE ? final_action : leave.wheel_en};
 }
 
 }  // namespace
@@ -88,17 +93,30 @@ ZTEST(power_control_auto_charge, test_eval_auto_charge_transitions_ksw_rising_go
 }
 
 #ifdef ENABLE_PUSH_MODE
-ZTEST(power_control_auto_charge, test_eval_auto_charge_transitions_psw_pushed_is_ignored_in_push)
+ZTEST(power_control_auto_charge, test_eval_auto_charge_transitions_psw_pushed_goes_standby_in_push)
 {
     const auto_charge_decision d = eval_auto_charge_transitions(with(&auto_charge_inputs::psw_pushed, true));
-    zassert_equal(d.next, POWER_STATE::AUTO_CHARGE);
+    zassert_equal(d.next, POWER_STATE::STANDBY);
+    zassert_equal(d.reason, auto_charge_exit_reason::PSW);
 }
 
-ZTEST(power_control_auto_charge, test_eval_auto_charge_transitions_psw_pushed_still_evaluates_later_conditions)
+ZTEST(power_control_auto_charge, test_eval_auto_charge_transitions_psw_pushed_with_bmu_failure_goes_standby_in_push)
 {
     auto_charge_inputs in = with(&auto_charge_inputs::psw_pushed, true);
     in.bmu_ok = false;
-    zassert_equal(eval_auto_charge_transitions(in).next, POWER_STATE::STANDBY);
+    const auto_charge_decision d = eval_auto_charge_transitions(in);
+    zassert_equal(d.next, POWER_STATE::STANDBY);
+    zassert_equal(d.reason, auto_charge_exit_reason::PSW);
+}
+
+ZTEST(power_control_auto_charge, test_eval_auto_charge_transitions_psw_beats_esw_in_push)
+{
+    auto_charge_inputs in = with(&auto_charge_inputs::psw_pushed, true);
+    in.esw_asserted = true;
+    const auto_charge_decision d = eval_auto_charge_transitions(in);
+    zassert_equal(d.next, POWER_STATE::STANDBY);
+    zassert_equal(d.reason, auto_charge_exit_reason::PSW);
+    zassert_false(d.use_software_brake);
 }
 #else
 ZTEST(power_control_auto_charge, test_eval_auto_charge_transitions_psw_pushed_goes_standby_in_standard)
@@ -258,11 +276,7 @@ ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_destinations_match_cur
     zassert_equal(plan_enter_wheel_en(POWER_STATE::OFF_WAIT, false), wheel_en_action::NONE);
     zassert_equal(plan_enter_wheel_en(POWER_STATE::OFF_WAIT, true), wheel_en_action::NONE);
     zassert_equal(plan_enter_wheel_en(POWER_STATE::NORMAL, false), wheel_en_action::ENABLE);
-#ifdef ENABLE_PUSH_MODE
-    zassert_equal(plan_enter_wheel_en(POWER_STATE::NORMAL, true), wheel_en_action::ENABLE);
-#else
     zassert_equal(plan_enter_wheel_en(POWER_STATE::NORMAL, true), wheel_en_action::DISABLE_IMMEDIATE);
-#endif
 }
 
 ZTEST(power_control_auto_charge, test_compose_exit_bmu_failure_disables_wheel_en_immediately_in_both_builds)
@@ -280,18 +294,18 @@ ZTEST(power_control_auto_charge, test_compose_exit_esw_suspend_never_disables_wh
     zassert_equal(r.wheel_en, wheel_en_action::NONE);
 }
 
-ZTEST(power_control_auto_charge, test_compose_exit_full_charge_enables_wheel_en_in_push)
+ZTEST(power_control_auto_charge, test_compose_exit_full_charge_follows_ksw_maintenance_in_push)
 {
     const exit_result r = composeExit(with(&auto_charge_inputs::bmu_full_charge, true), true);
     zassert_equal(r.next, POWER_STATE::NORMAL);
-    zassert_equal(r.wheel_en, wheel_en_action::ENABLE);
+    zassert_equal(r.wheel_en, wheel_en_action::DISABLE_IMMEDIATE);
 }
 
-ZTEST(power_control_auto_charge, test_compose_exit_off_wait_leaves_wheel_en_untouched_in_push)
+ZTEST(power_control_auto_charge, test_compose_exit_off_wait_disables_wheel_en_immediately_in_push)
 {
     const exit_result r = composeExit(with(&auto_charge_inputs::should_turn_off, true), false);
     zassert_equal(r.next, POWER_STATE::OFF_WAIT);
-    zassert_equal(r.wheel_en, wheel_en_action::NONE);
+    zassert_equal(r.wheel_en, wheel_en_action::DISABLE_IMMEDIATE);
 }
 
 ZTEST(power_control_auto_charge, test_compose_exit_each_trigger_final_wheel_en_matches_table_in_push)
@@ -303,8 +317,10 @@ ZTEST(power_control_auto_charge, test_compose_exit_each_trigger_final_wheel_en_m
         wheel_en_action wheel_en;
     };
     const row rows[] = {
-        {&auto_charge_inputs::should_turn_off, true, POWER_STATE::OFF_WAIT, wheel_en_action::NONE},
-        {&auto_charge_inputs::ksw_transition_to_running, true, POWER_STATE::OFF_WAIT, wheel_en_action::NONE},
+        {&auto_charge_inputs::should_turn_off, true, POWER_STATE::OFF_WAIT, wheel_en_action::DISABLE_IMMEDIATE},
+        {&auto_charge_inputs::ksw_transition_to_running, true, POWER_STATE::OFF_WAIT,
+         wheel_en_action::DISABLE_IMMEDIATE},
+        {&auto_charge_inputs::psw_pushed, true, POWER_STATE::STANDBY, wheel_en_action::DISABLE_IMMEDIATE},
         {&auto_charge_inputs::power_off_from_ros, true, POWER_STATE::STANDBY, wheel_en_action::DISABLE_IMMEDIATE},
         {&auto_charge_inputs::bmu_ok, false, POWER_STATE::STANDBY, wheel_en_action::DISABLE_IMMEDIATE},
         {&auto_charge_inputs::dcdc_ok, false, POWER_STATE::STANDBY, wheel_en_action::DISABLE_IMMEDIATE},
@@ -376,25 +392,118 @@ ZTEST(power_control_auto_charge, test_compose_exit_each_trigger_final_wheel_en_m
 
 // L5: enter AUTO_CHARGE
 
-#ifdef ENABLE_PUSH_MODE
-ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_auto_charge_maintenance_enables_in_push)
+ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_auto_charge_maintenance_disables_in_both_builds)
 {
-    zassert_equal(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, true), wheel_en_action::ENABLE);
+    zassert_equal(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, true), wheel_en_action::DISABLE_IMMEDIATE);
 }
+
+#ifdef ENABLE_PUSH_MODE
 
 ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_auto_charge_running_enables_in_push)
 {
     zassert_equal(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, false), wheel_en_action::ENABLE);
 }
 #else
-ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_auto_charge_maintenance_disables_in_standard)
-{
-    zassert_equal(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, true), wheel_en_action::DISABLE_IMMEDIATE);
-}
-
 ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_auto_charge_running_enables_in_standard)
 {
     zassert_equal(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, false), wheel_en_action::ENABLE);
+}
+#endif
+
+// Z7: maintenance follows the standard build in both builds
+
+ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_normal_follows_ksw_maintenance_in_both_builds)
+{
+    zassert_equal(plan_enter_wheel_en(POWER_STATE::NORMAL, true), wheel_en_action::DISABLE_IMMEDIATE);
+    zassert_equal(plan_enter_wheel_en(POWER_STATE::NORMAL, false), wheel_en_action::ENABLE);
+}
+
+ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_auto_charge_follows_ksw_maintenance_in_both_builds)
+{
+    zassert_equal(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, true), wheel_en_action::DISABLE_IMMEDIATE);
+    zassert_equal(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, false), wheel_en_action::ENABLE);
+}
+
+ZTEST(power_control_auto_charge, test_plan_enter_wheel_en_standby_ignores_ksw_maintenance_in_both_builds)
+{
+    zassert_equal(plan_enter_wheel_en(POWER_STATE::STANDBY, true), wheel_en_action::DISABLE_IMMEDIATE);
+    zassert_equal(plan_enter_wheel_en(POWER_STATE::STANDBY, false), wheel_en_action::DISABLE_IMMEDIATE);
+}
+
+ZTEST(power_control_auto_charge, test_compose_exit_full_charge_maintenance_disables_wheel_en_in_both_builds)
+{
+    const exit_result r = composeExit(with(&auto_charge_inputs::bmu_full_charge, true), true);
+    zassert_equal(r.next, POWER_STATE::NORMAL);
+    zassert_equal(r.wheel_en, wheel_en_action::DISABLE_IMMEDIATE);
+}
+
+// L6: shutdown (enter OFF_WAIT / OFF)
+
+namespace {
+
+constexpr POWER_STATE all_states[] = {
+    POWER_STATE::OFF,         POWER_STATE::WAIT_SW,     POWER_STATE::POST,         POWER_STATE::STANDBY,
+    POWER_STATE::NORMAL,      POWER_STATE::AUTO_CHARGE, POWER_STATE::MANUAL_CHARGE, POWER_STATE::LOCKDOWN,
+    POWER_STATE::TIMEROFF,    POWER_STATE::SUSPEND,     POWER_STATE::RESUME_WAIT,  POWER_STATE::OFF_WAIT,
+};
+
+}  // namespace
+
+#ifdef ENABLE_PUSH_MODE
+ZTEST(power_control_auto_charge, test_shutdown_wheel_en_off_wait_follows_brake_latch_in_push)
+{
+    zassert_equal(plan_shutdown_wheel_en(POWER_STATE::OFF_WAIT, false), wheel_en_action::DISABLE_IMMEDIATE);
+    zassert_equal(plan_shutdown_wheel_en(POWER_STATE::OFF_WAIT, true), wheel_en_action::DISABLE_DELAYED);
+}
+
+ZTEST(power_control_auto_charge, test_shutdown_wheel_en_off_disables_immediately_in_push)
+{
+    zassert_equal(plan_shutdown_wheel_en(POWER_STATE::OFF, false), wheel_en_action::DISABLE_IMMEDIATE);
+    zassert_equal(plan_shutdown_wheel_en(POWER_STATE::OFF, true), wheel_en_action::DISABLE_IMMEDIATE);
+}
+
+ZTEST(power_control_auto_charge, test_shutdown_wheel_en_other_states_do_nothing_in_push)
+{
+    for (const POWER_STATE s : all_states) {
+        if (s == POWER_STATE::OFF_WAIT || s == POWER_STATE::OFF) {
+            continue;
+        }
+        zassert_equal(plan_shutdown_wheel_en(s, false), wheel_en_action::NONE);
+        zassert_equal(plan_shutdown_wheel_en(s, true), wheel_en_action::NONE);
+    }
+}
+
+ZTEST(power_control_auto_charge, test_shutdown_wheel_en_latched_brake_off_wait_is_delayed_viewpoint1)
+{
+    // ESW leaves NORMAL or AUTO_CHARGE with the latch set; the latch survives SUSPEND into OFF_WAIT.
+    const auto_charge_decision d = eval_auto_charge_transitions(with(&auto_charge_inputs::esw_asserted, true));
+    zassert_true(d.use_software_brake);
+    zassert_equal(plan_shutdown_wheel_en(POWER_STATE::OFF_WAIT, d.use_software_brake),
+                  wheel_en_action::DISABLE_DELAYED);
+}
+
+ZTEST(power_control_auto_charge, test_shutdown_wheel_en_off_is_always_immediate_viewpoint2)
+{
+    // Entering OFF must cancel any pending delayed disable, whatever the latch is.
+    constexpr bool latches[] = {false, true};
+    for (const bool latch : latches) {
+        zassert_equal(plan_shutdown_wheel_en(POWER_STATE::OFF, latch), wheel_en_action::DISABLE_IMMEDIATE);
+    }
+}
+
+ZTEST(power_control_auto_charge, test_shutdown_wheel_en_has_no_esw_input_viewpoint3)
+{
+    // The only inputs are the state and the latch, so ESW being asserted cannot change the result.
+    wheel_en_action (*const fn)(POWER_STATE, bool) = &plan_shutdown_wheel_en;
+    zassert_equal(fn(POWER_STATE::OFF_WAIT, false), wheel_en_action::DISABLE_IMMEDIATE);
+}
+#else
+ZTEST(power_control_auto_charge, test_shutdown_wheel_en_does_nothing_in_standard)
+{
+    for (const POWER_STATE s : all_states) {
+        zassert_equal(plan_shutdown_wheel_en(s, false), wheel_en_action::NONE);
+        zassert_equal(plan_shutdown_wheel_en(s, true), wheel_en_action::NONE);
+    }
 }
 #endif
 
