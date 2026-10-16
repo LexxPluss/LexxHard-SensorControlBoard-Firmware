@@ -62,7 +62,10 @@ extern "C" {
 #include "tof_l7_runtime.hpp"
 #include "tof_l7_sensor.hpp"
 #include "tof_package_bench_deadman.hpp"
+#include "tof_package_can.hpp"
 #include "tof_package_l7.hpp"
+#include "tof_package_stream.hpp"
+#include "tof_seq_boot_local.hpp"
 
 LOG_MODULE_REGISTER(tof_package_bench);
 
@@ -104,6 +107,20 @@ struct vl53l7cx_go2_observation go2_scratch_;
 /* The last complete grid, kept so `read` can show what arrived rather than only how many did. In
  * .bss for the stack reason above, and because the content has to outlive the hook that filled it. */
 tof_l7::sample last_sample_;
+
+/* THE PUBLISHER AND ITS SEQUENCE SOURCE, in .bss so that their counts survive the command that
+ * produced them: an operator reading "17 grids, 1 abandoned" wants it after the run, not inside it.
+ * They are re-initialised at the start of every `stream`, so a second run never reports the first
+ * one's totals -- see tof_package_stream::init() on why a re-init is a new stream. */
+tof_package_stream::publisher publisher_;
+tof_seq_boot_local::source boot_sequence_;
+
+/* The adapter the publisher's injected source needs. It exists only because a member function is
+ * not a C function pointer; it adds no rule of its own. */
+int issue_boot_local(void *, uint32_t *out)
+{
+    return boot_sequence_.issue(out);
+}
 
 VL53L7CX_Configuration *addressed(uint8_t addr_7bit)
 {
@@ -797,6 +814,182 @@ int cmd_hold(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+/* THE SEQUENCE SOURCE IS NAMED BY THE OPERATOR, not selected by the firmware. There is exactly one
+ * in this build and it is the non-compliant one, so typing its name is the acknowledgement: numbers
+ * come from RAM and start again at one after any reset. A command that picked it silently would
+ * turn "this board cannot number acquisitions durably" into a stream that looks numbered. */
+constexpr const char *kBootLocalSource{"boot-local"};
+
+/* Long enough to catch a 10 Hz talker twice over and short enough that nobody skips the check.
+ * What it can and cannot establish is in tof_package_can.hpp -- silence is not proof of ownership.
+ */
+constexpr int32_t kListenWindowMs{200};
+
+/* ONE ACQUISITION PER PUBLISH, AND THE PUBLISHER IS WHERE THE RULE LIVES. This command's job is to
+ * drive the lifecycle and hand over what came back; it must not decide what a grid's number is,
+ * when a diagnostic goes out, or whether a failed send may be retried. Every one of those is in
+ * tof_package_stream, tested on the host, and the reason they are not here is that a shell command
+ * cannot be regression-tested at all.
+ *
+ * IDENTIFIERS ARE ARGUMENTS BECAUSE NONE IS REGISTERED. 0x21A and 0x21B are candidates in a note.
+ * They are printed before the first frame so that whoever runs this checks them against the
+ * registry at the moment of use, and the listen window refuses outright if somebody is already
+ * transmitting on them.
+ *
+ * ELEVEN-BIT ONLY. Every identifier this board transmits is 11-bit, so a 29-bit option would be an
+ * untested path offered for no caller. The transport still carries the width because the consumer
+ * treats it as part of the identity and refuses the other one as a stranger's traffic.
+ *
+ * WHAT ENDING THE RUN DOES AND DOES NOT DO. It stops publishing, and that is all: ranging is left
+ * exactly as `read` leaves it, so the device's state stays inspectable. Nothing in this build sends
+ * a periodic diagnostic, so after the last grid the bus simply goes quiet on these identifiers --
+ * reporting that gap is the consumer's receive-liveness job, not this command's. */
+int cmd_stream(const struct shell *sh, size_t argc, char **argv)
+{
+    if (!bound_) {
+        shell_error(sh, "run `pkg_tof bind` first");
+        return -EPERM;
+    }
+
+    if (argc < 5) {
+        shell_error(sh, "usage: pkg_tof stream <data_id> <health_id> %s <grids> [budget_ms]",
+                    kBootLocalSource);
+        return -EINVAL;
+    }
+
+    tof_package_can::identifiers ids{};
+    ids.data_id = strtoul(argv[1], nullptr, 0);
+    ids.health_id = strtoul(argv[2], nullptr, 0);
+    ids.extended = false;
+
+    if (strcmp(argv[3], kBootLocalSource) != 0) {
+        shell_error(sh, "the sequence source must be named, and `%s` is the only one here: numbers "
+                        "come from RAM and restart at 1 after any reset, so they repeat. That is "
+                        "not candidate N's sequence. A durable source needs a commissioned journal, "
+                        "which this board does not have.",
+                    kBootLocalSource);
+        return -EINVAL;
+    }
+
+    const unsigned long grids{strtoul(argv[4], nullptr, 10)};
+    const unsigned long budget_ms{argc > 5 ? strtoul(argv[5], nullptr, 10) : 10000UL};
+    if (grids < 1UL || grids > 2000UL || budget_ms < 10UL || budget_ms > 600000UL) {
+        shell_error(sh, "usage: pkg_tof stream <data_id> <health_id> %s <grids 1-2000> "
+                        "[budget_ms 10-600000]",
+                    kBootLocalSource);
+        return -EINVAL;
+    }
+
+    if (const int rc{tof_package_can::init()}; rc != 0) {
+        shell_error(sh, "can2 is not available: %d", rc);
+        return rc;
+    }
+    if (const int rc{tof_package_can::configure(ids)}; rc != 0) {
+        shell_error(sh, "identifiers 0x%x/0x%x refused: zero means unset, the two must differ, and "
+                        "both must fit 11 bits",
+                    ids.data_id, ids.health_id);
+        return rc;
+    }
+
+    uint32_t heard{0};
+    if (const int rc{tof_package_can::listen_for_traffic(kListenWindowMs, &heard)}; rc != 0) {
+        shell_error(sh, "could not listen on 0x%x/0x%x: %d", ids.data_id, ids.health_id, rc);
+        return rc;
+    }
+    if (heard != 0U) {
+        shell_error(sh, "%u frames arrived on 0x%x/0x%x in %d ms. Somebody is already using these "
+                        "identifiers; nothing was sent.",
+                    heard, ids.data_id, ids.health_id, kListenWindowMs);
+        return -EADDRINUSE;
+    }
+
+    shell_print(sh, "data 0x%x, health 0x%x, 11-bit, source %s", ids.data_id, ids.health_id,
+                kBootLocalSource);
+    shell_print(sh, "silent for %d ms on both: nobody transmitted while we listened, which is NOT "
+                    "evidence that either number is unallocated. Check the registry.",
+                kListenWindowMs);
+    shell_warn(sh, "sequence numbers are boot-local and repeat after a reset. This stream is an "
+                   "observation of the path, not evidence that candidate N's identity holds.");
+
+    boot_sequence_ = tof_seq_boot_local::source{};
+    tof_package_stream::sequence_source source{};
+    source.issue = issue_boot_local;
+    if (const int rc{publisher_.init(tof_package_can::sink(), source)}; rc != 0) {
+        shell_error(sh, "publisher refused the wiring: %d", rc);
+        return rc;
+    }
+
+    const int64_t started{k_uptime_get()};
+    int64_t previous{started};
+    unsigned long polls{0};
+    unsigned long published{0};
+
+    while (published < grids) {
+        if (k_uptime_get() - started > static_cast<int64_t>(budget_ms)) {
+            shell_error(sh, "budget expired: %lu of %lu grids in %lu ms over %lu polls", published,
+                        grids, budget_ms, polls);
+            break;
+        }
+
+        bool fresh{false};
+        ++polls;
+        const int read_rc{lifecycle_.read_once(&fresh)};
+
+        tof_package_stream::input in{};
+        if (read_rc == 0 && fresh) {
+            in.outcome = tof_package_health::acquisition::complete_grid;
+            in.distance_mm = last_sample_.distance_mm;
+            in.status = last_sample_.target_status;
+            in.zone_count = tof_package_stream::kZones;
+        } else if (read_rc == 0) {
+            /* Not ready yet. Nothing is published for a poll that found nothing: a readiness poll is
+             * not an acquisition, and sending a diagnostic for each one would bury the stream in
+             * frames that report no event. */
+            k_msleep(kPollIntervalMs);
+            continue;
+        } else {
+            /* A transport or device failure. The grid in last_sample_ may be perfectly good and is
+             * deliberately NOT passed: `failed` is what happened to THIS acquisition, and the
+             * publisher's rule is what keeps the held grid off the bus. */
+            in.outcome = tof_package_health::acquisition::failed;
+        }
+
+        tof_package_stream::outcome what{};
+        const int publish_rc{publisher_.publish(in, &what)};
+        const int64_t now{k_uptime_get()};
+
+        if (publish_rc != 0) {
+            shell_error(sh, "publish refused after %lu grids: %s (%d)", published,
+                        tof_package_stream::outcome_name(what), publish_rc);
+            break;
+        }
+
+        if (what == tof_package_stream::outcome::grid_published) {
+            ++published;
+            shell_print(sh, "grid %lu  seq %u  +%lld ms", published, publisher_.current().last_sequence,
+                        now - previous);
+            previous = now;
+            continue;
+        }
+
+        /* Anything else ends the run and says which rule stopped it. Carrying on would spend
+         * sequence numbers and bus time on a fault the operator has not seen yet. */
+        shell_error(sh, "stopped after %lu grids: %s (read rc %d)", published,
+                    tof_package_stream::outcome_name(what), read_rc);
+        break;
+    }
+
+    const tof_package_stream::counters c{publisher_.current()};
+    shell_print(sh, "%lu published, %u abandoned, %u diagnostics, %u send failures, last seq %u, "
+                    "%u numbers issued this boot, %lu polls in %lld ms",
+                published, c.grids_abandoned, c.diagnostics_sent, c.send_failures, c.last_sequence,
+                boot_sequence_.issued(), polls, k_uptime_get() - started);
+    shell_print(sh, "ranging is untouched; `pkg_tof stop` when done. Nothing further is sent on "
+                    "these identifiers, so a consumer should now report the stream as stale.");
+
+    return published == grids ? 0 : -EIO;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_pkg_tof,
     SHELL_CMD(status, NULL, "lifecycle state, failed step and blob verification", cmd_status),
     SHELL_CMD_ARG(bind, NULL, "bind [hz=10] - bind the lifecycle to i2c4 @0x29; opens nothing",
@@ -810,6 +1003,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_pkg_tof,
                   "read [frames=8] [budget_ms=5000] - wait for N complete grids, print each",
                   cmd_read, 1, 2),
     SHELL_CMD(stop, NULL, "stop ranging; retryable while the debt stands", cmd_stop),
+    SHELL_CMD_ARG(stream, NULL,
+                  "stream <data_id> <health_id> boot-local <grids> [budget_ms] - publish grids as "
+                  "candidate N frames on can2. Identifiers are arguments because none is "
+                  "registered; the sequence source is named because it is boot-local",
+                  cmd_stream, 5, 1),
     SHELL_CMD_ARG(hold, NULL,
                   "hold [minutes] - extend the unattended revert; bounded, and no confirm exists",
                   cmd_hold, 1, 1),
