@@ -97,8 +97,20 @@ identifiers current();
 int listen_for_traffic(int32_t window_ms, uint32_t *frames_seen);
 
 /* The sink to hand tof_package_stream::publisher. Valid only after a successful init() and
- * configure(); its callbacks return -EPERM otherwise, rather than sending on identifier zero. */
+ * configure(); its callbacks return -EPERM otherwise, rather than sending on identifier zero.
+ *
+ * WHAT A SUCCESSFUL SEND MEANS, because the publisher's counters inherit it: a transmit mailbox
+ * accepted the frame. It does NOT mean the frame won arbitration, was acknowledged by another node,
+ * or reached the bus at all. Those outcomes arrive later, in the driver's own context, and are
+ * counted by transmit_errors(). So a grid this module reported as sent may still have failed on the
+ * wire -- and a grid the publisher calls abandoned may still complete on the wire afterwards, if
+ * the controller drains mailboxes that were already accepted. The producer's counts are the
+ * producer's view; the consumer's are the only account of what arrived. */
 tof_package_stream::sink sink();
+
+/* Completion failures the driver has reported since init(). Zero does NOT mean every frame
+ * arrived -- a frame still sitting in a mailbox has reported nothing yet. */
+uint32_t transmit_errors();
 
 }  // namespace lexxhard::tof_package_can
 

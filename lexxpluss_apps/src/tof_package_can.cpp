@@ -34,6 +34,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 
 namespace lexxhard::tof_package_can {
 
@@ -45,10 +46,30 @@ const device *dev_{nullptr};
 identifiers ids_{};
 bool configured_{false};
 
-/* Matches tof_cliff_can. "Blocking" here bounds only the wait for a free mailbox, not the
- * completion on the wire, and one millisecond is chosen for the same reason: a grid is 65 frames,
- * and a longer per-frame wait would let a congested bus stall the shell thread for seconds. */
-constexpr k_timeout_t kSendTimeout{K_MSEC(1)};
+/* THE ONLY WAIT IN THIS PATH, and it covers one thing: getting the frame into a transmit mailbox.
+ * One millisecond because a grid is 65 frames and a longer per-frame wait would let a congested bus
+ * stall the shell thread for seconds.
+ *
+ * IT IS NOT A CALL DEADLINE UNLESS THE SEND IS GIVEN A CALLBACK, which is why one is passed below.
+ * can_send() with a null callback is the SYNCHRONOUS form: zephyr/drivers/can/can_common.c
+ * substitutes its own callback and then waits on it with K_FOREVER, so the timeout argument bounds
+ * the mailbox wait and nothing bounds the wait for completion. On a bus where nothing acknowledges
+ * -- an unterminated stub, a bench with the IPC powered down -- the controller retransmits
+ * indefinitely, the completion never arrives, and the shell thread blocks forever. The command's
+ * own budget check cannot run, because it is upstream of a call that never returns. */
+constexpr k_timeout_t kMailboxTimeout{K_MSEC(1)};
+
+/* Completion failures reported by the driver since the last init(). An atomic because the callback
+ * runs in the driver's context, not the caller's, and a counter is all it may do there. */
+atomic_t transmit_errors_;
+
+/* NON-BLOCKING BY OBLIGATION. It runs wherever the CAN driver finishes a frame, so it increments a
+ * counter and returns; anything that could wait belongs on the caller's thread. */
+void on_transmit_complete(const device *, int error, void *)
+{
+    if (error != 0)
+        atomic_inc(&transmit_errors_);
+}
 
 /* Four slots, for a window whose only output is a count. The listen loop drains continuously, so
  * depth buys nothing except tolerance for a burst arriving between drains; a dropped frame would
@@ -74,7 +95,13 @@ int send(uint32_t can_id, const uint8_t *frame_bytes, size_t frame_len)
         frame.flags |= CAN_FRAME_IDE;
     memcpy(frame.data, frame_bytes, frame_len);
 
-    return can_send(dev_, &frame, kSendTimeout, nullptr, nullptr);
+    /* SUCCESS HERE MEANS THE CONTROLLER TOOK THE FRAME, NOT THAT ANYBODY RECEIVED IT. Zero says a
+     * mailbox accepted it within kMailboxTimeout. Whether it then won arbitration, was acknowledged
+     * by another node, or was retransmitted until the controller gave up is reported later and
+     * elsewhere -- on_transmit_complete() counts the failures, and transmit_errors() is how a
+     * caller sees them. Waiting here for that answer is exactly what the null-callback form does,
+     * and what this must not do. */
+    return can_send(dev_, &frame, kMailboxTimeout, on_transmit_complete, nullptr);
 }
 
 int send_data(void *, const uint8_t *frame_bytes, size_t frame_len)
@@ -89,8 +116,18 @@ int send_health(void *, const uint8_t *frame_bytes, size_t frame_len)
 
 }  // namespace
 
+uint32_t transmit_errors()
+{
+    return static_cast<uint32_t>(atomic_get(&transmit_errors_));
+}
+
 int init()
 {
+    /* Cleared here so the count belongs to the run being started. A late completion from a previous
+     * run can still land on it, which is the honest arrangement: the frame really did fail, and
+     * attributing it to the run that is listening is better than dropping it. */
+    atomic_clear(&transmit_errors_);
+
     dev_ = DEVICE_DT_GET(DT_NODELABEL(can2));
     if (!device_is_ready(dev_)) {
         LOG_ERR("can2 is not ready; no Package ToF frame can be sent");
