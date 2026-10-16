@@ -414,6 +414,46 @@ ZTEST(tof_l7_quiesce_call_sites, test_every_command_that_starts_a_round_goes_thr
     }
 }
 
+ZTEST(tof_l7_quiesce_call_sites, test_nothing_in_the_adapter_reassigns_the_sequence_source)
+{
+    /* THE DEFECT THIS EXISTS FOR. `stream` used to assign a fresh tof_seq_boot_local::source at the
+     * start of every run, so a second run in the same boot reissued 1, 2, 3 and a consumer rejected
+     * all of it as not newer than the first run's. The source's documented limitation is that
+     * numbers repeat after a RESET, which a reader could reasonably take to mean a reboot; a
+     * per-command reset made them repeat between two commands.
+     *
+     * The rule is therefore about the whole adapter, not one command: the source's lifetime is the
+     * device's, and nothing here may shorten it. A publisher re-initialised per run is correct and
+     * untouched by this -- counts describe a run, numbers describe a device.
+     *
+     * Matched by scanning for the identifier followed by an assignment rather than by a fixed
+     * substring, because "boot_sequence_ =" and "boot_sequence_=" are the same defect and a
+     * substring check would catch only whichever one somebody happened to write. */
+    read_and_strip(ADAPTER_SOURCE);
+
+    size_t mentions{0};
+    size_t assignments{0};
+    static const char kName[]{"boot_sequence_"};
+    for (const char *at{strstr(stripped_, kName)}; at != nullptr;
+         at = strstr(at + sizeof kName - 1U, kName)) {
+        ++mentions;
+        const char *c{at + sizeof kName - 1U};
+        while (*c == ' ' || *c == '\t' || *c == '\n' || *c == '\r')
+            ++c;
+        /* `==` is a comparison, not an assignment, and must not be mistaken for one. */
+        if (*c == '=' && *(c + 1) != '=')
+            ++assignments;
+    }
+
+    zassert_equal(assignments, 0U,
+                  "something in %s assigns the sequence source. One source spans the boot; "
+                  "re-creating it reissues numbers a consumer has already seen", ADAPTER_SOURCE);
+    /* A probe that matched nothing would pass. The declaration, the issue adapter and the run's
+     * report are the legitimate mentions, so there are at least three. */
+    zassert_true(mentions >= 3U, "only %zu mentions of %s were found, so this gate read nothing",
+                 mentions, kName);
+}
+
 ZTEST(tof_l7_quiesce_call_sites, test_no_shell_command_reaches_a_round_without_the_boundary)
 {
     /* THE DERIVED HALF of the check above. That test names the two commands that DO start a round

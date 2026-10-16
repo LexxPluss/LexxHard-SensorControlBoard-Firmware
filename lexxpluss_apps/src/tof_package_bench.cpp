@@ -924,7 +924,15 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
     shell_warn(sh, "sequence numbers are boot-local and repeat after a reset. This stream is an "
                    "observation of the path, not evidence that candidate N's identity holds.");
 
-    boot_sequence_ = tof_seq_boot_local::source{};
+    /* THE SEQUENCE SOURCE IS NOT RESET HERE, and that absence is the fix for a real defect: this
+     * line used to assign a fresh source, so a second `stream` in the same boot reissued 1, 2, 3
+     * and a consumer rejected every grid of it as not newer than the first run's. The source's
+     * documented limitation is that numbers repeat after a RESET; a per-command reset made them
+     * repeat between two commands, which is a different and much easier thing to hit.
+     *
+     * So one source spans the whole boot. The publisher is still re-initialised per run -- its
+     * counters are a per-run report -- and the two are deliberately not the same lifetime: counts
+     * describe a run, numbers describe a device. */
     tof_package_stream::sequence_source source{};
     source.issue = issue_boot_local;
     if (const int rc{publisher_.init(tof_package_can::sink(), source)}; rc != 0) {
@@ -1013,10 +1021,16 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
     }
 
     const tof_package_stream::counters c{publisher_.current()};
-    shell_print(sh, "%lu published, %u abandoned, %u diagnostics, %u send failures, last seq %u, "
+    shell_print(sh, "%lu published, %u abandoned, %u diagnostics, %u mailbox refusals, last seq %u, "
                     "%u numbers issued this boot, %lu polls in %lld ms",
                 published, c.grids_abandoned, c.diagnostics_sent, c.send_failures, c.last_sequence,
                 boot_sequence_.issued(), polls, k_uptime_get() - started);
+    /* REPORTED SEPARATELY FROM THE PUBLISHER'S COUNT, because they answer different questions. The
+     * publisher counts frames no mailbox would take within a millisecond; this counts frames a
+     * mailbox took and the controller then failed to transmit. A run with zero of the first and a
+     * non-zero second looks healthy from the producer's side and put nothing on the bus. */
+    shell_print(sh, "%u transmit completions failed (frames still queued have reported nothing)",
+                tof_package_can::transmit_errors());
     shell_print(sh, "ranging is untouched; `pkg_tof stop` when done. Nothing further is sent on "
                     "these identifiers, so a consumer should now report the stream as stale.");
 

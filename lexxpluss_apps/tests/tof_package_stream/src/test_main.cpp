@@ -668,6 +668,69 @@ ZTEST(tof_package_stream, test_a_failed_diagnostic_is_reported_and_counted)
     zassert_equal(p.current().send_failures, 1U, "counted as a send failure");
 }
 
+ZTEST(tof_package_stream, test_two_consecutive_runs_do_not_reissue_the_first_runs_numbers)
+{
+    /* THE SHAPE OF A DEFECT THE BENCH SHIPPED. Its stream command re-initialised the publisher per
+     * run, which is right -- the counters are a per-run report -- and ALSO assigned a fresh
+     * sequence source, which is not: the second run reissued 1, 2, 3 and a consumer rejected every
+     * grid of it as not newer than the first run's. Two runs in one boot was enough; no reboot was
+     * involved, so the source's documented "repeats after a reset" did not cover it.
+     *
+     * The composition this asserts is therefore the fix: the publisher's lifetime is a run, the
+     * source's lifetime is the device. `seq` is deliberately NOT reset between the two rounds here,
+     * which is exactly what the adapter must do. */
+    reset_all();
+    stream::publisher p{};
+    test_grid g{};
+    fill(g);
+    stream::outcome o{};
+
+    uint32_t first_round[3]{};
+    zassert_equal(p.init(wired_sink(), wired_source()), 0, "first init");
+    for (unsigned i{0}; i < 3U; ++i) {
+        zassert_equal(p.publish(grid_input(g), &o), 0, "first round %u", i);
+        zassert_equal(o, stream::outcome::grid_published, "%s", stream::outcome_name(o));
+        first_round[i] = p.current().last_sequence;
+    }
+
+    /* A new run: counters start again, numbers do not. */
+    const size_t frames_after_first_round{spy.logged_count};
+    zassert_equal(p.init(wired_sink(), wired_source()), 0, "second init");
+    zassert_equal(p.current().grids_published, 0U, "a re-init is a new stream's count");
+
+    for (unsigned i{0}; i < 3U; ++i) {
+        zassert_equal(p.publish(grid_input(g), &o), 0, "second round %u", i);
+        zassert_equal(o, stream::outcome::grid_published, "%s", stream::outcome_name(o));
+        const uint32_t now{p.current().last_sequence};
+        for (unsigned j{0}; j < 3U; ++j)
+            zassert_not_equal(now, first_round[j],
+                              "the second run reissued the first run's number %u", first_round[j]);
+        zassert_true(now > first_round[2], "numbers must keep advancing across runs, got %u after %u",
+                     now, first_round[2]);
+    }
+
+    /* And on the wire: no frame of the second round carries a first-round number. Checked against
+     * the bytes, because that is what a consumer rejects on. */
+    for (size_t i{frames_after_first_round}; i < spy.logged_count; ++i) {
+        uint32_t carried{0};
+        if (spy.log[i].is_data) {
+            wire::data_frame df{};
+            zassert_equal(wire::decode_data(spy.log[i].bytes, wire::kFrameBytes, df),
+                          wire::result::ok, "frame %u", (unsigned)i);
+            carried = df.sequence;
+        } else {
+            wire::health_frame hf{};
+            zassert_equal(wire::decode_health(spy.log[i].bytes, wire::kFrameBytes, hf),
+                          wire::result::ok, "frame %u", (unsigned)i);
+            carried = hf.sequence;
+        }
+        for (unsigned j{0}; j < 3U; ++j)
+            zassert_not_equal(carried, first_round[j],
+                              "frame %u of the second run carries the first run's number %u",
+                              (unsigned)i, first_round[j]);
+    }
+}
+
 ZTEST(tof_package_stream, test_reinit_starts_a_new_streams_counts)
 {
     reset_all();
