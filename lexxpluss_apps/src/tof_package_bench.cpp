@@ -115,6 +115,19 @@ tof_l7::sample last_sample_;
 tof_package_stream::publisher publisher_;
 tof_seq_boot_local::source boot_sequence_;
 
+/* THE TWO ZONE COUNTS ARE TIED HERE, where the arrays cross from one to the other. cmd_stream
+ * hands last_sample_'s arrays to the publisher together with a length of
+ * tof_package_stream::kZones, and the publisher's length check believes that number -- it cannot
+ * measure the caller's buffer. So if the sensor layer ever moved to the ULD's 4x4 resolution,
+ * tof_l7::kZoneCount would become 16, the claim would stay 64, and the publisher would read 48
+ * zones past the end of a .bss object while every length check passed. The two constants are
+ * independent by design (one is a wire layout, the other a sensor mode) and nothing else makes
+ * them agree, so the agreement is asserted at the only place that depends on it. */
+static_assert(tof_l7::kZoneCount == tof_package_stream::kZones,
+              "the sensor's grid and the wire's grid must have the same number of zones: "
+              "cmd_stream passes last_sample_'s arrays with the wire's count, and a smaller sample "
+              "would be read past its end");
+
 /* The adapter the publisher's injected source needs. It exists only because a member function is
  * not a C function pointer; it adds no rule of its own. */
 int issue_boot_local(void *, uint32_t *out)
@@ -917,6 +930,26 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
     if (const int rc{publisher_.init(tof_package_can::sink(), source)}; rc != 0) {
         shell_error(sh, "publisher refused the wiring: %d", rc);
         return rc;
+    }
+
+    /* NOT RANGING IS `never started`, NOT `failed`, and the two are different claims about the
+     * device: never_started carries the availability flag -- nothing was ever brought up -- while
+     * failed says the sensor is there and erroring. read_once() refuses from every state but
+     * ranging with the same -EPERM it uses for "not initialised", so the state is read here rather
+     * than inferred from that error, which cannot tell them apart.
+     *
+     * One diagnostic, then the run ends. Entering the loop would send one per poll, which is a
+     * flood reporting a single condition. */
+    if (lifecycle_.current().current != tof_package::state::ranging) {
+        tof_package_stream::input nothing{};
+        nothing.outcome = tof_package_health::acquisition::never_started;
+        tof_package_stream::outcome what{};
+        (void)publisher_.publish(nothing, &what);
+        shell_error(sh, "state is %s, not ranging: sent one `never started` diagnostic (%s) and no "
+                        "measurement. Run `pkg_tof up` or `pkg_tof takeover` first.",
+                    tof_package::state_name(lifecycle_.current().current),
+                    tof_package_stream::outcome_name(what));
+        return -EPERM;
     }
 
     const int64_t started{k_uptime_get()};
