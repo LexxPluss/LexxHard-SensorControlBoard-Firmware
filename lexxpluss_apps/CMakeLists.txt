@@ -23,6 +23,13 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
+# The variant feature file is read before find_package(Zephyr): besides plain flags it adds
+# devicetree overlays and Kconfig fragments (EXTRA_DTC_OVERLAY_FILE, EXTRA_CONF_FILE), which are
+# fixed by find_package(Zephyr) and would be silently ignored if the file were read later.
+if(FEATURES_FILE)
+    include(${FEATURES_FILE})
+endif()
+
 # The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
 # nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
 # find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
@@ -129,10 +136,6 @@ if(_blocking_can_send)
         "can_send() with a null callback waits for acknowledgement forever, whatever timeout "
         "it is given: a bus with no other node awake stops the caller permanently. Use "
         "zcan_bounded_send::send() instead. Found in: ${_blocking_can_send}")
-endif()
-
-if(FEATURES_FILE)
-    include(${FEATURES_FILE})
 endif()
 
 if(ENABLE_INTERLOCK)
