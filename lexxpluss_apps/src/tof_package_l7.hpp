@@ -173,6 +173,12 @@ struct status {
     /* Set by every stop() that refuses, cleared by one that succeeds. Never inferred from
      * `current`. */
     stop_refusal last_stop_refusal{stop_refusal::none};
+    /* True when the round now in progress, or the last one attempted, was entered by
+     * take_over_unknown_state() rather than by bring_up(). Recorded because the two rounds are not
+     * the same experiment: one established that nothing was ranging before it opened, the other was
+     * authorised to proceed without establishing it, and a reading of any later result has to know
+     * which. */
+    bool entered_by_takeover{false};
 };
 
 /* Only called after a stop() that returned non-zero. */
@@ -188,6 +194,32 @@ public:
      * stopped, and no later step is attempted -- in particular an unclassifiable probe stops the
      * run instead of being treated as an empty address. */
     int bring_up();
+
+    /* TAKE OVER A DEVICE WHOSE STATE IS UNKNOWN.
+     *
+     * bring_up() refuses to open on top of a device that answered and could not be quiesced, which
+     * is the right default: opening a second session on a sensor that may be ranging is the one
+     * thing that ordering prevents. On 2026-10-12 that defence is where the Package sensor stopped
+     * -- the stop handshake timed out with every transfer succeeding -- and the ULD's own init
+     * begins with a software reboot sequence, a boot wait and a full firmware download, so there is
+     * a case for letting init be the thing that establishes the device's state.
+     *
+     * This entry makes that case something a human asks for explicitly, once, and nothing else can
+     * reach. It is NOT a retry of bring_up and NOT a cold start: `idle` means only that the
+     * software holds no session, never that the sensor stopped, and nothing here establishes that
+     * the device lost power. What it expresses is an authorisation to proceed without the
+     * quiesce -- and the full init that follows is then the only thing that will have touched the
+     * device's state.
+     *
+     * Everything else bring_up() does, it does: the blob verification, the probe, the identity
+     * refusal, close, open, configure, start, and the same state and step on every failure. A
+     * failure is left exactly as bring_up() would leave it -- blocked, or stop_owed after a start
+     * that did not confirm -- and is NOT wound back to idle so the caller can try again.
+     *
+     * Only from `idle`, and only when initialised. From ranging, stop_owed or blocked it returns
+     * -EPERM having touched no hardware and changed no field, so the evidence of whatever put the
+     * lifecycle there survives the attempt. */
+    int take_over_unknown_state();
 
     /* WHETHER bring_up() WOULD ACCEPT A NEW ROUND, asked rather than predicted.
      *
@@ -231,6 +263,11 @@ public:
     bool discardable() const;
 
 private:
+    /* The body both entries share. `quiesce_a_survivor` is the whole difference between them, and
+     * it is a parameter rather than two copies because every other step, state and refusal has to
+     * stay identical by construction -- a second copy is how the two would drift. */
+    int begin_round(bool quiesce_a_survivor);
+
     int refuse(step s, int rc);
 
     hooks hooks_{};

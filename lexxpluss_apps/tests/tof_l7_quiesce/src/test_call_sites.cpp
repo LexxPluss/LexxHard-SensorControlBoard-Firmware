@@ -338,13 +338,16 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_only_when_a_r
                   "defect itself -- whether a round begins is the lifecycle's answer, and "
                   "begin_round() is where it is applied");
 
+    /* THE BOUNDARY MOVED WHEN THE TAKEOVER ENTRY ARRIVED, and the property did not. Both commands
+     * run through run_round(), which is where the clear now lives; checking cmd_up() would now pass
+     * trivially on a one-line delegation and prove nothing about either entry. */
     size_t from{0}, to{0};
-    zassert_true(body_of("int cmd_up(", &from, &to), "cmd_up() not found");
+    zassert_true(body_of("int run_round(", &from, &to), "run_round() not found");
     const size_t len{to - from};
     memcpy(body_, stripped_ + from, len);
     body_[len] = '\0';
     zassert_equal(count_of(body_, kStepBeginGuarded), 1U,
-                  "cmd_up() must clear through `%s`. The argument is the property: anything else "
+                  "run_round() must clear through `%s`. The argument is the property: anything else "
                   "clears for rounds the lifecycle refused",
                   kStepBeginGuarded);
 
@@ -352,17 +355,45 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_only_when_a_r
      * the answer is about the state the round LEFT -- `ranging` or `blocked`, never idle -- so the
      * records would never be cleared and every run would show the first one's steps. */
     const char *const boundary{strstr(body_, kStepBeginGuarded)};
-    const char *const brings_up{strstr(body_, "lifecycle_.bring_up()")};
-    zassert_not_null(brings_up, "cmd_up() does not call bring_up()");
-    zassert_true(boundary < brings_up,
-                 "the round boundary is applied after bring_up() has already run, so it reads the "
+    const char *const runs_a_round{strstr(body_, "lifecycle_.")};
+    zassert_not_null(runs_a_round, "run_round() calls no lifecycle entry");
+    zassert_true(boundary < runs_a_round,
+                 "the round boundary is applied after the round has already run, so it reads the "
                  "state the round left rather than the one it started from");
 
-    /* AND THE QUIESCE RECORD IS NOT CLEARED WITH THEM. The quiesce happens inside bring_up, so a
+    /* AND THE QUIESCE RECORD IS NOT CLEARED WITH THEM. The quiesce happens inside the round, so a
      * clear that took it too would discard the observation the last window needed. */
     zassert_equal(count_of(body_, "tof_l7_quiesce::forget_all("), 0U,
-                  "cmd_up() clears the quiesce record, which is taken during the very call it is "
+                  "run_round() clears the quiesce record, which is taken during the very call it is "
                   "clearing for");
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_every_command_that_starts_a_round_goes_through_the_boundary)
+{
+    /* The clear lives in one place, so an entry that reached a lifecycle round without passing
+     * through it would start a round with the previous one's step records still in place. There are
+     * two commands now and there may be more; each must delegate rather than call a round itself. */
+    read_and_strip(ADAPTER_SOURCE);
+
+    static const char *const commands[]{"int cmd_up(", "int cmd_takeover("};
+    for (const char *const signature : commands) {
+        size_t from{0}, to{0};
+        zassert_true(body_of(signature, &from, &to), "%s not found", signature);
+        const size_t len{to - from};
+        memcpy(body_, stripped_ + from, len);
+        body_[len] = '\0';
+
+        zassert_equal(count_of(body_, "run_round("), 1U,
+                      "%s must start its round through run_round()", signature);
+        zassert_equal(count_of(body_, kStepBegin), 0U,
+                      "%s applies a round boundary of its own, so there are now two places that "
+                      "decide when the step records are cleared",
+                      signature);
+        zassert_equal(count_of(body_, "lifecycle_.bring_up("), 0U,
+                      "%s calls a lifecycle round directly, bypassing the boundary", signature);
+        zassert_equal(count_of(body_, "lifecycle_.take_over_unknown_state("), 0U,
+                      "%s calls a lifecycle round directly, bypassing the boundary", signature);
+    }
 }
 
 ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clears_a_step_record)

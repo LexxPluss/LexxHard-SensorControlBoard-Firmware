@@ -302,9 +302,14 @@ void report(const struct shell *sh)
 {
     const tof_package::status s{lifecycle_.current()};
 
-    shell_print(sh, "state %s  step %s  errno %d  survivor %s  stop_attempts %u",
+    /* WHICH ENTRY STARTED THE ROUND IS PART OF THE READING. A survivor found by `up` was stopped
+     * before anything opened; the same survivor found by `takeover` was not, so any later result
+     * sits on a different footing. Printed on every report rather than only on the takeover, so a
+     * reader comparing two runs is never left to remember which command produced which. */
+    shell_print(sh, "state %s  step %s  errno %d  survivor %s  stop_attempts %u  entry %s",
                 tof_package::state_name(s.current), tof_package::step_name(s.failed_step),
-                s.errno_value, s.survivor_found ? "yes" : "no", s.stop_attempts_used);
+                s.errno_value, s.survivor_found ? "yes" : "no", s.stop_attempts_used,
+                s.entered_by_takeover ? "takeover" : "up");
 }
 
 int bind(const struct shell *sh, uint8_t frequency_hz)
@@ -399,7 +404,10 @@ int cmd_bind(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
-int cmd_up(const struct shell *sh, size_t, char **)
+/* The body both entries share. `takeover` picks which lifecycle entry runs and nothing else: the
+ * clearing rule, the report and every message below have to be the same for both, and a second copy
+ * is how they would stop being. */
+int run_round(const struct shell *sh, bool takeover)
 {
     if (!bound_) {
         shell_error(sh, "run `pkg_tof bind` first");
@@ -419,11 +427,15 @@ int cmd_up(const struct shell *sh, size_t, char **)
      * quiesce happens inside this very call and its observation is the one the last window needed. */
     tof_l7_steps::begin_round(lifecycle_.can_begin_round());
 
-    const int rc{lifecycle_.bring_up()};
+    const int rc{takeover ? lifecycle_.take_over_unknown_state() : lifecycle_.bring_up()};
 
     report(sh);
     if (rc != 0) {
-        shell_error(sh, "bring_up failed: %d", rc);
+        shell_error(sh, "%s failed: %d", takeover ? "takeover" : "bring_up", rc);
+        if (rc == -EPERM)
+            shell_warn(sh, "a round starts only from idle. Nothing was probed, no blob was "
+                           "consulted and no hook ran, so whatever put the lifecycle in its "
+                           "current state is still recorded. Do not re-bind to clear it.");
         /* Named explicitly because it is the case the lifecycle exists for, and a bench operator
          * reading only the errno would miss what it means. */
         /* Named explicitly because these are the cases the lifecycle exists for, and a bench
@@ -454,6 +466,23 @@ int cmd_up(const struct shell *sh, size_t, char **)
     }
     shell_print(sh, "ranging");
     return 0;
+}
+
+int cmd_up(const struct shell *sh, size_t, char **)
+{
+    return run_round(sh, false);
+}
+
+int cmd_takeover(const struct shell *sh, size_t, char **)
+{
+    /* SAID BEFORE IT RUNS, because the one thing this command must not become is a habit. It is not
+     * a retry of `up` and not a cold start: it proceeds without establishing that the device is
+     * stopped, so the full init that follows is the only thing that will have touched the device's
+     * state. */
+    shell_warn(sh, "taking over a device whose state is UNKNOWN: the stop that `up` requires is "
+                   "skipped, and nothing here establishes that the sensor lost power or stopped "
+                   "ranging. The init that follows is what will have changed it.");
+    return run_round(sh, true);
 }
 
 /* Between readiness polls. The device publishes a complete grid at the configured rate -- 66 ms
@@ -772,6 +801,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_pkg_tof,
     SHELL_CMD(status, NULL, "lifecycle state, failed step and blob verification", cmd_status),
     SHELL_CMD_ARG(bind, NULL, "bind [hz=10] - bind the lifecycle to i2c4 @0x29; opens nothing",
                   cmd_bind, 1, 1),
+    SHELL_CMD(takeover, NULL,
+              "take over an UNKNOWN device state: `up` without the quiesce, from idle only",
+              cmd_takeover),
     SHELL_CMD(up, NULL, "ensure_verified, probe, quiesce a survivor, open, configure, start",
               cmd_up),
     SHELL_CMD_ARG(read, NULL,

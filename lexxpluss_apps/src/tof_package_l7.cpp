@@ -65,14 +65,29 @@ bool lifecycle::can_begin_round() const
 
 int lifecycle::bring_up()
 {
+    return begin_round(true);
+}
+
+int lifecycle::take_over_unknown_state()
+{
+    return begin_round(false);
+}
+
+int lifecycle::begin_round(bool quiesce_a_survivor)
+{
     /* THE SAME QUESTION THE CALLER ASKS, so a caller that cleared its per-round records on a true
-     * answer cleared them for a round that really is starting here. */
+     * answer cleared them for a round that really is starting here.
+     *
+     * IT IS ALSO WHAT MAKES THE TAKEOVER SAFE TO OFFER. Refused here, nothing is probed, no blob
+     * is consulted and no hook runs, so reaching for the takeover from `blocked` leaves the
+     * evidence that put it there exactly as it was. */
     if (!can_begin_round())
         return -EPERM;
 
     status_.failed_step = step::none;
     status_.errno_value = 0;
     status_.survivor_found = false;
+    status_.entered_by_takeover = !quiesce_a_survivor;
 
     /* ASKED, NOT PERFORMED. One payload serves every L7 in the image, so this consults the one
      * verification rather than starting another. A refusal stops the run here: without a verified
@@ -116,14 +131,23 @@ int lifecycle::bring_up()
     }
 
     if (present) {
+        /* RECORDED WHETHER OR NOT IT IS ACTED ON. A takeover round still found something answering
+         * before it opened anything, and that belongs in the evidence even though this round was
+         * authorised not to stop it. */
+        status_.survivor_found = true;
+
         /* A SURVIVOR, which on this sensor is the warm-reset case: an SCB reset does not reset the
          * device and there is no reset line to use, so it may still be powered and measuring.
-         * Quiesced over the bus before anything else, and a failure to quiesce is terminal for
-         * this run -- opening on top of a live session is the one thing this ordering prevents. */
-        status_.survivor_found = true;
-        if (const int rc{hooks_.quiesce(hooks_.ctx, config_.address_7bit)}; rc != 0) {
-            status_.current = state::blocked;
-            return refuse(step::survivor, rc);
+         * Quiesced over the bus before anything else, and a failure to quiesce is terminal for this
+         * run -- opening on top of a live session is the one thing this ordering prevents.
+         *
+         * THE TAKEOVER ENTRY IS THE ONE THING THAT SKIPS IT, and skipping it is the whole of what
+         * that entry authorises. Everything after this point is identical for both. */
+        if (quiesce_a_survivor) {
+            if (const int rc{hooks_.quiesce(hooks_.ctx, config_.address_7bit)}; rc != 0) {
+                status_.current = state::blocked;
+                return refuse(step::survivor, rc);
+            }
         }
     }
 

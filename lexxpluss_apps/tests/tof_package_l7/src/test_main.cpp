@@ -1211,3 +1211,191 @@ ZTEST(tof_package_l7, test_a_round_refused_by_an_in_flight_verification_still_co
     zassert_equal(now.raw.completed, kept.raw.completed);
     zassert_equal(now.elapsed_us, kept.elapsed_us);
 }
+
+/* ---- taking over a device whose state is unknown ------------------------------------------- */
+
+ZTEST(tof_package_l7, test_a_takeover_runs_every_step_a_bring_up_does_except_the_quiesce)
+{
+    /* The entry exists for exactly one difference, so this pins that it IS the only one: the blob
+     * verification, the probe, the identity refusal, close, open, configure and start all still
+     * run, in the same order, and only the stop of a survivor is skipped. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.probe_present = true;
+    spy_.quiesce_rc = -ETIMEDOUT;   /* the very failure that blocks a bring_up */
+
+    zassert_ok(lc_.take_over_unknown_state(), "the quiesce is not attempted, so it cannot block");
+
+    zassert_equal(spy_.quiesce_calls, 0, "the device was not asked to stop");
+    zassert_equal(spy_.verified_calls, 1, "the blob was still verified");
+    zassert_equal(spy_.probe_calls, 1, "and the device was still probed");
+    zassert_equal(spy_.close_calls, 1);
+    zassert_equal(spy_.open_calls, 1);
+    zassert_equal(spy_.configure_calls, 1);
+    zassert_equal(spy_.start_calls, 1);
+    zassert_equal(lc_.current().current, pkg::state::ranging);
+    zassert_true(lc_.current().survivor_found,
+                 "something answered before anything opened, and that stays in the evidence even "
+                 "though this round was authorised not to stop it");
+    zassert_true(lc_.current().entered_by_takeover, "and the round says which entry ran it");
+}
+
+ZTEST(tof_package_l7, test_a_bring_up_still_refuses_what_the_takeover_is_for)
+{
+    /* The default is unchanged. Without this, a takeover that quietly relaxed bring_up would pass
+     * every case above. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.probe_present = true;
+    spy_.quiesce_rc = -ETIMEDOUT;
+
+    zassert_equal(lc_.bring_up(), -ETIMEDOUT);
+    zassert_equal(spy_.quiesce_calls, 1, "it did ask");
+    zassert_equal(spy_.open_calls, 0, "and opened nothing when the answer did not come");
+    zassert_equal(lc_.current().failed_step, pkg::step::survivor);
+    zassert_false(lc_.current().entered_by_takeover);
+}
+
+ZTEST(tof_package_l7, test_a_takeover_from_anything_but_idle_touches_no_hardware_and_changes_nothing)
+{
+    /* THE GUARD THAT MAKES THE ENTRY SAFE TO OFFER. An operator who has just been refused will
+     * reach for it, and from `blocked` it has to refuse without probing, without consulting the
+     * blob, and above all without disturbing the record of what blocked the lifecycle -- that
+     * record is the result of the previous experiment. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.probe_present = true;
+    spy_.quiesce_rc = -ETIMEDOUT;
+    zassert_equal(lc_.bring_up(), -ETIMEDOUT);
+    zassert_equal(lc_.current().current, pkg::state::blocked);
+
+    const pkg::status before{lc_.current()};
+    const int verified_before{spy_.verified_calls};
+    const int probe_before{spy_.probe_calls};
+    const int quiesce_before{spy_.quiesce_calls};
+    const int close_before{spy_.close_calls};
+    const int open_before{spy_.open_calls};
+
+    zassert_equal(lc_.take_over_unknown_state(), -EPERM, "blocked is not an entry point");
+
+    zassert_equal(spy_.verified_calls, verified_before, "no blob was consulted");
+    zassert_equal(spy_.probe_calls, probe_before, "nothing was probed");
+    zassert_equal(spy_.quiesce_calls, quiesce_before);
+    zassert_equal(spy_.close_calls, close_before);
+    zassert_equal(spy_.open_calls, open_before, "and nothing was opened");
+
+    const pkg::status after{lc_.current()};
+    zassert_equal(after.current, before.current, "the state is the one the failed round left");
+    zassert_equal(after.failed_step, before.failed_step, "and so is the step: %d against %d",
+                  (int)after.failed_step, (int)before.failed_step);
+    zassert_equal(after.errno_value, before.errno_value);
+    zassert_equal(after.survivor_found, before.survivor_found);
+    zassert_equal(after.entered_by_takeover, before.entered_by_takeover,
+                  "a refused takeover did not run, so it must not claim the round");
+}
+
+ZTEST(tof_package_l7, test_a_takeover_while_ranging_or_owing_a_stop_is_refused_the_same_way)
+{
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    zassert_ok(lc_.bring_up());
+    zassert_equal(lc_.current().current, pkg::state::ranging);
+
+    const int open_while_ranging{spy_.open_calls};
+    zassert_equal(lc_.take_over_unknown_state(), -EPERM, "it would stack a second session");
+    zassert_equal(spy_.open_calls, open_while_ranging);
+    zassert_equal(lc_.current().current, pkg::state::ranging);
+
+    /* The second half needs a lifecycle of its own AND a clean spy: these fakes model the real
+     * close, which refuses while a session is open, so leaving the first one ranging would have the
+     * second refused at `close` -- which is what the first version of this case actually measured. */
+    zassert_ok(lc_.stop());
+    spy_ = spy{};
+
+    pkg::lifecycle owing{};
+    zassert_ok(owing.init(all_hooks(), good_config()));
+    spy_.start_rc = -EIO;
+    zassert_equal(owing.bring_up(), -EIO);
+    zassert_equal(owing.current().current, pkg::state::stop_owed);
+    spy_.start_rc = 0;
+
+    const int opens{spy_.open_calls};
+    zassert_equal(owing.take_over_unknown_state(), -EPERM,
+                  "a stop that is owed is cleared by stopping, not by starting again");
+    zassert_equal(spy_.open_calls, opens);
+    zassert_equal(owing.current().current, pkg::state::stop_owed);
+}
+
+ZTEST(tof_package_l7, test_a_takeover_before_init_is_refused_like_everything_else)
+{
+    pkg::lifecycle fresh{};
+    zassert_equal(fresh.take_over_unknown_state(), -EPERM);
+    zassert_equal(spy_.probe_calls, 0);
+}
+
+ZTEST(tof_package_l7, test_a_takeover_that_fails_is_left_where_it_failed_and_not_wound_back)
+{
+    /* No step of a takeover gets a softer landing than the same step of a bring_up. A failure that
+     * returned the lifecycle to idle so the operator could try again would erase which step failed
+     * -- and would make the entry the retry loop it must not become. */
+    static const struct {
+        const char *name;
+        int *rc_knob;
+        pkg::step step;
+        pkg::state state;
+    } stages[] = {
+        { "open", &spy_.open_rc, pkg::step::open, pkg::state::blocked },
+        { "configure", &spy_.configure_rc, pkg::step::configure, pkg::state::blocked },
+        { "close", &spy_.close_rc, pkg::step::close, pkg::state::blocked },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(stages); ++i) {
+        pkg::lifecycle one{};
+        spy_ = spy{};
+        zassert_ok(one.init(all_hooks(), good_config()));
+        *stages[i].rc_knob = -EIO;
+
+        zassert_equal(one.take_over_unknown_state(), -EIO, "%s", stages[i].name);
+        zassert_equal(one.current().failed_step, stages[i].step, "%s", stages[i].name);
+        zassert_equal(one.current().current, stages[i].state, "%s", stages[i].name);
+        zassert_true(one.current().entered_by_takeover, "%s", stages[i].name);
+        zassert_equal(one.current().errno_value, -EIO, "%s", stages[i].name);
+
+        /* And the refusal is not a door back in. */
+        zassert_equal(one.take_over_unknown_state(), -EPERM, "%s", stages[i].name);
+        zassert_equal(one.current().failed_step, stages[i].step, "%s: the step survived the second "
+                                                                 "attempt", stages[i].name);
+    }
+}
+
+ZTEST(tof_package_l7, test_a_takeover_whose_start_did_not_confirm_owes_the_same_stop)
+{
+    /* After start, a takeover is on exactly the same footing as a bring_up: the debt, the budget
+     * and the refusals are the lifecycle's, not the entry's. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.start_rc = -EIO;
+
+    zassert_equal(lc_.take_over_unknown_state(), -EIO);
+    zassert_equal(lc_.current().current, pkg::state::stop_owed);
+    zassert_equal(lc_.current().failed_step, pkg::step::start);
+
+    spy_.stop_rc = 0;
+    zassert_ok(lc_.stop(), "the debt is paid the ordinary way");
+    zassert_equal(spy_.stop_calls, 1);
+    zassert_equal(lc_.current().current, pkg::state::idle);
+}
+
+ZTEST(tof_package_l7, test_a_takeover_refused_by_the_blob_or_the_identity_stops_as_a_bring_up_would)
+{
+    /* The two refusals that protect the device from an 86 KB download it did not ask for are not
+     * part of what the takeover authorises. */
+    zassert_ok(lc_.init(all_hooks(), good_config()));
+    spy_.verified_rc = -ENODATA;
+    zassert_equal(lc_.take_over_unknown_state(), -ENODATA);
+    zassert_equal(lc_.current().failed_step, pkg::step::firmware);
+    zassert_equal(spy_.probe_calls, 0, "an unverified blob stops it before the bus is touched");
+
+    pkg::lifecycle other{};
+    spy_ = spy{};
+    zassert_ok(other.init(all_hooks(), good_config()));
+    spy_.probe_wrong_identity = true;
+    zassert_equal(other.take_over_unknown_state(), -ENOTSUP);
+    zassert_equal(other.current().failed_step, pkg::step::identity);
+    zassert_equal(spy_.open_calls, 0, "nothing unidentified is opened, takeover or not");
+}
