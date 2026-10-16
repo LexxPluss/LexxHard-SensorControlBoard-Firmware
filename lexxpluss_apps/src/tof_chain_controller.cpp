@@ -1,0 +1,986 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+// Ownership rules for ENABLE_TOF_CHAIN builds:
+//
+//   - i2c2 belongs to the ToF chain. The tug encoder is the only other
+//     i2c2 user; main.cpp initialises it as disconnected and never starts
+//     its thread. The two features are mutually exclusive by construction.
+//   - The diagnostic build owns the same resources a different way; the
+//     two flags must never combine.
+//   - Every use of the chain (this shell command today, the Phase 3
+//     acquisition thread tomorrow) holds chain_lock() for its whole
+//     session.
+
+#ifdef ENABLE_TOF_CHAIN
+
+#ifdef TOF_I2C_DIAG
+#error "ENABLE_TOF_CHAIN and TOF_I2C_DIAG both claim i2c2 and the ToF shell: pick one"
+#endif
+
+#include <errno.h>
+
+#include <atomic>
+
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/i2c.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
+
+#include "tof_chain_controller.hpp"
+#include "tof_chain_spec.hpp"
+#if defined(ENABLE_TOF_CLIFF_ULD)
+#include "tof_acquisition.hpp"
+#include "tof_cliff_runtime.hpp"
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+#include "tof_commission_bind.hpp"
+#endif
+#include "tof_commission_wiring.hpp"
+#include "tof_commissioning.hpp"
+#endif
+#include "tof_enumerator.hpp"
+#include "tof_l7_boot_order.hpp"
+/* Outside every feature guard: the quiesce that reports a stopped acquisition lives behind the
+ * cliff guard and the boot recovery lives behind the L7 one, and the header was only included for
+ * the second. A chain + cliff build without the grid driver is a configuration CMake permits. */
+#include "tof_watchdog_feeder.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_recovery.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_l7_blob_record.hpp"
+#include "tof_l7_runtime.hpp"
+#endif
+#include "tof_l7_recovery_ops.hpp"
+#include "tof_l7_sensor.hpp"
+#endif
+#include "tof_readdress.hpp"
+
+namespace lexxhard::tof_chain_controller {
+
+LOG_MODULE_REGISTER(tof_chain);
+
+namespace {
+
+const struct device *const i2c2_dev{DEVICE_DT_GET(DT_NODELABEL(i2c2))};
+const struct gpio_dt_spec data_pin = GPIO_DT_SPEC_GET(DT_PATH(tof_chain), data_gpios);
+const struct gpio_dt_spec clock_pin = GPIO_DT_SPEC_GET(DT_PATH(tof_chain), clock_gpios);
+constexpr uint32_t kDataSettleMs{DT_PROP(DT_PATH(tof_chain), data_settle_ms)};
+constexpr uint32_t kSensorBootMs{DT_PROP(DT_PATH(tof_chain), sensor_boot_ms)};
+
+K_MUTEX_DEFINE(chain_mutex);
+
+// Written by init(), read by the shell thread: one atomic word. 0 means
+// initialised; -EAGAIN means init has not run; any other negative errno is
+// the failure. The commissioning command refuses to run on a chain whose
+// control lines or bus never came up -- operating half-initialised hardware
+// would produce verdicts that look like chain findings.
+std::atomic<int> init_status{-EAGAIN};
+
+// Explicit zero-length write, the same probe shape the diagnostics used;
+// classification of the return code is the one-line glue rule.
+int raw_probe(uint8_t addr7)
+{
+    uint8_t dummy{0};
+    struct i2c_msg msg{&dummy, 0, I2C_MSG_WRITE | I2C_MSG_STOP};
+    return i2c_transfer(i2c2_dev, &msg, 1, addr7);
+}
+
+// VL53 register access: 16-bit big-endian index, as in the ST ULD.
+int vl53_rd(uint8_t addr7, uint16_t reg, uint8_t *buf, size_t len)
+{
+    uint8_t const index[2]{static_cast<uint8_t>(reg >> 8), static_cast<uint8_t>(reg & 0xff)};
+    return i2c_write_read(i2c2_dev, addr7, index, sizeof index, buf, len);
+}
+
+int vl53_wr8(uint8_t addr7, uint16_t reg, uint8_t value)
+{
+    uint8_t const frame[3]{static_cast<uint8_t>(reg >> 8), static_cast<uint8_t>(reg & 0xff), value};
+    return i2c_write(i2c2_dev, frame, sizeof frame, addr7);
+}
+
+// The production readdress helper's bus, tri-state end to end: its
+// collision probe gets the same classified result the census gets, so a
+// transport error can never read as "target free" anywhere in the stack.
+struct real_bus final : tof_readdress::i2c_ops {
+    tof_enum::probe_result probe(uint8_t addr7) override
+    {
+        return tof_enum::classify_probe_rc(raw_probe(addr7));
+    }
+    int wr8(uint8_t addr7, uint16_t reg, uint8_t value) override
+    {
+        return vl53_wr8(addr7, reg, value);
+    }
+    int rd(uint8_t addr7, uint16_t reg, uint8_t *buf, size_t len) override
+    {
+        return vl53_rd(addr7, reg, buf, len);
+    }
+};
+
+struct zephyr_chain_ops final : tof_enum::chain_ops {
+    tof_enum::probe_result probe(uint8_t addr7) override
+    {
+        return tof_enum::classify_probe_rc(raw_probe(addr7));
+    }
+    int read_id(tof_enum::model m, uint8_t addr7, tof_enum::id_bytes &out) override
+    {
+        // Staging and failure policy live in the shared, host-tested helper.
+        real_bus bus{};
+        return tof_readdress::read_id(m, bus, addr7, out);
+    }
+    tof_enum::readdress_result readdress(tof_enum::model m, uint8_t old7, uint8_t new7) override
+    {
+        real_bus bus{};
+        return tof_readdress::readdress(m, bus, old7, new7);
+    }
+    int set_data(bool level) override
+    {
+        return gpio_pin_set_dt(&data_pin, level ? 1 : 0);
+    }
+    int pulse_clock() override
+    {
+        // Drive low FIRST: if an earlier failure left the line high, a
+        // naive high-then-low "pulse" would produce no rising edge and
+        // silently break the promise that a fresh run recovers the chain.
+        if (int const rc{gpio_pin_set_dt(&clock_pin, 0)}; rc != 0)
+            return rc;
+        k_busy_wait(100);
+        if (int const rc{gpio_pin_set_dt(&clock_pin, 1)}; rc != 0)
+            return rc;
+        k_busy_wait(100);
+        if (int const rc{gpio_pin_set_dt(&clock_pin, 0)}; rc != 0)
+            return rc;
+        k_busy_wait(100);
+        return 0;
+    }
+    void wait(wait_reason reason) override
+    {
+        k_msleep(reason == wait_reason::data_settle ? kDataSettleMs : kSensorBootMs);
+    }
+};
+
+const char *outcome_name(tof_enum::outcome o)
+{
+    using tof_enum::outcome;
+    switch (o) {
+    case outcome::enumerated:              return "enumerated";
+    case outcome::retained:                return "retained";
+    case outcome::absent:                  return "absent";
+    case outcome::ambiguous_identity:      return "ambiguous_identity";
+    case outcome::unexpected_retained:     return "unexpected_retained";
+    case outcome::unexpected_address:      return "unexpected_address";
+    case outcome::verified_device_missing: return "verified_device_missing";
+    case outcome::wrong_model:             return "wrong_model";
+    case outcome::transport_failed:        return "transport_failed";
+    case outcome::readdress_failed:        return "readdress_failed";
+    case outcome::control_failed:          return "control_failed";
+    case outcome::not_attempted:           return "not_attempted";
+    }
+    return "?";
+}
+
+const char *stage_name(tof_enum::readdress_stage s)
+{
+    using tof_enum::readdress_stage;
+    switch (s) {
+    case readdress_stage::none:         return "none";
+    case readdress_stage::validate:     return "validate";
+    case readdress_stage::collision:    return "collision";
+    case readdress_stage::page_select:  return "page_select";
+    case readdress_stage::addr_write:   return "addr_write";
+    case readdress_stage::verify:       return "verify";
+    case readdress_stage::page_restore: return "page_restore";
+    }
+    return "?";
+}
+
+const char *status_name(tof_enum::chain_status s)
+{
+    using tof_enum::chain_status;
+    switch (s) {
+    case chain_status::complete: return "COMPLETE";
+    case chain_status::degraded: return "DEGRADED";
+    case chain_status::failed:   return "FAILED";
+    }
+    return "?";
+}
+
+const char *control_stage_name(tof_enum::control_stage s)
+{
+    using tof_enum::control_stage;
+    switch (s) {
+    case control_stage::none:          return "none";
+    case control_stage::data_low:      return "data_low";
+    case control_stage::alloff_pulse:  return "alloff_pulse";
+    case control_stage::data_high:     return "data_high";
+    case control_stage::advance_pulse: return "advance_pulse";
+    }
+    return "?";
+}
+
+int cmd_enum(const struct shell *shell, size_t, char **)
+{
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d): refusing to run", st);
+        return -ENODEV;
+    }
+    if (k_mutex_lock(&chain_mutex, K_NO_WAIT) != 0) {
+        shell_error(shell, "chain is busy (acquisition or another enum holds the lock)");
+        return -EBUSY;
+    }
+
+    auto const spec{tof_chain::dasher_spec()};
+    zephyr_chain_ops ops{};
+    auto const r{tof_enum::enumerate(ops, spec)};
+    k_mutex_unlock(&chain_mutex);
+
+    shell_print(shell, "status: %s (spec_error=%d)", status_name(r.status),
+                static_cast<int>(r.spec));
+    shell_print(shell, "control: known=%d failed_at=%s rc=%d; data_high=%d pulses=%u",
+                r.control_state_known, control_stage_name(r.control_failed_at),
+                r.control_rc, r.data_commanded_high, r.pulses_issued);
+    shell_print(shell, "frozen_at=%d interrupted_at=%d", r.frozen_at, r.interrupted_at);
+    for (size_t k{0}; k < r.positions; ++k) {
+        const auto &p{r.at[k]};
+        shell_print(shell,
+                    "pos%u: %s addr=0x%02x id=%02x/%02x rc=%d stage=%s offending=0x%02x "
+                    "enable_cmd=%d",
+                    static_cast<unsigned>(k + 1), outcome_name(p.verdict), p.address,
+                    p.seen.first, p.seen.second, p.rc, stage_name(p.readdress.failed_at),
+                    p.offending_addr, p.enable_commanded_high);
+    }
+    shell_print(shell, "source_allowed: right(0)=%d left(1)=%d",
+                r.source_allowed[0], r.source_allowed[1]);
+    shell_print(shell, "note: driver return-code hardware verification PENDING "
+                       "(empty addr->nack, clamped SCL->transport, live->ack)");
+    // Distinct exit codes so scripts cannot mistake a degraded chain for a
+    // complete one: 0 only for COMPLETE, -ENODATA for DEGRADED, -EIO FAILED.
+    if (r.status == tof_enum::chain_status::complete)
+        return 0;
+    return r.status == tof_enum::chain_status::degraded ? -ENODATA : -EIO;
+}
+
+/* THE PRIMITIVE, AND OUTSIDE EVERY FEATURE GUARD. It takes an I2C_SPEED_* and knows nothing else.
+ *
+ * It lived inside the cliff guard, which compiled in the three configurations I had built and not
+ * in the fourth: CMake permits chain + L7 WITHOUT the cliff driver, and the boot recovery calls
+ * this. So the combination the grid path most needs was the one that would not build. The feature
+ * that owns a vocabulary keeps its own wrapper; the register write belongs to neither. */
+int set_chain_bus_speed(uint32_t i2c_speed)
+{
+    if (!device_is_ready(i2c2_dev))
+        return -ENODEV;
+    return i2c_configure(i2c2_dev, I2C_MODE_CONTROLLER | I2C_SPEED_SET(i2c_speed));
+}
+
+#if defined(ENABLE_TOF_CLIFF_ULD)
+
+const char *stage_label(tof_commissioning::stage st)
+{
+    using tof_commissioning::stage;
+    switch (st) {
+    case stage::none:               return "proven";
+    case stage::not_configured:     return "not_configured";
+    case stage::epoch_out_of_range: return "epoch_out_of_range";
+    case stage::quiesce_failed:     return "quiesce_failed";
+    case stage::chain_busy:         return "chain_busy";
+    case stage::attempt_refused:    return "attempt_refused";
+    case stage::evidence_refused:   return "evidence_refused";
+    case stage::proof_speed_refused:     return "proof_speed_refused";
+    case stage::product_speed_refused:   return "product_speed_refused";
+    case stage::identity_recheck_failed: return "identity_recheck_failed";
+    case stage::commit_refused:     return "commit_refused";
+    }
+    return "?";
+}
+
+const char *bus_label(tof_commissioning::bus_state b)
+{
+    switch (b) {
+    case tof_commissioning::bus_state::proof_100k:   return "100kHz";
+    case tof_commissioning::bus_state::product_400k: return "400kHz";
+    case tof_commissioning::bus_state::unknown:      break;
+    }
+    /* Printed as what it is. An operator told "unknown" knows to set the speed before the next
+     * attempt; one told a number that was guessed does not. */
+    return "unknown";
+}
+
+const char *recheck_label(tof_commissioning::recheck_fault f)
+{
+    switch (f) {
+    case tof_commissioning::recheck_fault::none:           return "none";
+    case tof_commissioning::recheck_fault::no_answer:      return "no_answer";
+    case tof_commissioning::recheck_fault::probe_failed:   return "probe_failed";
+    case tof_commissioning::recheck_fault::read_failed:    return "read_failed";
+    case tof_commissioning::recheck_fault::wrong_identity: return "wrong_identity";
+    }
+    return "?";
+}
+
+/* COMMISSIONING'S VOCABULARY, and it stays behind the cliff guard because the type does. The
+ * register write itself is set_chain_bus_speed() above, outside every feature guard.
+ *
+ * Neither takes the chain lock: commissioning calls this while holding it, and a lock in here
+ * would deadlock that caller.
+ *
+ * Nor does either check whether acquisition is running. That check belongs to the caller, which is
+ * in a position to know -- commissioning has already quiesced and holds the chain -- and repeating
+ * it here would be a third opinion about the same fact. */
+#if defined(ENABLE_TOF_CLIFF_ULD)
+int set_bus_speed_hw(tof_commissioning::bus_speed s)
+{
+    return set_chain_bus_speed(s == tof_commissioning::bus_speed::proof_100k ? I2C_SPEED_STANDARD
+                                                                            : I2C_SPEED_FAST);
+}
+#endif
+
+int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
+{
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d): refusing to run", st);
+        return -ENODEV;
+    }
+
+    /* The epoch is mandatory and has no default. Under the commissioning profile the HOST owns it and
+     * is the component that persists it; a firmware-invented value would be an epoch no operator
+     * recorded. Parsed wide and range-checked by the orchestration, so 256 is refused rather than
+     * truncated to a different epoch. */
+    if (argc != 2) {
+        shell_error(shell, "usage: tof cliff prove <host_epoch 0-255>");
+        return -EINVAL;
+    }
+    char *end{nullptr};
+    unsigned long const parsed{strtoul(argv[1], &end, 0)};
+    if (end == argv[1] || *end != '\0' || parsed > 0xFFFFFFFFUL) {
+        shell_error(shell, "bad epoch '%s'", argv[1]);
+        return -EINVAL;
+    }
+
+    /* The bootstrap has to have finished, and saying WHICH step failed matters: "not ready" sends
+     * an operator to look at the chain, which is the wrong place when the truth is that can2 never
+     * came up or that this image never ran the bootstrap at all. */
+    if (!tof_cliff_runtime::ready()) {
+        shell_error(shell, "cliff runtime not ready (%s): refusing to commission",
+                    tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+        return -EPERM;
+    }
+
+    /* CONFIGURED AT BOOT, NOT HERE. This command used to assemble the configuration and call
+     * tof_commissioning::init() itself, which made the transaction ready only on the path that goes
+     * through a keyboard -- so the automatic downlink, which calls prove() directly, refused every
+     * request as `misconfigured`. Observed on dasher2 on 2026-09-21: a session announced, the
+     * request accepted, and `misconfigured / not_started` answered within three frames, having
+     * touched neither I2C nor the enable chain.
+     *
+     * The one call site is now tof_commission_wiring::boot() in init() below, and this command
+     * reads its result rather than repeating it: two initialisations would be two chances to
+     * disagree about which spec was being proven. */
+    if (int const st{tof_commission_wiring::configure_status()}; st != 0) {
+        shell_error(shell, "commissioning transaction not configured at boot (rc=%d): refusing", st);
+        return st;
+    }
+
+    auto const r{tof_commissioning::prove(static_cast<uint32_t>(parsed))};
+
+    shell_print(shell, "result: %s", stage_label(r.failed_at));
+    shell_print(shell, "detail: rc=%d begin=%d proof=%d commit=%d isolation_rc=%d", r.rc,
+                static_cast<int>(r.begin), static_cast<int>(r.proof),
+                static_cast<int>(r.commit), r.isolation_rc);
+    shell_print(shell, "walk1: %s  walk2: %s", status_name(r.walk1.status),
+                status_name(r.walk2.status));
+    shell_print(shell, "isolation: attempted=%d answered=0x%02x prev=0x%02x id=%02x/%02x",
+                r.isolation.attempted, r.isolation.answering_addr, r.isolation.prev_addr,
+                r.isolation.seen.first, r.isolation.seen.second);
+
+    /* WHERE THE BUS WAS LEFT, on every path including the successful one. An operator who is not
+     * told this has been told the wrong thing about the machine: a run that gave up after the
+     * retime may have put the bus back, may have failed to, and the next attempt behaves
+     * differently in each case. */
+    shell_print(shell, "bus: %s  restore=%s rc=%d  speed_rc=%d", bus_label(r.final_bus),
+                r.restore_attempted ? "attempted" : "not-needed", r.restore_rc, r.speed_rc);
+
+    /* And which position refused, and how. Only when there is one -- printing a cleared struct on
+     * every run would make the fields look like readings rather than a fault report. */
+    if (r.failed_at == tof_commissioning::stage::identity_recheck_failed) {
+        shell_print(shell,
+                    "identity re-check: position %u (addr 0x%02x) %s  probe_rc=%d read_rc=%d "
+                    "id=%02x/%02x",
+                    r.recheck.position, r.recheck.address, recheck_label(r.recheck.fault),
+                    r.recheck.probe_rc, r.recheck.read_rc, r.recheck.seen.first,
+                    r.recheck.seen.second);
+    }
+
+    if (!r.proven())
+        return -EIO;
+
+    /* The descriptors were keyed inside the commit, by the authority's install callback -- there is
+     * no step here to do it, which is the point: a command that could key them separately could key
+     * them from a mapping that was never proven, and a failure between the two used to leave a
+     * PROVEN authority describing a different chain. Asserted rather than assumed, because "the
+     * commit says it succeeded" and "the keys are the current mapping's" are different claims. */
+    if (!tof_cliff_runtime::mapping_applied()) {
+        shell_error(shell, "commit reported success but the descriptors are not keyed to it: "
+                           "refusing to report a usable mapping");
+        return -EIO;
+    }
+
+    /* Proven, keyed, and deliberately going no further. Starting acquisition is the next commit's
+     * job -- there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so
+     * no measurement frame can leave this board even now. Saying so here keeps an operator from
+     * reading "proven" as "producing". */
+    shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; acquisition NOT "
+                       "started (no thread yet) and the PROVEN clamp is still in force",
+                parsed);
+    return 0;
+}
+
+int cmd_cliff_start(const struct shell *shell, size_t, char **)
+{
+    /* Separate from `prove` on purpose. Proving a mapping and starting to produce measurements are
+     * two decisions, and an operator must be able to make the first without the second -- inspect
+     * the proof, then start. A prove that started acquisition implicitly would also mean any
+     * re-prove silently restarted production.
+     *
+     * Every refusal below comes from the runtime, not from re-checked conditions here: a command
+     * that re-implemented the gate could disagree with it. */
+    if (int const st{init_status.load()}; st != 0) {
+        shell_error(shell, "chain glue not initialised (rc=%d)", st);
+        return -ENODEV;
+    }
+    if (!tof_cliff_runtime::ready()) {
+        shell_error(shell, "cliff runtime not ready (%s)",
+                    tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+        return -EPERM;
+    }
+    if (tof_acq::thread_running()) {
+        shell_error(shell, "acquisition thread is already running; nothing to do");
+        return -EALREADY;
+    }
+    if (!tof_cliff_runtime::mapping_applied()) {
+        /* Either nothing was ever proven, or a later attempt revoked it. Both mean the descriptors
+         * are not keyed to the mapping the authority currently reports, and a cycle would produce
+         * facts nothing can be keyed by. */
+        shell_error(shell, "no proven mapping is installed: run `tof cliff prove <epoch>` first");
+        return -EPERM;
+    }
+
+    if (int const rc{tof_cliff_runtime::start_acquisition()}; rc != 0) {
+        shell_error(shell, "acquisition refused to start (%d)", rc);
+        return rc;
+    }
+
+    shell_print(shell, "acquisition thread started");
+    /* Said explicitly, because "started" and "measurements are on the wire" are different claims
+     * and only the clamp decides the second one. */
+    shell_print(shell, "measurement frames leave this board only if the PROVEN clamp is lifted; "
+                       "health frames were already flowing since boot");
+    return 0;
+}
+
+/* THE MANUAL ENTRY POINTS STAY, FOR THE TRANSITION, AND THIS IS THE DECISION RATHER THAN AN
+ * OMISSION.
+ *
+ * They are the only way to commission a board today. The host side of automatic commissioning --
+ * issuing the request and persisting the epoch it issued -- does not exist yet, and it is not
+ * firmware; and `commission-profile-enabled` is absent from every image this branch builds, so a
+ * downlink that is wired up still answers `disabled`. Removing these two commands now would leave
+ * no path at all, on any image.
+ *
+ * KEEPING THEM IS SAFE BECAUSE THEY ARE NO LONGER A SECOND MECHANISM. `prove` used to assemble the
+ * commissioning configuration and call tof_commissioning::init() itself, which is exactly what made
+ * the automatic path refuse every request as `misconfigured`. It now READS the one configuration
+ * the boot established, so the shell and the downlink prove the same transaction against the same
+ * spec. Two initialisations would have been two chances to disagree about which chain was being
+ * proven.
+ *
+ * THEY ARE NOT A BYPASS. Every refusal in both commands comes from the runtime's own gates rather
+ * than from conditions re-checked here, `start` still requires a proven mapping that the authority
+ * currently reports, and neither touches the PROVEN clamp -- lifting that is a separate release
+ * decision and is not made from a console.
+ *
+ * WHEN THEY GO: when the host issues commissioning requests and persists epochs, and a deployment
+ * has turned `commission-profile-enabled` on. Until both are true, deleting them would remove the
+ * only way to bring a chain up and would not remove any capability the automatic path does not
+ * already have. */
+/* READ-ONLY, AND THAT IS A REQUIREMENT RATHER THAN A DESCRIPTION.
+ *
+ * It exists because tof_acquisition's overrun counter had no reader outside the tests: the one
+ * number that separates "running at the configured rate" from "running as fast as the work allows"
+ * could not be read on a board at all. A degradation nobody can observe is not reported, whatever
+ * the firmware counts internally.
+ *
+ * SO IT ASKS FOR NOTHING AND CHANGES NOTHING. No proven mapping is required -- the question "is the
+ * cadence being met" is worth answering on a board that has not proven anything, and refusing to
+ * answer it would put a precondition on a diagnostic. It does not start, stop or prove, and it does
+ * NOT take chain_lock(): the lock is held across a cycle, so waiting for it would make reading a
+ * status cost up to a full period and would turn a diagnostic into something that can hang behind
+ * the thing it is diagnosing.
+ *
+ * THE TWO FIGURES ARE SAMPLED INDEPENDENTLY and are not a snapshot. They are separate atomic
+ * words, so each is individually sound but the pair is not taken together: a read that straddles a
+ * reconfiguration can show one period with the other period's count. Nothing here needs them to be
+ * atomic as a pair -- reconfiguring is an operator action, not something that happens underneath a
+ * status command -- but a reader must not treat the line as a consistent instant.
+ *
+ * THE PERIOD IS PRINTED BESIDE THE COUNT because the count alone does not say what cadence it was
+ * measured against. And a zero period is not a fast cadence, it is no cadence: init() refuses a
+ * zero, so the only way to read one back is that no configuration has been accepted yet. */
+int cmd_cliff_status(const struct shell *shell, size_t, char **)
+{
+    const uint32_t period_ms{tof_acq::configured_cycle_period_ms()};
+
+    if (period_ms == 0) {
+        /* Said rather than implied. Printing "period 0 ms, overruns 0" would read as a configured
+         * cadence that is being met perfectly. */
+        shell_print(shell, "acquisition not configured: init() has not accepted a cadence");
+        shell_print(shell, "thread_running=%d", tof_acq::thread_running());
+        return 0;
+    }
+
+    shell_print(shell, "thread_running=%d", tof_acq::thread_running());
+    shell_print(shell, "cycle_period_ms=%u", period_ms);
+    shell_print(shell, "cycle_overruns=%u (since init)", tof_acq::cycle_overruns());
+    /* The reading rule, next to the reading. An operator who sees a non-zero count needs to know
+     * that one is not a verdict and that the question is whether it keeps moving. */
+    shell_print(shell, "note: a rising count indicates repeated deadline misses; a single overrun "
+                       "can be scheduling latency or one slow transfer");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
+    SHELL_CMD(status, NULL,
+              "read the acquisition cadence: thread state, configured period, overrun count "
+              "(read-only, requires nothing, takes no lock)",
+              cmd_cliff_status),
+    SHELL_CMD(start, NULL,
+              "start the acquisition thread (requires a proven, installed mapping)",
+              cmd_cliff_start),
+    SHELL_CMD_ARG(prove, NULL,
+                  "prove the cliff mapping: stop acquisition, walk -> isolate -> walk, install "
+                  "under <host_epoch 0-255>",
+                  cmd_cliff_prove, 2, 0),
+    SHELL_SUBCMD_SET_END
+);
+
+#endif  // ENABLE_TOF_CLIFF_ULD
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
+    SHELL_CMD(enum, NULL,
+              "manual commissioning: enumerate the ToF chain (holds the chain lock)",
+              cmd_enum),
+#if defined(ENABLE_TOF_CLIFF_ULD)
+    SHELL_CMD(cliff, &sub_tof_cliff, "cliff mapping commissioning", NULL),
+#endif
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(tof, &sub_tof, "ToF chain commands", NULL);
+
+}  // namespace
+
+k_mutex &chain_lock()
+{
+    return chain_mutex;
+}
+
+bool glue_ready()
+{
+    return init_status.load() == 0;
+}
+
+/* ------------------------------------------------- the boot order, as a call ------------- */
+/*
+ * AN SCB-ONLY RESET DOES NOT CLEAR AN L7. The enable chain gates that board's comms rather than
+ * resetting it, and no XSHUT or power-rail control for it exists on this carrier -- so after any run
+ * that opened one, the sensor is still ranging at its programmed address when this firmware starts.
+ *
+ * It can only be reached while it is still enabled, and the FIRST gpio_pin_configure_dt() on a
+ * control line is the first thing this image does that can change that: once the lines are driven,
+ * the chain's enable state is whatever this boot decided rather than whatever the last one left.
+ * So recovery goes before both pins, and the order is a function rather than a comment --
+ * tof_l7_boot_order::run(), which a host suite links and which this is the production caller of.
+ *
+ * THE STEPS ARE NULL IN AN IMAGE WITHOUT THE GRID DRIVER. A build with no L7 ULD has no survivor to
+ * recover and nothing to recover it with; run() skips a null step rather than refusing, so such an
+ * image goes straight to its pins and the order module is still the one thing that configures them.
+ */
+
+#if defined(ENABLE_TOF_L7_ULD)
+int boot_set_recovery_speed(void *)
+{
+    /* The slower speed, not the product one. Recovery talks to a device whose state nobody knows,
+     * over a bus whose 400 kHz behaviour is the open incident on L0-L1 -- 100 kHz is the speed the
+     * chain has ever been walked at successfully. */
+    return set_chain_bus_speed(I2C_SPEED_STANDARD);
+}
+
+int boot_read_back_speed(void *, bool *matches)
+{
+    if (matches == nullptr)
+        return -EINVAL;
+    *matches = false;
+
+    /* READ BACK, NOT ASSUMED. A configure that silently did nothing would leave recovery running at
+     * whatever the devicetree left behind -- the product speed, chosen for a schedule rather than
+     * for robustness -- and nothing downstream would say so. */
+    uint32_t cfg{0};
+    if (const int rc{i2c_get_config(i2c2_dev, &cfg)}; rc != 0)
+        return rc;
+    *matches = I2C_SPEED_GET(cfg) == I2C_SPEED_STANDARD;
+    return 0;
+}
+
+int boot_restore_product_speed(void *)
+{
+    /* Everything downstream was promised the devicetree's speed. */
+    return set_chain_bus_speed(I2C_SPEED_FAST);
+}
+
+int boot_recover_survivors(void *)
+{
+    /* Not open, and never opened: uld_ops() zeroes it on every call, so a live session would be
+     * discarded. This runs before any open in the image, which is the whole reason that is safe. */
+    static tof_l7::sensor recovery_scratch{};
+
+    tof_l7_recovery::request req{};
+    for (size_t i{0}; i < tof_chain::dasher_spec().positions; ++i) {
+        const tof_enum::position_spec &ps{tof_chain::dasher_spec().at[i]};
+        if (ps.expected != tof_enum::model::l7cx)
+            continue;
+        if (req.count < tof_l7_recovery::kMaxGridSensors)
+            req.addr_7bit[req.count++] = ps.target_addr;
+    }
+
+    const tof_l7_recovery::report r{
+        tof_l7_recovery::run(tof_l7_recovery::uld_ops(&recovery_scratch), req)};
+
+    /* NOT FATAL, and not a verdict on the chain. Enumeration owns that; a second opinion from here
+     * is a mistake this project has already paid for. What is worth saying is how many were
+     * actually brought out of a session, because a non-zero count is the only direct evidence that
+     * this boot had something to recover. */
+    for (size_t i{0}; i < r.count; ++i)
+        LOG_INF("l7 recovery: 0x%02x %s", req.addr_7bit[i],
+                tof_l7_recovery::result_name(r.at[i]));
+    if (r.stopped != 0)
+        LOG_WRN("l7 recovery stopped %u live sensor(s): this was a warm reset", r.stopped);
+    return r.any_failure ? -EIO : 0;
+}
+#else
+/* A NAMED STUB RATHER THAN AN ABSENCE, so the caller below has no #if in it and the gate lives in
+ * exactly one place -- steps_for_image(), which a host suite links. It is never called: that
+ * function drops this step in a build without the grid driver. */
+int boot_recover_survivors(void *)
+{
+    return -ENOSYS;
+}
+
+int boot_set_recovery_speed(void *)
+{
+    return -ENOSYS;
+}
+
+int boot_read_back_speed(void *, bool *matches)
+{
+    if (matches != nullptr)
+        *matches = false;
+    return -ENOSYS;
+}
+
+int boot_restore_product_speed(void *)
+{
+    return -ENOSYS;
+}
+#endif  // ENABLE_TOF_L7_ULD
+
+int boot_configure_data_pin(void *)
+{
+    return gpio_pin_configure_dt(&data_pin, GPIO_OUTPUT_INACTIVE);
+}
+
+int boot_configure_clock_pin(void *)
+{
+    return gpio_pin_configure_dt(&clock_pin, GPIO_OUTPUT_INACTIVE);
+}
+
+/* NO #if HERE. Everything this image can do is offered, and steps_for_image() decides what this
+ * image may actually run -- one gate, in a file a host suite links, rather than a preprocessor
+ * condition repeated at every caller. */
+tof_l7_boot_order::steps boot_steps()
+{
+    tof_l7_boot_order::steps s{};
+
+    s.set_recovery_speed = boot_set_recovery_speed;
+    s.read_back_speed = boot_read_back_speed;
+    s.recover_survivors = boot_recover_survivors;
+    s.restore_product_speed = boot_restore_product_speed;
+    s.configure_data_pin = boot_configure_data_pin;
+    s.configure_clock_pin = boot_configure_clock_pin;
+    return tof_l7_boot_order::steps_for_image(s);
+}
+
+#if defined(ENABLE_TOF_CLIFF_ULD)
+
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+/* THE TWO DEPLOYMENT DECISIONS, read from the devicetree and constant for the life of the image.
+ *
+ * Neither may be changeable at runtime, and neither is defaulted on. The first is whether this
+ * board entertains a commissioning request at all; the second is whether it may drive its sensors'
+ * enable lines and re-address them when it gets one. Absent means no in both cases, which is how a
+ * boolean property behaves and is the whole mechanism: a deployment act is not something an image
+ * acquires by linking the code that could perform it. */
+constexpr bool kCommissionProfileEnabled{DT_PROP(DT_PATH(tof_chain), commission_profile_enabled)};
+constexpr bool kCommissionEnumerationPermitted{
+    DT_PROP(DT_PATH(tof_chain), commission_enumeration_permitted)};
+
+/* ASKED, NOT INFERRED -- and the answer comes from the image rather than from a runtime signal.
+ *
+ * The binding refuses a null hook precisely so that this question has to be answered somewhere, and
+ * the honest answer today is a constant: nothing in this firmware can tell a parked machine from a
+ * moving one, so a function that tried to work it out would be inventing a stationary condition.
+ * When a real one exists this is where it goes, and the shape of the hook already allows it. */
+bool commission_enumeration_permitted(void *)
+{
+    return kCommissionEnumerationPermitted;
+}
+
+int boot_start_downlink(void *)
+{
+    tof_commission_bind::config c{};
+
+    c.profile_enabled = kCommissionProfileEnabled;
+    c.max_proof_attempts = DT_PROP(DT_PATH(tof_chain), commission_max_proof_attempts);
+    c.max_start_attempts = DT_PROP(DT_PATH(tof_chain), commission_max_start_attempts);
+    c.announce_period_ms = DT_PROP(DT_PATH(tof_chain), commission_announce_period_ms);
+    c.poll_ms = DT_PROP(DT_PATH(tof_chain), commission_poll_ms);
+    c.enumeration_permitted = commission_enumeration_permitted;
+
+    /* can2, started by zcan_main::init(), which main() calls before this one. The binding checks
+     * readiness itself and refuses rather than installing a filter on a device that is not there. */
+    const tof_commission_bind::result r{
+        tof_commission_bind::start(DEVICE_DT_GET(DT_NODELABEL(can2)), c)};
+
+    if (r.state != tof_commission_bind::outcome::running)
+        LOG_WRN("commissioning downlink not fully up: rc %d, filter %d, worker %d", r.rc,
+                r.filter_id, static_cast<int>(r.worker_started));
+    return static_cast<int>(r.state);
+}
+
+const char *commission_outcome_label(int state)
+{
+    switch (static_cast<tof_commission_bind::outcome>(state)) {
+    case tof_commission_bind::outcome::running:
+        return "running";
+    case tof_commission_bind::outcome::answering_only:
+        return "answering only (no session token)";
+    case tof_commission_bind::outcome::refused:
+        return "refused";
+    }
+    return "unknown";
+}
+#endif  // ENABLE_TOF_AUTO_COMMISSION
+
+/* The image's chain ops, at file scope because tof_commissioning::init() copies the configuration
+ * and keeps this pointer: it has to outlive every proof. */
+zephyr_chain_ops chain_ops{};
+
+/* What the boot sequence hands to the wiring module. Assembled here because these are the only
+ * pieces that need the Zephyr image; the ORDER they are used in belongs to tof_commission_wiring,
+ * where a host suite can link it.
+ *
+ * The quiesce is try_stop(), not stop(): stop() takes the chain with K_FOREVER, so anything built
+ * on it would block and the session's K_NO_WAIT acquire -- the whole reason a busy chain is a
+ * refusal rather than a wait -- would never be reached. And try_stop(), not "try_stop plus a
+ * check": is_idle() also takes the chain with K_FOREVER, so verifying the quiesce that way would
+ * put the block back one line later.
+ *
+ * IT IS WRAPPED, AND ONLY TO TELL THE WATCHDOG. The wrapper adds no check and no wait -- one atomic
+ * store after a call that already returned -- so the reasoning above still holds. What it buys is
+ * that the one place acquisition is stopped in production is also the place that says so; see
+ * quiesce_acquisition().
+ *
+ * NO #if ON start_downlink BEYOND THE ONE THAT DECIDES WHETHER IT EXISTS. An image without the
+ * downlink leaves that step null and the sequence runs the half it has; the preprocessor decides
+ * what exists, not what the order is. */
+/* THE ONE PLACE ACQUISITION IS STOPPED IN PRODUCTION, and therefore the one place that can tell the
+ * watchdog it has been.
+ *
+ * tof_watchdog_feeder::set_acquisition_expected() had no caller at all: the feeder's atomic
+ * defaults to expected, which its header says is deliberate so that a missing wiring fails loudly
+ * rather than silently blinding the watchdog. This is that missing wiring, and the loud failure is
+ * real -- the cycle and its sender stop for the whole pass, which is longer than their silence
+ * bounds, so an unwired board resets itself during its first commissioning run.
+ *
+ * NOT on the failure path. A quiesce that did not succeed left acquisition running, or left it in a
+ * state nobody can account for, and in neither case is "stopped" a fact to report; the bounds keep
+ * applying, which is the safe direction. start_acquisition() is what says it is expected again, and
+ * only when the thread actually started -- so a proof that fails and leaves acquisition stopped by
+ * design keeps the suspension, which is the case a long-operation declaration cannot cover because
+ * it has no end to wait for. */
+int quiesce_acquisition()
+{
+    const int rc{tof_acq::try_stop()};
+
+    if (rc == 0)
+        tof_watchdog_feeder::set_acquisition_expected(false);
+    return rc;
+}
+
+tof_commission_wiring::inputs commission_inputs()
+{
+    tof_commission_wiring::inputs in{};
+
+    in.chain = &chain_mutex;
+    in.ops = &chain_ops;
+    in.set_bus_speed = set_bus_speed_hw;
+    in.quiesce = quiesce_acquisition;
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+    in.start_downlink = boot_start_downlink;
+#endif
+    return in;
+}
+#endif  // ENABLE_TOF_CLIFF_ULD
+
+void init()
+{
+    if (!device_is_ready(i2c2_dev)) {
+        LOG_ERR("i2c2 not ready");
+        init_status.store(-ENODEV);
+        return;
+    }
+    if (!gpio_is_ready_dt(&data_pin) || !gpio_is_ready_dt(&clock_pin)) {
+        LOG_ERR("chain control pin controller not ready");
+        init_status.store(-ENODEV);
+        return;
+    }
+    /* THROUGH THE ORDER MODULE, not inline. The two pin calls used to be here, and the recovery
+     * that has to precede them had no way in: a comment saying "recovery goes first" cannot be
+     * linked by a test, and the ordering is the whole deliverable. */
+    const tof_l7_boot_order::report boot{tof_l7_boot_order::run(boot_steps())};
+
+    if (!boot.pins_configured) {
+        LOG_ERR("chain control pin not configurable at %s (%d)",
+                tof_l7_boot_order::step_name(boot.failed_at), boot.rc);
+        init_status.store(boot.rc);
+        return;
+    }
+
+    /* ONLY THE PINS ARE FATAL. A bus speed that would not set, a readback that disagreed, a
+     * survivor that would not stop -- each is recorded and the boot carries on to bring the chain
+     * up, because enumeration owns the verdict on whether the chain is usable and a second opinion
+     * from here is a mistake this project has already paid for. */
+    if (boot.recovery_ran) {
+        LOG_INF("l7 recovery ran before the control lines (speed set %d, readback %d, rc %d, "
+                "product speed restored %d)",
+                boot.speed_set, boot.speed_readback_ok, boot.recovery_rc,
+                boot.product_speed_restored);
+    } else {
+        LOG_INF("l7 recovery did not run (speed set %d, readback %d): the chain is brought up "
+                "regardless", boot.speed_set, boot.speed_readback_ok);
+    }
+
+    init_status.store(0);
+    // Deliberately NO enumeration here: `tof enum` is a manual commissioning
+    // step, and the acquisition thread (Phase 3) will own the boot-time
+    // sequence once it exists.
+    LOG_INF("tof chain glue ready (data settle %u ms, sensor boot %u ms; "
+            "DS20001 provisional timing)",
+            kDataSettleMs, kSensorBootMs);
+
+#if defined(ENABLE_TOF_L7_ULD)
+    /* THE DEVICE FIRMWARE, VERIFIED ONCE, BEFORE ANYTHING ASKS AN L7 FOR A GRID.
+     *
+     * This had no caller. The grid adapter reads tof_l7_runtime::firmware_data(), which answers
+     * empty until a completed bootstrap publishes stage::available -- so every grid position would
+     * have failed at the firmware stage on a board, with the image otherwise looking healthy.
+     *
+     * AN INTEGRITY FAILURE DISABLES ONLY L7. The cliff path and its health channel must still come
+     * up: losing hanging-object detection is already fail-open for that hazard, and suppressing the
+     * independent cliff channel would make the failure larger while hiding the diagnosis. */
+    /* A DECLARED LONG OPERATION. Verifying the stored blob hashes 86 KB on the main stack, which
+     * dwarfs every per-cycle bound the watchdog feeder judges by. Declared rather than inferred,
+     * and bounded -- see tof_task_watchdog.hpp for what a declaration does and does not excuse.
+     * set_l7_expected tells the feeder this image has an L7 to watch at all. */
+    tof_watchdog_feeder::set_l7_expected(true);
+    tof_watchdog_feeder::long_operation_begin();
+    const int blob_rc{tof_l7_runtime::bootstrap()};
+    tof_watchdog_feeder::long_operation_end();
+    if (const int rc{blob_rc}; rc != 0) {
+        const tof_l7_runtime::snapshot state{tof_l7_runtime::current()};
+
+        LOG_ERR("L7 runtime bootstrap failed at %s (%s, %d); L7 remains unavailable",
+                tof_l7_runtime::stage_name(state.current_stage),
+                tof_l7_blob::status_name(state.verification.st), rc);
+    }
+#endif
+
+#if defined(ENABLE_TOF_CLIFF_ULD)
+    /* THE BOOTSTRAP, THE COMMISSIONING TRANSACTION AND THE DOWNLINK, AS ONE SEQUENCE, from the one
+     * context allowed to run it: main(), before any per-feature thread starts. tof_acq reads
+     * configured_/active_ outside the chain lock on exactly that basis, and the downlink runtime
+     * states the same once-per-boot rule for its session and its worker.
+     *
+     * All three steps live in tof_commission_wiring so a host suite can link the order; what is
+     * left here is supplying the pieces only this image has. The transaction configuration is
+     * OUTSIDE the auto-commission guard on purpose: the shell command needs exactly the same
+     * configuration, so a cliff image without the downlink must still get it.
+     *
+     * After the control lines, because a subsystem whose enable lines are not configurable has
+     * nothing to acquire from -- and after zcan_main::init(), which is where can2 is started
+     * (main.cpp calls it before this). */
+    const tof_commission_wiring::report wiring{
+        tof_commission_wiring::boot(tof_cliff_runtime::config_from_devicetree(),
+                                    commission_inputs())};
+
+    if (wiring.already_run) {
+        /* Reachable only from a second init(), which main() does not do. Logged rather than
+         * ignored: a boot that silently did nothing is what the latch exists to make visible. */
+        LOG_ERR("tof boot sequence ran twice; the second run did nothing");
+    }
+    if (wiring.bootstrap_rc != 0) {
+        /* Logged and left in the stage: the shell command reports which step failed, and the health
+         * path is still what a consumer hears. */
+        LOG_ERR("cliff runtime bootstrap failed at %s (%d)",
+                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()),
+                wiring.bootstrap_rc);
+    }
+    if (wiring.configure_rc != 0) {
+        LOG_ERR("commissioning transaction not configured (%d): proof refused on BOTH paths -- the "
+                "shell command and the downlink", wiring.configure_rc);
+    }
+#if defined(ENABLE_TOF_AUTO_COMMISSION)
+    if (wiring.downlink_attempted) {
+        LOG_INF("commissioning downlink: %s (requests %s, enumeration %s)",
+                commission_outcome_label(wiring.downlink_rc),
+                kCommissionProfileEnabled ? "enabled" : "disabled",
+                kCommissionEnumerationPermitted ? "permitted" : "refused");
+    }
+#endif
+#endif
+}
+
+}  // namespace lexxhard::tof_chain_controller
+
+#endif  // ENABLE_TOF_CHAIN

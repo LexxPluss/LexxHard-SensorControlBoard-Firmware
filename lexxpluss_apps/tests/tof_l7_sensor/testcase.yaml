@@ -1,0 +1,4 @@
+tests:
+  tof.l7.sensor:
+    platform_allow: native_sim
+    tags: tof l7 sensor

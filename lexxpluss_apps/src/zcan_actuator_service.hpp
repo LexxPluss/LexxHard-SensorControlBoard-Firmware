@@ -33,6 +33,8 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "actuator_service_controller.hpp"
+#include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_ACTUATOR_SERVICE_REQUEST 0x20b // based on CAN ID assignment
 #define CAN_ID_ACTUATOR_SERVICE_RESPONSE 0x213 // based on CAN ID assignment
@@ -77,7 +79,8 @@ public:
 private:
     void handle_request() {
         struct can_frame can_frame;
-        while (k_msgq_get(&msgq_can_actuator_service_request, &can_frame, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kRxPerPass &&
+                      k_msgq_get(&msgq_can_actuator_service_request, &can_frame, K_NO_WAIT) == 0; ++n) {
             auto const msg{actuator_service_controller::msg_request::from(can_frame.data)};
             while (k_msgq_put(&actuator_service_controller::msgq_request, &msg, K_NO_WAIT) != 0) {
                 k_msgq_purge(&actuator_service_controller::msgq_request);
@@ -85,19 +88,30 @@ private:
         }
     }
 
+    /* Held until accepted, not sent once and forgotten: this is a reply to a request the host is
+     * waiting on, and the controller produces it exactly once. A reply dropped because the
+     * mailboxes were busy leaves the requester waiting forever, so a refused send keeps
+     * `pending_response_` for a later pass. Periodic telemetry does the opposite and drops. */
     void handle_response() {
-        actuator_service_controller::msg_response msg;
-        while (k_msgq_get(&actuator_service_controller::msgq_response, &msg, K_NO_WAIT) == 0) {
-            struct can_frame can_frame{
-                .id = CAN_ID_ACTUATOR_SERVICE_RESPONSE,
-                .dlc = CAN_DATALENGTH_ACTUATOR_SERVICE_RESPONSE,
-            };
-            msg.into(can_frame.data);
-            can_send(dev, &can_frame, K_MSEC(100), nullptr, nullptr);    //accel
+        if (!pending_response_valid_ &&
+            k_msgq_get(&actuator_service_controller::msgq_response, &pending_response_,
+                       K_NO_WAIT) == 0) {
+            pending_response_valid_ = true;
         }
+        if (!pending_response_valid_)
+            return;
+        struct can_frame can_frame{
+            .id = CAN_ID_ACTUATOR_SERVICE_RESPONSE,
+            .dlc = CAN_DATALENGTH_ACTUATOR_SERVICE_RESPONSE,
+        };
+        pending_response_.into(can_frame.data);
+        if (zcan_bounded_send::send(dev, &can_frame, zcan_poll_budget::kMailboxWait) == 0)
+            pending_response_valid_ = false;
     }
 
     const device *dev{nullptr};
+    actuator_service_controller::msg_response pending_response_{};
+    bool pending_response_valid_{false};
 };
 
 }

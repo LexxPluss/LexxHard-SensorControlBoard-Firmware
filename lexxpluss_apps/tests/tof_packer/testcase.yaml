@@ -1,0 +1,4 @@
+tests:
+  tof.grid_packer:
+    platform_allow: native_sim
+    tags: tof

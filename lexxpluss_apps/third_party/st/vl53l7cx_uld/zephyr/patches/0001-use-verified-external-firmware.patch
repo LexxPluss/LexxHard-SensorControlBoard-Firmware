@@ -1,0 +1,51 @@
+diff --git a/modules/vl53l7cx_buffers.h b/modules/vl53l7cx_buffers.h
+--- a/modules/vl53l7cx_buffers.h
++++ b/modules/vl53l7cx_buffers.h
+@@ -31,6 +31,7 @@
+  * @brief This buffer contains the VL53L7CX firmware (MM1.8)
+  */
+ 
++#ifndef VL53L7CX_EXTERNAL_FIRMWARE
+ const uint8_t VL53L7CX_FIRMWARE[] = {
+ 	
+  0xe0, 0x00, 0x03, 0x08,
+@@ -21540,6 +21541,7 @@ const uint8_t VL53L7CX_FIRMWARE[] = {
+  0x00, 0x00, 0x00, 0x00,
+ 
+ };
++#endif
+ 
+ /**
+  * @brief This buffer contains the VL53L7CX default configuration.
+diff --git a/modules/vl53l7cx_api.c b/modules/vl53l7cx_api.c
+--- a/modules/vl53l7cx_api.c
++++ b/modules/vl53l7cx_api.c
+@@ -245,6 +245,11 @@ uint8_t vl53l7cx_init(
+ 	uint8_t pipe_ctrl[] = {VL53L7CX_NB_TARGET_PER_ZONE, 0x00, 0x01, 0x00};
+ 	uint32_t single_range = 0x01;
+ 
++	if((p_dev->platform.firmware == NULL)
++		|| (p_dev->platform.firmware_size < VL53L7CX_FIRMWARE_DOWNLOAD_SIZE)){
++		return VL53L7CX_STATUS_INVALID_PARAM;
++	}
++
+ 	p_dev->default_xtalk = (uint8_t*)VL53L7CX_DEFAULT_XTALK;
+ 	p_dev->default_configuration = (uint8_t*)VL53L7CX_DEFAULT_CONFIGURATION;
+ 	p_dev->is_auto_stop_enabled = (uint8_t)0x0;
+@@ -320,13 +325,13 @@ uint8_t vl53l7cx_init(
+ 	/* Download FW into VL53L7CX */
+ 	status |= VL53L7CX_WrByte(&(p_dev->platform), 0x7fff, 0x09);
+ 	status |= VL53L7CX_WrMulti(&(p_dev->platform),0,
+-		(uint8_t*)&VL53L7CX_FIRMWARE[0],0x8000);
++		(uint8_t*)&p_dev->platform.firmware[0],0x8000);
+ 	status |= VL53L7CX_WrByte(&(p_dev->platform), 0x7fff, 0x0a);
+ 	status |= VL53L7CX_WrMulti(&(p_dev->platform),0,
+-		(uint8_t*)&VL53L7CX_FIRMWARE[0x8000],0x8000);
++		(uint8_t*)&p_dev->platform.firmware[0x8000],0x8000);
+ 	status |= VL53L7CX_WrByte(&(p_dev->platform), 0x7fff, 0x0b);
+ 	status |= VL53L7CX_WrMulti(&(p_dev->platform),0,
+-		(uint8_t*)&VL53L7CX_FIRMWARE[0x10000],0x5000);
++		(uint8_t*)&p_dev->platform.firmware[0x10000],0x5000);
+ 	status |= VL53L7CX_WrByte(&(p_dev->platform), 0x7fff, 0x01);
+ 
+ 	/* Check if FW correctly downloaded */

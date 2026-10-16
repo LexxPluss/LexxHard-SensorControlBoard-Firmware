@@ -1,0 +1,177 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#pragma once
+
+// ToF grid CAN packer (AMRSW-2322). Pure logic, no Zephyr dependencies:
+// tested on native_sim against the golden vectors in docs/can/, whose test
+// pins the contract SHA-256. See docs/can/tof_can_wire_contract.md -- the
+// wire format is owned by that document, not by this file.
+//
+// Split of obligations, deliberately reflected in the types:
+//
+// - completed_verified_grid::from_read() is the CONTROLLER's transmit
+//   obligation ("a generation may only be transmitted after one complete,
+//   successful, model-verified 64-zone read"). Nothing else can mint an
+//   admitted grid: every mutating path is private.
+// - packer::pack() proves BYTE FORMAT only, and refuses a grid that was
+//   not admitted. It cannot re-check the obligation -- by the time bytes
+//   are made, that proof is carried by the type.
+
+#include <stddef.h>
+#include <stdint.h>
+
+namespace lexxhard::tof_grid {
+
+inline constexpr size_t kZones{64};
+inline constexpr size_t kDataFrames{16};
+inline constexpr size_t kZonesPerFrame{4};
+inline constexpr uint16_t kInvalidSentinel{0xFFF};
+inline constexpr uint16_t kMaxValidMm{4094};
+
+// Byte-3 status flag bits, per the wire contract. Only bit 2 is named here:
+// the others are advisory and travel through the packer untouched, whereas
+// this one decides whether a grid may be transmitted at all.
+inline constexpr uint8_t kFlagBindingUntrusted{1U << 2};
+
+// One raw acquisition attempt, as the acquisition thread hands it over.
+// Flags are asserted by the caller; from_read() only judges them.
+//
+// EVERY member carries a default member initialiser, and the safe value is the
+// refusing one. Without them only `sensor_read r{}` zeroed the gates and a plain
+// `sensor_read r;` left them indeterminate -- so a caller that forgot a leg could
+// admit a grid on whatever happened to be on the stack, which is the
+// unsafe-direction failure this struct exists to prevent. See
+// test_default_constructed_read_is_refused.
+struct sensor_read {
+    bool complete{false};        // all 64 zones present in this read
+    bool io_success{false};      // no I2C error anywhere in the transaction set
+    bool model_verified{false};  // device id verified at this chain position
+    /* The enumerator's per-source permission (chain_result::source_allowed for
+     * this source_id), and the ONLY thing that withholds a grid on an untrusted
+     * chain_position -> source_id binding. It is a separate input from the
+     * status flags on purpose: the wire contract says a flag never suppresses
+     * transmission, so the suppression has to come from the obligation. Reading
+     * byte-3 bit 2 instead would have been the same decision taken through the
+     * wrong door, and would leave a firmware whose acquisition path never
+     * consulted the enumerator at all looking compliant.
+     *
+     * NOT YET WIRED. No production code constructs a sensor_read on this
+     * branch -- the L7 grid_ops are still -ENOSYS stubs -- so this field exists
+     * to make the obligation impossible to supply implicitly once they are
+     * implemented. Until then the enumerator computes source_allowed and only
+     * the shell reads it.
+     *
+     * WHAT THIS FIELD DOES NOT DO, stated because a separate bool beside a
+     * separately writable source_id looks like a binding and is not one.
+     *
+     * from_read() checks two things about attribution: that this flag is set,
+     * and that source_id is representable. It cannot check that the permission
+     * BELONGS to that source_id. Both are plain members of a struct the caller
+     * fills in, so a caller that reads permission for source 0 and then labels
+     * the read source 1 is admitted, and the wrong-side attribution this field
+     * is meant to prevent happens anyway. Nothing in this type can close that:
+     * the two values arrive already separated.
+     *
+     * So the binding is an obligation on the PRODUCER, and it is not discharged
+     * by setting this flag. A producer must read chain_result::source_allowed
+     * for the same source_id it writes, as one step rather than two, and must
+     * carry a test that permission for one source never admits a grid labelled
+     * as the other. tof_packer's own suite records the limit rather than the
+     * guarantee -- see test_the_packer_cannot_bind_permission_to_its_source_id.
+     *
+     * The alternative, a source-indexed permission or a token that names its
+     * source, would move the check in here. That is a real design and is
+     * deliberately not being made now: there is no producer to design it
+     * against, and a token shape chosen before the only caller exists is the
+     * kind of interface this contract work keeps having to unpick. */
+    bool source_allowed{false};
+    /* Not a gate but still initialised: 0 is a representable source, so an
+     * indeterminate source_id would pass the range check and attribute a grid
+     * to whichever side the stack happened to name. */
+    uint8_t source_id{0};     // 0 or 1, per the contract mapping
+    uint8_t generation{0};
+    uint8_t chain_position{0};   // diagnostics only, low nibble on the wire
+    uint8_t boards_detected{0};  // diagnostics only, high nibble on the wire
+    uint8_t recovered_flags{0};  // contract byte-3 flags: recovered/chain-level only, never kFlagBindingUntrusted
+    uint8_t last_error{0};       // device/driver specific, 0 = none
+    /* SIGNED, because the ULD's are. A VL53L7CX zone can report a negative
+     * distance with a trusted status -- below-floor geometry, or a crosstalk
+     * correction that overshoots. Held as uint16_t it wraps to a large positive
+     * value, survives the > kMaxValidMm test as "too far", and clamps to
+     * 4094 mm: a defect that reads as CLEAR SPACE on a detector whose whole job
+     * is to notice something overhead. from_read() rejects negatives outright. */
+    int16_t zones_mm[kZones]{};       // raw ULD distances
+    uint8_t target_status[kZones]{};  // raw ULD per-zone status
+};
+
+class completed_verified_grid {
+public:
+    // The gate. Returns a non-admitted grid unless the read satisfies the
+    // transmit obligation (complete && io_success && model_verified &&
+    // source_allowed) and carries a representable source_id. Zone reduction to the wire
+    // domain happens here: target_status 5 is trusted, 6 and 9 only when
+    // accept_low_confidence, everything else becomes the invalid
+    // sentinel; a negative raw distance is the sentinel too; valid
+    // distances clamp to 4094 mm.
+    static completed_verified_grid from_read(const sensor_read &read,
+                                             bool accept_low_confidence);
+
+    bool admitted() const { return is_admitted; }
+    uint8_t source() const { return source_id; }
+    uint8_t gen() const { return generation; }
+    uint8_t valid_zones() const { return valid_zone_count; }
+    const uint16_t (&wire_zones() const)[kZones] { return zones; }
+
+private:
+    completed_verified_grid() = default;
+    friend class packer;
+
+    bool is_admitted{false};
+    uint8_t source_id{0};
+    uint8_t generation{0};
+    uint8_t valid_zone_count{0};
+    uint8_t status_flags{0};
+    uint8_t chain_position{0};
+    uint8_t boards_detected{0};
+    uint8_t last_error{0};
+    uint16_t zones[kZones]{};
+};
+
+struct can_frame_out {
+    uint8_t bytes[8]; // DLC is always 8, both frame types
+};
+
+class packer {
+public:
+    // 16 data frames plus the health frame that closes the grid, exactly
+    // as the contract lays them out. Returns false -- and writes nothing
+    // -- for a grid that was not admitted.
+    static bool pack(const completed_verified_grid &grid,
+                     can_frame_out (&data)[kDataFrames],
+                     can_frame_out &health);
+};
+
+}

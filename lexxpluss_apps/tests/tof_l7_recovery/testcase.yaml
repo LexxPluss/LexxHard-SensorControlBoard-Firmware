@@ -1,0 +1,5 @@
+common:
+  platform_allow: native_sim
+  tags: tof l7
+tests:
+  tof.l7.recovery: {}

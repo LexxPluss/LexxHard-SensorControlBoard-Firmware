@@ -1,0 +1,5 @@
+common:
+  platform_allow: native_sim
+  tags: tof l7 uld
+tests:
+  tof.l7.uld.stop: {}

@@ -1,0 +1,4 @@
+tests:
+  tof.auto_commission:
+    platform_allow: native_sim
+    tags: tof

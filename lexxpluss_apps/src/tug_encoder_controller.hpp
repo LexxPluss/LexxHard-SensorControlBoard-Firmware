@@ -35,6 +35,13 @@ struct msg {
 } __attribute__((aligned(2)));
 
 void init();
+
+// For ENABLE_TOF_CHAIN builds: the ToF chain owns i2c2, so the tug encoder
+// must not touch the bus, yet is_tug_connected() must still resolve --
+// with the optional left unset it blocks forever and takes the actuator
+// thread down at startup. Initialises the msgq and stores "disconnected"
+// without any bus access.
+void init_disconnected_for_tof();
 void run(void *p1, void *p2, void *p3);
 bool is_tug_connected();
 extern k_thread thread;
