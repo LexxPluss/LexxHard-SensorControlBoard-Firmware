@@ -1,0 +1,4 @@
+tests:
+  tof.package_grid_codec:
+    platform_allow: native_sim
+    tags: tof
