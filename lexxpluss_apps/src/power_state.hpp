@@ -1,3 +1,5 @@
+#pragma once
+
 enum class POWER_STATE {
     OFF,
     WAIT_SW,
