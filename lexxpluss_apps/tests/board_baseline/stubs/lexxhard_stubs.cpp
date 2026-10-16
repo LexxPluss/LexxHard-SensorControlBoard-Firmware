@@ -20,4 +20,21 @@ namespace lexxhard {
             return stub_adc3_mv;
         }
     }
+
+    namespace tof_watchdog_feeder {
+        // Watchdog feeder stubs: the host harness has no IWDG to feed
+        int start() {
+            return 0;
+        }
+
+        void release(const struct device *, int) {
+        }
+
+        int wait_first_feed(void) {
+            return 0;
+        }
+
+        void report_previous_stop() {
+        }
+    }
 }
