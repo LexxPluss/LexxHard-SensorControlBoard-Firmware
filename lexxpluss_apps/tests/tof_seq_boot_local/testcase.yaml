@@ -1,0 +1,4 @@
+tests:
+  tof.seq_boot_local:
+    platform_allow: native_sim
+    tags: tof
