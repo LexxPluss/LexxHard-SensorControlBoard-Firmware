@@ -103,9 +103,14 @@ int listen_for_traffic(int32_t window_ms, uint32_t *frames_seen);
  * accepted the frame. It does NOT mean the frame won arbitration, was acknowledged by another node,
  * or reached the bus at all. Those outcomes arrive later, in the driver's own context, and are
  * counted by transmit_errors(). So a grid this module reported as sent may still have failed on the
- * wire -- and a grid the publisher calls abandoned may still complete on the wire afterwards, if
- * the controller drains mailboxes that were already accepted. The producer's counts are the
- * producer's view; the consumer's are the only account of what arrived. */
+ * wire.
+ *
+ * AN ABANDONED GRID CANNOT ARRIVE COMPLETE, and the earlier wording here overstated it. What may
+ * still reach the bus after the publisher gives up is the FRAGMENT it had already queued: those
+ * frames were accepted and the controller will drain them. The frame that was refused is not
+ * retried and no later frame of that grid is even built, so the grid is permanently short and the
+ * consumer refuses it. The producer's counts are the producer's view; the consumer's are the only
+ * account of what arrived. */
 tof_package_stream::sink sink();
 
 /* Completion failures the driver has reported since init(). Zero does NOT mean every frame
