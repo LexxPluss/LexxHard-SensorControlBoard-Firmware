@@ -70,6 +70,58 @@ struct inputs {
     uint8_t uld_status{kUldOk};
 };
 
+/* HOW THE POLL ENDED, which is a different question from what the device said. */
+enum class go2_exit : uint8_t {
+    /* The auto-stop path skipped the poll, so nothing below was observed. */
+    not_polled = 0,
+    /* The loop's own condition was satisfied: bit 7, the MCU stop this call waits for. */
+    confirmed,
+    /* The 500 iterations ran out. This is the exit patch 0002 made report a timeout. */
+    exhausted,
+};
+
+/* WHAT GO2 STATUS SAID WHILE THE STOP HANDSHAKE WAITED.
+ *
+ * The 2026-10-12 run polled the device 501 times, tested one bit of each answer and kept none of
+ * them, so "the MCU stop was never confirmed" was everything the five seconds produced. Patch 0005
+ * keeps the bytes those same reads returned; this is their pure mirror, declared here so the record
+ * stays free of vendor headers and every combination is testable without a bus.
+ *
+ * EVERY VALUE CARRIES ITS OWN VALIDITY. The port leaves the caller's buffer untouched when a
+ * transfer fails, so an unread byte would otherwise be indistinguishable from a read one. A value
+ * whose `_valid` companion is false was not read; it is zero because nothing wrote it.
+ *
+ * IT IS NOT A COLD-START DETECTOR, and a field named as though it were does not belong here. The
+ * same register's bit 0 is an exit condition in the MCU boot wait that runs AFTER the firmware
+ * download, so any particular value here is consistent with more than one device history. This
+ * structure reports an observation; whatever is concluded from it must be named after the evidence
+ * that actually supports the conclusion. */
+struct go2_observation {
+    /* GO2 status 0 from the first and the last successful read inside the poll. Both, because a
+     * value that never changed and one that changed once are different observations, and the count
+     * cannot tell them apart. */
+    uint8_t first{0};
+    uint8_t last{0};
+    /* GO2 status 0 from the read that happens AFTER the loop, on the way to the status 1 check --
+     * the device's answer once the budget is already spent, not another sample of the same moment. */
+    uint8_t after_loop{0};
+    /* GO2 status 1, read only when bit 7 is set in `after_loop`. */
+    uint8_t status1{0};
+    go2_exit exit{go2_exit::not_polled};
+    bool first_valid{false};
+    bool last_valid{false};
+    bool after_loop_valid{false};
+    bool status1_valid{false};
+    /* Bit 7 seen in any sample that was really read. Kept apart from `exit` because one is what the
+     * device answered and the other is how this loop ended. */
+    bool saw_mcu_stop{false};
+    /* Read attempts inside the poll, and how many succeeded. A gap between them is a transport
+     * fault during the wait, which is not the same event as a device that answered every time and
+     * never confirmed. */
+    uint16_t polls{0};
+    uint16_t valid_polls{0};
+};
+
 /* Which layer the attempt stopped in. Named rather than inferred at each reading site. */
 enum class layer : uint8_t {
     /* Every transfer succeeded and the ULD reported success. */
@@ -117,6 +169,11 @@ struct record {
      * evidence -- but it is NOT a discriminator on its own: a transfer error does not make the ULD
      * return early, so a failing transport can spend the same five seconds. */
     uint32_t elapsed_us{0};
+    /* DELIBERATELY NOT AN INPUT TO `classify`. The layer verdict rests on the argument fault, the
+     * transport errno and the ULD status byte, and adding device-reported bytes to that rule would
+     * make the classification depend on the thing it is meant to help interpret. Carried beside the
+     * verdict, never inside it. */
+    go2_observation go2{};
 };
 
 /* THE SPAN, IN 64-BIT ARITHMETIC, BECAUSE THE FIRST VERSION WRAPPED.
@@ -144,7 +201,7 @@ uint32_t span_us(int64_t started_us, int64_t ended_us);
 /* Called once per quiesce, with the raw observations and the measured duration. It classifies,
  * stamps a sequence number and stores the result. There is exactly one caller, which is what makes
  * "no later probe or stop rewrites it" a property of the code rather than a convention. */
-void remember(const inputs &in, uint32_t elapsed_us);
+void remember(const inputs &in, uint32_t elapsed_us, const go2_observation &go2);
 
 /* The stored record. Reading does not clear it. */
 const record &last();

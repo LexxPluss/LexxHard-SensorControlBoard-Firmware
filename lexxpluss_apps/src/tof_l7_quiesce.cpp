@@ -60,7 +60,7 @@ uint32_t span_us(int64_t started_us, int64_t ended_us)
     return static_cast<uint32_t>(span);
 }
 
-void remember(const inputs &in, uint32_t elapsed_us)
+void remember(const inputs &in, uint32_t elapsed_us, const go2_observation &go2)
 {
     const verdict v{classify(in)};
     ++recorded_so_far;
@@ -70,6 +70,7 @@ void remember(const inputs &in, uint32_t elapsed_us)
     stored.which = v.which;
     stored.rc = v.rc;
     stored.elapsed_us = elapsed_us;
+    stored.go2 = go2;
 }
 
 const record &last()

@@ -1179,7 +1179,7 @@ ZTEST(tof_package_l7, test_a_round_refused_by_an_in_flight_verification_still_co
     observed.port_errno = 0;
     observed.completed = 511U;
     observed.uld_status = quiesce::kUldTimeout;
-    quiesce::remember(observed, 5429600U);
+    quiesce::remember(observed, 5429600U, quiesce::go2_observation{});
     const quiesce::record kept{quiesce::last()};
     zassert_true(kept.taken);
 

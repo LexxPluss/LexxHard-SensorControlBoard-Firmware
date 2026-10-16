@@ -28,6 +28,31 @@ tof_l7_quiesce::inputs clean()
         .argument_fault = 0, .port_errno = 0, .completed = 12U, .uld_status = tof_l7_quiesce::kUldOk};
 }
 
+/* WHAT A QUIESCE THAT OBSERVED NOTHING LEAVES. Used wherever the test is about the verdict rather
+ * than the observation, so those cases say so instead of carrying an incidental sample. */
+tof_l7_quiesce::go2_observation no_observation()
+{
+    return tof_l7_quiesce::go2_observation{};
+}
+
+/* The shape the 2026-10-12 dasher1 run produced: every poll answered, bit 7 never set, the budget
+ * spent. Named for the run so a reader can tell the recorded case from an invented one. */
+tof_l7_quiesce::go2_observation dasher1_shape()
+{
+    tof_l7_quiesce::go2_observation g{};
+    g.first = 0x01;
+    g.first_valid = true;
+    g.last = 0x01;
+    g.last_valid = true;
+    g.after_loop = 0x01;
+    g.after_loop_valid = true;
+    g.exit = tof_l7_quiesce::go2_exit::exhausted;
+    g.polls = 501U;
+    g.valid_polls = 501U;
+    g.saw_mcu_stop = false;
+    return g;
+}
+
 void before(void *)
 {
     tof_l7_quiesce::forget_all();
@@ -186,7 +211,7 @@ ZTEST(tof_l7_quiesce, test_a_successful_quiesce_is_recorded_too)
     /* Review's requirement, and the half an "only on failure" record would miss: a successful
      * quiesce followed by a later failure is a different story from two failures, and only the
      * record tells them apart. */
-    tof_l7_quiesce::remember(clean(), 1234U);
+    tof_l7_quiesce::remember(clean(), 1234U, no_observation());
 
     const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
     zassert_true(q.taken);
@@ -203,7 +228,7 @@ ZTEST(tof_l7_quiesce, test_every_raw_field_is_kept_not_just_the_verdict)
     in.port_errno = -EIO;
     in.completed = 9U;
     in.uld_status = 255U;
-    tof_l7_quiesce::remember(in, 5'004'321U);
+    tof_l7_quiesce::remember(in, 5'004'321U, no_observation());
 
     const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
     zassert_equal(q.raw.argument_fault, 0);
@@ -218,16 +243,123 @@ ZTEST(tof_l7_quiesce, test_each_quiesce_is_a_new_record_and_says_which_one_it_is
 {
     /* Two prints of the same record and two records that happen to look alike are different
      * observations, and a reader cannot tell them apart without the sequence number. */
-    tof_l7_quiesce::remember(clean(), 10U);
+    tof_l7_quiesce::remember(clean(), 10U, no_observation());
     const uint32_t first{tof_l7_quiesce::last().sequence};
 
     tof_l7_quiesce::inputs second{clean()};
     second.uld_status = tof_l7_quiesce::kUldTimeout;
-    tof_l7_quiesce::remember(second, 5'000'000U);
+    tof_l7_quiesce::remember(second, 5'000'000U, no_observation());
 
     zassert_equal(tof_l7_quiesce::last().sequence, first + 1U);
     zassert_equal(tof_l7_quiesce::last().which, tof_l7_quiesce::layer::handshake);
     zassert_equal(tof_l7_quiesce::last().elapsed_us, 5'000'000U);
+}
+
+ZTEST(tof_l7_quiesce, test_the_observation_is_kept_beside_the_verdict_not_folded_into_it)
+{
+    /* The whole point of the GO2 observation is the bytes the 2026-10-12 run threw away, so every
+     * field has to survive the record rather than being reduced to the layer. */
+    tof_l7_quiesce::inputs in{clean()};
+    in.uld_status = tof_l7_quiesce::kUldTimeout;
+    tof_l7_quiesce::remember(in, 5'429'600U, dasher1_shape());
+
+    const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
+    zassert_equal(q.which, tof_l7_quiesce::layer::handshake);
+    zassert_equal(q.go2.exit, tof_l7_quiesce::go2_exit::exhausted);
+    zassert_equal(q.go2.polls, 501U);
+    zassert_equal(q.go2.valid_polls, 501U);
+    zassert_equal(q.go2.first, 0x01U);
+    zassert_true(q.go2.first_valid);
+    zassert_equal(q.go2.last, 0x01U);
+    zassert_true(q.go2.last_valid);
+    zassert_equal(q.go2.after_loop, 0x01U);
+    zassert_true(q.go2.after_loop_valid);
+    zassert_false(q.go2.saw_mcu_stop);
+    zassert_false(q.go2.status1_valid, "status 1 is read only when bit 7 is set");
+}
+
+ZTEST(tof_l7_quiesce, test_the_observation_does_not_change_the_layer_verdict)
+{
+    /* The rule stays the argument fault, then the transport errno, then the status byte. A device
+     * byte that happens to look alarming must not move the verdict, or the classification would
+     * depend on the thing it exists to help interpret. */
+    tof_l7_quiesce::inputs in{clean()};
+    in.uld_status = tof_l7_quiesce::kUldTimeout;
+
+    tof_l7_quiesce::go2_observation alarming{dasher1_shape()};
+    alarming.first = 0xffU;
+    alarming.last = 0xffU;
+    alarming.after_loop = 0xffU;
+    alarming.status1 = 0xffU;
+    alarming.status1_valid = true;
+
+    tof_l7_quiesce::remember(in, 5'429'600U, alarming);
+    const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
+    zassert_equal(q.which, tof_l7_quiesce::layer::handshake);
+    zassert_equal(q.rc, -EIO);
+    zassert_equal(q.go2.status1, 0xffU, "carried, not consulted");
+}
+
+ZTEST(tof_l7_quiesce, test_an_unread_byte_is_not_a_zero_reading)
+{
+    /* A failed read leaves the caller's buffer untouched, so a value without its validity flag
+     * would be the previous sample wearing the current one's clothes. The record has to make the
+     * two distinguishable, which is what the reading side prints as `--`. */
+    tof_l7_quiesce::inputs in{clean()};
+    in.port_errno = -EIO;
+
+    tof_l7_quiesce::go2_observation partial{};
+    partial.exit = tof_l7_quiesce::go2_exit::exhausted;
+    partial.polls = 501U;
+    partial.valid_polls = 0U;
+
+    tof_l7_quiesce::remember(in, 5'000'000U, partial);
+    const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
+    zassert_equal(q.go2.polls, 501U);
+    zassert_equal(q.go2.valid_polls, 0U, "the reads were attempted and none of them answered");
+    zassert_false(q.go2.first_valid);
+    zassert_false(q.go2.last_valid);
+    zassert_equal(q.go2.first, 0U, "zero because nothing wrote it, which is why validity travels "
+                                   "separately");
+}
+
+ZTEST(tof_l7_quiesce, test_a_quiesce_that_never_polled_says_so)
+{
+    /* The auto-stop path skips the poll entirely. Reporting that as "zero polls, nothing seen" is
+     * right only because the exit reason names it; without that it reads like a poll that answered
+     * nothing. */
+    tof_l7_quiesce::remember(clean(), 900U, no_observation());
+
+    const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
+    zassert_equal(q.go2.exit, tof_l7_quiesce::go2_exit::not_polled);
+    zassert_equal(q.go2.polls, 0U);
+    zassert_false(q.go2.saw_mcu_stop);
+}
+
+ZTEST(tof_l7_quiesce, test_a_new_quiesce_replaces_the_previous_observation)
+{
+    /* Each record belongs to one call. An observation that survived into the next record would be
+     * the stale-evidence failure this module was built to remove, one level down. */
+    tof_l7_quiesce::inputs in{clean()};
+    in.uld_status = tof_l7_quiesce::kUldTimeout;
+    tof_l7_quiesce::remember(in, 5'429'600U, dasher1_shape());
+
+    tof_l7_quiesce::go2_observation confirmed{};
+    confirmed.exit = tof_l7_quiesce::go2_exit::confirmed;
+    confirmed.polls = 3U;
+    confirmed.valid_polls = 3U;
+    confirmed.first = 0x01U;
+    confirmed.first_valid = true;
+    confirmed.last = 0x81U;
+    confirmed.last_valid = true;
+    confirmed.saw_mcu_stop = true;
+    tof_l7_quiesce::remember(clean(), 40U, confirmed);
+
+    const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
+    zassert_equal(q.go2.exit, tof_l7_quiesce::go2_exit::confirmed);
+    zassert_equal(q.go2.polls, 3U);
+    zassert_true(q.go2.saw_mcu_stop);
+    zassert_equal(q.go2.last, 0x81U);
 }
 
 ZTEST(tof_l7_quiesce, test_reading_the_record_does_not_consume_it)
@@ -236,7 +368,7 @@ ZTEST(tof_l7_quiesce, test_reading_the_record_does_not_consume_it)
      * of the same fault read as "none recorded". */
     tof_l7_quiesce::inputs in{clean()};
     in.uld_status = tof_l7_quiesce::kUldTimeout;
-    tof_l7_quiesce::remember(in, 4'999'000U);
+    tof_l7_quiesce::remember(in, 4'999'000U, no_observation());
 
     for (int i = 0; i < 3; ++i) {
         const tof_l7_quiesce::record &q{tof_l7_quiesce::last()};
