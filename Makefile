@@ -40,9 +40,13 @@ RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 # IMAGE_OK_OFFSET_FROM_END is where MCUboot keeps image_ok inside that trailer, counted back from
 # the end of the slot: 0x01 means confirmed, 0xff means boot it once and revert unless the
 # application confirms itself.
+# IMAGE_MAGIC_LE is MCUboot's IMAGE_MAGIC (0x96f3b83d, bootutil/image.h) as it appears at offset 0
+# of a signed image, little-endian and byte by byte. A file without it is not an image at all,
+# which is the one failure a size bound alone cannot see.
 SLOT_SIZE := 262144
 SIGNED_IMAGE_CEILING := 261712
 IMAGE_OK_OFFSET_FROM_END := 24
+IMAGE_MAGIC_LE := 3db8f396
 
 .PHONY: all
 all: bootloader firmware
@@ -542,12 +546,25 @@ firmware_tof_release:
 # A RELEASE ASSERTION, NOT THE SIGNING CHECK. imgtool already refuses an image that cannot hold its
 # trailer inside the slot, and that remains the authority on fit. This target exists because a
 # release publishes files that nobody opens again until a machine is in front of them, so it states
-# in one place the three properties an operator then depends on: the unpadded image still clears the
-# ceiling, the confirmed image is slot-sized and marked ok, and the test image differs from it in
-# exactly the one byte that asks for a test boot. A release that fails here publishes nothing.
+# in one place the properties an operator then depends on: all three files are MCUboot images, the
+# unpadded one clears the ceiling, the confirmed one is slot-sized and marked ok, and the test image
+# differs from it in exactly the one byte that asks for a test boot. A release that fails here
+# publishes nothing.
+#
+# THE MAGIC CHECK IS WHAT MAKES THE SIZE CHECK MEAN ANYTHING. A ceiling is an upper bound only: an
+# empty or truncated signed image passes it, and the SWD image built from one is a bootloader with
+# nothing behind it -- a board that comes up in MCUboot with no application and no complaint from
+# this target.
 .PHONY: verify_tof_release_images
 verify_tof_release_images:
 	@set -e; \
+	for image in out/zephyr_tof_release.signed.bin out/zephyr_tof_release.signed.confirmed.bin \
+	             out/zephyr_tof_release.test.bin; do \
+	    magic=$$(od -An -tx1 -N4 "$$image" | tr -d ' \n'); \
+	    if [ "$$magic" != "$(IMAGE_MAGIC_LE)" ]; then \
+	        echo "$$image starts with '$$magic', not the MCUboot magic $(IMAGE_MAGIC_LE)" >&2; exit 1; \
+	    fi; \
+	done; \
 	signed=$$(stat -c%s out/zephyr_tof_release.signed.bin); \
 	confirmed=$$(stat -c%s out/zephyr_tof_release.signed.confirmed.bin); \
 	test_image=$$(stat -c%s out/zephyr_tof_release.test.bin); \
