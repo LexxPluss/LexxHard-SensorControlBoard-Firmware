@@ -22,12 +22,18 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 name: release
+# ONE TRIGGER, BECAUSE PUBLISHING A RELEASE ALSO PUSHES ITS TAG. This workflow used to listen for
+# `release: published` as well, which meant a release published from a draft built and uploaded the
+# same version twice. The tag push is the one event both routes have in common, and the upload step
+# below reuses the release when the drafter has already prepared one.
 on:
-  release:
-    types: [published]
   push:
     tags:
       - 'v*'
+# The upload step creates the release when the tag has none, which the read-only default token
+# cannot do.
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: lp-4core-runner
@@ -51,20 +57,41 @@ jobs:
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_initial
           make IN_HOST=1 WORKDIR=$(pwd) clean
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_two_state_ksw_initial
+          # The ToF build keeps its own build directory, so it needs no clean between it and the
+          # two above. firmware_tof_release_initial asserts the sizes and the trailer itself, and
+          # fails the job before anything is uploaded.
+          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_tof_release_initial
           mv ./out/firmware.bin LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
           mv ./out/firmware_two_state_ksw.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr_two_state_ksw.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
-      - name: Upload release binaries
-        uses: alexellis/upload-assets@0.4.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
-          UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
-          INITIAL_FIRMWARE_TWO_STATE_KSW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
-          UPDATE_FIRMWARE_TWO_STATE_SKW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
+          # The ToF set is three files and deliberately not four: the unpadded signed image is the
+          # input to the Initial image above and is NOT published, because written into slot1 by
+          # the CAN DFU it carries no trailer, never asks for a swap, and leaves a machine running
+          # its old firmware in a way that reads as a revert.
+          mv ./out/firmware_tof_release.bin LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
+          mv ./out/zephyr_tof_release.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
+          mv ./out/zephyr_tof_release.test.bin LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
+          sha256sum LexxHard-SensorControlBoard-Firmware-*-${{ github.ref_name }}.bin > SHA256SUMS-${{ github.ref_name }}.txt
+          cat SHA256SUMS-${{ github.ref_name }}.txt
+      # Creates the release when the tag has none, and reuses the drafter's when it has one. A tag
+      # carrying a pre-release suffix (v3.8.0-tof.1) is marked as such here: GitHub does not infer
+      # it from the name.
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
-          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}", "${{ env.INITIAL_FIRMWARE_TWO_STATE_KSW_PATH }}", "${{ env.UPDATE_FIRMWARE_TWO_STATE_SKW_PATH }}"]'
+          tag_name: ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
+            SHA256SUMS-${{ github.ref_name }}.txt
       - name: Notification
         uses: act10ns/slack@v1
         with:

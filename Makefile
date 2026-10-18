@@ -29,6 +29,21 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
+# Flash facts the release assertions are written against, all from the board's partition table
+# (extra/boards/arm/lexxpluss_scb/lexxpluss_scb.dts).
+#
+# SLOT_SIZE is slot0/slot1, in bytes. A padded image is exactly this size.
+# SIGNED_IMAGE_CEILING is what an UNPADDED signed image may occupy, measured on this board and
+# toolchain: 432 B below the slot, which is what MCUboot keeps behind the image for its trailer. It
+# is NOT the slot size, and an image sized between the two looks like it fits right up to the swap
+# that needs those bytes.
+# IMAGE_OK_OFFSET_FROM_END is where MCUboot keeps image_ok inside that trailer, counted back from
+# the end of the slot: 0x01 means confirmed, 0xff means boot it once and revert unless the
+# application confirms itself.
+SLOT_SIZE := 262144
+SIGNED_IMAGE_CEILING := 261712
+IMAGE_OK_OFFSET_FROM_END := 24
+
 .PHONY: all
 all: bootloader firmware
 
@@ -47,7 +62,7 @@ clean:
 	        build-test-tof-commission-runtime build-test-tof-commission-worker build-test-tof-commission-bind \
 	        build-test-tof-commission-bind-session build-test-tof-commission-entropy-poll build-auto-commission \
 	        build-test-tof-l7-boot-order-no-grid build-test-tof-integration-wiring build-tof-full \
-	        build-check-l7-no-cliff build-tof-integration
+	        build-check-l7-no-cliff build-tof-integration build-tof-release
 
 .PHONY: distclean
 distclean: clean
@@ -522,7 +537,52 @@ firmware_tof_release:
 	mv build-tof-release/zephyr/zephyr.signed.bin out/zephyr_tof_release.signed.bin
 	mv build-tof-release/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_release.signed.confirmed.bin
 	cp out/zephyr_tof_release.signed.confirmed.bin out/zephyr_tof_release.test.bin
-	printf '\377' | dd of=out/zephyr_tof_release.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_release.test.bin) - 24)) conv=notrunc status=none
+	printf '\377' | dd of=out/zephyr_tof_release.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_release.test.bin) - $(IMAGE_OK_OFFSET_FROM_END))) conv=notrunc status=none
+
+# A RELEASE ASSERTION, NOT THE SIGNING CHECK. imgtool already refuses an image that cannot hold its
+# trailer inside the slot, and that remains the authority on fit. This target exists because a
+# release publishes files that nobody opens again until a machine is in front of them, so it states
+# in one place the three properties an operator then depends on: the unpadded image still clears the
+# ceiling, the confirmed image is slot-sized and marked ok, and the test image differs from it in
+# exactly the one byte that asks for a test boot. A release that fails here publishes nothing.
+.PHONY: verify_tof_release_images
+verify_tof_release_images:
+	@set -e; \
+	signed=$$(stat -c%s out/zephyr_tof_release.signed.bin); \
+	confirmed=$$(stat -c%s out/zephyr_tof_release.signed.confirmed.bin); \
+	test_image=$$(stat -c%s out/zephyr_tof_release.test.bin); \
+	if [ $$signed -gt $(SIGNED_IMAGE_CEILING) ]; then \
+	    echo "signed image is $$signed B, over the $(SIGNED_IMAGE_CEILING) B ceiling" >&2; exit 1; \
+	fi; \
+	if [ $$confirmed -ne $(SLOT_SIZE) ] || [ $$test_image -ne $(SLOT_SIZE) ]; then \
+	    echo "padded images are $$confirmed B and $$test_image B, expected $(SLOT_SIZE) B each" >&2; exit 1; \
+	fi; \
+	ok_confirmed=$$(od -An -tx1 -j $$(($$confirmed - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr_tof_release.signed.confirmed.bin | tr -d ' '); \
+	ok_test=$$(od -An -tx1 -j $$(($$test_image - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr_tof_release.test.bin | tr -d ' '); \
+	if [ "$$ok_confirmed" != "01" ] || [ "$$ok_test" != "ff" ]; then \
+	    echo "image_ok is $$ok_confirmed (confirmed) and $$ok_test (test), expected 01 and ff" >&2; exit 1; \
+	fi; \
+	differing=$$(cmp -l out/zephyr_tof_release.signed.confirmed.bin out/zephyr_tof_release.test.bin | wc -l); \
+	if [ $$differing -ne 1 ]; then \
+	    echo "test image differs from the confirmed image in $$differing bytes, expected 1" >&2; exit 1; \
+	fi; \
+	echo "tof release images: signed $$signed B of $(SIGNED_IMAGE_CEILING) B, padded $(SLOT_SIZE) B, image_ok 01/ff, one differing byte"
+
+# THE SWD IMAGE: bootloader and application in one file, written from 0x8000000 after an erase.
+#
+# IT CARRIES NO L7 BLOB, and that is not an oversight this target can fix. Its first 256 KiB are the
+# bootloader partition followed by storage_partition, and the storage half is 0xff -- the same hole
+# firmware_initial leaves, because the file is built the same way. The L7 driver blob lives in
+# storage_partition, so a board flashed with this image has no blob until one is provisioned, and
+# nobody should promise six data paths from this file alone.
+.PHONY: firmware_tof_release_initial
+firmware_tof_release_initial:
+	$(MAKE) bootloader
+	$(MAKE) firmware_tof_release
+	$(MAKE) verify_tof_release_images
+	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
+	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
+	cat out/bl_with_ff.bin out/zephyr_tof_release.signed.bin > out/firmware_tof_release.bin
 
 # The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
