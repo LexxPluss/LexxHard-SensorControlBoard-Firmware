@@ -7,7 +7,7 @@
 
 #include "tof_package_bench_deadman.hpp"
 
-#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO_DEADMAN)
 
 #include <errno.h>
 
@@ -88,4 +88,4 @@ int extend(uint32_t minutes)
 
 }  // namespace lexxhard::tof_package_bench_deadman
 
-#endif  // ENABLE_TOF_PACKAGE_BENCH
+#endif  // ENABLE_TOF_PACKAGE_BENCH || ENABLE_TOF_PACKAGE_AUTO_DEADMAN

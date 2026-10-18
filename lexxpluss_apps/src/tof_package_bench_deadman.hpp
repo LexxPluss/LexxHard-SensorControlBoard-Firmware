@@ -30,6 +30,19 @@
  *     kMaxExtensions times. Nothing re-arms it automatically: a timer that renews itself on
  *     activity is a timer that never fires during a session that went wrong slowly.
  *
+ * THE UNATTENDED RUNTIME ARMS THIS TOO, under ENABLE_TOF_PACKAGE_AUTO_DEADMAN, and gets a
+ * STRICTLY SHORTER leash than the bench does: that image has no shell, so `pkg_tof hold` does not
+ * exist in it and the window cannot be extended at all. One flash buys kWindowMinutes of running
+ * and no more.
+ *
+ * WHY AN IMAGE MEANT TO STAY UP ARMS A TIMER THAT REBOOTS IT. Being unconfirmed is not by itself a
+ * protection: a revert only happens once something RESETS the board, and the hazard this runtime
+ * adds is a Package thread that wedges while the board controller keeps feeding the watchdog --
+ * exactly the dasher2 case above, with nothing left to produce the reset. So the first acceptance
+ * of a candidate keeps the timer, and the configuration that is meant to stay resident turns it
+ * off deliberately, once the image has been watched. The default is therefore ON: forgetting the
+ * flag leaves a machine protected rather than stranded.
+ *
  * THE REBOOT IS A WHOLE-MACHINE POWER CYCLE, not an SCB-only reset: the SCB owns the main power
  * rails, so a cold reboot drops everything and the machine comes back in about 80 s. That is the
  * safe direction -- it costs a re-flash, while not rebooting leaves a machine running an image
@@ -38,7 +51,7 @@
 
 #pragma once
 
-#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO_DEADMAN)
 
 #include <stdint.h>
 
@@ -72,4 +85,4 @@ uint32_t extensions_used(void);
 
 }  // namespace lexxhard::tof_package_bench_deadman
 
-#endif  // ENABLE_TOF_PACKAGE_BENCH
+#endif  // ENABLE_TOF_PACKAGE_BENCH || ENABLE_TOF_PACKAGE_AUTO_DEADMAN

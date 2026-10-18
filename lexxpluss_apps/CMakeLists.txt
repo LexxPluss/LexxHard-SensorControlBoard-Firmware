@@ -39,6 +39,16 @@ if(ENABLE_TOF_PACKAGE_BENCH)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_bench.conf)
 endif()
 
+# The unattended runtime keeps the revert armed unless told otherwise, and the deadman needs the
+# image-manager query to ask whether this image is confirmed. Appended here for the same reason as
+# the bench's: Kconfig is fixed by find_package(Zephyr) below.
+if(ENABLE_TOF_PACKAGE_AUTO AND NOT DEFINED TOF_PACKAGE_AUTO_DEADMAN)
+    set(TOF_PACKAGE_AUTO_DEADMAN ON)
+endif()
+if(ENABLE_TOF_PACKAGE_AUTO AND TOF_PACKAGE_AUTO_DEADMAN)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_auto_deadman.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
@@ -243,6 +253,23 @@ if(ENABLE_TOF_PACKAGE_AUTO)
     endif()
     if(NOT DEFINED TOF_PACKAGE_AUTO_QUIESCE_FIRST)
         set(TOF_PACKAGE_AUTO_QUIESCE_FIRST 1)
+    endif()
+    # THE UNATTENDED REVERT, ON BY DEFAULT. Being unconfirmed only protects an image once
+    # something resets the board, and the hazard this runtime adds is a Package thread that wedges
+    # while the board controller keeps feeding the watchdog -- nothing would reset it. So the
+    # first acceptance of a candidate keeps the timer and the residency configuration passes
+    # -DTOF_PACKAGE_AUTO_DEADMAN=OFF once the image has been watched. Defaulting it ON means
+    # forgetting the flag leaves a machine protected rather than stranded. The window is
+    # kWindowMinutes and CANNOT be extended here: `pkg_tof hold` lives in the shell, which this
+    # image does not have.
+    if(TOF_PACKAGE_AUTO_DEADMAN)
+        add_definitions(-DENABLE_TOF_PACKAGE_AUTO_DEADMAN)
+        message(STATUS "package_tof runtime: unattended revert ARMED (one window per flash)")
+    else()
+        message(WARNING
+            "package_tof runtime: unattended revert DISABLED. Nothing in this image will reset "
+            "the board if the Package thread wedges, so its unconfirmed trailer protects it only "
+            "against a reset that comes from somewhere else.")
     endif()
     add_definitions(-DENABLE_TOF_PACKAGE_AUTO
                     -DTOF_PACKAGE_AUTO_DATA_ID=${TOF_PACKAGE_AUTO_DATA_ID}

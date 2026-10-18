@@ -375,10 +375,17 @@ firmware_tof_package_bench:
 # bench ran at; the sustainable one for this geometry has not been accepted either. Changing any of
 # the three is an edit here, in the open, rather than a default somewhere in the source.
 #
-# NO DEADMAN. The bench image arms an unattended revert because a human flashes it, watches it and
-# goes home; this one is meant to come up at every boot and stay up, so a timer that cold-reboots
-# the machine would be the opposite of the delivery. That makes the padded test image below the
-# ONLY protection: it reverts on any reset until somebody confirms it deliberately.
+# THE UNATTENDED REVERT IS ARMED, which is the opposite of what this target first did and the
+# correction is worth stating. The reasoning for leaving it off was that an image meant to stay up
+# should not carry a timer that reboots it. That misread what being unconfirmed buys: a revert
+# needs something to RESET the board, and the hazard this image adds is a Package thread that
+# wedges while the board controller keeps feeding the watchdog -- precisely the case where nothing
+# will. So a first candidate keeps the timer and gets kWindowMinutes per flash, with no way to
+# extend it, because `pkg_tof hold` lives in a shell this image does not have.
+#
+# The configuration meant to stay resident passes -DTOF_PACKAGE_AUTO_DEADMAN=OFF, once somebody
+# has watched the image run. That is a separate decision taken after an acceptance, not a default,
+# and CMake prints a warning when it is taken.
 #
 # BOOT-LOCAL SEQUENCE NUMBERS. They restart at 1 after any reset, so a consumer that outlives a
 # board reset sees them repeat. That is a property of this image, and the reason it is still an
