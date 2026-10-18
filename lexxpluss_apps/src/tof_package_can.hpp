@@ -28,11 +28,11 @@
 /*
  * The CAN transport for Package ToF frames: can2, two configured identifiers, and nothing else.
  *
- * BENCH ONLY. No product configuration sets ENABLE_TOF_PACKAGE_BENCH, so nothing here reaches a
- * product image, and no product path transmits a Package frame. That is a statement about this
- * stage of the work rather than a permanent arrangement: the acquisition this feeds is started by
- * hand at a shell, and a product producer would need its own thread, its own stack measurement and
- * its own answer to the identifier question below.
+ * NOT IN A PRODUCT IMAGE. It is compiled under ENABLE_TOF_PACKAGE_BENCH, where a human starts the
+ * acquisition at a shell, and under ENABLE_TOF_PACKAGE_AUTO, where a thread does it at boot;
+ * neither is set by any product configuration, so no product path transmits a Package frame. The
+ * runtime answered the two things the bench could not -- its own thread with its own measured
+ * stack -- and left the identifier question below exactly where it was: open.
  *
  * NO IDENTIFIER HAS A DEFAULT, AND NONE IS COMPILED IN. Nothing has been registered for this
  * stream: 0x21A and 0x21B appear in a note as candidates and are not an allocation. A number
@@ -63,7 +63,7 @@
 
 #include <stdint.h>
 
-#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO)
 
 #include "tof_package_stream.hpp"
 
@@ -119,4 +119,4 @@ uint32_t transmit_errors();
 
 }  // namespace lexxhard::tof_package_can
 
-#endif  // ENABLE_TOF_PACKAGE_BENCH
+#endif  // ENABLE_TOF_PACKAGE_BENCH || ENABLE_TOF_PACKAGE_AUTO

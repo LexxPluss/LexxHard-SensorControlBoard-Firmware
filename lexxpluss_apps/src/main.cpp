@@ -49,6 +49,9 @@
 #ifdef ENABLE_TOF_PACKAGE_BENCH
 #include "tof_package_bench_deadman.hpp"
 #endif
+#ifdef ENABLE_TOF_PACKAGE_AUTO
+#include "tof_package_runtime.hpp"
+#endif
 
 namespace {
 
@@ -70,6 +73,25 @@ K_THREAD_STACK_DEFINE(shutter_motor_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
 #endif
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
+#ifdef ENABLE_TOF_PACKAGE_AUTO
+/* 4,096 B RATHER THAN THE 2,048 B EVERY OTHER THREAD HERE GETS, and the difference is measured
+ * rather than chosen. The deepest path through the Package runtime is a bring-up, whose deepest
+ * branch is the BLOB VERIFICATION and not the ULD:
+ *
+ *   run 0 + lifecycle::bring_up 24 + hook_verified 0 + ensure_verified 8 + bootstrap_impl 100
+ *     + verify_stored 60 + blob verify 524 + tc_sha256_final 24 + compress 116   = 856 B
+ *
+ * Those frames are the ones overlays/tof_package_bench.conf summed from the bench ELF, with the
+ * shell's own 376 B of dispatch removed: this thread replaces it and adds no large local of its
+ * own. 2,048 B would survive that with room, and the margin is taken anyway for the three reasons
+ * that overlay gives -- the sums exclude the Cortex-M exception frame, a missed indirect edge is
+ * invisible to them, and this path drives a device we have run for minutes rather than months.
+ *
+ * STILL OWED: re-sum against the ELF THIS configuration produces before the image is signed off.
+ * The call graph above is the same only while the runtime keeps no large local, which is a
+ * property of today's source rather than a guarantee. */
+K_THREAD_STACK_DEFINE(tof_package_runtime_stack, 4096);
+#endif
 
 #define RUN(name, prio) \
     k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
@@ -348,6 +370,14 @@ int main()
     RUN(tug_encoder_controller, 2);
 #endif
     RUN(runaway_detector, 4);
+#ifdef ENABLE_TOF_PACKAGE_AUTO
+    /* Priority 7, the lowest tier used here and the same one the firmware updater runs at: this
+     * thread spends seconds at a time inside the ULD's blob download and its polling waits, and
+     * nothing it does is time-critical to the machine. Started before zcan_main for the same
+     * reason every other thread is -- zcan_main goes last -- and its own first act is to listen on
+     * the bus for a second before transmitting anything. */
+    RUN(tof_package_runtime, 7);
+#endif
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
 
 #ifdef ENABLE_TOF_CHAIN

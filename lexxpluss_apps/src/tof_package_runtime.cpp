@@ -1,0 +1,295 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <errno.h>
+
+#include "tof_package_runtime.hpp"
+
+#if defined(ENABLE_TOF_PACKAGE_AUTO)
+
+#if !defined(ENABLE_TOF_L7_ULD)
+#error "ENABLE_TOF_PACKAGE_AUTO requires ENABLE_TOF_L7_ULD: the runtime exists to drive the L7."
+#endif
+#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#error "ENABLE_TOF_PACKAGE_AUTO and ENABLE_TOF_PACKAGE_BENCH claim the same device: pick one."
+#endif
+
+/* THE IDENTIFIERS HAVE NO DEFAULT, and the build fails without them. 0x21A and 0x21B are the
+ * candidates this path has been observed on, and writing either into this file would make it the
+ * allocation by being the only number anybody could find -- the same rule the driver's registry
+ * and the bench's `stream` arguments follow. A Makefile target names them; that target is where
+ * the decision is visible. */
+#if !defined(TOF_PACKAGE_AUTO_DATA_ID) || !defined(TOF_PACKAGE_AUTO_HEALTH_ID)
+#error "ENABLE_TOF_PACKAGE_AUTO needs TOF_PACKAGE_AUTO_DATA_ID and TOF_PACKAGE_AUTO_HEALTH_ID: no "
+       "identifier is registered for this stream, so there is no default to fall back to."
+#endif
+/* The acquisition rate, likewise: the sustainable one for this geometry has not been accepted. */
+#if !defined(TOF_PACKAGE_AUTO_HZ)
+#error "ENABLE_TOF_PACKAGE_AUTO needs TOF_PACKAGE_AUTO_HZ"
+#endif
+
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+
+#include "tof_package_auto.hpp"
+#include "tof_package_can.hpp"
+#include "tof_package_device.hpp"
+#include "tof_package_l7.hpp"
+#include "tof_package_stream.hpp"
+
+LOG_MODULE_REGISTER(tof_package_runtime);
+
+namespace lexxhard::tof_package_runtime {
+
+k_thread thread;
+
+namespace {
+
+namespace pkg = lexxhard::tof_package;
+namespace auto_policy = lexxhard::tof_package_auto;
+
+/* HOW LONG TO LISTEN BEFORE TRANSMITTING ON AN UNREGISTERED IDENTIFIER. Silence here is not
+ * evidence that either number is free -- the registry is -- but traffic IS evidence that it is
+ * taken, and that is the half worth checking before a board starts transmitting by itself at
+ * every boot. */
+constexpr int32_t kListenWindowMs{1000};
+
+/* HOW OFTEN THE LOOP WAKES. Shorter than one acquisition period on purpose: a poll that found
+ * nothing is not an acquisition and publishes nothing, so the cost of polling early is a wakeup
+ * and the cost of polling late is latency added to every grid. */
+constexpr int32_t kPollIntervalMs{20};
+
+/* HOW OFTEN A DIAGNOSTIC GOES OUT WHEN THERE IS NOTHING TO PUBLISH. A consumer cannot tell a dead
+ * producer from a silent one, so a runtime that is failing has to keep saying so -- and has to do
+ * it on a cadence rather than per pass, which at the poll interval above would be fifty frames a
+ * second reporting one unchanged condition. */
+constexpr int64_t kDiagnosticIntervalMs{500};
+
+/* The thread's own state, in .bss: see tof_package_device.hpp on why nothing from this path goes
+ * on a stack. */
+auto_policy::policy policy_;
+
+/* Whether the transport is wired and the identifiers were silent. False means NOTHING is ever
+ * sent: a collision has no diagnostic, because the diagnostic would go out on the identifier that
+ * collided. */
+bool transport_ready_{false};
+
+int64_t last_diagnostic_ms_{0};
+
+/* One place that turns the lifecycle into what the policy is allowed to see. The policy takes the
+ * lifecycle's own discardable() answer rather than deriving one from the step, because that layer
+ * is the one that knows which blocked steps a live session can be behind. */
+auto_policy::observation look()
+{
+    const pkg::status s{tof_package_device::lifecycle().current()};
+    auto_policy::observation o{};
+    o.bound = tof_package_device::bound();
+    o.current = s.current;
+    o.failed_step = s.failed_step;
+    o.discardable = tof_package_device::lifecycle().discardable();
+    return o;
+}
+
+/* Publishes one acquisition, or one diagnostic when there is nothing to publish and the heartbeat
+ * is due. Returns nothing: every outcome is a counter the publisher already keeps, and a caller
+ * that branched on them would be making the publication rule's decisions a second time. */
+void offer(const tof_package_stream::input &in, bool is_acquisition)
+{
+    if (!transport_ready_)
+        return;
+
+    const int64_t now{k_uptime_get()};
+    if (!is_acquisition && now - last_diagnostic_ms_ < kDiagnosticIntervalMs)
+        return;
+
+    tof_package_stream::outcome what{};
+    const int rc{tof_package_device::publisher().publish(in, &what)};
+    last_diagnostic_ms_ = now;
+    if (rc != 0 || what == tof_package_stream::outcome::grid_abandoned ||
+        what == tof_package_stream::outcome::diagnostic_failed)
+        LOG_WRN("package tof: publish said %s (%d)", tof_package_stream::outcome_name(what), rc);
+}
+
+/* The acquisition pass. A poll that found nothing publishes nothing -- a readiness poll is not an
+ * acquisition, and one diagnostic per poll would bury the stream in frames reporting no event. */
+void acquire()
+{
+    bool fresh{false};
+    const int rc{tof_package_device::lifecycle().read_once(&fresh)};
+
+    tof_package_stream::input in{};
+    if (rc == 0 && !fresh)
+        return;
+    if (rc == 0) {
+        in.outcome = tof_package_health::acquisition::complete_grid;
+        in.distance_mm = tof_package_device::last_sample().distance_mm;
+        in.status = tof_package_device::last_sample().target_status;
+        in.zone_count = tof_package_stream::kZones;
+    } else {
+        /* A transport or device failure. The grid still sitting in the sample may be perfectly
+         * good and is deliberately NOT passed: `failed` is what happened to THIS acquisition. */
+        in.outcome = tof_package_health::acquisition::failed;
+    }
+    offer(in, true);
+}
+
+/* Says the device is not producing, at the heartbeat cadence. `never_started` rather than `failed`
+ * whenever nothing has been brought up: the two are different claims about the device, and the
+ * availability flag the consumer reads is what distinguishes them. */
+void report(bool ever_claimed)
+{
+    tof_package_stream::input in{};
+    in.outcome = ever_claimed ? tof_package_health::acquisition::failed
+                              : tof_package_health::acquisition::never_started;
+    offer(in, false);
+}
+
+/* The transport, once, before the loop. A failure here is final for this boot: there is no
+ * identifier to report it on. */
+void wire_the_transport()
+{
+    tof_package_can::identifiers ids{};
+    ids.data_id = TOF_PACKAGE_AUTO_DATA_ID;
+    ids.health_id = TOF_PACKAGE_AUTO_HEALTH_ID;
+    ids.extended = false;
+
+    if (const int rc{tof_package_can::init()}; rc != 0) {
+        LOG_ERR("package tof: can2 is not available (%d); nothing will be sent this boot", rc);
+        return;
+    }
+    if (const int rc{tof_package_can::configure(ids)}; rc != 0) {
+        LOG_ERR("package tof: identifiers 0x%x/0x%x refused (%d)", ids.data_id, ids.health_id, rc);
+        return;
+    }
+
+    uint32_t heard{0};
+    if (const int rc{tof_package_can::listen_for_traffic(kListenWindowMs, &heard)}; rc != 0) {
+        LOG_ERR("package tof: could not listen on 0x%x/0x%x (%d); nothing will be sent this boot",
+                ids.data_id, ids.health_id, rc);
+        return;
+    }
+    if (heard != 0U) {
+        LOG_ERR("package tof: %u frames on 0x%x/0x%x in %d ms. Somebody is already using these "
+                "identifiers; this board will send nothing, including diagnostics.",
+                heard, ids.data_id, ids.health_id, kListenWindowMs);
+        return;
+    }
+
+    tof_package_stream::sequence_source source{};
+    source.issue = tof_package_device::issue_boot_local;
+    if (const int rc{tof_package_device::publisher().init(tof_package_can::sink(), source)};
+        rc != 0) {
+        LOG_ERR("package tof: the publisher refused the wiring (%d)", rc);
+        return;
+    }
+
+    transport_ready_ = true;
+    LOG_INF("package tof: data 0x%x, health 0x%x, 11-bit, boot-local sequence. Silence on both for "
+            "%d ms is not evidence that either number is unallocated; check the registry.",
+            ids.data_id, ids.health_id, kListenWindowMs);
+}
+
+}  // namespace
+
+void run(void *, void *, void *)
+{
+    auto_policy::limits l{};
+    l.claims = TOF_PACKAGE_AUTO_CLAIMS;
+    l.takeovers = TOF_PACKAGE_AUTO_TAKEOVERS;
+    l.quiesce_first = TOF_PACKAGE_AUTO_QUIESCE_FIRST != 0;
+    if (const int rc{policy_.init(l)}; rc != 0) {
+        /* A configuration the policy refuses is a build mistake, and the thread ends rather than
+         * running on a budget nobody chose. Nothing has been claimed and nothing is on the bus. */
+        LOG_ERR("package tof: the runtime's budget is not usable (%d); this thread is doing "
+                "nothing. claims=%u takeovers=%u",
+                rc, l.claims, l.takeovers);
+        return;
+    }
+
+    wire_the_transport();
+
+    while (true) {
+        const auto_policy::observation seen{look()};
+        const auto_policy::action what{policy_.next(seen)};
+
+        switch (what) {
+        case auto_policy::action::bind: {
+            tof_package_device::bind_refusal why{tof_package_device::bind_refusal::none};
+            if (const int rc{tof_package_device::bind(TOF_PACKAGE_AUTO_HZ, &why)}; rc != 0)
+                LOG_ERR("package tof: bind refused: %s (%d)",
+                        tof_package_device::bind_refusal_name(why), rc);
+            break;
+        }
+        case auto_policy::action::rebind_to_retry: {
+            /* The same call. A rebind IS a bind: what makes it a retry is that the lifecycle it
+             * replaces was discardable, which the policy checked and this does not re-check. */
+            tof_package_device::bind_refusal why{tof_package_device::bind_refusal::none};
+            if (const int rc{tof_package_device::bind(TOF_PACKAGE_AUTO_HZ, &why)}; rc != 0)
+                LOG_ERR("package tof: rebind refused: %s (%d)",
+                        tof_package_device::bind_refusal_name(why), rc);
+            break;
+        }
+        case auto_policy::action::claim_with_quiesce:
+            /* Through the device layer's round entry, never the lifecycle directly: that is where
+             * the step-record boundary is applied, and a caller that went round it would start a
+             * round carrying the previous one's steps. */
+            if (const int rc{tof_package_device::begin_round(false)}; rc != 0)
+                LOG_WRN("package tof: bring-up stopped at %s (%d)",
+                        pkg::step_name(tof_package_device::lifecycle().current().failed_step), rc);
+            break;
+        case auto_policy::action::claim_by_takeover:
+            /* The quiesce was refused, so this proceeds without it. `idle` says the software holds
+             * no session, never that the sensor stopped: the full init that follows is then the
+             * only thing that will have touched the device's state. */
+            LOG_WRN("package tof: taking over a device whose state is unknown -- the stop "
+                    "handshake was refused, and this skips it");
+            if (const int rc{tof_package_device::begin_round(true)}; rc != 0)
+                LOG_WRN("package tof: takeover stopped at %s (%d)",
+                        pkg::step_name(tof_package_device::lifecycle().current().failed_step), rc);
+            break;
+        case auto_policy::action::pay_stop:
+            if (const int rc{tof_package_device::lifecycle().stop()}; rc != 0)
+                LOG_WRN("package tof: the stop this session owes was refused (%d)", rc);
+            break;
+        case auto_policy::action::acquire:
+            acquire();
+            break;
+        case auto_policy::action::report_only:
+            report(policy_.current().claims_used != 0U);
+            break;
+        }
+
+        /* Every pass that was not an acquisition still owes the consumer a heartbeat: a claim that
+         * is being retried looks, from the bus, exactly like a producer that died. */
+        if (what != auto_policy::action::acquire && what != auto_policy::action::report_only)
+            report(policy_.current().claims_used != 0U);
+
+        k_msleep(kPollIntervalMs);
+    }
+}
+
+}  // namespace lexxhard::tof_package_runtime
+
+#endif  // ENABLE_TOF_PACKAGE_AUTO

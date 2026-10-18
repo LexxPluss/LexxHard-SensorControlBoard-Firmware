@@ -363,6 +363,39 @@ firmware_tof_package_bench:
 	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin
 	printf '\377' | dd of=out/zephyr_tof_package_bench.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_bench.test.bin) - 24)) conv=notrunc status=none
 
+# THE UNATTENDED PACKAGE ToF IMAGE: one thread binds the sensor at boot, keeps it measuring and
+# puts every acquisition on can2 with nobody typing anything. The bench's bind/takeover/stream over
+# the same device layer and the same publication rule, with the shell gone -- and the build refuses
+# to carry both, because one sensor cannot have two owners.
+#
+# THE THREE NUMBERS ARE HERE BECAUSE THIS IS WHERE THEY ARE VISIBLE. 0x21A and 0x21B are the
+# identifiers this path has been observed on and are EXPERIMENTAL CANDIDATES, not an allocation:
+# nothing is registered for this stream, the firmware refuses to compile without being told them,
+# and the runtime listens on both for a second before it transmits anything. 10 Hz is the rate the
+# bench ran at; the sustainable one for this geometry has not been accepted either. Changing any of
+# the three is an edit here, in the open, rather than a default somewhere in the source.
+#
+# NO DEADMAN. The bench image arms an unattended revert because a human flashes it, watches it and
+# goes home; this one is meant to come up at every boot and stay up, so a timer that cold-reboots
+# the machine would be the opposite of the delivery. That makes the padded test image below the
+# ONLY protection: it reverts on any reset until somebody confirms it deliberately.
+#
+# BOOT-LOCAL SEQUENCE NUMBERS. They restart at 1 after any reset, so a consumer that outlives a
+# board reset sees them repeat. That is a property of this image, and the reason it is still an
+# observation of the path rather than evidence of candidate N's identity.
+#
+# -p always, padded test image, and the trailer cleared 24 bytes from the end: all three for the
+# reasons firmware_tof_package_bench gives above.
+.PHONY: firmware_tof_package_auto
+firmware_tof_package_auto:
+	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-auto -- $(ZBASE_BUILD) -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_AUTO=ON -DTOF_PACKAGE_AUTO_DATA_ID=0x21A -DTOF_PACKAGE_AUTO_HEALTH_ID=0x21B -DTOF_PACKAGE_AUTO_HZ=10 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-package-auto/zephyr/zephyr.signed.bin out/zephyr_tof_package_auto.signed.bin
+	mv build-tof-package-auto/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_package_auto.signed.confirmed.bin
+	cp out/zephyr_tof_package_auto.signed.confirmed.bin out/zephyr_tof_package_auto.test.bin
+	printf '\377' | dd of=out/zephyr_tof_package_auto.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_auto.test.bin) - 24)) conv=notrunc status=none
+
 #
 # The `tof enum` command is present but is NOT expected to complete on this
 # image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition

@@ -202,7 +202,55 @@ if(ENABLE_TOF_PACKAGE_BENCH)
             "ENABLE_TOF_PACKAGE_BENCH requires ENABLE_TOF_L7_ULD: the bench driver exists to call "
             "the L7 lifecycle, and without the driver there is nothing to call.")
     endif()
+    if(ENABLE_TOF_PACKAGE_AUTO)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_BENCH and ENABLE_TOF_PACKAGE_AUTO claim the same device: the shell "
+            "commands and the runtime thread would drive one sensor through one set of unlocked "
+            "objects. Pick one.")
+    endif()
     add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
+endif()
+
+# THE UNATTENDED RUNTIME. One thread that binds the Package sensor at boot, keeps it measuring and
+# puts every acquisition on can2 with nobody typing anything -- the bench's bind/takeover/stream
+# without the shell, over the same device layer and the same publication rule.
+#
+# IT NEEDS ITS IDENTIFIERS AND ITS RATE FROM THE BUILD, with no defaults anywhere in the source:
+# none of the three is registered or accepted, and a number compiled into a header becomes the
+# answer by being the only one anybody can find. The source refuses to compile without them, so a
+# target that forgets one fails here rather than transmitting on something nobody chose.
+if(ENABLE_TOF_PACKAGE_AUTO)
+    if(NOT ENABLE_TOF_L7_ULD)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_AUTO requires ENABLE_TOF_L7_ULD: the runtime exists to drive the "
+            "L7 lifecycle, and without the driver there is nothing to drive.")
+    endif()
+    foreach(required TOF_PACKAGE_AUTO_DATA_ID TOF_PACKAGE_AUTO_HEALTH_ID TOF_PACKAGE_AUTO_HZ)
+        if(NOT DEFINED ${required})
+            message(FATAL_ERROR
+                "ENABLE_TOF_PACKAGE_AUTO needs ${required}: nothing about this stream is "
+                "registered or accepted, so there is no default to fall back to.")
+        endif()
+    endforeach()
+    # The budget the policy runs on. Defaulted, because unlike the identifiers these are this
+    # project's own decisions about how far an unattended board may go without a human, and they
+    # are documented where the policy defines them.
+    if(NOT DEFINED TOF_PACKAGE_AUTO_CLAIMS)
+        set(TOF_PACKAGE_AUTO_CLAIMS 6)
+    endif()
+    if(NOT DEFINED TOF_PACKAGE_AUTO_TAKEOVERS)
+        set(TOF_PACKAGE_AUTO_TAKEOVERS 1)
+    endif()
+    if(NOT DEFINED TOF_PACKAGE_AUTO_QUIESCE_FIRST)
+        set(TOF_PACKAGE_AUTO_QUIESCE_FIRST 1)
+    endif()
+    add_definitions(-DENABLE_TOF_PACKAGE_AUTO
+                    -DTOF_PACKAGE_AUTO_DATA_ID=${TOF_PACKAGE_AUTO_DATA_ID}
+                    -DTOF_PACKAGE_AUTO_HEALTH_ID=${TOF_PACKAGE_AUTO_HEALTH_ID}
+                    -DTOF_PACKAGE_AUTO_HZ=${TOF_PACKAGE_AUTO_HZ}
+                    -DTOF_PACKAGE_AUTO_CLAIMS=${TOF_PACKAGE_AUTO_CLAIMS}
+                    -DTOF_PACKAGE_AUTO_TAKEOVERS=${TOF_PACKAGE_AUTO_TAKEOVERS}
+                    -DTOF_PACKAGE_AUTO_QUIESCE_FIRST=${TOF_PACKAGE_AUTO_QUIESCE_FIRST})
 endif()
 
 if(VERSION)
