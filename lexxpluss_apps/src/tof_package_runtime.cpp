@@ -81,11 +81,22 @@ constexpr int32_t kListenWindowMs{1000};
  * and the cost of polling late is latency added to every grid. */
 constexpr int32_t kPollIntervalMs{20};
 
-/* HOW OFTEN A DIAGNOSTIC GOES OUT WHEN THERE IS NOTHING TO PUBLISH. A consumer cannot tell a dead
- * producer from a silent one, so a runtime that is failing has to keep saying so -- and has to do
- * it on a cadence rather than per pass, which at the poll interval above would be fifty frames a
- * second reporting one unchanged condition. */
+/* THE CADENCE, which tof_package_auto::what_to_send() applies and this file only supplies.
+ *
+ * The diagnostic floor is 500 ms: a consumer cannot tell a dead producer from a silent one, so a
+ * failing runtime keeps saying so -- on a cadence, not per pass, which at the poll interval above
+ * would be fifty frames a second reporting one unchanged condition.
+ *
+ * A GRID IS OVERDUE AFTER FIVE NOMINAL PERIODS, never sooner than that floor. Five because the
+ * only measurement there is put this sensor at roughly 195 ms against a 200 ms nominal period at
+ * the bench's 5 Hz, so one period of slack says nothing and five is a silence no healthy sensor
+ * produced. The floor matters at high rates: at 10 Hz five periods is 500 ms and the two agree, at
+ * 15 Hz five periods would be 333 ms and the runtime would decide a grid was overdue more often
+ * than it is allowed to say so. */
+constexpr int64_t kNominalPeriodMs{1000 / TOF_PACKAGE_AUTO_HZ};
 constexpr int64_t kDiagnosticIntervalMs{500};
+constexpr int64_t kGridOverdueMs{5 * kNominalPeriodMs > kDiagnosticIntervalMs ? 5 * kNominalPeriodMs
+                                                                             : kDiagnosticIntervalMs};
 
 /* The thread's own state, in .bss: see tof_package_device.hpp on why nothing from this path goes
  * on a stack. */
@@ -96,7 +107,10 @@ auto_policy::policy policy_;
  * collided. */
 bool transport_ready_{false};
 
+/* WHEN A DIAGNOSTIC LAST WENT OUT, and when a grid was last in hand or last began to be expected.
+ * Both are only ever read by what_to_send(), which is where every rule about them lives. */
 int64_t last_diagnostic_ms_{0};
+int64_t last_grid_ms_{0};
 
 /* One place that turns the lifecycle into what the policy is allowed to see. The policy takes the
  * lifecycle's own discardable() answer rather than deriving one from the step, because that layer
@@ -112,58 +126,105 @@ auto_policy::observation look()
     return o;
 }
 
-/* Publishes one acquisition, or one diagnostic when there is nothing to publish and the heartbeat
- * is due. Returns nothing: every outcome is a counter the publisher already keeps, and a caller
- * that branched on them would be making the publication rule's decisions a second time. */
-void offer(const tof_package_stream::input &in, bool is_acquisition)
+/* Sends what the cadence rule asked for, and nothing on say_nothing. Returns nothing: every
+ * outcome is a counter the publisher already keeps, and a caller that branched on them would be
+ * making the publication rule's decisions a second time.
+ *
+ * THE TWO CLOCKS ARE STAMPED HERE because this is where a frame actually goes out. Stamping them
+ * at the decision instead would advance them for a pass that sent nothing. */
+void send(auto_policy::report what, const tof_package_stream::input &in, int64_t now)
 {
-    if (!transport_ready_)
+    if (what == auto_policy::report::say_nothing || !transport_ready_)
         return;
 
-    const int64_t now{k_uptime_get()};
-    if (!is_acquisition && now - last_diagnostic_ms_ < kDiagnosticIntervalMs)
-        return;
+    tof_package_stream::outcome result{};
+    const int rc{tof_package_device::publisher().publish(in, &result)};
 
-    tof_package_stream::outcome what{};
-    const int rc{tof_package_device::publisher().publish(in, &what)};
-    last_diagnostic_ms_ = now;
-    if (rc != 0 || what == tof_package_stream::outcome::grid_abandoned ||
-        what == tof_package_stream::outcome::diagnostic_failed)
-        LOG_WRN("package tof: publish said %s (%d)", tof_package_stream::outcome_name(what), rc);
+    if (what == auto_policy::report::publish_grid)
+        last_grid_ms_ = now;
+    else
+        last_diagnostic_ms_ = now;
+
+    if (rc != 0 || result == tof_package_stream::outcome::grid_abandoned ||
+        result == tof_package_stream::outcome::diagnostic_failed)
+        LOG_WRN("package tof: publish said %s (%d)", tof_package_stream::outcome_name(result), rc);
 }
 
-/* The acquisition pass. A poll that found nothing publishes nothing -- a readiness poll is not an
- * acquisition, and one diagnostic per poll would bury the stream in frames reporting no event. */
+auto_policy::cadence the_cadence()
+{
+    auto_policy::cadence c{};
+    c.diagnostic_interval_ms = kDiagnosticIntervalMs;
+    c.grid_overdue_ms = kGridOverdueMs;
+    return c;
+}
+
+/* One round on the device, and the restart of the grid wait that a successful one earns.
+ *
+ * WHY THE WAIT RESTARTS HERE. `last_grid_ms_` means "when a grid was last in hand, or when the
+ * runtime last began expecting one". A bring-up takes seconds -- the blob verification alone is
+ * most of them -- so without this the first poll after a successful claim would find a grid
+ * overdue by the whole duration of the claim and report a stall the instant the sensor started
+ * working. A claim that FAILED earns nothing: the silence it leaves behind is real. */
+void claim(bool by_takeover)
+{
+    const int rc{tof_package_device::begin_round(by_takeover)};
+    if (rc != 0) {
+        LOG_WRN("package tof: %s stopped at %s (%d)", by_takeover ? "takeover" : "bring-up",
+                pkg::step_name(tof_package_device::lifecycle().current().failed_step), rc);
+        return;
+    }
+    last_grid_ms_ = k_uptime_get();
+}
+
+/* One acquisition pass. What it owes the bus is what_to_send()'s answer, not this function's. */
 void acquire()
 {
     bool fresh{false};
     const int rc{tof_package_device::lifecycle().read_once(&fresh)};
 
+    auto_policy::pass p{};
+    p.read_rc = rc;
+    p.fresh = fresh;
+    p.now_ms = k_uptime_get();
+    p.last_grid_ms = last_grid_ms_;
+    p.last_diagnostic_ms = last_diagnostic_ms_;
+    const auto_policy::report what{auto_policy::what_to_send(p, the_cadence())};
+
     tof_package_stream::input in{};
-    if (rc == 0 && !fresh)
-        return;
-    if (rc == 0) {
+    if (what == auto_policy::report::publish_grid) {
         in.outcome = tof_package_health::acquisition::complete_grid;
         in.distance_mm = tof_package_device::last_sample().distance_mm;
         in.status = tof_package_device::last_sample().target_status;
         in.zone_count = tof_package_stream::kZones;
     } else {
-        /* A transport or device failure. The grid still sitting in the sample may be perfectly
-         * good and is deliberately NOT passed: `failed` is what happened to THIS acquisition. */
+        /* A failed read, or a grid overdue long enough to be a stall. The grid still sitting in
+         * the sample may be perfectly good and is deliberately NOT passed: `failed` is what
+         * happened to THIS acquisition, and the publication rule is what keeps a held grid off
+         * the bus. */
         in.outcome = tof_package_health::acquisition::failed;
     }
-    offer(in, true);
+    send(what, in, p.now_ms);
 }
 
-/* Says the device is not producing, at the heartbeat cadence. `never_started` rather than `failed`
- * whenever nothing has been brought up: the two are different claims about the device, and the
- * availability flag the consumer reads is what distinguishes them. */
+/* Says the device is not producing, on the diagnostic cadence. `never_started` rather than
+ * `failed` whenever nothing has been brought up: the two are different claims about the device,
+ * and the availability flag the consumer reads is what distinguishes them.
+ *
+ * This is not an acquisition, so it asks the same rule with a read that did not happen: a non-zero
+ * read_rc is how a pass says it has no grid and no excuse, which is exactly the case here. */
 void report(bool ever_claimed)
 {
+    auto_policy::pass p{};
+    p.read_rc = -ENODEV;
+    p.now_ms = k_uptime_get();
+    p.last_grid_ms = last_grid_ms_;
+    p.last_diagnostic_ms = last_diagnostic_ms_;
+    const auto_policy::report what{auto_policy::what_to_send(p, the_cadence())};
+
     tof_package_stream::input in{};
     in.outcome = ever_claimed ? tof_package_health::acquisition::failed
                               : tof_package_health::acquisition::never_started;
-    offer(in, false);
+    send(what, in, p.now_ms);
 }
 
 /* The transport, once, before the loop. A failure here is final for this boot: there is no
@@ -206,6 +267,9 @@ void wire_the_transport()
     }
 
     transport_ready_ = true;
+    /* The wait for a first grid starts now rather than at uptime zero, so the listen window and
+     * whatever boot took before it are not counted as a sensor that went quiet. */
+    last_grid_ms_ = k_uptime_get();
     LOG_INF("package tof: data 0x%x, health 0x%x, 11-bit, boot-local sequence. Silence on both for "
             "%d ms is not evidence that either number is unallocated; check the registry.",
             ids.data_id, ids.health_id, kListenWindowMs);
@@ -255,9 +319,7 @@ void run(void *, void *, void *)
             /* Through the device layer's round entry, never the lifecycle directly: that is where
              * the step-record boundary is applied, and a caller that went round it would start a
              * round carrying the previous one's steps. */
-            if (const int rc{tof_package_device::begin_round(false)}; rc != 0)
-                LOG_WRN("package tof: bring-up stopped at %s (%d)",
-                        pkg::step_name(tof_package_device::lifecycle().current().failed_step), rc);
+            claim(false);
             break;
         case auto_policy::action::claim_by_takeover:
             /* The quiesce was refused, so this proceeds without it. `idle` says the software holds
@@ -265,9 +327,7 @@ void run(void *, void *, void *)
              * only thing that will have touched the device's state. */
             LOG_WRN("package tof: taking over a device whose state is unknown -- the stop "
                     "handshake was refused, and this skips it");
-            if (const int rc{tof_package_device::begin_round(true)}; rc != 0)
-                LOG_WRN("package tof: takeover stopped at %s (%d)",
-                        pkg::step_name(tof_package_device::lifecycle().current().failed_step), rc);
+            claim(true);
             break;
         case auto_policy::action::pay_stop:
             if (const int rc{tof_package_device::lifecycle().stop()}; rc != 0)

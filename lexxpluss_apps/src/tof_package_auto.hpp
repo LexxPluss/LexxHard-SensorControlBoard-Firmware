@@ -120,6 +120,62 @@ struct limits {
     bool quiesce_first{true};
 };
 
+/* WHAT ONE ACQUISITION PASS OWES THE BUS.
+ *
+ * Separate from the action above because it answers a different question at a different rate: the
+ * action decides what to do to the DEVICE, this decides what to say about it, and a pass that
+ * reads the sensor still has to choose between a grid, a diagnostic and silence.
+ *
+ * IT IS HERE BECAUSE IT WAS GOT WRONG IN THE THREAD. The first runtime passed a flag meaning "this
+ * pass was an acquisition" where it needed one meaning "this is a grid", so a read that FAILED
+ * took the grid's path and bypassed the diagnostic's rate limit -- one frame every poll interval,
+ * reporting one unchanged condition. The same confusion left the other half silent: a sensor that
+ * kept answering "nothing ready yet" published nothing at all after the first diagnostic, which on
+ * the bus is indistinguishable from a producer that died. Both are rules about cadence, so they
+ * are a function of the clock and nothing else, and they live where they can be tested. */
+enum class report : uint8_t {
+    /* A complete grid is in hand. Grids are never rate limited: the rate is the sensor's. */
+    publish_grid,
+    /* One diagnostic, because the acquisition failed or because no grid has arrived for longer
+     * than a gap between grids. Rate limited, since both conditions persist. */
+    publish_diagnostic,
+    /* Nothing. Either a readiness poll that simply found nothing yet -- which is not an event --
+     * or a condition already reported inside the rate limit. */
+    say_nothing,
+};
+
+const char *report_name(report r);
+
+/* One pass, as the thread saw it. The two timestamps are the thread's, because a clock is the one
+ * thing this file will not own. */
+struct pass {
+    /* What read_once() returned. Non-zero is a transport or device failure. */
+    int read_rc{0};
+    /* Whether that read produced a complete grid. Only meaningful when read_rc is 0. */
+    bool fresh{false};
+    int64_t now_ms{0};
+    /* When a grid was last in hand, or when the runtime last began expecting one -- a claim that
+     * succeeds restarts the wait rather than inheriting the silence before it. */
+    int64_t last_grid_ms{0};
+    int64_t last_diagnostic_ms{0};
+};
+
+struct cadence {
+    /* The floor between two diagnostics. A consumer cannot tell a dead producer from a silent one,
+     * so a failing runtime keeps reporting -- on a cadence, not per pass. */
+    int64_t diagnostic_interval_ms{500};
+    /* How long without a grid stops being the ordinary gap between two and becomes a stall. Below
+     * this, a readiness poll that found nothing publishes nothing: the sensor is working and the
+     * grid has not landed yet, and a diagnostic for that would report a non-event. */
+    int64_t grid_overdue_ms{500};
+};
+
+/* Pure, and no state of its own: the caller keeps the timestamps because the caller owns the
+ * clock. A non-positive interval in `c` means "no floor" and a non-positive overdue means "every
+ * poll without a grid is overdue" -- both are honoured rather than corrected, because a
+ * configuration that asked for them is making a choice this file cannot second-guess. */
+report what_to_send(const pass &p, const cadence &c);
+
 struct counters {
     uint8_t claims_used{0};
     uint8_t takeovers_used{0};

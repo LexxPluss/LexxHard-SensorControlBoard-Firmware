@@ -33,6 +33,7 @@
  * as a sensor that did or did not come up, with the reasoning invisible.
  */
 
+#include <errno.h>
 #include <string.h>
 
 #include <zephyr/ztest.h>
@@ -307,6 +308,134 @@ ZTEST(tof_package_auto, test_init_resets_the_budget_and_what_it_remembered)
     zassert_false(p.current().quiesce_refused);
     zassert_equal(0, p.current().claims_used);
     zassert_equal(sut::action::claim_with_quiesce, p.next(idle()));
+}
+
+/* ---------------------------------------------------------------------------
+ * The cadence: what a pass owes the bus.
+ *
+ * THE FIRST TWO CASES ARE THE DEFECT THIS RULE WAS EXTRACTED FOR. Review drove the unmodified
+ * runtime against the real policy, lifecycle, publisher and codec with the device and the clock
+ * replaced, and reproduced both halves: a read that kept failing sent a diagnostic every poll
+ * interval, and a sensor that kept answering "nothing ready yet" sent one diagnostic at startup
+ * and then nothing at all. Both are here as cases rather than as a comment.
+ */
+
+namespace {
+
+sut::pass reading(int rc, bool fresh, int64_t now, int64_t last_grid, int64_t last_diag)
+{
+    sut::pass p{};
+    p.read_rc = rc;
+    p.fresh = fresh;
+    p.now_ms = now;
+    p.last_grid_ms = last_grid;
+    p.last_diagnostic_ms = last_diag;
+    return p;
+}
+
+}  // namespace
+
+ZTEST(tof_package_auto, test_a_read_that_keeps_failing_is_rate_limited_like_any_other_diagnostic)
+{
+    const sut::cadence c{};
+    /* The poll interval the runtime uses is 20 ms. Twenty-five consecutive failures inside one
+     * 500 ms window must produce exactly one diagnostic, not twenty-five. */
+    int64_t last_diag{0};
+    size_t sent{0};
+    for (int64_t now = 20; now <= 500; now += 20) {
+        const sut::report r{sut::what_to_send(reading(-EIO, false, now, 0, last_diag), c)};
+        if (r == sut::report::publish_diagnostic) {
+            ++sent;
+            last_diag = now;
+        }
+    }
+    zassert_equal(sent, 1U, "%zu diagnostics went out in one window", sent);
+}
+
+ZTEST(tof_package_auto, test_a_sensor_that_never_produces_a_grid_does_not_go_silent)
+{
+    const sut::cadence c{};
+    /* Every pass says "nothing ready yet" and nothing ever fails. The first half-second is the
+     * ordinary gap between grids and is silent; after that the silence is a stall, and the
+     * consumer has to keep hearing about it. */
+    int64_t last_diag{0};
+    size_t sent{0};
+    for (int64_t now = 20; now <= 3000; now += 20) {
+        const sut::report r{sut::what_to_send(reading(0, false, now, 0, last_diag), c)};
+        if (r == sut::report::publish_diagnostic) {
+            ++sent;
+            last_diag = now;
+        }
+    }
+    /* 3,000 ms of stall at a 500 ms floor: the first at 500 and one every 500 after it. */
+    zassert_equal(sent, 6U, "%zu diagnostics over three seconds of silence", sent);
+}
+
+ZTEST(tof_package_auto, test_a_poll_that_found_nothing_yet_is_not_an_event)
+{
+    const sut::cadence c{};
+    /* The poll interval is shorter than one acquisition period on purpose, so most passes land
+     * here. Publishing for each would bury the stream in frames reporting that nothing happened. */
+    for (int64_t now = 20; now < 500; now += 20)
+        zassert_equal(sut::report::say_nothing, sut::what_to_send(reading(0, false, now, 0, 0), c),
+                      "a readiness poll at %lld ms published something", now);
+}
+
+ZTEST(tof_package_auto, test_a_grid_is_never_held_back_by_the_diagnostic_cadence)
+{
+    const sut::cadence c{};
+    /* Its rate is the sensor's. Holding one back to satisfy a cadence would drop a measurement to
+     * make room for a message about measurements. */
+    zassert_equal(sut::report::publish_grid, sut::what_to_send(reading(0, true, 1, 0, 0), c));
+    zassert_equal(sut::report::publish_grid, sut::what_to_send(reading(0, true, 2, 1, 1), c));
+    /* Even at a rate far above the diagnostic floor. */
+    for (int64_t now = 1; now < 100; ++now)
+        zassert_equal(sut::report::publish_grid,
+                      sut::what_to_send(reading(0, true, now, now - 1, now - 1), c));
+}
+
+ZTEST(tof_package_auto, test_a_failed_read_is_a_diagnostic_even_when_a_grid_is_not_overdue)
+{
+    const sut::cadence c{};
+    /* A grid arrived 10 ms ago, so nothing is overdue -- but this pass FAILED, and a failure is an
+     * event in its own right rather than an absence waiting to become one. */
+    zassert_equal(sut::report::publish_diagnostic,
+                  sut::what_to_send(reading(-EIO, false, 1000, 990, 0), c));
+}
+
+ZTEST(tof_package_auto, test_the_overdue_window_and_the_diagnostic_floor_are_independent)
+{
+    sut::cadence c{};
+    c.grid_overdue_ms = 2000;
+    c.diagnostic_interval_ms = 100;
+    /* Silent for 1,500 ms, which this configuration still calls an ordinary gap. */
+    zassert_equal(sut::report::say_nothing, sut::what_to_send(reading(0, false, 1500, 0, 0), c));
+    /* Past the window, and the floor is what decides how often it is said. */
+    zassert_equal(sut::report::publish_diagnostic,
+                  sut::what_to_send(reading(0, false, 2000, 0, 1800), c));
+    zassert_equal(sut::report::say_nothing, sut::what_to_send(reading(0, false, 2050, 0, 2000), c));
+}
+
+ZTEST(tof_package_auto, test_a_configuration_that_asks_for_no_floor_gets_none)
+{
+    sut::cadence c{};
+    c.diagnostic_interval_ms = 0;
+    c.grid_overdue_ms = 0;
+    /* Honoured rather than corrected: a configuration that asked for this is making a choice this
+     * rule cannot second-guess. Every poll without a grid now reports. */
+    zassert_equal(sut::report::publish_diagnostic, sut::what_to_send(reading(0, false, 5, 5, 5), c));
+    zassert_equal(sut::report::publish_diagnostic,
+                  sut::what_to_send(reading(-EIO, false, 5, 5, 5), c));
+    /* And a grid is still a grid. */
+    zassert_equal(sut::report::publish_grid, sut::what_to_send(reading(0, true, 5, 5, 5), c));
+}
+
+ZTEST(tof_package_auto, test_every_report_has_a_name)
+{
+    const sut::report all[]{sut::report::publish_grid, sut::report::publish_diagnostic,
+                            sut::report::say_nothing};
+    for (const auto r : all)
+        zassert_not_equal(0, strcmp(sut::report_name(r), "unnamed"), "%d", static_cast<int>(r));
 }
 
 ZTEST(tof_package_auto, test_every_action_has_a_name)

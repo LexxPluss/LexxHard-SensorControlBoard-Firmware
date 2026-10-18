@@ -52,6 +52,40 @@ const char *action_name(action a)
     return "unnamed";
 }
 
+const char *report_name(report r)
+{
+    switch (r) {
+    case report::publish_grid:
+        return "publish_grid";
+    case report::publish_diagnostic:
+        return "publish_diagnostic";
+    case report::say_nothing:
+        return "say_nothing";
+    }
+    return "unnamed";
+}
+
+report what_to_send(const pass &p, const cadence &c)
+{
+    /* A GRID IS NEVER RATE LIMITED. Its rate is the sensor's, and holding one back to satisfy a
+     * diagnostic cadence would drop a measurement to make room for a message about measurements. */
+    if (p.read_rc == 0 && p.fresh)
+        return report::publish_grid;
+
+    /* A READINESS POLL THAT FOUND NOTHING IS NOT AN EVENT, for as long as a grid is not overdue.
+     * The poll interval is deliberately shorter than one acquisition period, so most passes land
+     * here and publishing for each would bury the stream in frames reporting that nothing has
+     * happened yet. */
+    if (p.read_rc == 0 && p.now_ms - p.last_grid_ms < c.grid_overdue_ms)
+        return report::say_nothing;
+
+    /* What is left is a failed read, or a silence long enough to be a stall. Both persist, so both
+     * go out on the cadence rather than on every pass. */
+    if (p.now_ms - p.last_diagnostic_ms < c.diagnostic_interval_ms)
+        return report::say_nothing;
+    return report::publish_diagnostic;
+}
+
 int policy::init(const limits &l)
 {
     if (l.claims == 0U || l.takeovers > l.claims)
