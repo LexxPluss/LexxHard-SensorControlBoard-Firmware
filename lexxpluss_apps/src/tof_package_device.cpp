@@ -50,6 +50,7 @@ extern "C" {
 }
 #include "vl53l7cx_port.h"
 
+#include "runtime_progress.hpp"
 #include "tof_l7_probe_verdict.hpp"
 #include "tof_l7_quiesce.hpp"
 #include "tof_l7_runtime.hpp"
@@ -125,6 +126,37 @@ VL53L7CX_Configuration *addressed(uint8_t addr_7bit)
     return &addressed_scratch_;
 }
 
+/* ---- what the watchdog can see of this thread ---- */
+
+/* THE ONLY VIEW THE WATCHDOG HAS OF THE PACKAGE PATH.
+ *
+ * The feeder judges the ToF chain's counters, and a Package-only image moves none of them, so the
+ * feeder stays in phase::waiting and feeds for ever -- without this the Package thread would be the
+ * one thread on the board with no watchdog coverage at all. What the waiting phase DOES judge is an
+ * L7 operation that has begun and not ended, bounded by bounds::l7_ms, and that is exactly the
+ * hazard here: an I2C transfer or a ULD call that never returns while the board controller keeps
+ * feeding on schedule.
+ *
+ * SO EVERY ULD OPERATION IS BRACKETED AND NOTHING ELSE IS. The silence BETWEEN operations is not
+ * judged in this phase, which is correct rather than a gap being hidden: a round the policy
+ * refuses, a budget that runs out, a sensor that keeps answering `not ready` all stop the
+ * operations deliberately, and a watchdog that reset the board for those would turn ordinary fault
+ * reporting into a reset loop. Judging genuine silence needs an expectation only this thread can
+ * state, and it is not in this commit.
+ *
+ * ensure_verified() IS DELIBERATELY NOT BRACKETED. It reads and verifies the stored blob -- the
+ * operation the waiting phase is mostly spent on, and the one nobody has timed against
+ * bounds::l7_ms on this board. Bracketing it would risk a false reset on a cold boot, which is the
+ * failure this wiring exists to prevent rather than to introduce.
+ *
+ * Scoped rather than two calls, so no return path can leave a begin without its end. */
+struct watched_uld_operation {
+    watched_uld_operation() { runtime_progress::begin(runtime_progress::activity::l7); }
+    ~watched_uld_operation() { runtime_progress::end(runtime_progress::activity::l7); }
+    watched_uld_operation(const watched_uld_operation &) = delete;
+    watched_uld_operation &operator=(const watched_uld_operation &) = delete;
+};
+
 /* ---- hooks: thin, and each one maps to exactly one layer below ---- */
 
 int hook_verified()
@@ -138,6 +170,8 @@ int hook_probe(void *, uint8_t addr_7bit, bool *present, bool *wrong_identity)
         return -EINVAL;
     *present = false;
     *wrong_identity = false;
+
+    const watched_uld_operation watched{};
 
     /* A probe must not leave the sensor open, so it runs on the address-only scratch and uses only
      * the ULD calls that need an address. */
@@ -207,6 +241,7 @@ tof_l7_quiesce::go2_observation observed_go2(const struct vl53l7cx_go2_observati
 
 int hook_quiesce(void *, uint8_t addr_7bit)
 {
+    const watched_uld_operation watched{};
     /* Stops a device that answered before this run began, using calls that need only an address.
      * Deliberately NOT tof_l7::stop(), which requires a lifecycle this sensor object does not have
      * for a session we did not open. */
@@ -245,6 +280,7 @@ int hook_quiesce(void *, uint8_t addr_7bit)
 
 int hook_close(void *)
 {
+    const watched_uld_operation watched{};
     /* The real close, not `sensor_ = {}`. It refuses a sensor that is running or owes a stop --
      * exactly the state the assignment would have erased -- and from `empty` it succeeds and does
      * nothing, which is what lets the lifecycle call it before every open. */
@@ -256,6 +292,9 @@ int hook_close(void *)
 
 int hook_open(void *, uint8_t addr_7bit)
 {
+    /* The ULD firmware download lives inside this call and is the longest single operation on the
+     * path -- the two seconds bounds::l7_ms was chosen to cover. */
+    const watched_uld_operation watched{};
     /* RECORDED FROM `st`, NEVER FROM THE PORT CONTEXT. open() refuses a null argument or a wrong
      * lifecycle state before anything clears the port, so its sticky errno and completed count
      * still belong to the previous operation -- in a bring-up, the quiesce and its 511 transfers.
@@ -268,6 +307,7 @@ int hook_open(void *, uint8_t addr_7bit)
 
 int hook_configure(void *, uint8_t frequency_hz)
 {
+    const watched_uld_operation watched{};
     tof_l7::operation_status st{};
     const int rc{tof_l7::configure(&sensor_, frequency_hz, &st)};
     tof_l7_steps::remember(tof_l7_steps::which::configure, rc, st);
@@ -276,6 +316,7 @@ int hook_configure(void *, uint8_t frequency_hz)
 
 int hook_start(void *)
 {
+    const watched_uld_operation watched{};
     tof_l7::operation_status st{};
     const int rc{tof_l7::start(&sensor_, &st)};
     tof_l7_steps::remember(tof_l7_steps::which::start, rc, st);
@@ -288,6 +329,7 @@ int hook_read(void *, bool *fresh)
         return -EINVAL;
     *fresh = false;
 
+    const watched_uld_operation watched{};
     /* Into the .bss sample rather than a local: 260 B of stack this path does not need to spend,
      * and the content has to survive the hook for `read` to show it. read_once() clears it on entry
      * and leaves it non-fresh on every refusal, so a stale grid cannot be reported as a new one. */
@@ -304,6 +346,7 @@ int hook_read(void *, bool *fresh)
 
 int hook_stop(void *)
 {
+    const watched_uld_operation watched{};
     tof_l7::operation_status st{};
     return tof_l7::stop(&sensor_, &st);
 }

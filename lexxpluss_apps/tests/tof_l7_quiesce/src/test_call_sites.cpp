@@ -35,8 +35,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#if !defined(DEVICE_SOURCE) || !defined(SHELL_SOURCE) || !defined(SOURCE_LIST_FILE)
-#error "CMake must pass DEVICE_SOURCE, SHELL_SOURCE and SOURCE_LIST_FILE"
+#if !defined(DEVICE_SOURCE) || !defined(SHELL_SOURCE) || !defined(RUNTIME_SOURCE) || \
+    !defined(SOURCE_LIST_FILE)
+#error "CMake must pass DEVICE_SOURCE, SHELL_SOURCE, RUNTIME_SOURCE and SOURCE_LIST_FILE"
 #endif
 
 namespace {
@@ -588,4 +589,81 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clea
                       "with the lifecycle's own answer", line);
     }
     zassert_true(seen > 1U, "the generated source list had %zu entries", seen);
+}
+
+/* ---- the watchdog's only view of the Package path ---- */
+
+/* WHAT MAKES A HOOK ONE THE WATCHDOG HAS TO SEE: it reaches the sensor layer or calls the ULD
+ * directly, which means it can sit on a stalled I2C transfer. Derived from the source rather than
+ * listed, because a listed gate says nothing about the hook somebody adds next. */
+bool hook_touches_the_bus(const char *body)
+{
+    return strstr(body, "tof_l7::") != nullptr || strstr(body, "vl53l7cx_is_alive(") != nullptr ||
+           strstr(body, "vl53l7cx_stop_ranging(") != nullptr;
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_every_hook_that_touches_the_bus_is_a_watched_operation)
+{
+    read_and_strip(DEVICE_SOURCE);
+
+    size_t watched{0}, found{0};
+    for (const char *at = strstr(stripped_, "\nint hook_"); at != nullptr;
+         at = strstr(at + 1, "\nint hook_")) {
+        size_t from{0}, to{0};
+        if (!body_at(at, &from, &to))
+            continue;
+        const size_t len{to - from};
+        zassert_true(len < kBufferSize, "a hook body does not fit");
+        memcpy(body_, stripped_ + from, len);
+        body_[len] = '\0';
+        ++found;
+        if (!hook_touches_the_bus(body_))
+            continue;
+        ++watched;
+        zassert_true(strstr(body_, "watched_uld_operation") != nullptr,
+                     "a hook in %s reaches the bus without declaring a watched_uld_operation. The "
+                     "feeder's L7 monitor is the only thing judging this thread, and it judges an "
+                     "operation that began and never ended -- an unbracketed call is invisible to "
+                     "it. Body: %.200s",
+                     DEVICE_SOURCE, body_);
+    }
+    zassert_true(found >= 8U, "only %zu hooks were located in %s, so this gate read nothing",
+                 found, DEVICE_SOURCE);
+    zassert_equal(watched, 8U,
+                  "%zu hooks reach the bus; the eight ULD operations are probe, quiesce, close, "
+                  "open, configure, start, read and stop. A ninth needs its own review against "
+                  "bounds::l7_ms, not a quiet pass here",
+                  watched);
+
+    /* AND THE ONE THAT MUST NOT BE BRACKETED. ensure_verified() reads and verifies the stored blob,
+     * which nobody has timed against bounds::l7_ms on this board; bracketing it would risk a false
+     * reset on a cold boot. */
+    size_t from{0}, to{0};
+    zassert_true(body_of("int hook_verified(", &from, &to),
+                 "hook_verified() could not be located in %s", DEVICE_SOURCE);
+    const size_t len{to - from};
+    memcpy(body_, stripped_ + from, len);
+    body_[len] = '\0';
+    zassert_true(strstr(body_, "watched_uld_operation") == nullptr,
+                 "hook_verified() is bracketed as a watched operation. The blob verification is "
+                 "the longest thing on the boot path and is not timed against bounds::l7_ms, so "
+                 "watching it trades a missed hang for a false reset");
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_the_runtime_announces_the_grid_sensor_before_it_binds)
+{
+    read_and_strip(RUNTIME_SOURCE);
+
+    zassert_equal(count_of(stripped_, "tof_watchdog_feeder::set_l7_expected("), 1U,
+                  "%s must announce the grid sensor exactly once", RUNTIME_SOURCE);
+    zassert_equal(count_of(stripped_, "tof_watchdog_feeder::set_l7_expected(true)"), 1U,
+                  "the announcement must be positive: without it the L7 monitor never arms and the "
+                  "bracketing in the device layer is inert");
+
+    const char *const announced{strstr(stripped_, "tof_watchdog_feeder::set_l7_expected(")};
+    const char *const first_bind{strstr(stripped_, "tof_package_device::bind(")};
+    zassert_not_null(first_bind, "%s never binds", RUNTIME_SOURCE);
+    zassert_true(announced < first_bind,
+                 "the grid sensor is announced after the first bind, so the probe inside that bind "
+                 "-- already a bracketed operation -- runs unjudged");
 }

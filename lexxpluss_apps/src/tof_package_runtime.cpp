@@ -58,6 +58,7 @@
 #include "tof_package_device.hpp"
 #include "tof_package_l7.hpp"
 #include "tof_package_stream.hpp"
+#include "tof_watchdog_feeder.hpp"
 
 LOG_MODULE_REGISTER(tof_package_runtime);
 
@@ -291,6 +292,14 @@ void run(void *, void *, void *)
                 rc, l.claims, l.takeovers);
         return;
     }
+
+    /* TELL THE FEEDER THERE IS A GRID SENSOR TO WATCH. Without this the L7 monitor never arms and
+     * the bracketing in tof_package_device.cpp is inert -- feed_allowed() only starts watching when
+     * l7_expected is set AND an operation has begun. Set after the budget check, because a thread
+     * that is about to do nothing must not ask to be judged, and before the first bind, because the
+     * probe inside it is already a bracketed operation. The chain's own caller is not compiled into
+     * this image, so this is the only call. */
+    tof_watchdog_feeder::set_l7_expected(true);
 
     wire_the_transport();
 
