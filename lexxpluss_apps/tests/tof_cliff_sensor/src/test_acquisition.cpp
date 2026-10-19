@@ -2688,11 +2688,63 @@ ZTEST(tof_acquisition, test_try_stop_leaves_the_heartbeat_running)
  * Staged with a holder thread for the same reason try_stop()'s test needs one: a Zephyr mutex is
  * recursive for its owner, so a test thread cannot make itself wait on a lock it holds. */
 
+/* EVERY FIELD, because the diagnostic that reads these facts prints every field: a bounded read
+ * that dropped one would be a diagnostic quietly missing a column, and the whole point of the
+ * comparison is that the two readers see the same thing.
+ *
+ * Field by field rather than memcmp, because both structures are copied by the implicit assignment
+ * operator, which says nothing about padding bytes -- a failure on padding would be a failure for
+ * a reason that has nothing to do with the facts. The static_assert is the guard that keeps this
+ * honest: a field added to either structure changes its size and stops the build here, where the
+ * new field has to be added below. */
+static_assert(sizeof(acq::source_status) == 16,
+              "source_status gained or lost a field: add it to assert_facts_match()");
+static_assert(sizeof(acq::source_facts) == 28,
+              "source_facts gained or lost a field: add it to assert_facts_match()");
+static_assert(sizeof(acq::cycle_facts) == 180,
+              "cycle_facts gained or lost a field: add it to assert_facts_match()");
+
+static void assert_facts_match(const acq::cycle_facts &expected, const acq::cycle_facts &actual)
+{
+    zassert_equal(actual.cycle_seq, expected.cycle_seq);
+    zassert_equal(actual.began_ms, expected.began_ms);
+    zassert_equal(actual.source_count, expected.source_count);
+    /* Over the whole array rather than over source_count, so a stale entry past the configured
+     * count -- which a partial copy would leave behind -- is caught too. */
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        const acq::source_facts &e{expected.sources[i]};
+        const acq::source_facts &a{actual.sources[i]};
+
+        zassert_equal(a.kind, e.kind, "source %d kind", i);
+        zassert_equal(a.addr_7bit, e.addr_7bit, "source %d addr", i);
+        zassert_equal(a.role_id, e.role_id, "source %d role_id", i);
+        zassert_equal(a.configured, e.configured, "source %d configured", i);
+        zassert_equal(a.started, e.started, "source %d started", i);
+        zassert_equal(a.sample_produced, e.sample_produced, "source %d sample_produced", i);
+        zassert_equal(a.transport_error, e.transport_error, "source %d transport_error", i);
+        zassert_equal(a.protocol_error, e.protocol_error, "source %d protocol_error", i);
+        zassert_equal(a.unsupported, e.unsupported, "source %d unsupported", i);
+        zassert_equal(a.usage_error, e.usage_error, "source %d usage_error", i);
+        zassert_equal(a.rearm_failed, e.rearm_failed, "source %d rearm_failed", i);
+        zassert_equal(a.cleanup_pending, e.cleanup_pending, "source %d cleanup_pending", i);
+        zassert_equal(a.status.domain, e.status.domain, "source %d status domain", i);
+        zassert_equal(a.status.stage, e.status.stage, "source %d status stage", i);
+        zassert_equal(a.status.port_errno, e.status.port_errno, "source %d port_errno", i);
+        zassert_equal(a.status.uld_status, e.status.uld_status, "source %d uld_status", i);
+        zassert_equal(a.status.sample_present, e.status.sample_present, "source %d sample_present",
+                      i);
+    }
+}
+
 ZTEST(tof_acquisition, test_try_copy_facts_sees_what_copy_facts_sees)
 {
+    /* Facts worth comparing: one source that never opened, keeping a bring-up diagnosis and its
+     * sticky flags, and one that ran and produced a sample. An all-default snapshot would match
+     * even if the copy dropped half of what it carries. */
     zassert_equal(acq::init(make_config(2)), 0);
+    devs[0].open_rc = -EIO;
     zassert_equal(acq::bring_up(), 0);
-    devs[0].fresh = true;
+    devs[1].fresh = true;
     acq::run_cycle();
 
     acq::cycle_facts blocking{};
@@ -2700,19 +2752,12 @@ ZTEST(tof_acquisition, test_try_copy_facts_sees_what_copy_facts_sees)
 
     acq::copy_facts(blocking);
     zassert_equal(acq::try_copy_facts(bounded, 250), 0, "a free chain has to be copied");
+    assert_facts_match(blocking, bounded);
 
-    /* Field by field rather than memcmp: both structs are copied by the implicit assignment, which
-     * says nothing about padding, and a diagnostic that reported a padding byte as a difference
-     * would fail for a reason that has nothing to do with the facts. */
-    zassert_equal(bounded.cycle_seq, blocking.cycle_seq);
-    zassert_equal(bounded.source_count, blocking.source_count);
-    for (int i{0}; i < blocking.source_count; ++i) {
-        zassert_equal(bounded.sources[i].started, blocking.sources[i].started);
-        zassert_equal(bounded.sources[i].sample_produced, blocking.sources[i].sample_produced);
-        zassert_equal(bounded.sources[i].transport_error, blocking.sources[i].transport_error);
-        zassert_equal(bounded.sources[i].status.stage, blocking.sources[i].status.stage);
-        zassert_equal(bounded.sources[i].status.domain, blocking.sources[i].status.domain);
-    }
+    // The staging held: a comparison of two empty snapshots would prove nothing.
+    zassert_false(bounded.sources[0].started, "source 0 was supposed to fail its bring-up");
+    zassert_true(bounded.sources[0].transport_error);
+    zassert_true(bounded.sources[1].sample_produced, "source 1 was supposed to produce a sample");
 }
 
 ZTEST(tof_acquisition, test_try_copy_facts_refuses_a_held_chain_within_its_bound)
@@ -2726,10 +2771,19 @@ ZTEST(tof_acquisition, test_try_copy_facts_refuses_a_held_chain_within_its_bound
                     chain_holder_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(1), 0, K_NO_WAIT);
     zassert_equal(k_sem_take(&holder_took_it, K_MSEC(500)), 0, "the holder never took the chain");
 
-    acq::cycle_facts out{};
+    /* EVERY BYTE, pattern-filled, which is what makes "untouched" an assertion rather than a spot
+     * check: a partial copy that wrote one field and bailed out is indistinguishable from a clean
+     * refusal if only one field is examined. memcmp is sound here where it is not sound for the
+     * equivalence test above -- both buffers are filled by memset, so their padding is equal by
+     * construction rather than by a guarantee the copy does not make. */
+    acq::cycle_facts out;
+    acq::cycle_facts pattern;
 
-    // A value no copy would leave behind, so "untouched" is observable rather than assumed.
-    out.cycle_seq = 0xA5A5A5A5U;
+    /* Through void*, which is how -Wclass-memaccess is told this is deliberate: the warning fires
+     * because cycle_facts has default member initialisers, and byte-filling it is exactly what
+     * this test needs instead of them. */
+    memset(static_cast<void *>(&out), 0xA5, sizeof out);
+    memset(static_cast<void *>(&pattern), 0xA5, sizeof pattern);
 
     const uint32_t began_ms{k_uptime_get_32()};
     const int rc{acq::try_copy_facts(out, 50)};
@@ -2740,13 +2794,21 @@ ZTEST(tof_acquisition, test_try_copy_facts_refuses_a_held_chain_within_its_bound
      * wide because native_sim runs this thread whenever the host scheduler lets it; what is being
      * pinned is "it came back", not the accuracy of the timeout. */
     zassert_true(waited_ms < 400, "a 50 ms bound waited %u ms", waited_ms);
-    zassert_equal(out.cycle_seq, 0xA5A5A5A5U, "a refusal must leave the caller's buffer untouched");
+    zassert_equal(memcmp(&out, &pattern, sizeof out), 0,
+                  "a refusal wrote into the caller's buffer");
 
     k_sem_give(&holder_release);
     zassert_equal(k_thread_join(&chain_holder, K_MSEC(500)), 0);
 
     zassert_equal(acq::try_copy_facts(out, 250), 0, "a released chain has to be copied");
-    zassert_not_equal(out.cycle_seq, 0xA5A5A5A5U, "the successful read did not overwrite anything");
+    /* And the released read really did fill it, so the assertion above was about the refusal and
+     * not about a buffer nothing ever writes. */
+    zassert_not_equal(memcmp(&out, &pattern, sizeof out), 0,
+                      "the successful read overwrote nothing");
+    acq::cycle_facts expected{};
+
+    acq::copy_facts(expected);
+    assert_facts_match(expected, out);
 }
 
 ZTEST(tof_acquisition, test_a_cycle_that_lost_the_race_to_a_quiesce_does_not_run)

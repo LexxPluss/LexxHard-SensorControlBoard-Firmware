@@ -615,15 +615,28 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                 tof_l7_runtime::stage_name(blob.current_stage),
                 static_cast<int>(blob.firmware_available),
                 static_cast<unsigned>(blob.firmware_size));
-    /* THE STORED HEADER BESIDE THE VERDICT, because the verdict alone cannot say what was wrong
-     * with what is in flash: `absent` means the board was never provisioned, while a
-     * length_mismatch with a parsed header means it holds a different blob and prints which. */
-    shell_print(shell, "blob record=%s region=%u stored_parsed=%d stored_len=%u stored_fmt=%u",
-                tof_l7_blob::status_name(blob.verification.st),
-                static_cast<unsigned>(blob.verification.region_size),
-                static_cast<int>(blob.verification.stored.parsed),
-                static_cast<unsigned>(blob.verification.stored.payload_len),
-                static_cast<unsigned>(blob.verification.stored.format_version));
+    /* ONLY A TERMINAL STAGE HAS A VERDICT TO PRINT. `verification` is default-constructed until
+     * bootstrap() fills it, and its default status is `unreadable` -- so printing the field
+     * unconditionally reports a flash controller failure on a board that has simply not been asked
+     * to verify anything yet, which is the most alarming of the diagnoses and the one furthest from
+     * the truth. not_started and verifying mean there is no answer, and that is what gets said.
+     *
+     * THE STORED HEADER BESIDE THE VERDICT, where there is one, because the verdict alone cannot
+     * say what is in flash: `absent` means the board was never provisioned, while a length_mismatch
+     * with a parsed header means it holds a different blob and prints which. */
+    if (blob.current_stage == tof_l7_runtime::stage::available ||
+        blob.current_stage == tof_l7_runtime::stage::refused) {
+        shell_print(shell, "blob record=%s region=%u stored_parsed=%d stored_len=%u stored_fmt=%u",
+                    tof_l7_blob::status_name(blob.verification.st),
+                    static_cast<unsigned>(blob.verification.region_size),
+                    static_cast<int>(blob.verification.stored.parsed),
+                    static_cast<unsigned>(blob.verification.stored.payload_len),
+                    static_cast<unsigned>(blob.verification.stored.format_version));
+    } else {
+        shell_print(shell, "blob record: no verification result yet (stage %s); storage has not "
+                           "been judged",
+                    tof_l7_runtime::stage_name(blob.current_stage));
+    }
 
     /* A FILE-SCOPE BUFFER RATHER THAN A LOCAL, and the reason is the stack this runs on. The shell
      * thread has 2 KiB, the two structures are a few hundred bytes together, and an image in this
@@ -670,6 +683,16 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                     grid_sources, facts.source_count);
     }
 
+    /* WHETHER THERE IS A PUBLISHER AT ALL, which is the ambiguity the counter block below cannot
+     * resolve on its own: the grid publisher's init() is one of this bootstrap's steps, so
+     * stage::ready means it ran, and any earlier stage means the counters were never offered
+     * anything to count. Read from the runtime rather than from the publisher, which has no such
+     * accessor -- adding a field to the production path for a shell command's benefit would be the
+     * wrong way round. */
+    shell_print(shell, "cliff runtime ready=%d stage=%s",
+                static_cast<int>(tof_cliff_runtime::ready()),
+                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+
     /* The publisher's own lock, taken by copy_counters(), is bounded by construction rather than by
      * an argument: it is held while frames are built and dropped before they are offered to the
      * bus, so it is never held across a blocking send. */
@@ -696,10 +719,14 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                 sent.suppressed_cycle_not_begun, sent.queue_full, sent.frames_abandoned);
     shell_print(shell, "send_failed data=%u health=%u", sent.send_failed_data,
                 sent.send_failed_health);
-    /* THE READING RULE, beside the reading, because all-zero is ambiguous on its own: a publisher
-     * that was never offered a sample counts nothing, and so does one that does not exist. */
-    shell_print(shell, "note: every counter zero means no grid sample ever reached the publisher, "
-                       "which points at the sources above rather than at the gate");
+    /* THE READING RULE, beside the reading, and it stops short of a diagnosis on purpose. All-zero
+     * has several causes that this command cannot tell apart: a publisher that init() never
+     * accepted returns from every hook without counting, one that was never offered a sample
+     * counts nothing either, and so does a chain that is not acquiring. Naming one of them here
+     * would send an operator past the other two. */
+    shell_print(shell, "note: all counters zero means no counted event, not a located fault; read "
+                       "it against the runtime stage and the sources above, and against whether "
+                       "the chain is acquiring at all");
     return 0;
 }
 
