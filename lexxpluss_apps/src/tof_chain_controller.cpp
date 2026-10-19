@@ -675,7 +675,12 @@ int boot_recover_survivors(void *)
     }
 
     const tof_l7_recovery::report r{
-        tof_l7_recovery::run(tof_l7_recovery::uld_ops(&recovery_scratch), req)};
+        /* THE SAME CONTEXT THE BRING-UP WILL USE, from tof_cliff_runtime. A second context for
+         * the same controller would split the first-error and completed-transfer record between
+         * this pass and the open that follows it -- and the recovery's whole argument for telling a
+         * cold address from a survivor rests on that count. */
+        tof_l7_recovery::run(
+            tof_l7_recovery::uld_ops(&recovery_scratch, tof_cliff_runtime::grid_port()), req)};
 
     /* NOT FATAL, and not a verdict on the chain. Enumeration owns that; a second opinion from here
      * is a mistake this project has already paid for. What is worth saying is how many were

@@ -54,6 +54,8 @@
 #include "tof_acquisition.hpp"
 #include "tof_enumerator.hpp"
 
+struct vl53l7cx_port_context;
+
 namespace lexxhard::tof_cliff_runtime {
 
 /* How far the bootstrap got. One value, so a refusal can say which step failed rather than "not
@@ -144,6 +146,19 @@ constexpr uint8_t kRoleUnassigned{0xFF};
  * the same epoch the descriptors were keyed under. A cycle whose descriptors carry kRoleUnassigned,
  * or keys from a mapping that has since been revoked, produces facts nothing can be keyed by. */
 int start_acquisition();
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE CHAIN'S ONE GRID BUS, as a context rather than as the port layer's former global.
+ *
+ * Before the port became per-device it was a file static naming i2c2, so every L7 in the image
+ * shared one first-error and one completed-transfer record whether that was intended or not. The
+ * chain's grid pair genuinely does share a controller and is read by one thread, so one context is
+ * the right answer HERE -- but it is now stated rather than assumed, and a position on another bus
+ * is a different context rather than a silent collision. The boot recovery probes the same
+ * controller before anything is opened and uses this same object, so what it recorded and what the
+ * first bring-up records are one history. */
+vl53l7cx_port_context *grid_port();
+#endif
 
 #ifdef CONFIG_ZTEST
 // Lets a suite exercise the single-shot rule more than once per image.

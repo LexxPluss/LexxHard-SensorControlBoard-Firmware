@@ -9,12 +9,14 @@
 
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_sensor.hpp"
+#include "vl53l7cx_port.h"
 #endif
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
 
 #include <errno.h>
 
+#include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -84,6 +86,14 @@ struct tof_cliff_stream_state streams_[kCliffSensors];
 constexpr int kGridSensors{2};
 tof_l7::sensor grid_objs_[kGridSensors];
 tof_l7::scratch grid_scratch_;
+/* ONE PORT CONTEXT FOR THE PAIR, and the bus is i2c2 because that is the controller the ULD port
+ * layer named when it kept this as a file static. Shared deliberately: these two sit on one
+ * controller and the acquisition thread is their only reader, which is exactly the case the
+ * context's contract permits -- "two sensors SHARING a context must stay on one thread". What has
+ * changed is that it is now said here instead of being a property of where a global happened to
+ * live, so a grid position on another controller is a second context rather than a collision
+ * nobody would see until two error records became one. */
+vl53l7cx_port_context grid_port_{.bus = DEVICE_DT_GET(DT_NODELABEL(i2c2))};
 #endif
 /* The acquisition thread's stack, sized from the devicetree.
  *
@@ -166,6 +176,7 @@ void build_descriptors(uint32_t cliff_timing_budget_us, uint8_t cliff_distance_m
             if (grid_index < kGridSensors) {
                 d.dev = &grid_objs_[grid_index];
                 d.scratch = &grid_scratch_;
+                d.grid_port = &grid_port_;
                 d.grid_ops = &acq::l7_grid_ops();
                 d.grid_frequency_hz = grid_frequency_hz;
                 ++grid_index;
@@ -495,6 +506,13 @@ bool mapping_applied()
 
     return keyed_ && now.state == acq::mapping_state::proven && now.epoch == keyed_epoch_;
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+vl53l7cx_port_context *grid_port()
+{
+    return &grid_port_;
+}
+#endif
 
 int start_acquisition()
 {
