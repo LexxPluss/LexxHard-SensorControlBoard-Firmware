@@ -832,6 +832,19 @@ void copy_facts(cycle_facts &out)
     k_mutex_unlock(&tof_chain_controller::chain_lock());
 }
 
+int try_copy_facts(cycle_facts &out, uint32_t wait_ms)
+{
+    /* Every k_mutex_lock() failure is reported as -EBUSY rather than passed through. The kernel
+     * returns -EAGAIN for the expiry and -EBUSY for a K_NO_WAIT that would have blocked; both mean
+     * the same thing to a caller that asked for a bounded read and did not get one, and two codes
+     * for one outcome would invite a caller to branch on which. */
+    if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_MSEC(wait_ms)) != 0)
+        return -EBUSY;
+    out = facts_;
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    return 0;
+}
+
 int init(const config &cfg)
 {
     /* A live subsystem is not re-configurable. cfg_ is read by the health work item from another

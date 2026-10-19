@@ -2678,6 +2678,77 @@ ZTEST(tof_acquisition, test_try_stop_leaves_the_heartbeat_running)
                  "try_stop() stopped the heartbeat: %d -> %d", before, rec.health_beats);
 }
 
+/* --------------------------------------------------- the bounded facts read -------- */
+
+/* try_copy_facts() is what a shell diagnostic reads, and the refusal is the whole reason it exists
+ * beside copy_facts(): the chain lock is held for the length of a commissioning walk and for the
+ * length of a transfer that has not returned, which are exactly the states somebody reads a
+ * diagnostic in. A reader that waited forever would hang on the fault it was called to describe.
+ *
+ * Staged with a holder thread for the same reason try_stop()'s test needs one: a Zephyr mutex is
+ * recursive for its owner, so a test thread cannot make itself wait on a lock it holds. */
+
+ZTEST(tof_acquisition, test_try_copy_facts_sees_what_copy_facts_sees)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+    devs[0].fresh = true;
+    acq::run_cycle();
+
+    acq::cycle_facts blocking{};
+    acq::cycle_facts bounded{};
+
+    acq::copy_facts(blocking);
+    zassert_equal(acq::try_copy_facts(bounded, 250), 0, "a free chain has to be copied");
+
+    /* Field by field rather than memcmp: both structs are copied by the implicit assignment, which
+     * says nothing about padding, and a diagnostic that reported a padding byte as a difference
+     * would fail for a reason that has nothing to do with the facts. */
+    zassert_equal(bounded.cycle_seq, blocking.cycle_seq);
+    zassert_equal(bounded.source_count, blocking.source_count);
+    for (int i{0}; i < blocking.source_count; ++i) {
+        zassert_equal(bounded.sources[i].started, blocking.sources[i].started);
+        zassert_equal(bounded.sources[i].sample_produced, blocking.sources[i].sample_produced);
+        zassert_equal(bounded.sources[i].transport_error, blocking.sources[i].transport_error);
+        zassert_equal(bounded.sources[i].status.stage, blocking.sources[i].status.stage);
+        zassert_equal(bounded.sources[i].status.domain, blocking.sources[i].status.domain);
+    }
+}
+
+ZTEST(tof_acquisition, test_try_copy_facts_refuses_a_held_chain_within_its_bound)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    k_sem_reset(&holder_took_it);
+    k_sem_reset(&holder_release);
+    k_thread_create(&chain_holder, chain_holder_stack, K_THREAD_STACK_SIZEOF(chain_holder_stack),
+                    chain_holder_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(1), 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&holder_took_it, K_MSEC(500)), 0, "the holder never took the chain");
+
+    acq::cycle_facts out{};
+
+    // A value no copy would leave behind, so "untouched" is observable rather than assumed.
+    out.cycle_seq = 0xA5A5A5A5U;
+
+    const uint32_t began_ms{k_uptime_get_32()};
+    const int rc{acq::try_copy_facts(out, 50)};
+    const uint32_t waited_ms{k_uptime_get_32() - began_ms};
+
+    zassert_equal(rc, -EBUSY, "a held chain has to be refused, not waited for");
+    /* THE RETURN IS THE CONTRACT, so the bound is asserted and not merely trusted. The slack is
+     * wide because native_sim runs this thread whenever the host scheduler lets it; what is being
+     * pinned is "it came back", not the accuracy of the timeout. */
+    zassert_true(waited_ms < 400, "a 50 ms bound waited %u ms", waited_ms);
+    zassert_equal(out.cycle_seq, 0xA5A5A5A5U, "a refusal must leave the caller's buffer untouched");
+
+    k_sem_give(&holder_release);
+    zassert_equal(k_thread_join(&chain_holder, K_MSEC(500)), 0);
+
+    zassert_equal(acq::try_copy_facts(out, 250), 0, "a released chain has to be copied");
+    zassert_not_equal(out.cycle_seq, 0xA5A5A5A5U, "the successful read did not overwrite anything");
+}
+
 ZTEST(tof_acquisition, test_a_cycle_that_lost_the_race_to_a_quiesce_does_not_run)
 {
     /* The race that arrives with the acquisition thread, staged deterministically.

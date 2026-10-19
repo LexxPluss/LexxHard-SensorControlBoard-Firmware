@@ -625,6 +625,20 @@ bool is_idle();
 // needs to know which sensors came up - and why the others did not - reads it here.
 void copy_facts(cycle_facts &out);
 
+// The same content as copy_facts(), for a caller that must not block to get it.
+//
+// WHY THE BOUND EXISTS. The chain lock is held for the whole of a commissioning walk and for the
+// whole of any transfer that is wedging the bus -- which are the states somebody reads a
+// diagnostic IN. A reader that waited forever would therefore hang on the fault it was called to
+// describe, and if that reader is the shell it takes every other question about the board down
+// with it.
+//
+// `wait_ms` bounds the wait for the lock only; the copy itself cannot block. Returns 0 with `out`
+// filled, or -EBUSY with `out` left exactly as the caller passed it. A refusal says the chain is
+// busy and says nothing whatever about the sensors -- it is not a fault, and a caller that reports
+// it as one is reporting the lock as a sensor.
+int try_copy_facts(cycle_facts &out, uint32_t wait_ms);
+
 // The snapshot the heartbeat reads. Packed into one 32-bit word so it can be read without
 // the chain lock: mapping state in bits 0-1, then one bit per source for sample_produced,
 // fault, configured and started.

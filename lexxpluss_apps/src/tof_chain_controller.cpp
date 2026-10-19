@@ -73,6 +73,12 @@
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_blob_record.hpp"
 #include "tof_l7_runtime.hpp"
+#if defined(ENABLE_TOF_CLIFF_ULD)
+/* The grid publisher is guarded on all three flags, so this include carries the cliff guard the
+ * surrounding block does not: a chain + L7 build without the cliff ULD is a configuration CMake
+ * permits, and there is no publisher in it. */
+#include "tof_grid_publisher.hpp"
+#endif
 #endif
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
@@ -574,6 +580,138 @@ int cmd_cliff_status(const struct shell *shell, size_t, char **)
     return 0;
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* WHY THE GRID NEEDS ITS OWN READER: nothing on a running board can currently say why the two L7
+ * boards produce no grid.
+ *
+ * The three facts that answer it are each recorded once and then never repeated. The blob
+ * verification happens at boot, in bootstrap(). The per-source open -> configure -> start outcome
+ * is produced when an epoch begins, and logged there. Per-cycle grid reads log nothing at all, on
+ * purpose: at 5 Hz against a 50 ms cycle nine cycles in ten find nothing ready, and a line for each
+ * would bury everything else on the console. The console keeps no history, so once the boot
+ * scrolled past -- or once the machine power-cycled, which an SCB reset does -- the whole diagnosis
+ * is gone, and DS20002 on 2026-10-19 is the case in point: four cliff sensors publishing, no
+ * 0x214/0x215, and no retained evidence of which stage failed.
+ *
+ * NOR IS IT ON THE BUS. 0x215 closes a burst of data frames rather than announcing a cycle, so a
+ * grid that is never produced sends nothing; and the cliff health frame's masks are four bits wide
+ * over the cliff sensors alone, so the two grid positions are absent from it by construction.
+ *
+ * WHAT THIS PRINTS, AND THAT IS ALL IT DOES: the blob state this boot reached, each grid source's
+ * bring-up and last-read detail, and the publisher's counters. Every figure is copied from memory
+ * that already holds it. Nothing is recomputed, no device is touched, no judgement is made and no
+ * state changes -- so it is safe to run on a machine that is producing, which is the only kind of
+ * machine that has this question.
+ *
+ * WHAT IT CANNOT SAY. The facts carry the classification of a failed call, not its rc: record_l7()
+ * maps the rc into one of transport/protocol/unsupported/usage and keeps the device detail
+ * (stage, port errno, ULD status). So this names where and in whose vocabulary an operation broke,
+ * not the exact return value the log line carried. */
+int cmd_grid_status(const struct shell *shell, size_t, char **)
+{
+    const tof_l7_runtime::snapshot blob{tof_l7_runtime::current()};
+
+    shell_print(shell, "blob stage=%s available=%d size=%u",
+                tof_l7_runtime::stage_name(blob.current_stage),
+                static_cast<int>(blob.firmware_available),
+                static_cast<unsigned>(blob.firmware_size));
+    /* THE STORED HEADER BESIDE THE VERDICT, because the verdict alone cannot say what was wrong
+     * with what is in flash: `absent` means the board was never provisioned, while a
+     * length_mismatch with a parsed header means it holds a different blob and prints which. */
+    shell_print(shell, "blob record=%s region=%u stored_parsed=%d stored_len=%u stored_fmt=%u",
+                tof_l7_blob::status_name(blob.verification.st),
+                static_cast<unsigned>(blob.verification.region_size),
+                static_cast<int>(blob.verification.stored.parsed),
+                static_cast<unsigned>(blob.verification.stored.payload_len),
+                static_cast<unsigned>(blob.verification.stored.format_version));
+
+    /* A FILE-SCOPE BUFFER RATHER THAN A LOCAL, and the reason is the stack this runs on. The shell
+     * thread has 2 KiB, the two structures are a few hundred bytes together, and an image in this
+     * family has already been halted by an MPU stack guard once (see overlays/tof_l7.conf). The
+     * shell is one thread and this command is the buffer's only user, so there is nothing to race
+     * with; a second reader would have to take a lock, which is a cost this diagnostic does not
+     * need to carry today. */
+    static tof_acq::cycle_facts facts{};
+
+    /* COPIED UNDER A BOUNDED WAIT, PRINTED AFTER IT IS RELEASED. shell_print() goes to a UART and
+     * must never run holding the chain lock -- that lock is what commissioning and every cycle
+     * take. The bound is the whole reason try_copy_facts() exists: a commissioning walk holds the
+     * lock for seconds and a wedged transfer holds it indefinitely, and the shell must survive
+     * both. 250 ms covers five cycle periods, so an ordinary cycle boundary never refuses. */
+    if (const int rc{tof_acq::try_copy_facts(facts, 250)}; rc != 0) {
+        shell_warn(shell, "chain busy: no per-source detail (rc %d). Something holds the chain "
+                          "lock -- a commissioning walk, or a transfer that has not returned. "
+                          "This is not a sensor fault; try again", rc);
+    } else {
+        for (int i{0}; i < facts.source_count; ++i) {
+            const tof_acq::source_facts &f{facts.sources[i]};
+
+            if (f.kind != tof_acq::model::l7_grid)
+                continue;
+            shell_print(shell, "grid pos=%d addr=0x%02x started=%d cleanup_pending=%d "
+                               "rearm_failed=%d", i, f.addr_7bit, static_cast<int>(f.started),
+                        static_cast<int>(f.cleanup_pending), static_cast<int>(f.rearm_failed));
+            shell_print(shell, "  outcome transport=%d protocol=%d unsupported=%d usage=%d "
+                               "sample_produced=%d", static_cast<int>(f.transport_error),
+                        static_cast<int>(f.protocol_error), static_cast<int>(f.unsupported),
+                        static_cast<int>(f.usage_error), static_cast<int>(f.sample_produced));
+            shell_print(shell, "  last stage=%s port_errno=%d uld_status=%d sample_present=%d",
+                        tof_acq::operation_stage_name(f.status), f.status.port_errno,
+                        f.status.uld_status, static_cast<int>(f.status.sample_present));
+        }
+        /* COUNTED AND SAID, rather than left as an empty section. No grid line at all means this
+         * image's descriptor table holds no l7_grid source -- a build or spec question -- and that
+         * is a different answer from two sources that failed to start. */
+        int grid_sources{0};
+        for (int i{0}; i < facts.source_count; ++i)
+            if (facts.sources[i].kind == tof_acq::model::l7_grid)
+                ++grid_sources;
+        shell_print(shell, "grid sources in the table: %d of %d configured positions",
+                    grid_sources, facts.source_count);
+    }
+
+    /* The publisher's own lock, taken by copy_counters(), is bounded by construction rather than by
+     * an argument: it is held while frames are built and dropped before they are offered to the
+     * bus, so it is never held across a blocking send. */
+    static tof_grid_pub::counters sent{};
+
+    tof_grid_pub::copy_counters(sent);
+    shell_print(shell, "grids admitted=%u sent=%u data_frames=%u health_frames=%u retired=%u",
+                sent.grids_admitted, sent.grids_sent, sent.data_frames_sent,
+                sent.health_frames_sent, sent.generations_retired);
+    /* THE GATE'S REFUSALS, which are the ones that explain a silent bus while the sensors are fine:
+     * not_proven is the authority, the next three are the descriptor, and the role pair is the
+     * mapping's keying. */
+    shell_print(shell, "refused not_proven=%u wrong_model=%u wrong_domain=%u role_mismatch=%u "
+                       "role_unassigned=%u", sent.suppressed_not_proven,
+                sent.suppressed_wrong_model, sent.suppressed_wrong_domain,
+                sent.suppressed_role_mismatch, sent.suppressed_role_unassigned);
+    shell_print(shell, "refused not_permitted=%u permission_withdrawn=%u duplicate_source=%u "
+                       "sample_contradiction=%u not_admitted=%u", sent.suppressed_not_permitted,
+                sent.suppressed_permission_withdrawn, sent.suppressed_duplicate_source,
+                sent.suppressed_sample_contradiction, sent.suppressed_not_admitted);
+    shell_print(shell, "dropped cycles_invalid=%u cycles_unauthorised=%u stale_cycle=%u "
+                       "cycle_not_begun=%u queue_full=%u frames_abandoned=%u",
+                sent.cycles_invalid, sent.cycles_discarded_unauthorised, sent.discarded_stale_cycle,
+                sent.suppressed_cycle_not_begun, sent.queue_full, sent.frames_abandoned);
+    shell_print(shell, "send_failed data=%u health=%u", sent.send_failed_data,
+                sent.send_failed_health);
+    /* THE READING RULE, beside the reading, because all-zero is ambiguous on its own: a publisher
+     * that was never offered a sample counts nothing, and so does one that does not exist. */
+    shell_print(shell, "note: every counter zero means no grid sample ever reached the publisher, "
+                       "which points at the sources above rather than at the gate");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_grid,
+    SHELL_CMD(status, NULL,
+              "read the L7 grid path: blob verification, per-source bring-up detail, publisher "
+              "counters (read-only, bounded wait on the chain lock)",
+              cmd_grid_status),
+    SHELL_SUBCMD_SET_END
+);
+#endif  // ENABLE_TOF_L7_ULD
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
     SHELL_CMD(status, NULL,
               "read the acquisition cadence: thread state, configured period, overrun count "
@@ -597,6 +735,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
               cmd_enum),
 #if defined(ENABLE_TOF_CLIFF_ULD)
     SHELL_CMD(cliff, &sub_tof_cliff, "cliff mapping commissioning", NULL),
+#if defined(ENABLE_TOF_L7_ULD)
+    SHELL_CMD(grid, &sub_tof_grid, "L7 grid path diagnostics, read-only", NULL),
+#endif
 #endif
     SHELL_SUBCMD_SET_END
 );
