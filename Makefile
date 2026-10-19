@@ -371,9 +371,13 @@ firmware_tof_package_bench:
 # THE THREE NUMBERS ARE HERE BECAUSE THIS IS WHERE THEY ARE VISIBLE. 0x21A and 0x21B are the
 # identifiers this path has been observed on and are EXPERIMENTAL CANDIDATES, not an allocation:
 # nothing is registered for this stream, the firmware refuses to compile without being told them,
-# and the runtime listens on both for a second before it transmits anything. 10 Hz is the rate the
-# bench ran at; the sustainable one for this geometry has not been accepted either. Changing any of
-# the three is an edit here, in the open, rather than a default somewhere in the source.
+# and the runtime listens on both for a second before it transmits anything.
+#
+# 5 Hz, WHICH IS THE ONLY RATE THIS SENSOR HAS EVER RUN AT. The bench bound it at 5 and measured
+# roughly 195 ms between grids. An earlier version of this target asked for 10, which would have
+# changed the operating point in the same flash that first removed the human -- and a failure then
+# could not be attributed to either. The sustainable rate is T7's question and is answered by
+# measuring, not by this line; raising it is a separate round with its own acceptance.
 #
 # THE UNATTENDED REVERT IS ARMED, which is the opposite of what this target first did and the
 # correction is worth stating. The reasoning for leaving it off was that an image meant to stay up
@@ -398,7 +402,7 @@ firmware_tof_package_bench:
 firmware_tof_package_auto:
 	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-auto -- $(ZBASE_BUILD) -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_AUTO=ON -DTOF_PACKAGE_AUTO_DATA_ID=0x21A -DTOF_PACKAGE_AUTO_HEALTH_ID=0x21B -DTOF_PACKAGE_AUTO_HZ=10 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-auto -- $(ZBASE_BUILD) -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_AUTO=ON -DTOF_PACKAGE_AUTO_DATA_ID=0x21A -DTOF_PACKAGE_AUTO_HEALTH_ID=0x21B -DTOF_PACKAGE_AUTO_HZ=5 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-tof-package-auto/zephyr/zephyr.signed.bin out/zephyr_tof_package_auto.signed.bin
 	mv build-tof-package-auto/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_package_auto.signed.confirmed.bin
 	cp out/zephyr_tof_package_auto.signed.confirmed.bin out/zephyr_tof_package_auto.test.bin
