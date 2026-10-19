@@ -80,6 +80,17 @@ struct config {
      * deployment. Zero is refused for the first two here and by tof_acq::start() for the timeout. */
     uint32_t stop_join_timeout_ms{0};
     int thread_priority{0};
+    /* The four cliff sensors' ranging profile, from the devicetree and required. See
+     * tof_acq::source_desc for what the two values mean and why SHORT is not accepted. It is
+     * deployment policy -- what the machine IS lives in the chain spec and does not change when
+     * somebody retunes a rate -- so it belongs in the overlay, where it is visible in a diff. */
+    uint32_t cliff_timing_budget_us{0};
+    uint8_t cliff_distance_mode{0};
+    /* The grid pair's ranging frequency, from the devicetree and required. 1..15; the ULD's ceiling
+     * at 8x8 is 15 and zero is the absence of a choice, so both are refused rather than clamped.
+     * Unused by an image without the grid driver, and still required of it -- the deployment states
+     * the rate once, and which drivers an image carries is not the deployment's business. */
+    uint8_t grid_frequency_hz{0};
 };
 
 /* The value production uses. DEFINED only where the chain devicetree node exists -- which is every

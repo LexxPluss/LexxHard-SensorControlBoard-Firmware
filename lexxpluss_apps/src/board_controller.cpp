@@ -43,6 +43,7 @@
 #include "common.hpp"
 #include "led_controller.hpp"
 #include "power_state.hpp"
+#include "tof_watchdog_feeder.hpp"
 
 namespace {
     constexpr int64_t SOFTWARE_BRAKE_DELAY_MS{5000};
@@ -1295,6 +1296,21 @@ public:
             return;
         }
 
+        /* Whatever the previous boot left, said out loud before this one can overwrite the
+         * conditions that produced it. Silent when there is nothing, which is the ordinary case. */
+        tof_watchdog_feeder::report_previous_stop();
+
+        /* THE FEEDER IS CREATED BEFORE THE WATCHDOG EXISTS, and blocks. There is no interval in
+         * which the IWDG is running and nobody is ready to feed it, and there is no handover from
+         * an interrupt -- this image never feeds from one. See tof_watchdog_feeder.hpp. */
+        if (int rc = tof_watchdog_feeder::start(); rc != 0) {
+            /* An IWDG with nobody to feed it is a guaranteed reset in ten seconds. Leaving it off
+             * and saying so is the only honest failure here; arming it would be choosing the
+             * reset. */
+            LOG_ERR("watchdog feeder thread could not be created (%d): the watchdog stays OFF", rc);
+            return;
+        }
+
         struct wdt_timeout_cfg wdt_config;
         wdt_config.flags = WDT_FLAG_RESET_SOC;
         wdt_config.window.min = 0;
@@ -1310,6 +1326,20 @@ public:
         int err_setup = wdt_setup(dev_wdi, WDT_OPT_PAUSE_HALTED_BY_DBG);
         if (err_setup) {
             LOG_ERR("WDT setup error: %d\n", err_setup);
+            return;
+        }
+
+        /* Published, released, and then WAITED FOR. Nothing else in this init runs until one real
+         * feed has succeeded, so the long operations further down cannot be what the first ten
+         * seconds are spent on. The bound is a fifth of the watchdog window. */
+        tof_watchdog_feeder::release(dev_wdi, wdt_channel_id);
+        if (int rc = tof_watchdog_feeder::wait_first_feed(); rc != 0) {
+            /* RETURN, not carry on. The IWDG is running now and nothing has fed it, so this boot
+             * has at most ten seconds left; bringing up the rest of the board inside that window
+             * would start subsystems that are about to be cut off mid-operation. Stopping here
+             * leaves the reset clean and the log line as the last thing said. */
+            LOG_ERR("no watchdog feed within the startup bound (%d): stopping init, the IWDG will "
+                    "reset this boot", rc);
             return;
         }
 
@@ -1926,12 +1956,13 @@ private:
             k_msgq_purge(&msgq_board_pb_tx);
         }
     }
+    /* EMPTY, AND THAT IS THE CHANGE. This used to feed the hardware watchdog unconditionally from
+     * a one-second timer callback, which meant the IWDG proved only that the timer interrupt was
+     * still firing -- it was fed just as faithfully while the acquisition thread, the senders or an
+     * L7 download were wedged. The watchdog now has exactly one feeder, it is a thread, and it
+     * feeds only while the watched work keeps finishing. See tof_watchdog_feeder.hpp, and the
+     * build-time check in CMakeLists.txt that keeps this the only arrangement. */
     void poll_1s() {
-        if (!device_is_ready(dev_wdi)){
-            LOG_INF("Watchdog device is not ready\n");
-            return;
-        }
-        wdt_feed(dev_wdi, 0);   // Feed the watchdog, Second value will not be used for STM32
     }
     bool should_lockdown() const {
         return (mbd.is_dead() || mbd.lockdown_from_ros()) && !esw.is_asserted();
