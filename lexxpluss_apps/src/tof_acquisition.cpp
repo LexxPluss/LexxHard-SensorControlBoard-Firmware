@@ -226,10 +226,11 @@ const source_ops kCliffOps{
  * ever completed anything. A heartbeat that counted only successful reads would begin after the
  * risky part was over. So `begun` goes up before the call and `ended` after it returns, which makes
  * an open that never returns visible as the pair standing apart. */
-int l7_real_open(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st)
+int l7_real_open(void *dev, vl53l7cx_port_context *port, uint8_t addr_7bit,
+                 tof_l7::operation_status *st)
 {
     runtime_progress::begin(runtime_progress::activity::l7);
-    const int rc{tof_l7::open(static_cast<tof_l7::sensor *>(dev), addr_7bit, st)};
+    const int rc{tof_l7::open(static_cast<tof_l7::sensor *>(dev), port, addr_7bit, st)};
     runtime_progress::end(runtime_progress::activity::l7);
     return rc;
 }
@@ -548,7 +549,7 @@ void bring_up_grid_locked(int i, const source_desc &d, source_facts &f)
         return;
     }
 
-    int rc{d.grid_ops->open(d.dev, d.addr_7bit, &st)};
+    int rc{d.grid_ops->open(d.dev, d.grid_port, d.addr_7bit, &st)};
     if (rc != 0) {
         record_l7(f, rc, st);
         LOG_WRN("grid source %d open failed at %s rc %d errno %d", i,
@@ -945,6 +946,11 @@ int init(const config &cfg)
                 d.grid_ops->read_grid_sample == nullptr || d.grid_ops->stop == nullptr)
                 return -EINVAL;
             if (d.grid_ops->close == nullptr)
+                return -EINVAL;
+            /* The adapter needs its device, the per-read work object, and the bus it is on. A
+             * grid source with no port cannot be opened at all, and finding that out at the first
+             * bring-up rather than here would lose the position for the boot. */
+            if (d.grid_port == nullptr)
                 return -EINVAL;
             /* The adapter needs both its device and the per-read work object. */
             if (d.dev == nullptr || d.scratch == nullptr)
