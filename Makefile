@@ -381,7 +381,8 @@ firmware_tof_package_bench:
 # needs something to RESET the board, and the hazard this image adds is a Package thread that
 # wedges while the board controller keeps feeding the watchdog -- precisely the case where nothing
 # will. So a first candidate keeps the timer and gets kWindowMinutes per flash, with no way to
-# extend it, because `pkg_tof hold` lives in a shell this image does not have.
+# extend it: `hold` belongs to the `pkg_tof` command group, which only a bench build registers.
+# The ordinary Zephyr shell is still there, so this bounds the commands rather than the console.
 #
 # The configuration meant to stay resident passes -DTOF_PACKAGE_AUTO_DEADMAN=OFF, once somebody
 # has watched the image run. That is a separate decision taken after an acceptance, not a default,

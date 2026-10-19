@@ -426,9 +426,9 @@ int main()
     // THE UNATTENDED RUNTIME ARMS IT FOR THE SAME REASON AND ON A SHORTER LEASH. That image is
     // meant to stay up, which is exactly why being unconfirmed protects it less: a revert needs
     // something to reset the board, and a Package thread that wedges while the board controller
-    // keeps feeding the watchdog leaves nothing that will. It has no shell, so the window cannot
-    // be extended -- one flash, one window. The residency configuration turns the flag off once
-    // the image has been watched.
+    // keeps feeding the watchdog leaves nothing that will. It registers no `pkg_tof` command
+    // group, so the window cannot be extended -- one flash, one window. The residency
+    // configuration turns the flag off once the image has been watched.
     lexxhard::tof_package_bench_deadman::arm();
 #endif
 

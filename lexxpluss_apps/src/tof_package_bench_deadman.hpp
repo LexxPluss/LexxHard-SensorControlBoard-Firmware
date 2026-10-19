@@ -31,9 +31,11 @@
  *     activity is a timer that never fires during a session that went wrong slowly.
  *
  * THE UNATTENDED RUNTIME ARMS THIS TOO, under ENABLE_TOF_PACKAGE_AUTO_DEADMAN, and gets a
- * STRICTLY SHORTER leash than the bench does: that image has no shell, so `pkg_tof hold` does not
- * exist in it and the window cannot be extended at all. One flash buys kWindowMinutes of running
- * and no more.
+ * STRICTLY SHORTER leash than the bench does: that image registers no `pkg_tof` command group, so
+ * `hold` does not exist in it and the window cannot be extended at all. One flash buys
+ * kWindowMinutes of running and no more. It still carries the ordinary Zephyr shell -- CONFIG_SHELL
+ * is set for every image this project builds -- so this is a statement about which commands exist,
+ * not about whether a console does.
  *
  * WHY AN IMAGE MEANT TO STAY UP ARMS A TIMER THAT REBOOTS IT. Being unconfirmed is not by itself a
  * protection: a revert only happens once something RESETS the board, and the hazard this runtime

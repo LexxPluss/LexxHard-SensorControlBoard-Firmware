@@ -260,8 +260,8 @@ if(ENABLE_TOF_PACKAGE_AUTO)
     # first acceptance of a candidate keeps the timer and the residency configuration passes
     # -DTOF_PACKAGE_AUTO_DEADMAN=OFF once the image has been watched. Defaulting it ON means
     # forgetting the flag leaves a machine protected rather than stranded. The window is
-    # kWindowMinutes and CANNOT be extended here: `pkg_tof hold` lives in the shell, which this
-    # image does not have.
+    # kWindowMinutes and CANNOT be extended here: `hold` belongs to the `pkg_tof` command group,
+    # which only a bench build registers. The ordinary Zephyr shell is still present.
     if(TOF_PACKAGE_AUTO_DEADMAN)
         add_definitions(-DENABLE_TOF_PACKAGE_AUTO_DEADMAN)
         message(STATUS "package_tof runtime: unattended revert ARMED (one window per flash)")
