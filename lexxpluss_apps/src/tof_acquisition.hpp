@@ -638,22 +638,15 @@ void copy_facts(cycle_facts &out);
 // faulted, and the cycles do not clear the diagnosis of a source they never read.
 uint32_t snapshot();
 
-// The state the rest of the system should act on, which is not what the provider returns:
-// PROVEN is ALWAYS clamped to NOT_READY, because a chain that cannot be enumerated across
-// both boards cannot have a proven mapping.
+// The state the rest of the system should act on: what the mapping authority reports, or
+// NOT_READY when no authority is wired. Until 2026-10-14 this also rewrote PROVEN to
+// NOT_READY unconditionally, which is why nothing could publish; the definition of that
+// clamp and what lifting it left unmeasured are recorded at the implementation.
 //
-// There is deliberately no build flag to lift this. A conditional bypass of a safety gate
-// is one careless -D away from shipping, and nothing about it would appear in a diff of
-// the code it disables. Re-enabling PROVEN is an edit to this function in a commit of its
-// own, reviewed against the fixed hardware.
+// A caller that already holds an authority snapshot must use the state from that snapshot
+// rather than calling this: reading the authority twice can pair a state with an epoch that
+// never existed together, and the publisher latches the pair per cycle.
 mapping_state effective_mapping_state();
-
-// The clamp on its own, for a caller that already holds a state and must not read a second
-// one. production_authorisation() needs exactly this: it takes the state and the epoch from
-// ONE authority snapshot, and going back through effective_mapping_state() for the state
-// would read the authority twice and could pair a state with an epoch that never existed
-// together. Clamping here rather than at the caller keeps the clamp in one place.
-mapping_state clamp_mapping_state(mapping_state reported);
 
 // True only when a role measurement may be published at all.
 bool publication_allowed();

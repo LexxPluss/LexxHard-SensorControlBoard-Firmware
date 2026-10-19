@@ -62,30 +62,26 @@ int init();
 /* The sink to hand tof_cliff_pub::config. Valid only after a successful init(). */
 struct tof_cliff_pub::can_sink sink();
 
-/* The authorisation production uses: the acquisition layer's effective mapping state read
- * together with the mapping authority's epoch.
+/* The authorisation production uses: the mapping authority's state and epoch, taken from ONE
+ * snapshot.
  *
- * The two halves come from two places on purpose, and it is not the disagreement the
- * publisher exists to avoid. The authority owns the epoch, and it is now a real value -- 0
- * until a proof commits, then whatever the host issued. The STATE is deliberately taken
- * through effective_mapping_state() rather than from the authority directly, because that is
- * where the clamp lives: the authority may well believe PROVEN, and until the clamp is lifted
- * nothing may act on that belief. Reading the state from the authority here would bypass the
- * clamp, which is exactly the shape of the safety backdoor this project deleted once. */
+ * ONE READ IS THE WHOLE RULE. The authority owns both halves, and a proof committing between two
+ * reads would yield a state paired with an epoch that never held it. The publisher latches this
+ * pair per cycle and re-checks it before flushing, so such a pair would be latched as though it
+ * had existed. Until 2026-10-14 the state came through effective_mapping_state() instead, because
+ * that is where the PROVEN clamp lived; the clamp is gone, and with it the reason to read twice. */
 struct tof_cliff_pub::authorisation production_authorisation();
 
 #if defined(ENABLE_TOF_L7_ULD)
 /* The grid pair's sender and gate. The sender is the same function the cliff frames use -- one bus,
- * one device, one timeout. The gate applies the same clamp, which is what keeps a wired publisher
- * from publishing. */
+ * one device, one timeout. The gate reads the authority once, like the cliff gate above. */
 struct tof_grid_pub::can_sink grid_sink();
 struct tof_grid_pub::authorisation grid_production_authorisation();
 
 /* The conversion on its own, so that it can be exercised against a snapshot the authority would
- * take a full proof to reach. It is split out rather than tested through the gate because under the
- * clamp every snapshot produces the same refusal, and reading the WRONG mask produces that same
- * refusal too: the defect this separates out -- taking the permission from enumerated_mask, whose
- * bits are the CLIFF roles -- is invisible from the outside until the clamp is lifted. */
+ * take a full proof to reach. Splitting it out is what made the defect it now pins visible at all:
+ * taking the grid permission from enumerated_mask, whose bits are the CLIFF roles, refuses and
+ * permits identically to the correct mask on every snapshot a test can reach through the gate. */
 struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::snapshot &now);
 #endif
 

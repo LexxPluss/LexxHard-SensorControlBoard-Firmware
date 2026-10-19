@@ -61,9 +61,9 @@ fake::fake_chain chain{};
 
 /* The CAN glue, stubbed at the boundary the runtime actually uses. Linking the real one would pull
  * in a Zephyr CAN controller; what production does with these three entry points is covered by the
- * publisher suite. production_authorisation() is reproduced faithfully -- ONE authority read with
- * the acquisition clamp applied -- because a permissive stub would make every gating assertion in
- * this file meaningless. */
+ * publisher suite. production_authorisation() is reproduced faithfully -- ONE authority read, with
+ * every field taken from that one snapshot -- because a permissive stub would make every gating
+ * assertion in this file meaningless. */
 namespace lexxhard::tof_cliff_can {
 
 int init()
@@ -81,7 +81,7 @@ struct tof_cliff_pub::authorisation production_authorisation()
     const au::snapshot now{au::current()};
     struct tof_cliff_pub::authorisation a{};
 
-    a.state = acq::clamp_mapping_state(now.state);
+    a.state = now.state;
     a.epoch = now.epoch;
     a.enumerated_mask = now.enumerated_mask;
     a.model_verified_mask = now.model_verified_mask;

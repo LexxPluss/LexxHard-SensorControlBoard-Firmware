@@ -448,12 +448,13 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
         return -EIO;
     }
 
-    /* Proven, keyed, and deliberately going no further. Starting acquisition is the next commit's
-     * job -- there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so
-     * no measurement frame can leave this board even now. Saying so here keeps an operator from
-     * reading "proven" as "producing". */
+    /* Proven, keyed, and deliberately going no further: starting acquisition is a separate command
+     * and there is no acquisition thread yet, so nothing is being read and nothing can be
+     * published. Saying so here keeps an operator from reading "proven" as "producing" -- which
+     * matters more since the PROVEN clamp was lifted, because now only the missing thread stands
+     * between this state and frames on the wire. */
     shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; acquisition NOT "
-                       "started (no thread yet) and the PROVEN clamp is still in force",
+                       "started, so no measurement frame can leave this board yet",
                 parsed);
     return 0;
 }
@@ -494,9 +495,10 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
     }
 
     shell_print(shell, "acquisition thread started");
-    /* Said explicitly, because "started" and "measurements are on the wire" are different claims
-     * and only the clamp decides the second one. */
-    shell_print(shell, "measurement frames leave this board only if the PROVEN clamp is lifted; "
+    /* Said explicitly, because "started" and "measurements are on the wire" are different claims.
+     * Since the clamp was lifted the second one depends on the authority alone: a mapping the
+     * authority reports as PROVEN publishes, anything else does not. */
+    shell_print(shell, "measurement frames leave this board only while the mapping is PROVEN; "
                        "health frames were already flowing since boot");
     return 0;
 }
@@ -518,9 +520,10 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
  * proven.
  *
  * THEY ARE NOT A BYPASS. Every refusal in both commands comes from the runtime's own gates rather
- * than from conditions re-checked here, `start` still requires a proven mapping that the authority
- * currently reports, and neither touches the PROVEN clamp -- lifting that is a separate release
- * decision and is not made from a console.
+ * than from conditions re-checked here, and `start` still requires a proven mapping that the
+ * authority currently reports. Since the PROVEN clamp was lifted that requirement is the only
+ * thing standing between these commands and frames on the wire, so neither may grow a way to
+ * assert a state the authority has not committed.
  *
  * WHEN THEY GO: when the host issues commissioning requests and persists epochs, and a deployment
  * has turned `commission-profile-enabled` on. Until both are true, deleting them would remove the

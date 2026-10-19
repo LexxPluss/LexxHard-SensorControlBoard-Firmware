@@ -725,18 +725,15 @@ ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
 
 /* ------------------------------------------------------------ publication gate ----- */
 
-/* The PROVEN clamp's one-time warning sits in effective_mapping_state(), which has callers on
- * two threads: the acquisition path reaches it through publish_snapshot() and
- * publication_allowed(), and health_work_handler() reaches it from the system workqueue. Its
- * guard was a plain function-local bool, read and written from both -- a data race.
- *
- * WHAT THIS CASE IS. The fix is an atomic one-time guard and changes no observable value, so
- * there is nothing new to assert about the result: the clamp is pinned by the cases below. What
- * this adds is the two-thread exercise the old guard never got in this suite -- the heartbeat
- * running while cycles run, with the provider reporting PROVEN, so both callers reach the guard.
- * Under the old code that was undefined behaviour; it is not a proof that the race is gone, and
- * a sanitizer build is where it would be caught. */
-ZTEST(tof_acquisition, test_the_clamp_holds_from_both_the_health_and_the_acquisition_paths)
+/* effective_mapping_state() has callers on two threads: the acquisition path reaches it through
+ * publish_snapshot() and publication_allowed(), and health_work_handler() reaches it from the
+ * system workqueue. Until the PROVEN clamp was lifted on 2026-10-14 it also held a one-time
+ * warning whose guard was a plain function-local bool, read and written from both -- a data race
+ * this case was written to exercise. The guard is gone with the clamp, and what the case is for
+ * now is the same two-thread exercise over the answer that replaced it: with the provider
+ * reporting PROVEN while the heartbeat runs alongside the cycles, both callers must see PROVEN
+ * and publication must be open. */
+ZTEST(tof_acquisition, test_both_the_health_and_the_acquisition_paths_see_a_proven_mapping)
 {
     zassert_equal(acq::init(make_config(2)), 0);
     zassert_equal(acq::bring_up(), 0);
@@ -750,34 +747,32 @@ ZTEST(tof_acquisition, test_the_clamp_holds_from_both_the_health_and_the_acquisi
     zassert_true(rec.health_beats > beats_before,
                  "the health path has to have run for this case to exercise anything");
 
-    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready,
-                 "the clamp must still hold with both callers active");
-    zassert_false(acq::publication_allowed(),
-                  "and nothing may be published on an unproven mapping");
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::proven,
+                 "the state the authority reports did not survive both callers");
+    zassert_true(acq::publication_allowed(),
+                  "publication is refused on a mapping the authority calls PROVEN");
 }
 
-ZTEST(tof_acquisition, test_proven_is_unreachable_and_has_no_bypass_flag)
+/* WHAT THE LIFT MEANS, AND WHAT STILL REFUSES. The firmware no longer rewrites the authority's
+ * verdict, so PROVEN reaches the gate as PROVEN -- a rewrite re-introduced anywhere between the
+ * provider and this call fails here. Everything the clamp was standing in front of still holds:
+ * the three states reach the gate unchanged and only PROVEN publishes. */
+ZTEST(tof_acquisition, test_the_authority_decides_and_only_proven_publishes)
 {
     zassert_equal(acq::init(make_config(4)), 0);
 
     provider_state = acq::mapping_state::proven;
-
-    // A chain that cannot be enumerated across both boards cannot have a proven
-    // mapping, so the firmware is not entitled to claim one.
-    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready);
-    zassert_false(acq::publication_allowed(),
-                  "no role measurement may be published on an unproven mapping");
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::proven);
+    zassert_true(acq::publication_allowed(),
+                  "a proven mapping must be publishable; is the state being rewritten again?");
 
     provider_state = acq::mapping_state::fault;
     zassert_true(acq::effective_mapping_state() == acq::mapping_state::fault);
     zassert_false(acq::publication_allowed());
 
-    // There is no build flag that lifts the clamp: a conditional safety bypass is one
-    // careless -D away from shipping, and it would not appear in a diff of the code it
-    // disables. Lifting it is an edit in its own commit against fixed hardware.
-    provider_state = acq::mapping_state::proven;
-    zassert_false(acq::publication_allowed(),
-                  "publication became possible - was a bypass reintroduced?");
+    provider_state = acq::mapping_state::not_ready;
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready);
+    zassert_false(acq::publication_allowed());
 }
 
 ZTEST(tof_acquisition, test_health_is_sent_from_startup_before_any_sensor_is_open)

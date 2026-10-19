@@ -257,9 +257,10 @@ int init_grid_publisher()
     cfg.sink = can::grid_sink();
     cfg.sources = descs_;
     cfg.source_count = static_cast<int>(spec_.positions);
-    /* THE SAME STRUCTURALLY SHUT GATE as the cliff path, and that is what makes wiring this safe:
-     * the clamp inside it makes PROVEN unreachable, and the packer refuses anything that is not
-     * PROVEN. So this connects the path without opening it. */
+    /* THE SAME GATE AS THE CLIFF PATH, and since the PROVEN clamp was lifted on 2026-10-14 what
+     * holds it shut is the authority: the packer refuses anything that is not PROVEN, and only a
+     * committed proof makes the authority say PROVEN. Wiring this connects the path; a proof is
+     * what opens it. */
     cfg.authorise = can::grid_production_authorisation;
     /* NO DEFAULT INVENTED HERE. VL53L7CX target_status 6 and 9 are the low-confidence verdicts, and
      * whether a hanging-object detector should trust them is a product decision nobody has taken.
