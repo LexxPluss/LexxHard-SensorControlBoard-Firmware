@@ -61,6 +61,15 @@ inline const char *stage_name(stage value) {
   return "unknown";
 }
 
+/* THE ULD'S TIMEOUT STATUS, MIRRORED so that callers above this layer can tell a timeout from any
+ * other failure without including the vendor header. tof_l7_sensor.cpp binds it to
+ * VL53L7CX_STATUS_TIMEOUT_ERROR with a static_assert, so the mirror cannot drift silently.
+ *
+ * It is needed because `failed_stage` alone does not say what went wrong: the readiness check can
+ * fail as a timeout, as a bus error or as impossible device metadata, and the wire contract has a
+ * flag for exactly one of those. */
+inline constexpr uint8_t kUldTimeoutStatus{1};
+
 struct operation_status {
   stage failed_stage{stage::none};
   int port_errno{0};

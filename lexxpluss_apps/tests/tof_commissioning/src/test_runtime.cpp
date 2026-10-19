@@ -28,6 +28,7 @@
 #include "tof_chain_controller.hpp"
 #include "tof_cliff_can.hpp"
 #include "tof_cliff_publisher.hpp"
+#include "tof_chain_spec.hpp"
 #include "tof_cliff_runtime.hpp"
 #include "tof_commissioning.hpp"
 #include "tof_mapping_authority.hpp"
@@ -107,12 +108,36 @@ namespace {
 
 /* Injected, as production injects it from the devicetree: cadence, health period, join timeout,
  * thread priority. Nothing here has a default anywhere in the module. */
-constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5)};
+/* The last two are the cliff ranging profile, which bootstrap() now requires. Deliberately not the
+ * overlay's 15000/2: this suite is about the runtime's sequence, and values matching the deployment
+ * would let a bootstrap that ignored its argument pass. */
+/* The last three are the cliff ranging profile and the grid rate, all of which bootstrap() now
+ * requires. Deliberately not the overlay's values: this suite is about the runtime's sequence, and
+ * values matching the deployment would let a bootstrap that ignored its argument pass. */
+constexpr rt::config kTiming{50, 20, 400, K_PRIO_PREEMPT(5), 21000, 3, 7};
 
 /* The acquisition thread's stack. The runtime sizes its own from a devicetree property; there is no
  * devicetree here, and a fallback compiled into the module for tests would be a size nobody chose
  * that shipped anyway -- so the suite hands one over. */
 K_THREAD_STACK_DEFINE(runtime_acq_stack, 2048);
+
+/* This suite is about the runtime's sequence, not the bus. The transaction now requires the hook,
+ * so it gets one that always succeeds; the dual-rate behaviour itself is covered next door, where
+ * the fake chain records the order. */
+int product_speed_rc{0};
+
+int runtime_set_bus_speed(cm::bus_speed speed)
+{
+    if (speed != cm::bus_speed::product_400k) {
+        chain.retimed = false;
+        return 0;
+    }
+    if (product_speed_rc != 0)
+        return product_speed_rc;
+    /* Arms the fake's post-retime faults, so this suite can reach the identity re-check too. */
+    chain.retimed = true;
+    return 0;
+}
 
 int quiesce_via_acquisition()
 {
@@ -127,6 +152,7 @@ void before(void *)
     au::reset_epoch_history_for_test();
     chain = fake::fake_chain{};
     can_init_rc = 0;
+    product_speed_rc = 0;
     send_rc = 0;
     frames_sent = 0;
     last_can_id = 0;
@@ -144,6 +170,7 @@ cm::outcome prove_over_the_fake_chain(uint32_t epoch)
     ccfg.ops = &chain;
     ccfg.spec = &rt::spec();
     ccfg.quiesce = quiesce_via_acquisition;
+    ccfg.set_bus_speed = runtime_set_bus_speed;
     zassert_equal(cm::init(ccfg), 0);
     return cm::prove(epoch);
 }
@@ -151,6 +178,93 @@ cm::outcome prove_over_the_fake_chain(uint32_t epoch)
 }  // namespace
 
 ZTEST_SUITE(tof_cliff_runtime, NULL, NULL, before, NULL, NULL);
+
+/* THE MIDDLE OF THE CHAIN, which neither of the other two profile cases covers. The acquisition
+ * suite fills descriptors itself and checks what reaches the ops table; its production-table case
+ * calls configure() directly. Between them sits build_descriptors(), and nothing pinned that it
+ * copies the configuration across unchanged -- a bootstrap that dropped the values on the floor, or
+ * put them on the wrong sources, would leave both of those cases green.
+ *
+ * The values are deliberately neither the overlay's nor the ones kTiming uses elsewhere, so this
+ * cannot pass against anything baked in. */
+ZTEST(tof_cliff_runtime, test_bootstrap_copies_the_profile_onto_the_cliff_descriptors)
+{
+    rt::config c{kTiming};
+    c.cliff_timing_budget_us = 27000;
+    c.cliff_distance_mode = 2;
+
+    zassert_equal(rt::bootstrap(c), 0);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+    zassert_not_null(d);
+
+    int cliff{0};
+    int grid{0};
+    for (size_t i = 0; i < lexxhard::tof_chain::dasher_spec().positions; ++i) {
+        if (d[i].kind == acq::model::l4_cliff) {
+            ++cliff;
+            zassert_equal(d[i].cliff_timing_budget_us, 27000U,
+                          "position %zu carries budget %u", i, d[i].cliff_timing_budget_us);
+            zassert_equal(d[i].cliff_distance_mode, 2, "position %zu carries mode %u", i,
+                          d[i].cliff_distance_mode);
+        } else {
+            ++grid;
+            /* Zero on a grid descriptor, and acquisition refuses one that is not -- the grid path
+             * never reads these, so a value carried there would range as if it were absent. */
+            zassert_equal(d[i].cliff_timing_budget_us, 0U, "position %zu is a grid source", i);
+            zassert_equal(d[i].cliff_distance_mode, 0, "position %zu is a grid source", i);
+        }
+    }
+    zassert_equal(cliff, 4, "the spec has four cliff positions");
+    zassert_equal(grid, 2, "and two grid positions");
+}
+
+/* THE RANGING PROFILE IS REFUSED HERE AS WELL AS IN tof_acq::init(), and the duplication is the
+ * point rather than an oversight. This is the stage that knows it is reading a deployment's
+ * devicetree; the same descriptor reaching acquisition is refused there as a generic -EINVAL with
+ * nothing to say which of the two layers was misconfigured. */
+/* THE GRID RATE IS REFUSED RATHER THAN CLAMPED. A rate silently moved to the nearest legal value
+ * is a rate nobody chose, and the devicetree would stop being the place it is written down. 15 is
+ * the ULD's ceiling at 8x8; zero is the absence of a choice. */
+ZTEST(tof_cliff_runtime, test_a_bootstrap_without_a_grid_rate_is_refused)
+{
+    const uint8_t bad_rates[]{0, 16, 255};
+
+    for (const uint8_t hz : bad_rates) {
+        rt::config bad{kTiming};
+        bad.grid_frequency_hz = hz;
+        zassert_equal(rt::bootstrap(bad), -EINVAL, "grid-frequency-hz %u", hz);
+    }
+
+    rt::config edge{kTiming};
+    edge.grid_frequency_hz = 15;
+    zassert_equal(rt::bootstrap(edge), 0, "15 is the ceiling and is legal");
+}
+
+ZTEST(tof_cliff_runtime, test_a_bootstrap_without_a_ranging_profile_is_refused)
+{
+    rt::config no_budget{kTiming};
+    no_budget.cliff_timing_budget_us = 0;
+    zassert_equal(rt::bootstrap(no_budget), -EINVAL, "a zero budget must not be defaulted");
+
+    const struct {
+        uint8_t mode;
+        int expected;
+    } modes[]{
+        {0, -EINVAL},   /* absent */
+        {1, -EINVAL},   /* SHORT: the ULD refuses it for an L4 part */
+        {4, -EINVAL},   /* beyond the enumeration */
+    };
+
+    for (const auto &k : modes) {
+        rt::config bad{kTiming};
+        bad.cliff_distance_mode = k.mode;
+        zassert_equal(rt::bootstrap(bad), k.expected, "distance mode %u", k.mode);
+    }
+
+    /* The control: nothing above left the runtime bootstrapped, and a valid profile still works. */
+    zassert_equal(rt::bootstrap(kTiming), 0, "a valid profile must still bootstrap");
+}
 
 ZTEST(tof_cliff_runtime, test_one_call_brings_the_whole_subsystem_up)
 {
@@ -300,6 +414,70 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_true(acq::thread_running());
     k_msleep(kTiming.cycle_period_ms * 2);
     zassert_equal(acq::try_stop(), 0, "the thread did not stop cleanly");
+}
+
+/* A RE-CHECK THAT FAILED AT A LATER POSITION MUST NOT LEAVE A STARTABLE MACHINE EITHER. Position 4,
+ * deliberately: a transaction that gave up after the first position would never reach it, and every
+ * "nothing was committed" assertion would still pass. */
+ZTEST(tof_cliff_runtime, test_a_recheck_failure_at_a_later_position_leaves_nothing_startable)
+{
+    zassert_equal(rt::bootstrap(kTiming), 0);
+
+    chain.fault_position = 4;
+    chain.wrong_id_after_retime = true;
+
+    const cm::outcome r{prove_over_the_fake_chain(11)};
+
+    zassert_equal(r.failed_at, cm::stage::identity_recheck_failed, "stage %d",
+                  static_cast<int>(r.failed_at));
+    zassert_equal(r.recheck.position, 4, "it stopped at position %u", r.recheck.position);
+    zassert_equal(r.recheck.fault, cm::recheck_fault::wrong_identity, "");
+
+    zassert_false(rt::mapping_applied(), "no mapping may be installed");
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+    zassert_equal(rt::start_acquisition(), -EPERM, "and acquisition must refuse to start");
+    zassert_false(acq::thread_running(), "");
+    zassert_true(r.restore_attempted, "");
+
+    /* The control: with the fault cleared the same sequence proves and starts. */
+    chain = fake::fake_chain{};
+    const cm::outcome good{prove_over_the_fake_chain(12)};
+    zassert_true(good.proven(), "stage %d", static_cast<int>(good.failed_at));
+    zassert_equal(rt::start_acquisition(), 0);
+    zassert_equal(acq::try_stop(), 0);
+}
+
+/* A RETIME THAT FAILED MUST NOT LEAVE A STARTABLE MACHINE, and that is the half the commissioning
+ * suite cannot show: it checks nothing was installed, and this checks what that means one layer up.
+ * The evidence was gathered at 100 kHz and nothing says the chain answers at the speed acquisition
+ * reads it at, so the descriptors are unkeyed, the authority is not PROVEN, and start_acquisition()
+ * refuses -- rather than ranging against a mapping nobody confirmed. */
+ZTEST(tof_cliff_runtime, test_a_failed_retime_leaves_nothing_startable)
+{
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    zassert_false(rt::mapping_applied());
+
+    product_speed_rc = -EIO;
+    const cm::outcome r{prove_over_the_fake_chain(9)};
+
+    zassert_equal(r.failed_at, cm::stage::product_speed_refused, "stage %d",
+                  static_cast<int>(r.failed_at));
+    zassert_false(rt::mapping_applied(), "no mapping may be installed");
+    zassert_not_equal(au::current().state, acq::mapping_state::proven);
+    zassert_equal(rt::start_acquisition(), -EPERM, "and acquisition must refuse to start");
+    zassert_false(acq::thread_running(), "");
+
+    /* The bus was put back, so the next proof starts from a known speed rather than inheriting
+     * this failure. */
+    zassert_true(r.restore_attempted, "");
+    zassert_equal(r.final_bus, cm::bus_state::proof_100k, "");
+
+    /* And the control: with the fault cleared the same sequence proves and starts. */
+    product_speed_rc = 0;
+    const cm::outcome good{prove_over_the_fake_chain(10)};
+    zassert_true(good.proven(), "stage %d", static_cast<int>(good.failed_at));
+    zassert_equal(rt::start_acquisition(), 0);
+    zassert_equal(acq::try_stop(), 0);
 }
 
 ZTEST(tof_cliff_runtime, test_nothing_is_keyed_or_started_before_a_proof)

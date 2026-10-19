@@ -37,6 +37,11 @@ void clear_sample(sample &out) {
   memset(out.target_status, 0, sizeof(out.target_status));
 }
 
+/* The mirror above this layer must be the vendor's value, or a caller distinguishing a timeout
+ * from a bus error would be testing a number that means something else. */
+static_assert(tof_l7::kUldTimeoutStatus == VL53L7CX_STATUS_TIMEOUT_ERROR,
+              "tof_l7_status.hpp's timeout mirror has drifted from the ULD");
+
 int mapped_error(uint8_t uld_status) {
   switch (uld_status) {
   case VL53L7CX_STATUS_OK:
