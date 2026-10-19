@@ -86,6 +86,17 @@ struct report {
 
 /* Runs the fixed order and returns what happened. The pins are configured on every path that is not
  * itself a pin failure -- including the paths where recovery was skipped or failed. */
+/* THE GATE, AND THE ONLY ONE. A caller hands in every step it has, including the recovery three,
+ * and gets back the table its image may actually run: without the grid driver the recovery steps
+ * are dropped, because such an image has no survivor to recover and no reason to retime its bus on
+ * the way to its pins.
+ *
+ * It exists so the decision is LINKABLE. The production caller is tof_chain_controller::init(),
+ * which cannot be host-linked -- it reaches real GPIO and I2C devices -- so a test of run() alone
+ * proves the module and says nothing about what the image feeds it. This function is the part of
+ * that wiring a host suite can hold. */
+steps steps_for_image(const steps &requested);
+
 report run(const steps &s);
 
 const char *step_name(step v);

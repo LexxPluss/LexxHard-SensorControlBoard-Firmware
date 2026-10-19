@@ -44,6 +44,12 @@
 #include <cstdint>
 
 #include "tof_cliff_publisher.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_grid_publisher.hpp"
+/* For the snapshot type in grid_authorisation_from()'s signature. The cliff half of this file takes
+ * its snapshot entirely inside the .cpp, so this is the only declaration here that needs it. */
+#include "tof_mapping_authority.hpp"
+#endif
 
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_CLIFF_ULD)
 
@@ -67,6 +73,21 @@ struct tof_cliff_pub::can_sink sink();
  * nothing may act on that belief. Reading the state from the authority here would bypass the
  * clamp, which is exactly the shape of the safety backdoor this project deleted once. */
 struct tof_cliff_pub::authorisation production_authorisation();
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* The grid pair's sender and gate. The sender is the same function the cliff frames use -- one bus,
+ * one device, one timeout. The gate applies the same clamp, which is what keeps a wired publisher
+ * from publishing. */
+struct tof_grid_pub::can_sink grid_sink();
+struct tof_grid_pub::authorisation grid_production_authorisation();
+
+/* The conversion on its own, so that it can be exercised against a snapshot the authority would
+ * take a full proof to reach. It is split out rather than tested through the gate because under the
+ * clamp every snapshot produces the same refusal, and reading the WRONG mask produces that same
+ * refusal too: the defect this separates out -- taking the permission from enumerated_mask, whose
+ * bits are the CLIFF roles -- is invisible from the outside until the clamp is lifted. */
+struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::snapshot &now);
+#endif
 
 }  // namespace lexxhard::tof_cliff_can
 

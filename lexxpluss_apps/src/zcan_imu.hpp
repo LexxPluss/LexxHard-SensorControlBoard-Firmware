@@ -29,6 +29,8 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/logging/log.h>
 #include "imu_controller.hpp"
+#include "zcan_bounded_send.hpp"
+#include "zcan_poll_budget.hpp"
 
 #define CAN_ID_ACCL 0x206
 #define CAN_ID_GYRO 0x207
@@ -52,7 +54,8 @@ public:
     void poll() {
         imu_controller::msg message;
 
-        while (k_msgq_get(&imu_controller::msgq, &message, K_NO_WAIT) == 0) {
+        for (int n{0}; n < zcan_poll_budget::kTxPerPass &&
+                      k_msgq_get(&imu_controller::msgq, &message, K_NO_WAIT) == 0; ++n) {
             can_frame frame_imu[2]{
                 {
                     .id = CAN_ID_ACCL,
@@ -82,8 +85,8 @@ public:
                 }
             };
 
-            can_send(dev, &frame_imu[0], K_MSEC(100), nullptr, nullptr);    //accel
-            can_send(dev, &frame_imu[1], K_MSEC(100), nullptr, nullptr);    //gyro
+            zcan_bounded_send::send(dev, &frame_imu[0], zcan_poll_budget::kMailboxWait);    //accel
+            zcan_bounded_send::send(dev, &frame_imu[1], zcan_poll_budget::kMailboxWait);    //gyro
         }
     }
 private:
