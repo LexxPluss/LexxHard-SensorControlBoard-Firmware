@@ -529,6 +529,18 @@ firmware_tof_full:
 # is removed in its own commit. An image that did both at once would offer no way to tell which
 # half a failure came from.
 #
+# THE SAFETY-LIDAR BYPASS IS CARRIED DELIBERATELY, AND THE FLAG IS MISNAMED FOR WHAT IT DOES HERE.
+# BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST was written for a bench, but the machines this image is
+# for have no safety lidar fitted at all: the OSSD input floats, the firmware reads it as a
+# permanent fault, and the board sits with the wheels gated off. Measured on DS20002 on 2026-10-19,
+# where the image without it came up reporting SafetyLiDAR:1 and WHEEL:0 while the previous
+# firmware -- which carried the same bypass through cmake/features_dasher.cmake -- did not.
+#
+# So this is not a diagnostic shortcut: it is the configuration that matches the hardware. It is
+# also the one line in this target that weakens a safety input, and it stays true only while the
+# fleet has no lidar: fitting one makes this image read a real sensor's OSSD as permanently clear.
+# Whoever fits one has to come back here.
+#
 # Delivered as a padded TEST image, for the reason firmware_tof_cliff states: the CAN DFU writes
 # raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer embedded in the file
 # can request a swap, and an unpadded signed.bin sits there doing nothing while the machine keeps
@@ -537,7 +549,7 @@ firmware_tof_full:
 firmware_tof_release:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-release -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay;overlays/tof_release.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-release -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay;overlays/tof_release.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-tof-release/zephyr/zephyr.signed.bin out/zephyr_tof_release.signed.bin
 	mv build-tof-release/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_release.signed.confirmed.bin
 	cp out/zephyr_tof_release.signed.confirmed.bin out/zephyr_tof_release.test.bin
