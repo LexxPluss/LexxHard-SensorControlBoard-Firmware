@@ -66,7 +66,8 @@ clean:
 	        build-test-tof-commission-runtime build-test-tof-commission-worker build-test-tof-commission-bind \
 	        build-test-tof-commission-bind-session build-test-tof-commission-entropy-poll build-auto-commission \
 	        build-test-tof-l7-boot-order-no-grid build-test-tof-integration-wiring build-tof-full \
-	        build-check-l7-no-cliff build-tof-integration build-tof-release
+	        build-check-l7-no-cliff build-tof-integration build-tof-release \
+	        build-test-tof-commissioning-grid
 
 .PHONY: distclean
 distclean: clean
@@ -162,6 +163,14 @@ test_tof_mapping_authority:
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# The same suite in the build that ships the grid driver, where the mapping keys the grid
+# descriptors and a sample under them reaches the bus. `make test` runs both configurations from
+# testcase.yaml; this target is for running the grid one on its own.
+.PHONY: test_tof_commissioning_grid
+test_tof_commissioning_grid:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning-grid -t run -- -DBOARD_ROOT=/${WORKDIR}/extra -DGRID_L7=1
 
 .PHONY: test_tof_commission_runtime
 test_tof_commission_runtime:

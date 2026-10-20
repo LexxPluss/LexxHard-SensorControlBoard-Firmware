@@ -61,6 +61,34 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_enumerator.cpp
 )
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
+
+# THE GRID CONFIGURATION, selected by twister with -DGRID_L7=1.
+#
+# It is not a variant of this suite's subject; it IS the subject in the build that ships the grid
+# driver. Without the flag every grid position carries the stub, so the keying the publisher depends
+# on has no observable consequence and the end-to-end case can only assert the two positions stay
+# unassigned -- which is right for a stub and stood in for the real wiring until a board showed
+# otherwise. Both configurations are kept: the stub build is a real product configuration and its
+# behaviour is a separate property.
+#
+# The extra sources are what tof_cliff_runtime.cpp reaches for once the flag is on: the grid
+# publisher and its packer, the L7 adapter named by the real grid ops table, and the link stubs for
+# the vendor entry points underneath it.
+if(GRID_L7)
+    target_compile_definitions(app PRIVATE ENABLE_TOF_L7_ULD)
+    target_sources(app PRIVATE
+        src/l7_link_stubs.cpp
+        ${APP_SRC_DIR}/tof_grid_packer.cpp
+        ${APP_SRC_DIR}/tof_grid_publisher.cpp
+        ${APP_SRC_DIR}/tof_l7_sensor.cpp
+    )
+    set(L7_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l7cx_uld)
+    target_include_directories(app PRIVATE
+        ${L7_DIR}/zephyr
+        ${L7_DIR}/upstream/modules
+    )
+endif()
+
 set(ULD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/st/vl53l4cx_uld)
 set(CONTRACT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/can)
 target_include_directories(app PRIVATE

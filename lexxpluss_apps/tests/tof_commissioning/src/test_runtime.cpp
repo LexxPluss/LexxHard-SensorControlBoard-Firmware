@@ -32,6 +32,11 @@
 #include "tof_cliff_runtime.hpp"
 #include "tof_commissioning.hpp"
 #include "tof_mapping_authority.hpp"
+#if defined(ENABLE_TOF_L7_ULD)
+#include "tof_can_ids.hpp"
+#include "tof_grid_publisher.hpp"
+#include "tof_l7_sample.hpp"
+#endif
 
 namespace acq = lexxhard::tof_acq;
 namespace au = lexxhard::tof_authority;
@@ -40,6 +45,10 @@ namespace enm = lexxhard::tof_enum;
 namespace pf = lexxhard::tof_proof;
 namespace pub = lexxhard::tof_cliff_pub;
 namespace rt = lexxhard::tof_cliff_runtime;
+#if defined(ENABLE_TOF_L7_ULD)
+namespace gpub = lexxhard::tof_grid_pub;
+namespace l7 = lexxhard::tof_l7;
+#endif
 
 namespace {
 
@@ -56,6 +65,27 @@ int fake_send(uint16_t can_id, const uint8_t *, uint8_t)
 }
 
 fake::fake_chain chain{};
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* THE GRID FRAMES, COUNTED BY IDENTIFIER rather than collected. The question this suite asks of the
+ * grid path is whether a mapping a proof installed reaches the bus at all, and the frames' contents
+ * are the grid packer suite's subject -- it drives them from the contract's own vectors, which is a
+ * stronger check than anything this file could restate. */
+int grid_data_frames{0};
+int grid_health_frames{0};
+int grid_other_frames{0};
+
+int grid_fake_send(uint16_t can_id, const uint8_t *, uint8_t)
+{
+    if (can_id == lexxhard::tof_can_ids::TOF_GRID_DATA_ID)
+        ++grid_data_frames;
+    else if (can_id == lexxhard::tof_can_ids::TOF_GRID_HEALTH_ID)
+        ++grid_health_frames;
+    else
+        ++grid_other_frames;
+    return 0;
+}
+#endif
 
 }  // namespace
 
@@ -75,6 +105,32 @@ struct tof_cliff_pub::can_sink sink()
 {
     return {fake_send};
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+struct tof_grid_pub::can_sink grid_sink()
+{
+    return {grid_fake_send};
+}
+
+/* Reproduced from grid_authorisation_from() for the reason the comment above gives, and with its
+ * one load-bearing detail kept: source_allowed comes from grid_source_mask, which is the
+ * authority's statement about GRID sources. Taking it from enumerated_mask -- whose bits are
+ * source_id_of(l4_role) -- would let a cliff sensor's permission admit a grid, and that is the
+ * defect #118 fixed. A stub that permitted everything would also hide the whole keying question
+ * this file now asks. */
+struct tof_grid_pub::authorisation grid_production_authorisation()
+{
+    const au::snapshot now{au::current()};
+    struct tof_grid_pub::authorisation a{};
+
+    a.state = now.state;
+    a.epoch = now.epoch;
+    a.boards_detected = 0;
+    for (int i{0}; i < tof_grid_pub::kGridSources; ++i)
+        a.source_allowed[i] = (now.grid_source_mask & (1U << i)) != 0U;
+    return a;
+}
+#endif
 
 struct tof_cliff_pub::authorisation production_authorisation()
 {
@@ -156,6 +212,11 @@ void before(void *)
     send_rc = 0;
     frames_sent = 0;
     last_can_id = 0;
+#if defined(ENABLE_TOF_L7_ULD)
+    grid_data_frames = 0;
+    grid_health_frames = 0;
+    grid_other_frames = 0;
+#endif
 }
 
 /* The roles used to be injected here, because dasher_spec() carried l4_role::unknown and PROVEN was
@@ -403,10 +464,20 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_equal(d[3].role_id, 1);
     zassert_equal(d[4].role_id, 2);
     zassert_equal(d[5].role_id, 3);
+#if defined(ENABLE_TOF_L7_ULD)
+    /* WITH THE GRID DRIVER IN THE IMAGE the two grid positions are keyed from the fingerprint's own
+     * source_id field, which the spec assigns and the proof verifies. Unassigned here is what kept
+     * every grid sample off the bus until 2026-10-20: the publisher refuses a sample whose source
+     * id was never keyed, and refusing it invalidates the cycle. */
+    zassert_equal(d[0].role_id, 0, "position 1 (index 0) must key to grid source 0");
+    zassert_equal(d[1].role_id, 1, "position 2 (index 1) must key to grid source 1");
+#else
     /* The grid positions are stubs with no cliff source id, and they stay unassigned rather than
-     * being given a plausible-looking number. */
+     * being given a plausible-looking number. A stub cannot produce a sample, so there is nothing
+     * to publish and nothing to key. */
     zassert_equal(d[0].role_id, rt::kRoleUnassigned);
     zassert_equal(d[1].role_id, rt::kRoleUnassigned);
+#endif
 
     /* Only now may the acquisition thread start -- and from here on it is the only thing allowed to
      * touch a sensor. */
@@ -628,3 +699,216 @@ ZTEST(tof_cliff_runtime, test_starting_twice_is_refused_rather_than_creating_a_s
     zassert_equal(rt::start_acquisition(), 0);
     zassert_equal(acq::try_stop(), 0);
 }
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* ------------------------------------------------ the grid keying, in a build that has L7 ------ */
+
+/* THIS CONFIGURATION EXISTS BECAUSE THE OTHER ONE CANNOT ASK THE QUESTION. Without
+ * ENABLE_TOF_L7_ULD every grid position carries the stub, and the suite's own end-to-end case
+ * asserted the two of them stay unassigned -- which was correct for a stub and silently stood in
+ * for the real wiring. The real build keys them from the fingerprint, and on 2026-10-19 DS20002
+ * showed what the gap costs: a committed epoch, four cliff sensors publishing, and not one grid
+ * frame on 0x214 because every sample was refused as suppressed_role_unassigned.
+ *
+ * The checks below are reached by handing install_from_mapping() a fingerprint directly. A proof
+ * cannot stage them: the fingerprint a walk produces is built from the spec, so an out-of-range
+ * source id, a neighbour's position number or two positions claiming one id are not reachable
+ * through commissioning. They guard against a fingerprint that disagrees with the descriptors,
+ * which is a wiring fault rather than a chain fault, and the only way to pin that is to build one.
+ */
+pf::fingerprint profile_fingerprint()
+{
+    const enm::chain_spec &spec{rt::spec()};
+    pf::fingerprint fp{};
+
+    fp.positions = spec.positions;
+    for (size_t i{0}; i < spec.positions; ++i) {
+        fp.at[i].position = static_cast<uint8_t>(i + 1);   // 1-based, as the operator counts them
+        fp.at[i].expected = spec.at[i].expected;
+        fp.at[i].address = spec.at[i].target_addr;
+        fp.at[i].source_id = spec.at[i].source_id;
+        fp.at[i].role = spec.at[i].role;
+        fp.at[i].verified = true;
+    }
+    return fp;
+}
+
+/* A bootstrap with descriptors built and nothing keyed: the state every refusal case has to be
+ * found in afterwards. */
+void bootstrap_unkeyed()
+{
+    zassert_equal(rt::bootstrap(kTiming), 0);
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    zassert_equal(d[0].role_id, rt::kRoleUnassigned, "the fixture started out keyed");
+    zassert_equal(d[1].role_id, rt::kRoleUnassigned, "the fixture started out keyed");
+}
+
+void assert_nothing_was_keyed(const char *what)
+{
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    for (size_t i{0}; i < rt::spec().positions; ++i)
+        zassert_equal(d[i].role_id, rt::kRoleUnassigned,
+                      "%s: position %u was keyed by a refused mapping", what,
+                      static_cast<unsigned>(i + 1));
+    zassert_false(rt::mapping_applied(), "%s: the mapping counts as applied", what);
+    zassert_equal(rt::start_acquisition(), -EPERM, "%s: acquisition would start", what);
+}
+
+ZTEST(tof_cliff_runtime, test_an_installed_mapping_keys_both_grid_positions_from_the_fingerprint)
+{
+    bootstrap_unkeyed();
+    zassert_equal(rt::install_from_mapping_for_test(profile_fingerprint(), 5), 0);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    /* THE SOURCE IDS THE SPEC ASSIGNS, not the descriptor indices they coincide with today. The
+     * values are equal here by construction of dasher_spec; what is being pinned is where they
+     * came from, which is why the two cliff assertions are beside them -- those are keyed from the
+     * role instead, through a different table. */
+    zassert_equal(d[0].role_id, 0);
+    zassert_equal(d[1].role_id, 1);
+    zassert_equal(d[2].role_id, 0, "the cliff roles are keyed through source_id_of(), unchanged");
+    zassert_equal(d[5].role_id, 3);
+}
+
+ZTEST(tof_cliff_runtime, test_a_grid_source_id_outside_the_contract_is_refused)
+{
+    bootstrap_unkeyed();
+
+    pf::fingerprint fp{profile_fingerprint()};
+
+    // Two grid sources exist. A third has no identifier on the wire to be published under.
+    fp.at[1].source_id = 2;
+    zassert_equal(rt::install_from_mapping_for_test(fp, 5), -EINVAL);
+    assert_nothing_was_keyed("source id 2");
+
+    fp.at[1].source_id = -1;
+    zassert_equal(rt::install_from_mapping_for_test(fp, 5), -EINVAL);
+    assert_nothing_was_keyed("no source id");
+}
+
+ZTEST(tof_cliff_runtime, test_two_grid_positions_claiming_one_source_id_are_refused)
+{
+    bootstrap_unkeyed();
+
+    pf::fingerprint fp{profile_fingerprint()};
+
+    /* Both sides of the machine published as one source: the publisher would drop the cycle as a
+     * duplicate, and nothing downstream could tell which of the two was mis-keyed. */
+    fp.at[1].source_id = 0;
+    zassert_equal(rt::install_from_mapping_for_test(fp, 5), -EINVAL);
+    assert_nothing_was_keyed("duplicate source id");
+}
+
+ZTEST(tof_cliff_runtime, test_a_grid_position_the_fingerprint_disagrees_about_is_refused)
+{
+    bootstrap_unkeyed();
+
+    /* Four separate disagreements, each refused on its own. They are in one case because they
+     * share the fixture and the same consequence, not because any one of them stands in for the
+     * others. */
+    pf::fingerprint moved{profile_fingerprint()};
+
+    moved.at[0].address = 0x2B;   // the entry describes the device at the NEXT position
+    zassert_equal(rt::install_from_mapping_for_test(moved, 5), -EINVAL);
+    assert_nothing_was_keyed("address moved");
+
+    pf::fingerprint wrong_model{profile_fingerprint()};
+
+    wrong_model.at[0].expected = enm::model::l4cx;   // an 8x8 claim about a point sensor
+    zassert_equal(rt::install_from_mapping_for_test(wrong_model, 5), -EINVAL);
+    assert_nothing_was_keyed("wrong model");
+
+    pf::fingerprint unverified{profile_fingerprint()};
+
+    unverified.at[1].verified = false;
+    zassert_equal(rt::install_from_mapping_for_test(unverified, 5), -EINVAL);
+    assert_nothing_was_keyed("unverified position");
+
+    pf::fingerprint neighbour{profile_fingerprint()};
+
+    neighbour.at[0].position = 2;   // position 2's entry, offered for position 1
+    zassert_equal(rt::install_from_mapping_for_test(neighbour, 5), -EINVAL);
+    assert_nothing_was_keyed("a neighbour's position number");
+}
+
+ZTEST(tof_cliff_runtime, test_a_refusal_at_the_second_grid_position_leaves_the_first_unkeyed)
+{
+    /* THE TWO-PASS DISCIPLINE, which every case above depends on but none of them isolates: the
+     * first grid position validates cleanly and only the second is refused. A single-pass install
+     * would have written source 0 before it reached the refusal, leaving one side of the machine
+     * publishing under a mapping the commit rejected -- and nothing on the wire to say so. */
+    bootstrap_unkeyed();
+
+    pf::fingerprint fp{profile_fingerprint()};
+
+    fp.at[1].verified = false;
+    zassert_equal(rt::install_from_mapping_for_test(fp, 5), -EINVAL);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    zassert_equal(d[0].role_id, rt::kRoleUnassigned,
+                  "the first grid position was keyed before the second was refused");
+}
+
+ZTEST(tof_cliff_runtime, test_a_proven_mapping_puts_both_grids_on_the_bus)
+{
+    /* THE WHOLE CHAIN, because keyed descriptors are not frames. A proof over the fake chain
+     * commits, the authority publishes its grid permission, the runtime keys the descriptors, and
+     * the publisher the bootstrap already wired is handed one sample per grid source. Everything
+     * between is production code; only the bus and the vendor are stubbed.
+     *
+     * This is the case that would have failed before the keying landed, and it fails for the right
+     * reason: suppressed_role_unassigned counts, and no frame is sent. */
+    zassert_equal(rt::bootstrap(kTiming), 0);
+
+    const cm::outcome r{prove_over_the_fake_chain(9)};
+
+    zassert_true(r.proven(), "the proof failed at stage %d", static_cast<int>(r.failed_at));
+    zassert_equal(au::current().grid_source_mask, 0x3,
+                  "the authority did not permit both grid sources");
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+    acq::cycle_facts facts{};
+
+    facts.cycle_seq = 1;
+    facts.source_count = static_cast<int>(rt::spec().positions);
+    for (size_t i{0}; i < rt::spec().positions; ++i) {
+        facts.sources[i].kind = d[i].kind;
+        facts.sources[i].addr_7bit = d[i].addr_7bit;
+        facts.sources[i].role_id = d[i].role_id;
+        facts.sources[i].configured = true;
+        facts.sources[i].started = true;
+    }
+
+    l7::sample s{};
+
+    s.fresh = true;
+    for (size_t z{0}; z < l7::kZoneCount; ++z) {
+        s.target_status[z] = 5;   // a valid range by the contract's status table
+        s.target_count[z] = 1;
+        s.distance_mm[z] = 1000;
+    }
+
+    gpub::on_cycle_begin(facts.cycle_seq);
+    for (int i{0}; i < gpub::kGridSources; ++i) {
+        facts.sources[i].sample_produced = true;
+        facts.sources[i].status.domain = acq::status_domain::l7;
+        gpub::on_grid_sample(i, facts.cycle_seq, facts.sources[i], s);
+    }
+    gpub::on_cycle_complete(facts);
+
+    gpub::counters c{};
+
+    gpub::copy_counters(c);
+    zassert_equal(c.suppressed_role_unassigned, 0U,
+                  "a keyed grid source was still refused for having no source id");
+    zassert_equal(c.grids_admitted, 2U, "both grids must be admitted");
+    zassert_equal(c.grids_sent, 2U, "both grids must reach the bus");
+    zassert_equal(grid_health_frames, 2, "one health frame closes each grid");
+    zassert_true(grid_data_frames > 0, "no grid data frame was sent");
+    zassert_equal(grid_other_frames, 0, "a grid frame went out under another identifier");
+}
+#endif  // ENABLE_TOF_L7_ULD

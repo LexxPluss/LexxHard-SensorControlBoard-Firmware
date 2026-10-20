@@ -194,6 +194,11 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
      * half-keyed table on the first refusal -- some corners published correctly, the rest not
      * published at all, and nothing on the wire to say which. */
     uint8_t keys[acq::kMaxSources];
+#if defined(ENABLE_TOF_L7_ULD)
+    /* Which grid source ids this mapping has already claimed, one bit per id. Local to the
+     * validation pass, so a refusal takes it with it. */
+    uint8_t grid_claimed{0};
+#endif
 
     if (!ready())
         return -EPERM;
@@ -202,8 +207,60 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
 
     for (size_t i{0}; i < spec_.positions; ++i) {
         keys[i] = kRoleUnassigned;
+#if defined(ENABLE_TOF_L7_ULD)
+        if (descs_[i].kind == acq::model::l7_grid) {
+            /* THE GRID SOURCE ID COMES FROM THE FINGERPRINT'S OWN FIELD.
+             *
+             * Not source_id_of(role): that answers a cliff question -- which corner a mounting role
+             * publishes as -- and an L7 has no cliff role at all. Not the descriptor index either:
+             * the index is where the board sits on the chain, while the contract's source_id is
+             * which side of the machine it looks at. They agree today by construction of the spec,
+             * and an index used as a source id would keep agreeing right up until somebody
+             * reorders the chain, at which point left and right swap with nothing on the wire
+             * looking wrong.
+             *
+             * THIS IS THE KEYING THAT WAS MISSING. Without it a grid position kept
+             * kRoleUnassigned, bring-up copied that into the facts, and the publisher refused
+             * every sample as suppressed_role_unassigned and invalidated the cycle -- so no image
+             * on this line could ever emit a grid frame, which is what DS20002 showed on
+             * 2026-10-19: four cliff sensors publishing under a committed epoch and not one
+             * 0x214. The gate was invisible until the PROVEN clamp was lifted, because before
+             * that nothing published at all.
+             *
+             * Five checks, and each one is a different way to publish a grid under a position
+             * nobody proved. The position, because the fingerprint entry has to be the one for
+             * THIS descriptor rather than a neighbour's. The model, because an L4 at a grid
+             * position would make an 8x8 claim about a part that has none. The address, because
+             * that is the device acquisition will actually read. The verified flag, because an
+             * unverified position proves nothing. The range, because the contract has two grid
+             * sources and a third would be unrepresentable. */
+            const pf::position_fingerprint &pos{fp.at[i]};
+
+            if (pos.position != static_cast<uint8_t>(i + 1))
+                return -EINVAL;
+            if (pos.expected != enm::model::l7cx)
+                return -EINVAL;
+            if (pos.address != descs_[i].addr_7bit)
+                return -EINVAL;
+            if (!pos.verified)
+                return -EINVAL;
+            if (pos.source_id < 0 || pos.source_id >= gpub::kGridSources)
+                return -EINVAL;
+
+            const uint8_t src{static_cast<uint8_t>(pos.source_id)};
+
+            /* Two positions claiming one source id is a mapping that cannot be published: the
+             * publisher would drop the whole cycle as a duplicate, and which of the two is
+             * mis-keyed cannot be known from here. */
+            if ((grid_claimed & static_cast<uint8_t>(1U << src)) != 0)
+                return -EINVAL;
+            grid_claimed |= static_cast<uint8_t>(1U << src);
+            keys[i] = src;
+            continue;
+        }
+#endif
         if (descs_[i].kind != acq::model::l4_cliff)
-            continue;   // the grid stubs have no cliff source id and stay unassigned
+            continue;   // a stubbed position has no source id and stays unassigned
 
         /* The address, because role_id is the key a measurement is published under: if the mapping
          * proved front_left at 0x2C and the descriptor acquisition reads is 0x2D, keying it would
@@ -565,6 +622,11 @@ int force_rebuild_descriptors_for_test()
                       cfg_.grid_frequency_hz);
     keyed_ = false;
     return 0;
+}
+
+int install_from_mapping_for_test(const pf::fingerprint &fp, uint8_t epoch)
+{
+    return install_from_mapping(fp, epoch);
 }
 #endif
 
