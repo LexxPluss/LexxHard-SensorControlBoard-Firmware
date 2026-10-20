@@ -43,32 +43,12 @@ struct snapshot {
  * caller that loses the race gets -EALREADY. */
 int bootstrap();
 
-/* THE ENTRY POINT WHEN MORE THAN ONE SENSOR NEEDS THE BLOB.
- *
- * One payload, one record, one accept-list: the architecture verifies the stored firmware once per
- * image and every L7 downloads the same bytes. So a second sensor must not verify again -- it must
- * ask whether the one verification succeeded.
- *
- * bootstrap() cannot answer that. It returns -EALREADY to whoever loses the CAS, and -EALREADY
- * covers `verifying`, `available` and `refused` alike. A caller reading non-zero as failure would
- * refuse to start on a perfectly verified blob; a caller reading -EALREADY as success would start
- * on a refused one. Both are wrong, and with a single consumer neither could happen.
- *
- * Returns what the caller needs rather than what this call performed:
- *
- *   0              verified and readable now -- firmware_data() is non-null
- *   -EINPROGRESS   another consumer is still verifying; ask again
- *   other          the refusal errno, the same value bootstrap() would have returned
- *
- * -EINPROGRESS RATHER THAN -EAGAIN, and the difference is not cosmetic. refusal_errno() already
- * maps status::uncommitted -- an interrupted provisioning attempt, which is a TERMINAL refusal --
- * to -EAGAIN. Using -EAGAIN for "still verifying" as well would have made those two
- * indistinguishable, so a consumer waiting for the check to finish would wait forever on a record
- * that had already been refused. The refusal errnos are left exactly as they were; only the busy
- * code is distinct from all of them.
- *
- * Still exactly one verification: this is bootstrap() plus a meaningful answer for the loser, not a
- * second path into the record. */
+/* Share the image's single blob verification across sensors.
+ * Returns 0 when firmware_data() is available, -EINPROGRESS while another
+ * consumer verifies, or the stored refusal errno. bootstrap()'s -EALREADY
+ * alone cannot distinguish verifying, available and refused.
+ * Busy must not use -EAGAIN: that already denotes terminal uncommitted storage.
+ */
 int ensure_verified();
 
 snapshot current();

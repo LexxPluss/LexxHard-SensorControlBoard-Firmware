@@ -20,18 +20,11 @@ verdict classify(const inputs &in)
     if (in.argument_fault != 0)
         return {in.argument_fault, false, false};
 
-    /* A CLEAN NACK WITH NOTHING ACKNOWLEDGED is the cold boot, and on a cold boot it is the answer
-     * every address gives. Reported as a completed probe with nobody there rather than as a
-     * failure, because a pass that called every cold boot a failure would say nothing about the
-     * boots that matter.
-     *
-     * BUT ONLY WITH NOTHING ACKNOWLEDGED. The port keeps the FIRST error it sees and
-     * vl53l7cx_is_alive() issues all four of its transfers regardless, ORing their statuses with no
-     * early return. So a survivor whose page-select write NACKs while its two ID reads answer
-     * arrives here with -ENXIO AND an answer; treating that as empty would report the address as
-     * cold, stop nothing, and record no failure. Asked of the TRANSPORT rather than of the identity
-     * flag, because the ULD sets that flag only when both identity bytes match -- zero does not
-     * mean nothing answered. */
+    /* Only a clean NACK with no completed transfer means nobody answered.
+     * The ULD attempts all four transfers and retains the first errno; a later
+     * successful transfer makes -ENXIO a partial exchange, not an empty address.
+     * Use the transfer count: the identity flag is zero for wrong IDs too.
+     */
     if (in.port_errno == -ENXIO)
         return {in.completed != 0U ? -EIO : 0, false, false};
 
@@ -40,14 +33,10 @@ verdict classify(const inputs &in)
     if (in.port_errno != 0)
         return {in.port_errno, false, false};
 
-    /* A NON-OK STATUS WITH NO TRANSPORT ERROR IS A FAILED PROBE, NOT AN EMPTY ADDRESS.
-     *
-     * vl53l7cx_is_alive() reports a wrong identity by setting its out-parameter to zero and
-     * returning OK -- its status can only become non-OK from one of the four platform calls it
-     * makes, and every one of those sets the port's sticky errno, which was checked above. So
-     * reaching here means the port said every transfer succeeded and the ULD still refused, which
-     * is an anomaly, and calling it "nobody there" would file it as the most ordinary observation a
-     * cold boot makes. */
+    /* Non-OK ULD status without a port error is a failed probe, not an empty
+     * address. is_alive() returns OK for a wrong identity; a transport failure
+     * should already have supplied the sticky errno checked above.
+     */
     if (!in.uld_ok)
         return {-EIO, false, false};
 

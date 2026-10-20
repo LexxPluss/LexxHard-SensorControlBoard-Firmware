@@ -80,22 +80,11 @@ enum class go2_exit : uint8_t {
     exhausted,
 };
 
-/* WHAT GO2 STATUS SAID WHILE THE STOP HANDSHAKE WAITED.
- *
- * The 2026-10-12 run polled the device 501 times, tested one bit of each answer and kept none of
- * them, so "the MCU stop was never confirmed" was everything the five seconds produced. Patch 0005
- * keeps the bytes those same reads returned; this is their pure mirror, declared here so the record
- * stays free of vendor headers and every combination is testable without a bus.
- *
- * EVERY VALUE CARRIES ITS OWN VALIDITY. The port leaves the caller's buffer untouched when a
- * transfer fails, so an unread byte would otherwise be indistinguishable from a read one. A value
- * whose `_valid` companion is false was not read; it is zero because nothing wrote it.
- *
- * IT IS NOT A COLD-START DETECTOR, and a field named as though it were does not belong here. The
- * same register's bit 0 is an exit condition in the MCU boot wait that runs AFTER the firmware
- * download, so any particular value here is consistent with more than one device history. This
- * structure reports an observation; whatever is concluded from it must be named after the evidence
- * that actually supports the conclusion. */
+/* GO2 bytes observed by patch 0005 during the stop handshake.
+ * Each value has its own validity flag: failed reads leave the buffer untouched,
+ * so zero with valid=false is not a device response. This is not a cold-start
+ * detector; the same register value can occur after a firmware download.
+ */
 struct go2_observation {
     /* GO2 status 0 from the first and the last successful read inside the poll. Both, because a
      * value that never changed and one that changed once are different observations, and the count
@@ -176,26 +165,11 @@ struct record {
     go2_observation go2{};
 };
 
-/* THE SPAN, IN 64-BIT ARITHMETIC, BECAUSE THE FIRST VERSION WRAPPED.
- *
- * It timed the call with `k_cycle_get_32()`, which at 216 MHz wraps every 2^32 / 216e6 = 19.884 s.
- * Review reproduced it: a 30-second call was recorded as 10.116 s. That is not a corner -- the
- * failure paths are exactly where it bites. The ULD polls 500 times with a 10 ms wait, and if each
- * polled read spends the I2C driver's 500 ms timeout the call runs for about 255 s, which wraps
- * twelve times and can land on any value at all.
- *
- * Takes microsecond timestamps from a 64-bit monotonic source and returns their difference,
- * saturated rather than wrapped. Saturation is unreachable in this image -- the deadman cold-reboots
- * after ten minutes and UINT32_MAX us is 71 -- and it is here so that the failure mode of an
- * out-of-range span is a clamped maximum rather than a small plausible number, which is the whole
- * lesson of the wrap.
- *
- * A span measured backwards returns 0 rather than a huge unsigned value, for the same reason.
- *
- * WHAT THIS DOES AND DOES NOT PIN. The arithmetic and the width are testable here, without a clock.
- * That the ADAPTER reads a 64-bit monotonic source rather than the 32-bit cycle counter is a
- * property of a call site, so it is checked where call sites are checked -- see the gate in
- * tests/tof_l7_quiesce. Neither alone is the property. */
+/* Elapsed microseconds from a 64-bit monotonic clock, saturated at UINT32_MAX.
+ * Return zero for backwards timestamps. Do not use k_cycle_get_32(): it wraps
+ * in about 19.9 s at 216 MHz, while timeout paths can run for minutes.
+ * The call-site gate separately checks the adapter's clock source.
+ */
 uint32_t span_us(int64_t started_us, int64_t ended_us);
 
 /* Called once per quiesce, with the raw observations and the measured duration. It classifies,

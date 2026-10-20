@@ -59,22 +59,10 @@
 
 #pragma once
 
-/* GUARDED ON THE L7 FLAG ALONE, and that is narrower than it reads.
- *
- * Every source cpp is globbed, so without a guard this module would compile into the production
- * image and drag SHA-256 and CRC-32 in with it. The guard also has to agree with the Kconfig the
- * record needs -- CONFIG_CRC and tinycrypt SHA-256 -- or it compiles a translation unit the image
- * was never configured to provide.
- *
- * That Kconfig comes from overlays/tof_l7.conf, applied by CMakeLists.txt under
- * `if(ENABLE_TOF_L7_ULD)`. So ENABLE_TOF_L7_ULD is exactly the condition under which the headers
- * exist, and the earlier `ENABLE_TOF_CHAIN &&` added nothing: the chain flag does not gate that
- * fragment. It was redundant while the only L7 was on the chain, and it stopped being harmless the
- * moment a second L7 on another bus became possible -- this layer reads flash, hashes it and
- * checks an accept-list, and touches no I2C, no enable chain and no bus at all.
- *
- * The production image is still byte-identical without ENABLE_TOF_L7_ULD, which is the property
- * the guard exists for. */
+/* ENABLE_TOF_L7_ULD supplies CRC/SHA Kconfig via overlays/tof_l7.conf.
+ * This flash-only verifier has no chain or I2C dependency. Keep it out of
+ * non-L7 images: all source files are globbed into the build.
+ */
 #if defined(ENABLE_TOF_L7_ULD)
 
 #include <stddef.h>

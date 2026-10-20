@@ -62,17 +62,10 @@ int mapped_error(uint8_t uld_status) {
 int finish(const sensor &device, operation_status &status, stage failed_stage,
            uint8_t uld_status) {
   status.uld_status = uld_status;
-  /* CHECKED FIRST, AND IT FAILS THE OPERATION. Before the port carried per-device state, a
-   * SwapBuffer argument fault landed in the one global errno and so propagated here on its own;
-   * moving it to its own latch would have made it invisible and turned those operations into
-   * silent successes. It outranks both the transport errno and the ULD status because a buffer
-   * this port cannot process makes the rest of the result meaningless.
-   *
-   * DELIBERATELY NOT CLEARED HERE, and not by any device operation. It is a programming error in
-   * this build, so it is sticky: clearing it per operation would let each operation hide the last
-   * one's fault, and clearing a shared latch from a device path is exactly the cross-device
-   * coupling the context split removed. vl53l7cx_port_clear_argument_fault() is explicit and has
-   * no caller in production. */
+  /* A SwapBuffer argument fault outranks transport and ULD status.
+   * It is a sticky programming error shared by the image, not device state;
+   * no device operation clears it. Explicit clearing has no production caller.
+   */
   status.argument_fault = vl53l7cx_port_argument_fault();
   if (status.argument_fault != 0) {
     status.failed_stage = failed_stage;

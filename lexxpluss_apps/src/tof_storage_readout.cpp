@@ -54,27 +54,10 @@ constexpr off_t kPartitionOffset{DT_REG_ADDR(DT_NODELABEL(storage_partition))};
  * which is why nothing here allocates a kilobyte. */
 constexpr size_t kLineBytes{16};
 
-/* PACING, AND WHY IT IS STILL HERE AFTER THE REASON FOR IT TURNED OUT TO BE WRONG.
- *
- * The honest history, because the wrong version of it is already in the commit that added these
- * arguments. A dump paced at 16 lines per 1 ms pause looked like it lost exactly the last 6 lines of
- * every 16-line group, identically on repeated runs, and that was read as the host-side socat/UDP
- * multiplexer overrunning. It was not. The host-side PARSER was wrong twice: shell_hexdump_line
- * prints addresses in UPPERCASE hex and the parser matched [0-9a-f], so every line whose address
- * contained A-F was discarded -- which is exactly the last six of each group -- and the two groups of
- * eight bytes are separated by TWO spaces, which the parser's single optional space did not accept.
- * Nothing was ever lost on the wire. A re-read of the same capture with a fixed parser gave all
- * 2,048 lines of a 32 KiB chunk with no gaps.
- *
- * So the pause is only ever about the CPU, which is reason enough on its own: 8,192 lines printed in
- * one uninterruptible loop would hold the shell thread for the better part of a minute, and
- * board_controller feeds the independent watchdog on this board, where a reset takes the whole power
- * rail with it.
- *
- * The defaults stay conservative and both numbers stay arguments, because the console path is shared
- * with a multiplexer this repository does not control, and if it ever does drop output the fix must
- * not need another flash. `dump <off> <len> 16 1` restores the fast pacing that was measured to be
- * lossless. */
+/* Pace output to yield CPU during long dumps; the console has not lost bytes
+ * in the measured captures. Pacing stays configurable for other console paths.
+ * `dump <off> <len> 16 1` selects the measured lossless fast setting.
+ */
 constexpr size_t kDefaultGroupLines{8};
 constexpr int32_t kDefaultPauseMs{60};
 constexpr size_t kMaxGroupLines{64};

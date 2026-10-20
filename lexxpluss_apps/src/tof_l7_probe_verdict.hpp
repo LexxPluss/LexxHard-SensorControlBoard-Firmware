@@ -52,16 +52,10 @@ struct verdict {
     int rc{0};
     /* An L7 answered: the transfers completed and both identity bytes matched. */
     bool present{false};
-    /* SOMETHING ANSWERED AND IS NOT AN L7, which is a THIRD outcome and not a shade of the other
-     * two. The first version of this function collapsed it into `rc == 0, present == false` --
-     * the same answer it gives when nothing answered at all -- and the two need opposite
-     * handling.
-     *
-     * On the chain that collapse was tolerable: addresses are assigned by the enable chain, an
-     * unexpected device is a census anomaly, and enumeration exists to act on it. On the Package
-     * sensor it is not. There the address is fixed at 0x29, the device is always powered, and
-     * "nothing answered" is the abnormal case -- so a wrong identity reported as an empty address
-     * would be followed by an open, onto a device nobody has identified. */
+    /* A responding device with the wrong identity is distinct from no response.
+     * At the Package sensor's fixed address, refuse it before quiesce or open;
+     * there is no chain enumerator to handle the anomaly.
+     */
     bool answered_without_matching_identity{false};
 };
 

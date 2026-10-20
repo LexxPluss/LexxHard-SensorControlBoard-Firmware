@@ -67,27 +67,15 @@ struct scratch {
   VL53L7CX_ResultsData results{};
 };
 
-/* CONCURRENCY: one thread per PORT CONTEXT. Every operation on a given sensor
- * belongs to the thread that owns that sensor's context, because the
- * clear-call-read sequence around each ULD call is not atomic as a whole. Two
- * sensors with different contexts are independent -- that is what the context
- * is for -- so a second bus may be driven by a second thread. Two sensors
- * SHARING a context are not, and must stay on one thread.
- *
- * This replaces an earlier note saying the first-error record was
- * process-global "because ST's callback carries no device context". Every
- * transfer callback does carry one; only VL53L7CX_SwapBuffer() does not. */
+/* Serialize all calls sharing a port context on one thread: clear/call/read
+ * is not atomic. Separate contexts may run independently. Transfer callbacks
+ * carry context; only SwapBuffer lacks a device argument.
+ */
 
-/* Initialise one already-addressed device on the bus named by `port`.
- *
- * The 7-bit address is converted exactly once for ST's 8-bit field. The
- * firmware pointer has no caller-supplied path: it is assigned only from
- * tof_l7_runtime::firmware_data(), after that runtime verified storage against
- * the signed-image accept-list.
- *
- * `port` must outlive every call made against this sensor, and is refused when
- * null or when it names no bus: a sensor that cannot say which controller it is
- * on has nothing to open. */
+/* Open an already-addressed device on port's bus; convert the 7-bit address
+ * once to ST's 8-bit field. Firmware comes only from verified runtime storage.
+ * Reject a null/unbound port; the context must outlive every sensor call.
+ */
 int open(sensor *device, vl53l7cx_port_context *port, uint8_t address_7bit,
          operation_status *status);
 

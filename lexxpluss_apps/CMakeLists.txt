@@ -238,25 +238,10 @@ endif()
 # The explicit source list compiles the ULD core and our platform only. The plugins and the STM32
 # BSP wrapper stay vendored and do not enter any image; see third_party/st/vl53l7cx_uld/UPSTREAM.md.
 if(ENABLE_TOF_L7_ULD)
-    # NO CHAIN DEPENDENCY, and that is a change from the cliff ULD above rather than an oversight.
-    #
-    # This block used to refuse ENABLE_TOF_L7_ULD without ENABLE_TOF_CHAIN "for the same reason as
-    # the cliff ULD": i2c2 belongs to the tug encoder until the chain hands it over, and a ULD that
-    # reaches the same bus would give it two owners. That reason held while the L7 port resolved
-    # DT_NODELABEL(i2c2) itself. It no longer does -- the port takes its controller from a
-    # per-device vl53l7cx_port_context the caller supplies, and references no devicetree node at
-    # all -- so enabling this flag no longer names any bus, and cannot contend for i2c2 by
-    # construction.
-    #
-    # The cliff refusal above stays exactly as it was, because VL53L4CX_I2C_NODE in
-    # third_party/st/vl53l4cx_uld/zephyr/vl53lx_platform.c really is DT_NODELABEL(i2c2). The
-    # asymmetry is the point: one port has been decoupled and the other has not.
-    #
-    # WHAT REPLACES THE REFUSAL IS A RUNTIME REFUSAL, not nothing. tof_l7::open() rejects a null
-    # context and one that names no controller, and the port refuses every transfer without one.
-    # Handing an L7 the i2c2 device while the tug encoder still owns it is now a wiring decision in
-    # whoever builds the context, which is where the knowledge lives; a configure-time flag could
-    # only have guessed at it.
+    # L7 receives its bus from a per-device context, so this flag needs no chain.
+    # open() and every transfer refuse an absent/unbound context. Callers must
+    # avoid controllers already owned by another device. The L4 chain guard stays:
+    # its port still resolves i2c2 directly.
 
     # THE FILESYSTEM IS NOT REMOVED HERE, and the reason is a measurement rather than inheritance.
     #
@@ -309,17 +294,8 @@ if(ENABLE_TOF_L7_ULD)
     add_definitions(-DENABLE_TOF_L7_ULD)
 endif()
 
-# Package ToF bench driver. BENCH ONLY, and a separate flag rather than a corner of the L7 one:
-# tof_package_l7 has no caller, so --gc-sections drops it and every size measured for the L7 flag
-# says nothing about what the lifecycle costs. This is what calls the path, which is the only way
-# the linked cost becomes a number -- and binding it into a product entry point instead would make
-# a bring-up decision that belongs to the Package configuration, which does not exist yet.
-#
-# It registers a shell command group and nothing else: no thread, no timer, no SYS_INIT. It never
-# provisions the blob, publishes nothing on CAN and moves no shutter; the file says why for each.
-#
-# No product configuration sets this. The guard inside the source also refuses the combination
-# without ENABLE_TOF_L7_ULD, so a bench image cannot be built without the driver it drives.
+# Package bench: registers shell commands only, with no automatic acquisition.
+# Requires the L7 driver and a provisioned blob; no product target enables it.
 if(ENABLE_TOF_PACKAGE_BENCH)
     if(NOT ENABLE_TOF_L7_ULD)
         message(FATAL_ERROR
