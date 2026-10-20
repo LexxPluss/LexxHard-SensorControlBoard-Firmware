@@ -82,7 +82,12 @@ fi
 # too -- one #include away from a product build carrying 87 test vectors and a
 # RELEASE_FORBIDDEN banner. "Production only uses contract.h" was a comment; this makes
 # it a rule.
+# Every vector header in docs/can belongs here, not only the cliff ones: the include path is
+# per-directory, so each new generator's output is reachable from production the moment it
+# lands. A name missing from this list is a rule that silently stopped covering the tree.
 TEST_ONLY_ARTEFACTS='tof_cliff_contract_vectors\.h|tof_contract_vectors\.h'
+TEST_ONLY_ARTEFACTS="$TEST_ONLY_ARTEFACTS|tof_pkg_grid_payload_vectors\.h"
+TEST_ONLY_ARTEFACTS="$TEST_ONLY_ARTEFACTS|tof_pkg_wire_n_vectors\.h"
 src_files=$(git ls-files 'lexxpluss_apps/src' || true)
 if [ -n "$src_files" ]; then
     while IFS= read -r f; do

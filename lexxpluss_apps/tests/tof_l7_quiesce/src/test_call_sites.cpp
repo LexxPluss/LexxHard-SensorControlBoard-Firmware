@@ -131,6 +131,24 @@ size_t count_of(const char *haystack, const char *needle)
 
 /* The body of a function: from its signature's opening brace to the first closing brace in column
  * one, which is how this repository's sources are written. Returned as offsets into `stripped_`. */
+/* The body that follows a point already located in `stripped_`. Split out of body_of() so that
+ * every occurrence of a signature can be walked, not only the first: a gate that can see one
+ * definition cannot say anything about the others. */
+bool body_at(const char *start, size_t *from, size_t *to)
+{
+    if (start == nullptr)
+        return false;
+    const char *const opened{strchr(start, '{')};
+    if (opened == nullptr)
+        return false;
+    const char *const end{strstr(opened, "\n}")};
+    if (end == nullptr)
+        return false;
+    *from = static_cast<size_t>(opened - stripped_);
+    *to = static_cast<size_t>(end + 2 - stripped_);
+    return true;
+}
+
 bool body_of(const char *signature, size_t *from, size_t *to)
 {
     const char *const start{strstr(stripped_, signature)};
@@ -394,6 +412,104 @@ ZTEST(tof_l7_quiesce_call_sites, test_every_command_that_starts_a_round_goes_thr
         zassert_equal(count_of(body_, "lifecycle_.take_over_unknown_state("), 0U,
                       "%s calls a lifecycle round directly, bypassing the boundary", signature);
     }
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_nothing_in_the_adapter_reassigns_the_sequence_source)
+{
+    /* THE DEFECT THIS EXISTS FOR. `stream` used to assign a fresh tof_seq_boot_local::source at the
+     * start of every run, so a second run in the same boot reissued 1, 2, 3 and a consumer rejected
+     * all of it as not newer than the first run's. The source's documented limitation is that
+     * numbers repeat after a RESET, which a reader could reasonably take to mean a reboot; a
+     * per-command reset made them repeat between two commands.
+     *
+     * The rule is therefore about the whole adapter, not one command: the source's lifetime is the
+     * device's, and nothing here may shorten it. A publisher re-initialised per run is correct and
+     * untouched by this -- counts describe a run, numbers describe a device.
+     *
+     * Matched by scanning for the identifier followed by an assignment rather than by a fixed
+     * substring, because "boot_sequence_ =" and "boot_sequence_=" are the same defect and a
+     * substring check would catch only whichever one somebody happened to write. */
+    read_and_strip(ADAPTER_SOURCE);
+
+    size_t mentions{0};
+    size_t assignments{0};
+    static const char kName[]{"boot_sequence_"};
+    for (const char *at{strstr(stripped_, kName)}; at != nullptr;
+         at = strstr(at + sizeof kName - 1U, kName)) {
+        ++mentions;
+        const char *c{at + sizeof kName - 1U};
+        while (*c == ' ' || *c == '\t' || *c == '\n' || *c == '\r')
+            ++c;
+        /* `==` is a comparison, not an assignment, and must not be mistaken for one. */
+        if (*c == '=' && *(c + 1) != '=')
+            ++assignments;
+    }
+
+    zassert_equal(assignments, 0U,
+                  "something in %s assigns the sequence source. One source spans the boot; "
+                  "re-creating it reissues numbers a consumer has already seen", ADAPTER_SOURCE);
+    /* A probe that matched nothing would pass. The declaration, the issue adapter and the run's
+     * report are the legitimate mentions, so there are at least three. */
+    zassert_true(mentions >= 3U, "only %zu mentions of %s were found, so this gate read nothing",
+                 mentions, kName);
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_no_shell_command_reaches_a_round_without_the_boundary)
+{
+    /* THE DERIVED HALF of the check above. That test names the two commands that DO start a round
+     * and asserts they delegate, which is a positive property and cannot be derived -- a command
+     * that starts no round must not call run_round either. This one needs no list: it walks every
+     * `int cmd_` definition in the adapter and asserts that none of them reaches a lifecycle round
+     * entry or opens a round boundary of its own.
+     *
+     * WHY IT WAS ADDED. A third command (`stream`) landed in this file without the named list
+     * changing, correctly -- it starts no round. But that is exactly how a fourth could land that
+     * DID start one and was never checked, because nothing fails when the list falls behind the
+     * file. The hazard the list guards against is derivable, so it is derived, and the list is left
+     * to carry only the claim that is not. */
+    read_and_strip(ADAPTER_SOURCE);
+
+    size_t commands{0};
+    const char *at{stripped_};
+    for (;;) {
+        at = strstr(at, "int cmd_");
+        if (at == nullptr)
+            break;
+
+        /* The command's name, for a failure message that points at a function rather than an
+         * offset. */
+        char name[64]{};
+        size_t n{0};
+        for (const char *c{at}; *c != '\0' && *c != '(' && n + 1U < sizeof name; ++c, ++n)
+            name[n] = *c;
+        name[n] = '\0';
+
+        size_t from{0}, to{0};
+        zassert_true(body_at(at, &from, &to), "%s has no body this gate can read", name);
+        const size_t len{to - from};
+        zassert_true(len < kBufferSize, "%s does not fit this gate's buffer", name);
+        memcpy(body_, stripped_ + from, len);
+        body_[len] = '\0';
+
+        zassert_equal(count_of(body_, "lifecycle_.bring_up("), 0U,
+                      "%s calls a lifecycle round directly, bypassing the boundary that clears the "
+                      "step records", name);
+        zassert_equal(count_of(body_, "lifecycle_.take_over_unknown_state("), 0U,
+                      "%s calls a lifecycle round directly, bypassing the boundary that clears the "
+                      "step records", name);
+        zassert_equal(count_of(body_, kStepBegin), 0U,
+                      "%s opens a round boundary of its own, so there are now two places that "
+                      "decide when the step records are cleared", name);
+
+        ++commands;
+        at = stripped_ + to;
+    }
+
+    /* A gate that found nothing proves nothing. There are three commands with `int cmd_` bodies at
+     * the time of writing and the count only grows, so a floor is the right assertion -- an exact
+     * number would be one more list to maintain. */
+    zassert_true(commands >= 3U, "only %zu shell command bodies were found in %s", commands,
+                 ADAPTER_SOURCE);
 }
 
 ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clears_a_step_record)
