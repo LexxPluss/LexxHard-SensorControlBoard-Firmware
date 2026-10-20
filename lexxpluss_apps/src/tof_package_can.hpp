@@ -25,40 +25,11 @@
 
 #pragma once
 
-/*
- * The CAN transport for Package ToF frames: can2, two configured identifiers, and nothing else.
- *
- * NOT IN A PRODUCT IMAGE. It is compiled under ENABLE_TOF_PACKAGE_BENCH, where a human starts the
- * acquisition at a shell, and under ENABLE_TOF_PACKAGE_AUTO, where a thread does it at boot;
- * neither is set by any product configuration, so no product path transmits a Package frame. The
- * runtime answered the two things the bench could not -- its own thread with its own measured
- * stack -- and left the identifier question below exactly where it was: open.
- *
- * NO IDENTIFIER HAS A DEFAULT, AND NONE IS COMPILED IN. Nothing has been registered for this
- * stream: 0x21A and 0x21B appear in a note as candidates and are not an allocation. A number
- * written into this header would BECOME the registration by being the only one anybody could find,
- * which is the trap the consumer's router (LexxHard-SCBDriver, tof_package_can_router.hpp) is kept
- * out of for the same reason. So both identifiers arrive from the caller, zero is refused as
- * "unset" even though identifier zero is legal on a bus, and the pair is printed at the shell
- * before the first frame so that whoever runs it can check them against the registry at the moment
- * of use.
- *
- * THE LISTEN WINDOW IS EVIDENCE, NOT BOOKKEEPING. Before streaming onto a live bus, this module can
- * listen on both identifiers and report whether anything is already arriving on them. A duplicate
- * table of this robot's allocated identifiers was the obvious alternative and was rejected: it
- * would be a second copy of an allocation that lives in the zcan_* headers and the generated
- * contract, and a second copy is how the two drift -- this project has fixed that defect more than
- * once. Reading the actual bus cannot drift.
- *
- * WHAT SILENCE DOES NOT PROVE, stated here because the temptation to over-read it is obvious:
- * nothing arriving during the window does NOT mean the number is unallocated. It means nobody
- * transmitted on it while we were listening. An identifier that is allocated to a node that is
- * idle, absent, or polled only on demand is silent and still taken. The window catches the case
- * that is actively harmful -- transmitting into somebody else's live traffic -- and the registry is
- * what settles ownership.
- *
- * IT DOES NOT CONFIGURE can2. zcan_main owns the bitrate, the mode and the start; configuring it
- * again here would fight whichever ran second. Same rule as tof_cliff_can, and the same reason.
+/* Package CAN transport on can2 for bench or auto builds; neither is a default
+ * product configuration. Supply both IDs explicitly: zero means unset and
+ * 0x21A/0x21B remain candidates. A listen window rejects observed traffic;
+ * silence does not establish ownership. Consult the allocation registry.
+ * Do not duplicate that registry or reconfigure can2: zcan_main owns it.
  */
 
 #include <stdint.h>

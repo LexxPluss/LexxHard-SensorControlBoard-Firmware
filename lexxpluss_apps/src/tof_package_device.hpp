@@ -25,26 +25,10 @@
 
 #pragma once
 
-/*
- * THE PACKAGE ToF DEVICE, as one owner: the port context, the ULD scratch objects, the lifecycle
- * hooks, and the bind that ties them together. Every caller that drives the real sensor on I2C4
- * goes through here, so the sensor has one set of objects rather than one per entry point.
- *
- * IT WAS EXTRACTED FROM tof_package_bench.cpp RATHER THAN WRITTEN, because that file held both
- * halves: a device layer and a shell. The shell half is still there; this is the half an
- * unattended runtime needs, and a second copy of it would be a second set of .bss objects pointed
- * at one piece of hardware.
- *
- * EXACTLY ONE OWNER EXISTS IN ANY IMAGE, and the build enforces it: ENABLE_TOF_PACKAGE_BENCH and
- * ENABLE_TOF_PACKAGE_AUTO are mutually exclusive, so either the shell drives this device or the
- * runtime thread does, never both. That is what lets the objects below stay unlocked. The bench's
- * original wording -- "the shell runs one command at a time to completion" -- was true of a shell
- * and is not true of a thread, so the guarantee was moved into the build rather than reasoned
- * about again here.
- *
- * NOTHING HERE DECIDES ANYTHING. There is no policy in this module: no retry, no backoff, no
- * choice between entry points, no rate. It owns objects and forwards calls, and every rule lives
- * either below it (tof_package_l7's lifecycle) or above it (the shell, the runtime).
+/* One owner for the I2C4 port, ULD scratch, lifecycle hooks and binding.
+ * Bench and auto builds are mutually exclusive, allowing serialized access
+ * without locks. Callers use this layer rather than duplicating device state.
+ * Retries, backoff, entry selection and rate belong to their policies.
  */
 
 #include <stdint.h>
@@ -101,19 +85,11 @@ const tof_l7::sample &last_sample();
 tof_package_stream::publisher &publisher();
 tof_seq_boot_local::source &boot_sequence();
 
-/* ONE ROUND ON THE DEVICE, WITH ITS BOUNDARY APPLIED. `by_takeover` picks the entry:
- * take_over_unknown_state(), which proceeds without the quiesce, or bring_up(), which does not.
- * Returns what the lifecycle returned.
- *
- * THE BOUNDARY IS WHY THIS EXISTS RATHER THAN THE CALLER CALLING THE LIFECYCLE. The step records
- * must be cleared when a round BEGINS and at no other time, and whether one begins is the
- * lifecycle's answer -- an earlier version of the bench cleared first and asked afterwards, so a
- * call that performed no operation erased the failing open before it. There is now more than one
- * caller (a shell and an unattended runtime), and two copies of that ordering is two chances to
- * get it wrong, so it lives here and the call-site gate asserts there is exactly one.
- *
- * The quiesce record is a different module and is deliberately NOT cleared with them: the quiesce
- * happens inside this very call, and its observation is the one the last window needed. */
+/* Apply the round boundary, then call bring_up() or take_over_unknown_state().
+ * Clear step records only when the lifecycle accepts a new round, before its
+ * first step; preserve evidence on refusal. Keep the separate quiesce record.
+ * All callers use this entry so the boundary ordering has one owner.
+ */
 int begin_round(bool by_takeover);
 
 /* The adapter the publisher's injected sequence source needs. It exists only because a member

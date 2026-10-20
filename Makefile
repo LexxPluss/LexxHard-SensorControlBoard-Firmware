@@ -533,41 +533,13 @@ firmware_tof_package_bench:
 	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin
 	printf '\377' | dd of=out/zephyr_tof_package_bench.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_bench.test.bin) - 24)) conv=notrunc status=none
 
-# THE UNATTENDED PACKAGE ToF IMAGE: one thread binds the sensor at boot, keeps it measuring and
-# puts every acquisition on can2 with nobody typing anything. The bench's bind/takeover/stream over
-# the same device layer and the same publication rule, with the shell gone -- and the build refuses
-# to carry both, because one sensor cannot have two owners.
-#
-# THE THREE NUMBERS ARE HERE BECAUSE THIS IS WHERE THEY ARE VISIBLE. 0x21A and 0x21B are the
-# identifiers this path has been observed on and are EXPERIMENTAL CANDIDATES, not an allocation:
-# nothing is registered for this stream, the firmware refuses to compile without being told them,
-# and the runtime listens on both for a second before it transmits anything.
-#
-# 5 Hz, WHICH IS THE ONLY RATE THIS SENSOR HAS EVER RUN AT. The bench bound it at 5 and measured
-# roughly 195 ms between grids. An earlier version of this target asked for 10, which would have
-# changed the operating point in the same flash that first removed the human -- and a failure then
-# could not be attributed to either. The sustainable rate is T7's question and is answered by
-# measuring, not by this line; raising it is a separate round with its own acceptance.
-#
-# THE UNATTENDED REVERT IS ARMED, which is the opposite of what this target first did and the
-# correction is worth stating. The reasoning for leaving it off was that an image meant to stay up
-# should not carry a timer that reboots it. That misread what being unconfirmed buys: a revert
-# needs something to RESET the board, and the hazard this image adds is a Package thread that
-# wedges while the board controller keeps feeding the watchdog -- precisely the case where nothing
-# will. So a first candidate keeps the timer and gets kWindowMinutes per flash, with no way to
-# extend it: `hold` belongs to the `pkg_tof` command group, which only a bench build registers.
-# The ordinary Zephyr shell is still there, so this bounds the commands rather than the console.
-#
-# The configuration meant to stay resident passes -DTOF_PACKAGE_AUTO_DEADMAN=OFF, once somebody
-# has watched the image run. That is a separate decision taken after an acceptance, not a default,
-# and CMake prints a warning when it is taken.
-#
-# BOOT-LOCAL SEQUENCE NUMBERS. They restart at 1 after any reset, so a consumer that outlives a
-# board reset sees them repeat. That is a property of this image, and the reason it is still an
-# observation of the path rather than evidence of candidate N's identity.
-#
-# -p always, padded test image, and the trailer cleared 24 bytes from the end: all three for the
-# reasons firmware_tof_package_bench gives above.
+# Auto Package image: one owner, no pkg_tof commands; ordinary shell remains.
+# Use explicit experimental IDs 0x21A/0x21B and configured 5 Hz. Sustainable
+# rate and ID allocation are separate acceptance items. A one-second listen
+# rejects observed traffic but cannot establish ownership.
+# Keep the deadman armed for candidate tests: unconfirmed images revert only
+# after reset. Auto has no hold command. Permanent residency requires an
+# explicit TOF_PACKAGE_AUTO_DEADMAN=OFF decision and its own acceptance.
 .PHONY: firmware_tof_package_auto
 firmware_tof_package_auto:
 	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify

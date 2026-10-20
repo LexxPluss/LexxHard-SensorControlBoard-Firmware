@@ -74,31 +74,13 @@ K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
 #endif
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
 #ifdef ENABLE_TOF_PACKAGE_AUTO
-/* 4,096 B RATHER THAN THE 2,048 B EVERY OTHER THREAD HERE GETS, and the difference is measured
- * rather than chosen. Summed from THIS configuration's own ELF -- not inherited from the bench's,
- * which overlays/tof_package_bench.conf explicitly refuses to let anyone do -- by adding the
- * prologue allocations (push, vpush, sub sp) along each branch, with the indirect edges added by
- * hand: the lifecycle reaches every device operation through a hook pointer and the publisher
- * reaches the bus through a sink pointer, so neither is visible to the disassembly.
- *
- * THE DEEPEST BRANCH IS THE BLOB VERIFICATION, not the ULD, which is the same answer the bench
- * got:
- *
- *   run 116 + claim 12 + device::begin_round 8 + lifecycle::begin_round 24 + bring_up 0
- *     + hook_verified 0 + ensure_verified 8 + bootstrap_impl 68 + verify_stored 28
- *     + blob verify 524 + tc_sha256_final 24 + compress 116            = 928 B
- *
- * The other two are well clear of it. The firmware download is 636 B (the same prefix, then
- * hook_open 24 + vl53l7cx_init 32 + _vl53l7cx_send_offset_data 420, which is 420 B of locals in
- * one frame), and a poll that publishes a grid is about 208 B (run 116 + send 8 + publish 52
- * + encode 0 + can send 32). acquire() is inlined into run(), which is why run()'s own frame
- * carries 116 B.
- *
- * So the worst case is roughly 1,032 B once the Cortex-M exception frame is allowed for -- up to
- * 104 B with the FPU in play, which these sums exclude. 2,048 B would survive it. The margin is
- * taken anyway for the two reasons that remain after the measurement: an indirect edge missed by
- * the hand-added list is invisible to it, and this thread runs unattended at every boot, where a
- * stack overflow costs more than 2 KB of .bss does. */
+/* Reserve 4,096 B for the auto thread, using its own ELF call graph.
+ * Static frame sums (including manually resolved hook/sink calls): blob
+ * verification 928 B, firmware download 636 B, publishing about 208 B.
+ * Allow up to 104 B for an FPU exception frame (~1,032 B total on the deepest
+ * measured path). Keep margin for missed indirect edges; this is not a
+ * measured runtime stack-watermark bound. Recheck after call-graph changes.
+ */
 K_THREAD_STACK_DEFINE(tof_package_runtime_stack, 4096);
 #endif
 
@@ -413,22 +395,10 @@ int main()
 #endif
 
 #if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO_DEADMAN)
-    // THE OPPOSITE DECISION FROM THE BLOCK ABOVE, and deliberately so. A chain commissioning image
-    // confirms itself because the CAN-DFU reboot cascade would otherwise revert it before anyone
-    // could interact with it. A Package bench image is never confirmed -- there is no confirm
-    // command in it at all -- so its revert is intact, and what it lacks is something to produce the
-    // reset that applies it. This arms that: see tof_package_bench_deadman.hpp for the case it
-    // covers that the watchdog does not.
-    //
-    // Armed here, after thread creation, so the window belongs to the operator rather than to boot.
-    // A wedge BEFORE this point is the watchdog's case, not this one.
-    //
-    // THE UNATTENDED RUNTIME ARMS IT FOR THE SAME REASON AND ON A SHORTER LEASH. That image is
-    // meant to stay up, which is exactly why being unconfirmed protects it less: a revert needs
-    // something to reset the board, and a Package thread that wedges while the board controller
-    // keeps feeding the watchdog leaves nothing that will. It registers no `pkg_tof` command
-    // group, so the window cannot be extended -- one flash, one window. The residency
-    // configuration turns the flag off once the image has been watched.
+    // Keep Package candidates unconfirmed and arm the reset that applies rollback.
+    // Bench may extend its window via hold; auto has no pkg_tof command group.
+    // Ordinary Zephyr shell remains. A permanently resident auto build explicitly
+    // opts out of the deadman; watchdog coverage does not replace this timer.
     lexxhard::tof_package_bench_deadman::arm();
 #endif
 

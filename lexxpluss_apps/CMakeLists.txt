@@ -321,14 +321,8 @@ if(ENABLE_TOF_PACKAGE_BENCH)
     add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
 endif()
 
-# THE UNATTENDED RUNTIME. One thread that binds the Package sensor at boot, keeps it measuring and
-# puts every acquisition on can2 with nobody typing anything -- the bench's bind/takeover/stream
-# without the shell, over the same device layer and the same publication rule.
-#
-# IT NEEDS ITS IDENTIFIERS AND ITS RATE FROM THE BUILD, with no defaults anywhere in the source:
-# none of the three is registered or accepted, and a number compiled into a header becomes the
-# answer by being the only one anybody can find. The source refuses to compile without them, so a
-# target that forgets one fails here rather than transmitting on something nobody chose.
+# Auto runtime reuses the device and publication layers. Require explicit
+# CAN IDs and acquisition rate from the build; none has a product default.
 if(ENABLE_TOF_PACKAGE_AUTO)
     if(NOT ENABLE_TOF_L7_ULD)
         message(FATAL_ERROR
@@ -354,14 +348,10 @@ if(ENABLE_TOF_PACKAGE_AUTO)
     if(NOT DEFINED TOF_PACKAGE_AUTO_QUIESCE_FIRST)
         set(TOF_PACKAGE_AUTO_QUIESCE_FIRST 1)
     endif()
-    # THE UNATTENDED REVERT, ON BY DEFAULT. Being unconfirmed only protects an image once
-    # something resets the board, and the hazard this runtime adds is a Package thread that wedges
-    # while the board controller keeps feeding the watchdog -- nothing would reset it. So the
-    # first acceptance of a candidate keeps the timer and the residency configuration passes
-    # -DTOF_PACKAGE_AUTO_DEADMAN=OFF once the image has been watched. Defaulting it ON means
-    # forgetting the flag leaves a machine protected rather than stranded. The window is
-    # kWindowMinutes and CANNOT be extended here: `hold` belongs to the `pkg_tof` command group,
-    # which only a bench build registers. The ordinary Zephyr shell is still present.
+    # Default the deadman ON: an unconfirmed image needs a reset to revert, and
+    # a wedged Package thread may leave the board watchdog fed. Permanent
+    # residency explicitly opts out. No pkg_tof/hold command exists in auto;
+    # the ordinary Zephyr shell remains available.
     if(TOF_PACKAGE_AUTO_DEADMAN)
         add_definitions(-DENABLE_TOF_PACKAGE_AUTO_DEADMAN)
         message(STATUS "package_tof runtime: unattended revert ARMED (one window per flash)")

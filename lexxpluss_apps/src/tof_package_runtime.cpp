@@ -82,18 +82,11 @@ constexpr int32_t kListenWindowMs{1000};
  * and the cost of polling late is latency added to every grid. */
 constexpr int32_t kPollIntervalMs{20};
 
-/* THE CADENCE, which tof_package_auto::what_to_send() applies and this file only supplies.
- *
- * The diagnostic floor is 500 ms: a consumer cannot tell a dead producer from a silent one, so a
- * failing runtime keeps saying so -- on a cadence, not per pass, which at the poll interval above
- * would be fifty frames a second reporting one unchanged condition.
- *
- * A GRID IS OVERDUE AFTER FIVE NOMINAL PERIODS, never sooner than that floor. Five because the
- * only measurement there is put this sensor at roughly 195 ms against a 200 ms nominal period at
- * the bench's 5 Hz, so one period of slack says nothing and five is a silence no healthy sensor
- * produced. The floor matters at high rates: at 10 Hz five periods is 500 ms and the two agree, at
- * 15 Hz five periods would be 333 ms and the runtime would decide a grid was overdue more often
- * than it is allowed to say so. */
+/* Diagnostics have a 500 ms minimum interval, not one per 20 ms poll.
+ * A grid is overdue after max(five nominal periods, 500 ms). This tolerance
+ * comes from the observed ~195 ms cadence at configured 5 Hz; it is not a
+ * sampling-freshness or sustainable-rate guarantee.
+ */
 constexpr int64_t kNominalPeriodMs{1000 / TOF_PACKAGE_AUTO_HZ};
 constexpr int64_t kDiagnosticIntervalMs{500};
 constexpr int64_t kGridOverdueMs{5 * kNominalPeriodMs > kDiagnosticIntervalMs ? 5 * kNominalPeriodMs

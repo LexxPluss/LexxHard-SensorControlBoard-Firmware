@@ -25,35 +25,15 @@
 
 #pragma once
 
-/*
- * THE UNATTENDED PACKAGE ToF RUNTIME: one thread that brings the sensor up at boot, keeps it
- * measuring, and puts every acquisition on can2 -- with nobody typing anything.
+/* Boot-driven Package ToF thread using the shared device, stream and CAN layers.
+ * ENABLE_TOF_PACKAGE_AUTO starts it; the bench build cannot own the same sensor.
  *
- * It is the bench's `bind` + `takeover` + `stream` without the shell, and deliberately not a copy
- * of them: the device is tof_package_device, the publication rule is tof_package_stream, the
- * transport is tof_package_can, and WHICH of those to do next is tof_package_auto's policy. What
- * is left here, and all that is left here, is the Zephyr part: a thread, a clock, two build-time
- * numbers turned into a configuration, and the loop that asks the policy and acts on the answer.
- *
- * ENABLED BY THE BUILD AND BY NOTHING ELSE. ENABLE_TOF_PACKAGE_AUTO is what starts this thread,
- * and it cannot be combined with ENABLE_TOF_PACKAGE_BENCH: one owner per image, which is what lets
- * the device layer's objects stay unlocked.
- *
- * WHAT IT WILL NOT DO:
- *
- *   - It will not transmit on identifiers somebody else is using. The identifiers for this stream
- *     are UNREGISTERED candidates, so the thread listens on both before it sends anything and
- *     refuses the whole run if either carries traffic. A refusal here sends nothing at all, not
- *     even a diagnostic: a diagnostic would go out on the colliding identifier.
- *   - It will not keep claiming a sensor that will not come up. Every claim is counted against a
- *     budget the policy holds, and when it is gone the thread keeps publishing diagnostics and
- *     stops touching the device.
- *   - It will not provision the blob. ensure_verified() is asked and reported; an unprovisioned
- *     board is a refusal to acquire, not a cue to write 86 KB into storage_partition unattended.
- *   - It will not pretend its sequence numbers are durable. The source is boot-local: numbers
- *     restart at 1 after any reset, so a consumer that outlives a board reset sees them repeat.
- *     That is a property of this build, stated here, and the reason the stream is still an
- *     observation of the path rather than evidence of an identity.
+ * Before sending, listen on both configured IDs. Observed traffic refuses the
+ * whole run, including diagnostics; silence does not prove an ID is unallocated.
+ * Claims are budgeted. Exhaustion stops new claims while diagnostics, existing
+ * ranging reads and owed stops continue. Verify the provisioned blob; never
+ * provision it unattended. Boot-local numbering restarts at 1 after reset,
+ * so this image does not establish persistent acquisition identity.
  */
 
 #if defined(ENABLE_TOF_PACKAGE_AUTO)

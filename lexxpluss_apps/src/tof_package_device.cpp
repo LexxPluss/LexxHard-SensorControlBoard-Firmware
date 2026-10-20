@@ -23,15 +23,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/*
- * The objects and the hooks. See tof_package_device.hpp for why there is one owner and why nothing
- * here decides anything.
- *
- * STACK. sizeof(VL53L7CX_Configuration) is 2,324 B against a 2,048 B default thread stack: one
- * object overruns it before any call chain is counted. So nothing here puts a configuration, a
- * scratch or a sample on the stack. The caller's stack is sized against a measured figure in its
- * own place -- overlays/tof_package_bench.conf for the shell thread, and the stack definition in
- * main.cpp for the runtime thread.
+/* Single-owner device objects and hooks; policy lives above this layer.
+ * Keep configuration, scratch and samples in .bss: one 2,324 B configuration
+ * already exceeds a default 2,048 B stack. Size each caller's stack separately.
  */
 
 #include <errno.h>
@@ -70,19 +64,10 @@ tof_l7::scratch scratch_;
 tof_package::lifecycle lifecycle_;
 bool bound_{false};
 
-/* THE ADDRESS-ONLY SCRATCH CONFIGURATION, IN .bss AND NOT ON THE STACK.
- *
- * sizeof(VL53L7CX_Configuration) is 2,324 B -- it carries the ULD's temporary buffer -- against a
- * 2,048 B default shell stack. Declaring one as a local, which is what the first version of
- * hook_probe() and hook_quiesce() each did, overruns the shell stack with a single object, before
- * any of the ULD's own frames are counted. The same mistake one layer down already cost this
- * project a boot loop: see overlays/tof_l7.conf.
- *
- * ONE object serves both hooks, because the shell runs one command at a time to completion and
- * neither hook retains anything past its own return. It is zeroed on every use for the reason the
- * chain's recovery scratch is: a probe must ask about the bus, not about a previous session. And it
- * is deliberately NOT sensor_, whose object belongs to a lifecycle -- an address-only call made on
- * it would write over a session's state. */
+/* Keep the 2,324 B address-only scratch in .bss. One owner serializes probe
+ * and quiesce; zero it per call. Never use sensor_ as scratch or overwrite
+ * its live session. Caller stack measurements are separate.
+ */
 VL53L7CX_Configuration addressed_scratch_;
 
 /* WHERE PATCH 0005 WRITES. Beside the scratch configuration and for the same stack reason, and
@@ -103,14 +88,10 @@ tof_l7::sample last_sample_;
 tof_package_stream::publisher publisher_;
 tof_seq_boot_local::source boot_sequence_;
 
-/* THE TWO ZONE COUNTS ARE TIED HERE, where the arrays cross from one to the other. cmd_stream
- * hands last_sample_'s arrays to the publisher together with a length of
- * tof_package_stream::kZones, and the publisher's length check believes that number -- it cannot
- * measure the caller's buffer. So if the sensor layer ever moved to the ULD's 4x4 resolution,
- * tof_l7::kZoneCount would become 16, the claim would stay 64, and the publisher would read 48
- * zones past the end of a .bss object while every length check passed. The two constants are
- * independent by design (one is a wire layout, the other a sensor mode) and nothing else makes
- * them agree, so the agreement is asserted at the only place that depends on it. */
+/* Tie sample array size to the wire's zone count where the buffers cross layers.
+ * The publisher trusts that count; a resolution change must fail at compile
+ * time instead of reading past the sample.
+ */
 static_assert(tof_l7::kZoneCount == tof_package_stream::kZones,
               "the sensor's grid and the wire's grid must have the same number of zones: "
               "every caller hands last_sample_'s arrays to the publisher with the wire's count, "
@@ -128,28 +109,14 @@ VL53L7CX_Configuration *addressed(uint8_t addr_7bit)
 
 /* ---- what the watchdog can see of this thread ---- */
 
-/* THE ONLY VIEW THE WATCHDOG HAS OF THE PACKAGE PATH.
- *
- * The feeder judges the ToF chain's counters, and a Package-only image moves none of them, so the
- * feeder stays in phase::waiting and feeds for ever -- without this the Package thread would be the
- * one thread on the board with no watchdog coverage at all. What the waiting phase DOES judge is an
- * L7 operation that has begun and not ended, bounded by bounds::l7_ms, and that is exactly the
- * hazard here: an I2C transfer or a ULD call that never returns while the board controller keeps
- * feeding on schedule.
- *
- * SO EVERY ULD OPERATION IS BRACKETED AND NOTHING ELSE IS. The silence BETWEEN operations is not
- * judged in this phase, which is correct rather than a gap being hidden: a round the policy
- * refuses, a budget that runs out, a sensor that keeps answering `not ready` all stop the
- * operations deliberately, and a watchdog that reset the board for those would turn ordinary fault
- * reporting into a reset loop. Judging genuine silence needs an expectation only this thread can
- * state, and it is not in this commit.
- *
- * ensure_verified() IS DELIBERATELY NOT BRACKETED. It reads and verifies the stored blob -- the
- * operation the waiting phase is mostly spent on, and the one nobody has timed against
- * bounds::l7_ms on this board. Bracketing it would risk a false reset on a cold boot, which is the
- * failure this wiring exists to prevent rather than to introduce.
- *
- * Scoped rather than two calls, so no return path can leave a begin without its end. */
+/* Bracket ULD operations with scoped L7 progress so the feeder's waiting phase
+ * can bound an operation that never returns (bounds::l7_ms). Package does not
+ * satisfy the chain baseline; do not claim it.
+ * This does not monitor silence between operations or ensure_verified().
+ * Blob verification has no measured bound against l7_ms; refused claims,
+ * exhausted budgets and not-ready responses must not create reset loops.
+ * The scope guarantees end() on every returning path.
+ */
 struct watched_uld_operation {
     watched_uld_operation() { runtime_progress::begin(runtime_progress::activity::l7); }
     ~watched_uld_operation() { runtime_progress::end(runtime_progress::activity::l7); }
@@ -257,15 +224,9 @@ int hook_quiesce(void *, uint8_t addr_7bit)
     const uint32_t elapsed_us{
         tof_l7_quiesce::span_us(started_us, k_ticks_to_us_floor64(k_uptime_ticks()))};
 
-    /* READ ONCE, RECORDED ONCE, AND EVERY FIELD FROM THIS CALL.
-     *
-     * The earlier version returned from three places and kept nothing, so a -5 could not be placed
-     * in a layer. It also must not become a version that reads these back later: the port's errno
-     * and completed count are sticky per context, so whatever runs next owns them. They are taken
-     * here, between the ULD's return and anything else touching the bus.
-     *
-     * ONE RETURN, so "every path records" is structural rather than a thing to remember -- success
-     * included, which is what makes a successful quiesce followed by a later failure legible. */
+    /* Record every return path, including success. Snapshot sticky port errno and
+     * transfer count immediately after this read, before another operation runs.
+     */
     const tof_l7_quiesce::inputs observed{
         .argument_fault = vl53l7cx_port_argument_fault(),
         .port_errno = vl53l7cx_port_error(&port_ctx),
@@ -413,17 +374,10 @@ int begin_round(bool by_takeover)
 
 int bind(uint8_t frequency_hz, bind_refusal *why)
 {
-    /* RE-BINDING OVER A SESSION NOBODY HAS ACCOUNTED FOR IS REFUSED, and refused FIRST, before a
-     * single byte is written. The earlier version reset port_ctx, sensor_ and lifecycle_
-     * unconditionally, so a second `bind` silently erased `ranging`, an unpaid stop debt, or a
-     * blocked-after-the-budget state. None of those is bookkeeping: each is the only record that a
-     * device may still be measuring, and the way back from forgetting that on this sensor is a
-     * machine power cycle.
-     *
-     * Two independent guards, because one of them is bookkeeping and the other is not: the
-     * lifecycle's own answer, which knows whether anything was ever opened; and tof_l7::close()
-     * below, which refuses `running` and `stop_unconfirmed` from the sensor's own state and
-     * therefore holds even if the bookkeeping above it were wrong. */
+    /* Check lifecycle discardability before changing objects. The independent
+     * close() guard also rejects running/stop_unconfirmed, so rebind cannot erase
+     * a live session or unpaid stop debt.
+     */
     if (why != nullptr)
         *why = bind_refusal::none;
 
