@@ -763,14 +763,38 @@ ZTEST(tof_cliff_runtime, test_an_installed_mapping_keys_both_grid_positions_from
 
     const acq::source_desc *d{rt::descriptors_for_test()};
 
-    /* THE SOURCE IDS THE SPEC ASSIGNS, not the descriptor indices they coincide with today. The
-     * values are equal here by construction of dasher_spec; what is being pinned is where they
-     * came from, which is why the two cliff assertions are beside them -- those are keyed from the
-     * role instead, through a different table. */
+    /* The production spec, where source 0 sits at position 1 and source 1 at position 2. */
     zassert_equal(d[0].role_id, 0);
     zassert_equal(d[1].role_id, 1);
     zassert_equal(d[2].role_id, 0, "the cliff roles are keyed through source_id_of(), unchanged");
     zassert_equal(d[5].role_id, 3);
+
+}
+
+ZTEST(tof_cliff_runtime, test_the_grid_key_follows_the_fingerprint_and_not_the_descriptor_index)
+{
+    /* THE SAME MAPPING WITH THE TWO GRID SOURCES SWAPPED, and this is the case that pins WHERE the
+     * key came from rather than what it happens to equal. In dasher_spec the grid source ids are 0
+     * and 1 at positions 1 and 2, so they coincide with the descriptor indices and `keys[i] = i`
+     * would satisfy every assertion in the case above. It cannot satisfy these.
+     *
+     * Both values are legal and both positions keep their own address, so a mapping is free to say
+     * either -- which is the whole reason the field exists. The index is where a board sits on the
+     * chain; source_id is which side of the machine it looks at. An index used as the key would
+     * publish left as right the first time somebody reordered the harness, with nothing on the
+     * wire looking wrong. */
+    bootstrap_unkeyed();
+
+    pf::fingerprint swapped{profile_fingerprint()};
+
+    swapped.at[0].source_id = 1;
+    swapped.at[1].source_id = 0;
+    zassert_equal(rt::install_from_mapping_for_test(swapped, 6), 0);
+
+    const acq::source_desc *d{rt::descriptors_for_test()};
+
+    zassert_equal(d[0].role_id, 1, "position 1 did not take the fingerprint's source id");
+    zassert_equal(d[1].role_id, 0, "position 2 did not take the fingerprint's source id");
 }
 
 ZTEST(tof_cliff_runtime, test_a_grid_source_id_outside_the_contract_is_refused)
