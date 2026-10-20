@@ -79,19 +79,10 @@ tof_l7::scratch scratch_;
 tof_package::lifecycle lifecycle_;
 bool bound_{false};
 
-/* THE ADDRESS-ONLY SCRATCH CONFIGURATION, IN .bss AND NOT ON THE STACK.
- *
- * sizeof(VL53L7CX_Configuration) is 2,324 B -- it carries the ULD's temporary buffer -- against a
- * 2,048 B default shell stack. Declaring one as a local, which is what the first version of
- * hook_probe() and hook_quiesce() each did, overruns the shell stack with a single object, before
- * any of the ULD's own frames are counted. The same mistake one layer down already cost this
- * project a boot loop: see overlays/tof_l7.conf.
- *
- * ONE object serves both hooks, because the shell runs one command at a time to completion and
- * neither hook retains anything past its own return. It is zeroed on every use for the reason the
- * chain's recovery scratch is: a probe must ask about the bus, not about a previous session. And it
- * is deliberately NOT sensor_, whose object belongs to a lifecycle -- an address-only call made on
- * it would write over a session's state. */
+/* Keep the 2,324 B address-only scratch in .bss; it exceeds the default
+ * 2,048 B shell stack. Probe and quiesce reuse it serially and zero it per call.
+ * Never use sensor_ as scratch: that would overwrite a live session.
+ */
 VL53L7CX_Configuration addressed_scratch_;
 
 /* WHERE PATCH 0005 WRITES. Beside the scratch configuration and for the same stack reason, and
@@ -212,15 +203,10 @@ int hook_quiesce(void *, uint8_t addr_7bit)
     const uint32_t elapsed_us{
         tof_l7_quiesce::span_us(started_us, k_ticks_to_us_floor64(k_uptime_ticks()))};
 
-    /* READ ONCE, RECORDED ONCE, AND EVERY FIELD FROM THIS CALL.
-     *
-     * The earlier version returned from three places and kept nothing, so a -5 could not be placed
-     * in a layer. It also must not become a version that reads these back later: the port's errno
-     * and completed count are sticky per context, so whatever runs next owns them. They are taken
-     * here, between the ULD's return and anything else touching the bus.
-     *
-     * ONE RETURN, so "every path records" is structural rather than a thing to remember -- success
-     * included, which is what makes a successful quiesce followed by a later failure legible. */
+    /* Record every return path, including success. Snapshot the sticky port errno
+     * and transfer count immediately after this read, before another bus operation
+     * can replace them.
+     */
     const tof_l7_quiesce::inputs observed{
         .argument_fault = vl53l7cx_port_argument_fault(),
         .port_errno = vl53l7cx_port_error(&port_ctx),
@@ -314,17 +300,10 @@ void report(const struct shell *sh)
 
 int bind(const struct shell *sh, uint8_t frequency_hz)
 {
-    /* RE-BINDING OVER A SESSION NOBODY HAS ACCOUNTED FOR IS REFUSED, and refused FIRST, before a
-     * single byte is written. The earlier version reset port_ctx, sensor_ and lifecycle_
-     * unconditionally, so a second `bind` silently erased `ranging`, an unpaid stop debt, or a
-     * blocked-after-the-budget state. None of those is bookkeeping: each is the only record that a
-     * device may still be measuring, and the way back from forgetting that on this sensor is a
-     * machine power cycle.
-     *
-     * Two independent guards, because one of them is bookkeeping and the other is not: the
-     * lifecycle's own answer, which knows whether anything was ever opened; and tof_l7::close()
-     * below, which refuses `running` and `stop_unconfirmed` from the sensor's own state and
-     * therefore holds even if the bookkeeping above it were wrong. */
+    /* Refuse rebind before changing objects if the lifecycle is not discardable.
+     * The independent close() guard below also rejects running/stop_unconfirmed;
+     * neither a live session nor unpaid stop debt may be erased by rebind.
+     */
     if (bound_ && !lifecycle_.discardable()) {
         shell_error(sh, "refused: the current lifecycle still owns a session. Nothing was changed.");
         report(sh);
@@ -414,17 +393,10 @@ int run_round(const struct shell *sh, bool takeover)
         return -EPERM;
     }
 
-    /* CLEARED ONLY IF A ROUND REALLY BEGINS HERE, which is the lifecycle's answer and not this
-     * command's guess. An earlier version cleared on every cmd_up, before asking: review
-     * reproduced a first `up` failing at open with its port errno recorded, then a second `up`
-     * refused outright for being in `blocked` -- having already erased the first. The refused call
-     * started nothing and must take nothing away.
-     *
-     * Cleared on acceptance rather than after a successful bring-up, so a round that fails at its
-     * first step shows that step and nothing from the run before it.
-     *
-     * The quiesce record is a different module and is deliberately not cleared with them -- the
-     * quiesce happens inside this very call and its observation is the one the last window needed. */
+    /* Clear step records only for an accepted new round, before it runs.
+     * Refused calls preserve prior evidence. Keep the separate quiesce record:
+     * this call may update it and a skipped quiesce must remain distinguishable.
+     */
     tof_l7_steps::begin_round(lifecycle_.can_begin_round());
 
     const int rc{takeover ? lifecycle_.take_over_unknown_state() : lifecycle_.bring_up()};
@@ -539,17 +511,10 @@ void show_grid(const struct shell *sh, const tof_l7::sample &s)
     }
 }
 
-/* ACCEPTANCE IS A FRESH-FRAME COUNT AGAINST A DEADLINE, not a poll count.
- *
- * The first version of this command took a number of polls and reported how many came back fresh.
- * Two things were wrong with that. 200 tight polls against a 10 Hz device complete in a few
- * milliseconds, so "200 polls, 0 fresh" was the expected outcome of a perfectly healthy sensor and
- * said nothing; and the sample was thrown away, so the command could not distinguish a stream of
- * complete grids from a stream of complete zeroes.
- *
- * So the caller asks for N complete grids within a budget. Reaching N is the pass; the deadline is
- * what turns a silent device into a bounded failure instead of a hang; and each frame prints its
- * interval and its content so the rate and the data are both inspectable. */
+/* Count N fresh, complete grids within the deadline, not N polls.
+ * Print each grid's interval and content; tight polling alone neither measures
+ * sensor rate nor proves that returned data is usable.
+ */
 int cmd_read(const struct shell *sh, size_t argc, char **argv)
 {
     if (!bound_) {

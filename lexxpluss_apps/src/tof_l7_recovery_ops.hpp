@@ -49,15 +49,10 @@ struct vl53l7cx_port_context;
 
 namespace lexxhard::tof_l7_recovery {
 
-/* `scratch` must be a sensor object that is not open. It is zeroed on every call, so passing one
- * that holds a live session would discard the firmware's side of it -- which is why the product
- * path calls this before any open and never after.
- *
- * `port` names the controller this pass probes, and is installed on `scratch` here rather than
- * passed through `ops`: the context belongs to the sensor, so it survives the zeroing that each
- * probe does and there is no second place for a caller to get it wrong. A pass over a different
- * bus is a different scratch sensor with a different context, which is the whole point -- the two
- * no longer share an errno or a completed-transfer count. */
+/* Use an unopened scratch sensor: every probe zeroes it, destroying any session.
+ * Install the supplied port after zeroing. The port owns this bus's error/count
+ * history and must outlive the pass; another bus needs another context.
+ */
 ops uld_ops(tof_l7::sensor *scratch, vl53l7cx_port_context *port);
 
 }  // namespace lexxhard::tof_l7_recovery
