@@ -25,40 +25,11 @@
 
 #pragma once
 
-/*
- * The CAN transport for Package ToF frames: can2, two configured identifiers, and nothing else.
- *
- * BENCH ONLY. No product configuration sets ENABLE_TOF_PACKAGE_BENCH, so nothing here reaches a
- * product image, and no product path transmits a Package frame. That is a statement about this
- * stage of the work rather than a permanent arrangement: the acquisition this feeds is started by
- * hand at a shell, and a product producer would need its own thread, its own stack measurement and
- * its own answer to the identifier question below.
- *
- * NO IDENTIFIER HAS A DEFAULT, AND NONE IS COMPILED IN. Nothing has been registered for this
- * stream: 0x21A and 0x21B appear in a note as candidates and are not an allocation. A number
- * written into this header would BECOME the registration by being the only one anybody could find,
- * which is the trap the consumer's router (LexxHard-SCBDriver, tof_package_can_router.hpp) is kept
- * out of for the same reason. So both identifiers arrive from the caller, zero is refused as
- * "unset" even though identifier zero is legal on a bus, and the pair is printed at the shell
- * before the first frame so that whoever runs it can check them against the registry at the moment
- * of use.
- *
- * THE LISTEN WINDOW IS EVIDENCE, NOT BOOKKEEPING. Before streaming onto a live bus, this module can
- * listen on both identifiers and report whether anything is already arriving on them. A duplicate
- * table of this robot's allocated identifiers was the obvious alternative and was rejected: it
- * would be a second copy of an allocation that lives in the zcan_* headers and the generated
- * contract, and a second copy is how the two drift -- this project has fixed that defect more than
- * once. Reading the actual bus cannot drift.
- *
- * WHAT SILENCE DOES NOT PROVE, stated here because the temptation to over-read it is obvious:
- * nothing arriving during the window does NOT mean the number is unallocated. It means nobody
- * transmitted on it while we were listening. An identifier that is allocated to a node that is
- * idle, absent, or polled only on demand is silent and still taken. The window catches the case
- * that is actively harmful -- transmitting into somebody else's live traffic -- and the registry is
- * what settles ownership.
- *
- * IT DOES NOT CONFIGURE can2. zcan_main owns the bitrate, the mode and the start; configuring it
- * again here would fight whichever ran second. Same rule as tof_cliff_can, and the same reason.
+/* Package CAN transport on can2, enabled only in the bench build at this layer.
+ * Supply both IDs explicitly; zero means unset and 0x21A/0x21B remain candidates.
+ * The listen window rejects observed traffic, but silence proves no ownership;
+ * consult the allocation registry before use. Do not duplicate that registry here.
+ * zcan_main owns controller configuration, bitrate, mode and start.
  */
 
 #include <stdint.h>
@@ -96,21 +67,13 @@ identifiers current();
  * does and does not prove. */
 int listen_for_traffic(int32_t window_ms, uint32_t *frames_seen);
 
-/* The sink to hand tof_package_stream::publisher. Valid only after a successful init() and
- * configure(); its callbacks return -EPERM otherwise, rather than sending on identifier zero.
- *
- * WHAT A SUCCESSFUL SEND MEANS, because the publisher's counters inherit it: a transmit mailbox
- * accepted the frame. It does NOT mean the frame won arbitration, was acknowledged by another node,
- * or reached the bus at all. Those outcomes arrive later, in the driver's own context, and are
- * counted by transmit_errors(). So a grid this module reported as sent may still have failed on the
- * wire.
- *
- * AN ABANDONED GRID CANNOT ARRIVE COMPLETE, and the earlier wording here overstated it. What may
- * still reach the bus after the publisher gives up is the FRAGMENT it had already queued: those
- * frames were accepted and the controller will drain them. The frame that was refused is not
- * retried and no later frame of that grid is even built, so the grid is permanently short and the
- * consumer refuses it. The producer's counts are the producer's view; the consumer's are the only
- * account of what arrived. */
+/* The publisher sink requires successful init() and configure(), else -EPERM.
+ * Success means mailbox acceptance, not arbitration, ACK or wire delivery;
+ * transmit_errors() counts later completion failures.
+ * Abandonment may leave queued fragments on the bus, but the refused frame is
+ * not retried and no later frame is built, so that grid cannot arrive complete.
+ * Only the consumer can account for complete grids received.
+ */
 tof_package_stream::sink sink();
 
 /* Completion failures the driver has reported since init(). Zero does NOT mean every frame

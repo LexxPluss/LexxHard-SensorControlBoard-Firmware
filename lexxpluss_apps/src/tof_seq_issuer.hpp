@@ -25,94 +25,29 @@
 
 #pragma once
 
-/*
- * Persistent sequence issuer: hands out the 32-bit acquisition numbers that the Package grid's
- * identity is built on, and never hands the same one out twice -- across power loss.
+/* Persistent 32-bit sequence issuer with injected read/program operations.
+ * The caller selects a valid physical partition and sector geometry; an offset
+ * check alone cannot prove the correct region was selected. No runtime erase.
  *
- * WHY IT EXISTS. The transport direction chosen is N: the sequence does not restart, so a restart
- * cannot repeat a value, and the whole cross-restart splicing hazard collapses into one question --
- * does the issuer ever repeat? That question is answerable by injection, which is the point of
- * concentrating the risk here.
+ * Rules:
+ * - init() validates a commissioned journal; blank is a refusal, not a reset.
+ * - Persist and verify a block reservation before issuing any number from it.
+ * - Restart skips unused numbers in reserved blocks; never reclaim them.
+ * - Refuse absent/corrupt/incompatible/raced journals, write/readback failures
+ *   and exhaustion. Never fall back, erase or skip a failed reservation.
+ * - Use one non-copyable, non-movable issuer per journal and serialize calls.
+ *   Require an erased mark on reservation to detect a second initialized writer.
+ *   Copies could duplicate a cached range without touching flash; only the
+ *   deleted copy/move operations prevent that case.
  *
- * NO FLASH IN THIS MODULE. Storage arrives as injected read and program operations, which is what
- * lets power loss be injected at every write point on a host. It also means this module cannot be
- * the place a partition is chosen wrongly -- and it is worth being explicit that choosing right is
- * somebody else's job: a flash_area handle checks that an offset falls inside the region it was
- * given, and proves nothing about whether that region was the right one. Real wiring must still
- * check the partition's address, its size and the physical sector geometry against each other.
- *
- * THERE IS NO ERASE IN THE RUNTIME INTERFACE, and that is a design statement rather than an
- * omission: the journal is append-only, a consumed block is never reclaimed, and anything that
- * would need an erase -- a blank region, a corrupt journal, a migration -- is refused at runtime
- * and handled by a separate commissioning path. storage_ops has no erase member, so the runtime
- * cannot perform one even by mistake.
- *
- * THE RULES, each of which a test names:
- *
- * - EXPLICIT INITIALISATION. init() scans and validates. A journal that is ABSENT (a blank region)
- *   is not a fresh start: it is refused, because starting from zero is exactly how a sequence
- *   repeats after someone replaces a board or wipes a region.
- * - RESERVE, PERSIST, READ BACK, THEN ISSUE. A block of numbers is marked consumed in the journal
- *   and the mark is read back and verified BEFORE any number from that block is handed out. A
- *   number that was never persisted cannot survive a power loss, so it must not be issued.
- * - A RESTART SKIPS THE WHOLE RESERVED RANGE. Numbers reserved but not issued are discarded, never
- *   reclaimed and never reused. The cost is that a restart burns the remainder of a block, which is
- *   why the service life depends on restart frequency and not only on acquisition rate.
- * - EVERY FAILURE REFUSES. Absent, corrupt, incompatible, raced, program failure, readback failure
- *   and exhaustion all stop issuance. None of them falls back to zero, and none of them retries into
- *   the next block: a program failure may have left a torn mark, and stepping over it would be
- *   issuing numbers whose persistence was never established.
- * - ONE ISSUER PER JOURNAL, AND IT CANNOT BE COPIED. The object holds a reservation that exists
- *   on media as a single mark, so a second object holding the same reservation hands out the same
- *   numbers while the journal records nothing unusual -- the duplication is invisible to a later
- *   scan, which is what makes it worse than a torn write. Copy and move are therefore deleted,
- *   and the compile-time regression that keeps them deleted is in tof_seq_issuer.cpp.
- *
- *   TWO INITIALISED ISSUERS ARE A SEPARATE DEFECT, AND IT WAS REAL. The second one's scan does see
- *   the first one's mark and starts a block later, so for a while their numbers differ -- but each
- *   object caches its own count, so the moment the first one's block is spent it reserves the index
- *   the second one already took, programs the same value over the same mark (which flash accepts
- *   and reads back as itself), and the two hand out identical numbers with nothing on the media to
- *   show it. reserve_next_block() therefore requires the mark it is about to write to be ERASED and
- *   refuses with journal_raced otherwise. The suite measures this; the assertion was written
- *   expecting disjoint ranges and failed, which is how the defect was found.
- *
- *   WHAT NEITHER DEFENCE COVERS: a copy reserves nothing, writes no mark and leaves no trace, so
- *   only the deleted constructor stops it. Nor can this module tell that two issuers share a
- *   storage_ops ctx before one of them races; choosing the region and running one issuer over it
- *   remains the wiring's responsibility.
- * - CALLS ARE SERIAL. There is no locking here and no atomic. issue() reads and writes plain
- *   members, so two threads in it concurrently can hand out one number twice for the same reason a
- *   copy can. The caller serialises -- one thread, or its own mutex.
- *
- * THE JOURNAL FORMAT IS A CANDIDATE, AND IT IS VERSIONED. A 12-byte header then fixed-size marks;
- * a mark must be distinguishable from the erased state AND from a torn write, which is why it is
- * four bytes of checkable content rather than one byte of "something was written here". Capacity
- * arithmetic depends on this choice, so any year-count quoted elsewhere is provisional until it is
- * frozen.
- *
- * WHY THE HEADER CARRIES EVERY PARAMETER OF THE MAPPING. A mark means "block i is spent", and
- * which NUMBERS that block covers is computed as i * numbers_per_block + kFirstNumber. Both
- * factors are therefore part of the on-media meaning, not of the running code: firmware that
- * reads the same marks with a different numbers_per_block or a different first number derives a
- * different range from the same journal, and the ranges overlap. The format was SEQ1 with an
- * 8-byte header while numbering started at zero; numbering now starts at one, so the magic is
- * SEQ2 and the first number is written into the header and checked on every scan. A SEQ1 journal
- * is refused by name, and -- the half that matters more -- SEQ1 firmware refuses a SEQ2 journal,
- * because unknown magic was already a refusal there. A rollback thus fails closed instead of
- * reinterpreting the marks.
- *
- * AN INCOMPATIBLE JOURNAL IS NOT "ERASE AND RECOMMISSION". Making the region blank is what lets a
- * number repeat: the numbers issued under the old semantics were sent, and the new semantics would
- * reissue most of them. The service answer is a different region or a board whose journal was
- * never commissioned -- or an explicit, recorded decision to accept the overlap. The refusal says
- * which journal it found; it does not offer a reset.
- *
- * This change is free TODAY and would not be later: no SEQ1 journal exists on any device, so there
- * is nothing to migrate, and the versioning exists to make the next change refusable rather than
- * silent.
- *
- * Pure: no Zephyr, no allocation, no clock.
+ * Candidate journal format: 12-byte header plus fixed-size, checkable marks
+ * that distinguish erased and torn writes. The header stores the mapping
+ * parameters, including numbers_per_block and the first number (1).
+ * SEQ2 rejects SEQ1 and vice versa; changing those parameters would reuse ranges.
+ * Do not erase/recommission an incompatible journal: use a separate unused
+ * region/board, or explicitly record acceptance of overlapping numbers.
+ * Capacity depends on restart frequency and the candidate format.
+ * Pure module: no flash driver, Zephyr, allocation or clock.
  */
 
 #include <stddef.h>

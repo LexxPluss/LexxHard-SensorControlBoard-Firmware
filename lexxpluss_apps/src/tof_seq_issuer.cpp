@@ -264,18 +264,10 @@ int issuer::reserve_next_block()
         state_ = state::exhausted;
         return -ENOSPC;
     }
-    /* NUMBERING STARTS AT 1, NOT 0. Zero is reserved on the wire as the independent diagnostic
-     * frame's placeholder (tof_package_wire_n), so a grid numbered 0 cannot be sent at all: its
-     * metadata frame would be indistinguishable from a diagnostic whose flag bit got flipped. The
-     * skip belongs here rather than in the wire layer because this is the only place a number is
-     * born, and a number that cannot be transmitted must never be handed out in the first place.
-     * The cost is one number, once in the device's life.
-     *
-     * The 32-bit space, checked before the journal is touched: a block that cannot be represented
-     * must not consume a mark. The +1 means the topmost block is refused while it still holds
-     * representable numbers -- at most numbers_per_block - 1 of them are given up at the very top,
-     * which is the conservative direction: a block is contiguous and never reused, and no number is
-     * ever issued twice to keep the arithmetic tidy. */
+    /* Reserve numbering from 1; zero is the wire's independent-diagnostic marker.
+     * Check 32-bit range before touching the journal. Refuse a block that cannot
+     * fit in full, sacrificing at most numbers_per_block-1 top-end values.
+     */
     const uint64_t first{static_cast<uint64_t>(blocks_consumed_) * config_.numbers_per_block +
                          kFirstNumber};
     if (first + config_.numbers_per_block > 0x100000000ULL) {
@@ -288,14 +280,10 @@ int issuer::reserve_next_block()
     put_be32(mark, mark_value(index));
     const size_t offset{kHeaderBytes + static_cast<size_t>(index) * kMarkBytes};
 
-    /* THE MARK MUST STILL BE ERASED. Programming the correct value over a mark that already holds
-     * it succeeds on flash and reads back as itself, so without this read a reservation that was
-     * ALREADY MADE BY SOMEONE ELSE is indistinguishable from a fresh one -- and both owners then
-     * hand out the same numbers. That is not hypothetical: two issuers each init()ed over one
-     * journal reach this point with the same cached count the moment the first one's block is
-     * spent, which is what tests/tof_seq_issuer measures. Nothing but a second writer can put a
-     * value here, because a single owner's count always matches the media, so the condition is
-     * refused rather than reconciled. */
+    /* Require an erased mark before reserving it. Reprogramming an existing mark
+     * can succeed and read back correctly, allowing a second issuer to duplicate
+     * the first's range. Refuse journal_raced rather than reconciling counts.
+     */
     uint8_t prior[kMarkBytes]{};
     if (config_.ops.read(config_.ops.ctx, offset, prior, sizeof prior) != 0) {
         /* Reported as a corrupt journal, as scan() reports its read failures: this module cannot

@@ -106,14 +106,9 @@ tof_l7::sample last_sample_;
 tof_package_stream::publisher publisher_;
 tof_seq_boot_local::source boot_sequence_;
 
-/* THE TWO ZONE COUNTS ARE TIED HERE, where the arrays cross from one to the other. cmd_stream
- * hands last_sample_'s arrays to the publisher together with a length of
- * tof_package_stream::kZones, and the publisher's length check believes that number -- it cannot
- * measure the caller's buffer. So if the sensor layer ever moved to the ULD's 4x4 resolution,
- * tof_l7::kZoneCount would become 16, the claim would stay 64, and the publisher would read 48
- * zones past the end of a .bss object while every length check passed. The two constants are
- * independent by design (one is a wire layout, the other a sensor mode) and nothing else makes
- * them agree, so the agreement is asserted at the only place that depends on it. */
+/* The publisher trusts the supplied zone count; tie it to the actual sample
+ * array size here so a sensor-resolution change cannot cause an overread.
+ */
 static_assert(tof_l7::kZoneCount == tof_package_stream::kZones,
               "the sensor's grid and the wire's grid must have the same number of zones: "
               "cmd_stream passes last_sample_'s arrays with the wire's count, and a smaller sample "
@@ -803,25 +798,12 @@ constexpr const char *kBootLocalSource{"boot-local"};
  */
 constexpr int32_t kListenWindowMs{200};
 
-/* ONE ACQUISITION PER PUBLISH, AND THE PUBLISHER IS WHERE THE RULE LIVES. This command's job is to
- * drive the lifecycle and hand over what came back; it must not decide what a grid's number is,
- * when a diagnostic goes out, or whether a failed send may be retried. Every one of those is in
- * tof_package_stream, tested on the host, and the reason they are not here is that a shell command
- * cannot be regression-tested at all.
- *
- * IDENTIFIERS ARE ARGUMENTS BECAUSE NONE IS REGISTERED. 0x21A and 0x21B are candidates in a note.
- * They are printed before the first frame so that whoever runs this checks them against the
- * registry at the moment of use, and the listen window refuses outright if somebody is already
- * transmitting on them.
- *
- * ELEVEN-BIT ONLY. Every identifier this board transmits is 11-bit, so a 29-bit option would be an
- * untested path offered for no caller. The transport still carries the width because the consumer
- * treats it as part of the identity and refuses the other one as a stranger's traffic.
- *
- * WHAT ENDING THE RUN DOES AND DOES NOT DO. It stops publishing, and that is all: ranging is left
- * exactly as `read` leaves it, so the device's state stays inspectable. Nothing in this build sends
- * a periodic diagnostic, so after the last grid the bus simply goes quiet on these identifiers --
- * reporting that gap is the consumer's receive-liveness job, not this command's. */
+/* Hand each fresh acquisition to tof_package_stream; numbering and publication
+ * rules belong there. IDs are explicit experimental choices, printed before
+ * use and checked for traffic. This command supports only 11-bit frames.
+ * Ending stream stops publication, not ranging. No periodic diagnostic runs
+ * afterwards; the consumer must detect the silence.
+ */
 int cmd_stream(const struct shell *sh, size_t argc, char **argv)
 {
     if (!bound_) {
@@ -889,15 +871,9 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
     shell_warn(sh, "sequence numbers are boot-local and repeat after a reset. This stream is an "
                    "observation of the path, not evidence that candidate N's identity holds.");
 
-    /* THE SEQUENCE SOURCE IS NOT RESET HERE, and that absence is the fix for a real defect: this
-     * line used to assign a fresh source, so a second `stream` in the same boot reissued 1, 2, 3
-     * and a consumer rejected every grid of it as not newer than the first run's. The source's
-     * documented limitation is that numbers repeat after a RESET; a per-command reset made them
-     * repeat between two commands, which is a different and much easier thing to hit.
-     *
-     * So one source spans the whole boot. The publisher is still re-initialised per run -- its
-     * counters are a per-run report -- and the two are deliberately not the same lifetime: counts
-     * describe a run, numbers describe a device. */
+    /* Keep sequence numbering across stream commands; only a board reset restarts it.
+     * Reinitialize the publisher's per-run counters, not the boot's sequence source.
+     */
     tof_package_stream::sequence_source source{};
     source.issue = issue_boot_local;
     if (const int rc{publisher_.init(tof_package_can::sink(), source)}; rc != 0) {
@@ -905,14 +881,10 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
         return rc;
     }
 
-    /* NOT RANGING IS `never started`, NOT `failed`, and the two are different claims about the
-     * device: never_started carries the availability flag -- nothing was ever brought up -- while
-     * failed says the sensor is there and erroring. read_once() refuses from every state but
-     * ranging with the same -EPERM it uses for "not initialised", so the state is read here rather
-     * than inferred from that error, which cannot tell them apart.
-     *
-     * One diagnostic, then the run ends. Entering the loop would send one per poll, which is a
-     * flood reporting a single condition. */
+    /* Check lifecycle state: -EPERM alone cannot distinguish uninitialized from
+     * not ranging. Report never_started with availability, not a sensor failure.
+     * Send one diagnostic and exit rather than reporting at every poll.
+     */
     if (lifecycle_.current().current != tof_package::state::ranging) {
         tof_package_stream::input nothing{};
         nothing.outcome = tof_package_health::acquisition::never_started;

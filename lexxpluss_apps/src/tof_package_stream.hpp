@@ -25,61 +25,18 @@
 
 #pragma once
 
-/*
- * The PUBLICATION RULE for Package ToF: turns one acquisition into the frames that go on the bus,
- * and is the single place where "which acquisition is this grid from" is decided.
+/* Publish one acquisition without retaining its arrays or retrying a failed send.
+ * An abandoned grid consumes its number; the next acquisition takes a new one.
  *
- * THIS MODULE HOLDS NO GRID, and that absence is the design. The hazard it exists to remove is a
- * stale grid going out under a new acquisition number -- a consumer that reassembles 64 zones and a
- * sequence cannot tell last second's measurement from this one, so the producer is the only layer
- * where the two can still be told apart. A module with a retained copy would need a rule saying
- * when not to use it, and a rule can be got wrong; a module with nowhere to keep one cannot
- * resend. So the caller's zone arrays are read inside publish() and never stored, there is no
- * retry path, and a send that fails part-way ABANDONS the grid rather than queuing it.
+ * Order: validate health before spending a sequence, send zones 0..63, then
+ * metadata. Data order and metadata-last are producer choices; receivers allow
+ * reordering. Refused health must not consume finite journal capacity.
  *
- * WHAT IS SPENT BY AN ABANDONED GRID. Its sequence. The number is drawn once, attached to that one
- * acquisition, and never reattached -- not to the retry that does not exist, and not to the next
- * acquisition, which draws its own. A consumer therefore sees an incomplete grid for that number
- * and refuses the whole of it (which is the arrival-side rule in tof_package_wire_n), and the
- * number never reappears to make the refusal ambiguous.
- *
- * THE ORDER OF OPERATIONS IS LOAD-BEARING, so it is stated rather than left to be read off the
- * code:
- *
- * - HEALTH IS JUDGED FIRST, before a sequence exists. A grid the health rule refuses to publish
- *   must not consume a number: numbers are a finite, persisted resource (tof_seq_issuer reserves
- *   them in a journal), and spending one on an acquisition that was never transmitted would burn
- *   journal capacity for nothing. It also keeps the invariant simple -- every number ever issued
- *   was attached to a grid that was at least attempted.
- * - THE 64 DATA FRAMES GO OUT ASCENDING, zone 0 first. The contract does not require an order;
- *   fixing one makes a reordering visible to a test.
- * - THE METADATA FRAME GOES LAST. It is the producer's assertion that a complete grid was taken,
- *   and sending it before the grid is on the wire would put the assertion ahead of its evidence.
- *   The contract accepts the two in any arrival order, so this is a producer choice and not a
- *   compatibility requirement.
- *
- * NO ACQUISITION PRODUCES A DIAGNOSTIC, NOT A GRID. When the caller has nothing fresh -- the
- * sensor was never started, a read failed, a grid arrived malformed -- exactly one independent
- * diagnostic frame goes out: sequence zero, no data frames, and nothing that could refresh a
- * grid's timestamp. That separation is what stops a failed acquisition from rewriting an earlier
- * grid's health after a consumer has already acted on it, and it is the reason this module never
- * manufactures an all-sentinel grid to carry a fault.
- *
- * STOPPING IS THE CALLER'S, AND COSTS NOTHING HERE. There is no "stop" entry point because there
- * is nothing to flush: once the caller stops asking for acquisitions, no data frame can be
- * produced, because the only source of one is a fresh grid handed in by the caller. Diagnostics
- * continue only for as long as the caller keeps calling publish() with a non-fresh outcome, which
- * is how a stopped sensor keeps reporting while sending no measurements.
- *
- * IT KNOWS NO CAN IDENTIFIER. The sink takes an already-encoded eight-byte frame and is told only
- * whether it is a data or a health frame; which identifier carries which is transport, decided by
- * whoever wires the sink, and no identifier is registered for this stream. Keeping the number out
- * of this file is the same rule the consumer's router follows, for the same reason: a number
- * written into a header becomes the registration by being the only one anybody can find.
- *
- * Pure: no Zephyr, no vendor headers, no allocation, no clock. The sink, the sequence source and
- * the acquisition all arrive as arguments, so every rule above is testable without a bus, without
- * a sensor and without flash.
+ * No fresh acquisition produces one independent diagnostic (sequence zero),
+ * never a synthetic grid or a refreshed timestamp on old data. Diagnostics
+ * continue only while the caller supplies non-fresh outcomes; there is no flush.
+ * The caller supplies the sink and sequence source. No CAN IDs, clock, vendor
+ * headers, retained grid or allocation belong to this module.
  */
 
 #include <stddef.h>
