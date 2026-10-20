@@ -25,16 +25,16 @@
 
 #pragma once
 
-/* Package CAN transport on can2, enabled only in the bench build at this layer.
- * Supply both IDs explicitly; zero means unset and 0x21A/0x21B remain candidates.
- * The listen window rejects observed traffic, but silence proves no ownership;
- * consult the allocation registry before use. Do not duplicate that registry here.
- * zcan_main owns controller configuration, bitrate, mode and start.
+/* Package CAN transport on can2 for bench or auto builds; neither is a default
+ * product configuration. Supply both IDs explicitly: zero means unset and
+ * 0x21A/0x21B remain candidates. A listen window rejects observed traffic;
+ * silence does not establish ownership. Consult the allocation registry.
+ * Do not duplicate that registry or reconfigure can2: zcan_main owns it.
  */
 
 #include <stdint.h>
 
-#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO)
 
 #include "tof_package_stream.hpp"
 
@@ -82,4 +82,4 @@ uint32_t transmit_errors();
 
 }  // namespace lexxhard::tof_package_can
 
-#endif  // ENABLE_TOF_PACKAGE_BENCH
+#endif  // ENABLE_TOF_PACKAGE_BENCH || ENABLE_TOF_PACKAGE_AUTO

@@ -75,6 +75,16 @@ if(ENABLE_TOF_PACKAGE_BENCH)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_bench.conf)
 endif()
 
+# The unattended runtime keeps the revert armed unless told otherwise, and the deadman needs the
+# image-manager query to ask whether this image is confirmed. Appended here for the same reason as
+# the bench's: Kconfig is fixed by find_package(Zephyr) below.
+if(ENABLE_TOF_PACKAGE_AUTO AND NOT DEFINED TOF_PACKAGE_AUTO_DEADMAN)
+    set(TOF_PACKAGE_AUTO_DEADMAN ON)
+endif()
+if(ENABLE_TOF_PACKAGE_AUTO AND TOF_PACKAGE_AUTO_DEADMAN)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_auto_deadman.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
@@ -302,7 +312,62 @@ if(ENABLE_TOF_PACKAGE_BENCH)
             "ENABLE_TOF_PACKAGE_BENCH requires ENABLE_TOF_L7_ULD: the bench driver exists to call "
             "the L7 lifecycle, and without the driver there is nothing to call.")
     endif()
+    if(ENABLE_TOF_PACKAGE_AUTO)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_BENCH and ENABLE_TOF_PACKAGE_AUTO claim the same device: the shell "
+            "commands and the runtime thread would drive one sensor through one set of unlocked "
+            "objects. Pick one.")
+    endif()
     add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
+endif()
+
+# Auto runtime reuses the device and publication layers. Require explicit
+# CAN IDs and acquisition rate from the build; none has a product default.
+if(ENABLE_TOF_PACKAGE_AUTO)
+    if(NOT ENABLE_TOF_L7_ULD)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_AUTO requires ENABLE_TOF_L7_ULD: the runtime exists to drive the "
+            "L7 lifecycle, and without the driver there is nothing to drive.")
+    endif()
+    foreach(required TOF_PACKAGE_AUTO_DATA_ID TOF_PACKAGE_AUTO_HEALTH_ID TOF_PACKAGE_AUTO_HZ)
+        if(NOT DEFINED ${required})
+            message(FATAL_ERROR
+                "ENABLE_TOF_PACKAGE_AUTO needs ${required}: nothing about this stream is "
+                "registered or accepted, so there is no default to fall back to.")
+        endif()
+    endforeach()
+    # The budget the policy runs on. Defaulted, because unlike the identifiers these are this
+    # project's own decisions about how far an unattended board may go without a human, and they
+    # are documented where the policy defines them.
+    if(NOT DEFINED TOF_PACKAGE_AUTO_CLAIMS)
+        set(TOF_PACKAGE_AUTO_CLAIMS 6)
+    endif()
+    if(NOT DEFINED TOF_PACKAGE_AUTO_TAKEOVERS)
+        set(TOF_PACKAGE_AUTO_TAKEOVERS 1)
+    endif()
+    if(NOT DEFINED TOF_PACKAGE_AUTO_QUIESCE_FIRST)
+        set(TOF_PACKAGE_AUTO_QUIESCE_FIRST 1)
+    endif()
+    # Default the deadman ON: an unconfirmed image needs a reset to revert, and
+    # a wedged Package thread may leave the board watchdog fed. Permanent
+    # residency explicitly opts out. No pkg_tof/hold command exists in auto;
+    # the ordinary Zephyr shell remains available.
+    if(TOF_PACKAGE_AUTO_DEADMAN)
+        add_definitions(-DENABLE_TOF_PACKAGE_AUTO_DEADMAN)
+        message(STATUS "package_tof runtime: unattended revert ARMED (one window per flash)")
+    else()
+        message(WARNING
+            "package_tof runtime: unattended revert DISABLED. Nothing in this image will reset "
+            "the board if the Package thread wedges, so its unconfirmed trailer protects it only "
+            "against a reset that comes from somewhere else.")
+    endif()
+    add_definitions(-DENABLE_TOF_PACKAGE_AUTO
+                    -DTOF_PACKAGE_AUTO_DATA_ID=${TOF_PACKAGE_AUTO_DATA_ID}
+                    -DTOF_PACKAGE_AUTO_HEALTH_ID=${TOF_PACKAGE_AUTO_HEALTH_ID}
+                    -DTOF_PACKAGE_AUTO_HZ=${TOF_PACKAGE_AUTO_HZ}
+                    -DTOF_PACKAGE_AUTO_CLAIMS=${TOF_PACKAGE_AUTO_CLAIMS}
+                    -DTOF_PACKAGE_AUTO_TAKEOVERS=${TOF_PACKAGE_AUTO_TAKEOVERS}
+                    -DTOF_PACKAGE_AUTO_QUIESCE_FIRST=${TOF_PACKAGE_AUTO_QUIESCE_FIRST})
 endif()
 
 if(VERSION)

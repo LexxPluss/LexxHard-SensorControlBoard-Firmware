@@ -533,6 +533,23 @@ firmware_tof_package_bench:
 	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin
 	printf '\377' | dd of=out/zephyr_tof_package_bench.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_bench.test.bin) - 24)) conv=notrunc status=none
 
+# Auto Package image: one owner, no pkg_tof commands; ordinary shell remains.
+# Use explicit experimental IDs 0x21A/0x21B and configured 5 Hz. Sustainable
+# rate and ID allocation are separate acceptance items. A one-second listen
+# rejects observed traffic but cannot establish ownership.
+# Keep the deadman armed for candidate tests: unconfirmed images revert only
+# after reset. Auto has no hold command. Permanent residency requires an
+# explicit TOF_PACKAGE_AUTO_DEADMAN=OFF decision and its own acceptance.
+.PHONY: firmware_tof_package_auto
+firmware_tof_package_auto:
+	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-auto -- $(ZBASE_BUILD) -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_AUTO=ON -DTOF_PACKAGE_AUTO_DATA_ID=0x21A -DTOF_PACKAGE_AUTO_HEALTH_ID=0x21B -DTOF_PACKAGE_AUTO_HZ=5 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-package-auto/zephyr/zephyr.signed.bin out/zephyr_tof_package_auto.signed.bin
+	mv build-tof-package-auto/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_package_auto.signed.confirmed.bin
+	cp out/zephyr_tof_package_auto.signed.confirmed.bin out/zephyr_tof_package_auto.test.bin
+	printf '\377' | dd of=out/zephyr_tof_package_auto.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_auto.test.bin) - 24)) conv=notrunc status=none
+
 #
 # The `tof enum` command is present but is NOT expected to complete on this
 # image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition

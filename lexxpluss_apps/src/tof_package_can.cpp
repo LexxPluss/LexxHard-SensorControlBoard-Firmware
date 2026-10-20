@@ -25,7 +25,7 @@
 
 #include "tof_package_can.hpp"
 
-#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO)
 
 #include <errno.h>
 #include <string.h>
@@ -221,4 +221,4 @@ tof_package_stream::sink sink()
 
 }  // namespace lexxhard::tof_package_can
 
-#endif  // ENABLE_TOF_PACKAGE_BENCH
+#endif  // ENABLE_TOF_PACKAGE_BENCH || ENABLE_TOF_PACKAGE_AUTO
