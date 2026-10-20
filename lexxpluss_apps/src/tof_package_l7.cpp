@@ -117,14 +117,9 @@ int lifecycle::begin_round(bool quiesce_a_survivor)
         return refuse(step::probe, probe_rc);
     }
 
-    /* SOMETHING ANSWERED AND IS NOT A VL53L7CX. Stopped here, and in particular BEFORE the
-     * quiesce: issuing a five-second L7 stop sequence to a device that is not one is not this
-     * module's business, and opening it afterwards would download 86 KB of L7 firmware into
-     * something nobody has identified.
-     *
-     * The chain can afford to report this and move on, because its addresses are assigned by the
-     * enable chain and enumeration exists to act on a census anomaly. Here the address is fixed at
-     * 0x29 and there is no enumerator, so there is nothing to hand it to. */
+    /* Refuse a responding non-L7 device before quiesce or firmware download.
+     * This fixed address has no enumerator to resolve an identity mismatch.
+     */
     if (wrong_identity) {
         status_.current = state::blocked;
         return refuse(step::identity, -ENOTSUP);
@@ -151,18 +146,10 @@ int lifecycle::begin_round(bool quiesce_a_survivor)
         }
     }
 
-    /* A FULL INITIALISATION EITHER WAY, survivor or cold. A successful quiesce clears the stop debt
-     * and nothing more: which device state survives an SCB reset is not established, and the
-     * host-side configuration object is gone with the reset regardless, so there is nothing to
-     * resume into. Skipping the firmware download on a warm entry would be an optimisation that
-     * needs its own evidence.
-     *
-     * AND IT STARTS WITH A CLOSE, BEFORE EVERY OPEN, not only after a failure. A confirmed stop
-     * leaves the sensor `configured` and tof_l7::open() requires `empty`, so an ordinary
-     * up -> stop -> up sequence fails on its second open without this -- the sensor would be a
-     * one-session-per-boot object. From an already-empty sensor the close succeeds and does nothing,
-     * which is what lets it be unconditional rather than conditional on reasoning about which
-     * earlier failure left what behind. */
+    /* Always fully initialize after quiesce; a successful stop does not restore
+     * host configuration lost at reset. Close before every open: stop leaves the
+     * adapter configured, while open requires empty. Closing empty is a no-op.
+     */
     if (const int rc{hooks_.close(hooks_.ctx)}; rc != 0) {
         status_.current = state::blocked;
         return refuse(step::close, rc);
@@ -299,21 +286,11 @@ bool lifecycle::discardable() const
         /* A device that is measuring, or one whose session nobody can account for. */
         return false;
     case state::blocked:
-        /* THE DIVIDING LINE IS WHETHER A MEASUREMENT COULD HAVE BEEN STARTED, not whether the device
-         * was touched. Only start() can begin one, and a start failure does not land here: it owes a
-         * stop, so it is `stop_owed` above and reaches `blocked` only through a spent stop budget,
-         * which is recorded as step::stop. The two steps left off this list are exactly the ones a
-         * live session can be behind:
-         *
-         *   - step::close, because close() refuses precisely when the sensor is running or owes a
-         *     stop, so arriving here means one of those was true;
-         *   - step::stop, which is the spent budget: a device that may still be measuring and that
-         *     this tool has given up on stopping.
-         *
-         * open and configure are on the list because neither starts ranging -- a failure in either
-         * leaves a device that was configured at most, and the sensor layer in a state a later close
-         * accepts. Listed positively so that a step added later is non-discardable until someone
-         * decides otherwise. */
+        /* Whitelist only failures that cannot leave ranging active. open/configure
+         * do not start measurements. A failed start owes stop; failed close may hide
+         * a live session, and failed stop means its retry budget is spent.
+         * New steps remain non-discardable until explicitly reviewed.
+         */
         return status_.failed_step == step::firmware || status_.failed_step == step::probe ||
                status_.failed_step == step::identity || status_.failed_step == step::survivor ||
                status_.failed_step == step::open || status_.failed_step == step::configure;

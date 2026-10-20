@@ -96,21 +96,13 @@ identifiers current();
  * does and does not prove. */
 int listen_for_traffic(int32_t window_ms, uint32_t *frames_seen);
 
-/* The sink to hand tof_package_stream::publisher. Valid only after a successful init() and
- * configure(); its callbacks return -EPERM otherwise, rather than sending on identifier zero.
- *
- * WHAT A SUCCESSFUL SEND MEANS, because the publisher's counters inherit it: a transmit mailbox
- * accepted the frame. It does NOT mean the frame won arbitration, was acknowledged by another node,
- * or reached the bus at all. Those outcomes arrive later, in the driver's own context, and are
- * counted by transmit_errors(). So a grid this module reported as sent may still have failed on the
- * wire.
- *
- * AN ABANDONED GRID CANNOT ARRIVE COMPLETE, and the earlier wording here overstated it. What may
- * still reach the bus after the publisher gives up is the FRAGMENT it had already queued: those
- * frames were accepted and the controller will drain them. The frame that was refused is not
- * retried and no later frame of that grid is even built, so the grid is permanently short and the
- * consumer refuses it. The producer's counts are the producer's view; the consumer's are the only
- * account of what arrived. */
+/* The publisher sink requires successful init() and configure(), else -EPERM.
+ * Success means mailbox acceptance, not arbitration, ACK or wire delivery;
+ * transmit_errors() counts later completion failures.
+ * Abandonment may leave queued fragments on the bus, but the refused frame is
+ * not retried and no later frame is built, so that grid cannot arrive complete.
+ * Only the consumer can account for complete grids received.
+ */
 tof_package_stream::sink sink();
 
 /* Completion failures the driver has reported since init(). Zero does NOT mean every frame

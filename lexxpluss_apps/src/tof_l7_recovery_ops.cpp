@@ -73,14 +73,9 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     uint8_t answered{0};
     const uint8_t uld_status{vl53l7cx_is_alive(dev, &answered)};
 
-    /* THE RULE ITSELF LIVES IN tof_l7_probe_verdict, and this adapter only gathers its inputs.
-     * It was reasoned out here first and is four cases deep -- a clean NACK with nothing
-     * acknowledged is the ordinary cold boot, the same NACK with transfers completed is a partial
-     * exchange, any other errno never reached the bus, and a non-OK ULD status with no transport
-     * error is an anomaly rather than an empty address. The Package sensor needs exactly that rule
-     * and cannot reach this file, which is guarded on ENABLE_TOF_CHAIN; two copies of a
-     * classification that must always agree is worse than one function both call. The reasoning
-     * moved with it, so nothing here repeats it. */
+    /* Share probe classification with the Package path; this adapter only gathers
+     * the ULD status, first port error and completed-transfer count.
+     */
     const tof_l7_probe::inputs in{
         .argument_fault = vl53l7cx_port_argument_fault(),
         .port_errno = vl53l7cx_port_error(dev->platform.port),
@@ -90,15 +85,10 @@ int is_alive(void *ctx, uint8_t addr_7bit, bool *alive)
     };
     const tof_l7_probe::verdict v{tof_l7_probe::classify(in)};
 
-    /* v.answered_without_matching_identity IS DELIBERATELY NOT FORWARDED, and the enumeration above
-     * is why. Its contract is a census: one pass over every chain position, comparing what answered
-     * against what the enable chain should have produced, so "this address answered and is not an
-     * L7" is a finding it already derives from the pass as a whole and routes around. Promoting it
-     * into this adapter's return would change a recovery pass's behaviour to no benefit.
-     *
-     * The Package sensor cannot do that -- one fixed address, nothing to compare against, no
-     * enumerator to report to -- which is why the field exists at all. See its handling in
-     * tof_package_l7.cpp. */
+    /* Chain enumeration handles wrong identities through its census, so retain
+     * this adapter's existing return semantics. The fixed-address Package path
+     * must instead refuse answered_without_matching_identity explicitly.
+     */
     *alive = v.present;
     return v.rc;
 }

@@ -25,36 +25,12 @@
 
 #pragma once
 
-/*
- * A BOOT-LOCAL sequence source. It counts in RAM from one, and every reboot starts again at one.
- *
- * SO IT REPEATS NUMBERS ACROSS A RESTART, which is the single thing candidate N's identity rests on
- * not happening. This is therefore NOT an implementation of the requirement's 32-bit acquisition
- * sequence, and a stream driven by it must not be read as evidence that N works. It exists for one
- * purpose: to make an end-to-end observation possible on a board that has no commissioned sequence
- * journal, so that the CAN path, the frame layout and the consumer can be exercised while the
- * persistent issuer's storage question is still open (tof_seq_issuer, and the field storage
- * acceptance item it names).
- *
- * IT IS NOT A FALLBACK, and nothing may make it one. tof_seq_issuer refuses to issue when its
- * journal is absent, corrupt or incompatible -- that refusal is the whole protection, and a source
- * that silently stepped in behind it would convert "this board cannot number acquisitions" into
- * "this board numbers them from one again", which is exactly the repeat the refusal exists to
- * prevent. The two sources are therefore separate types with no common interface and no selection
- * logic between them: choosing this one is an act a human performs, by name, at a shell.
- *
- * WHAT IT DOES GUARANTEE, within one boot:
- *
- * - it never issues tof_package_wire_n's reserved sequence, because it starts at one. A zero would
- *   be indistinguishable from an independent diagnostic's placeholder, so the layout refuses it end
- *   to end and a source that produced one would simply stall the stream;
- * - it REFUSES rather than wrapping when the 32-bit space is spent. Wrapping would reissue number
- *   one to a different acquisition inside a single boot, and that is the one repeat that cannot be
- *   excused by "it is boot-local": a consumer watching one continuous session would see the same
- *   number twice with no restart to explain it.
- *
- * Pure: no Zephyr, no clock, no storage. Deliberately holds nothing that could survive a reset,
- * because anything that did would start to look like persistence.
+/* RAM-only sequence source for experiments without a commissioned journal.
+ * Starts at 1 each boot, never issues reserved zero, and refuses exhaustion
+ * instead of wrapping. Keep one instance per boot, not per stream command.
+ * Numbers repeat across resets: this does not meet candidate N's persistent
+ * identity requirement. It is a separate type, never a fallback for a failed
+ * persistent issuer. No storage, clock or Zephyr dependency.
  */
 
 #include <stdint.h>

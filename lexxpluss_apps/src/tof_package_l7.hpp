@@ -69,14 +69,10 @@ struct hooks {
     /* The image-wide verification, asked rather than performed: one payload, one record, one
      * accept-list. 0 means the firmware is readable now. */
     int (*ensure_verified)(){nullptr};
-    /* Sets *present and *wrong_identity. Returns 0 when the probe itself completed, whatever its
-     * verdict; non-zero is a transport error and both flags are then meaningless.
-     *
-     * THE THIRD OUTCOME IS NOT OPTIONAL HERE. `*present == false` with `*wrong_identity == true`
-     * means something answered and is not a VL53L7CX, which on this sensor must stop the run: the
-     * address is fixed, the device is always powered, and there is no enumerator to hand the
-     * anomaly to. Collapsing it into "nobody there" would be followed by an open onto a device
-     * nobody has identified. */
+    /* On rc=0, report both present and wrong_identity. Nonzero makes both invalid.
+     * A responding non-L7 device at the fixed address must stop the round before
+     * quiesce/open; do not collapse it into no response.
+     */
     int (*probe)(void *ctx, uint8_t addr_7bit, bool *present, bool *wrong_identity){nullptr};
     /* Stop a device that answered before this run began. */
     int (*quiesce)(void *ctx, uint8_t addr_7bit){nullptr};
@@ -107,18 +103,10 @@ struct config {
     uint8_t stop_attempts{3};
 };
 
-/* WHY A STOP WAS REFUSED, reported rather than inferred.
- *
- * `stop()` returns -EPERM from three unrelated places -- not initialised, a state that owes no
- * stop, and a spent retry budget -- and the shell used to tell them apart by looking at the state
- * afterwards, reading `blocked` as "the budget is spent". On 2026-10-12 that printed "the retry
- * budget is spent. The device may still be measuring" for a run whose budget was untouched: the
- * state was `blocked` because bring_up had refused at the survivor step, so `stop()` returned at
- * its state guard without calling the device at all. The message named the wrong cause AND implied
- * a device interaction that never happened.
- *
- * A state is not a reason. Three refusals that share a return value have to say which one they
- * were. */
+/* Record the refusal reason explicitly: -EPERM alone cannot distinguish
+ * uninitialized, wrong state and exhausted budget. In particular, blocked at
+ * an earlier step does not mean the device was asked to stop.
+ */
 enum class stop_refusal : uint8_t {
     none = 0,
     /* init() has not run, or ran and failed. */
@@ -126,34 +114,19 @@ enum class stop_refusal : uint8_t {
     /* Nothing owes a stop: the state is neither `ranging` nor `stop_owed`. `blocked` from any
      * refusal EARLIER than a stop lands here, and no device call is made. */
     wrong_state,
-    /* The device was asked and did not acknowledge, as many times as configured.
-     *
-     * UNREACHABLE WHILE THE STATE GUARD COMES FIRST, and the ordering is deliberate. The attempt
-     * that spends the budget also sets the state to `blocked`, so every stop() after it answers at
-     * the state guard and records `wrong_state`. Writing the test that expected this value is what
-     * surfaced it.
-     *
-     * The guards are NOT reordered to make it reachable, because "does anything owe a stop" is the
-     * prior question and reordering mis-answers a real case: a run that spends attempts and then
-     * succeeds leaves the state `idle` with the counter still at the budget, where the truthful
-     * answer is "nothing owes a stop" and a budget-first order would say "the budget is spent".
-     *
-     * So this enumerator is kept for the guard that produces it and the OBSERVABLE distinction
-     * lives elsewhere: `blocked` with `failed_step == step::stop` is the device-was-asked case,
-     * `blocked` with any earlier step is the device-was-never-asked case. That pair is what the
-     * shell reports and what the regression pins. */
+    /* The state guard currently precedes the budget guard: the attempt that
+     * exhausts the budget enters blocked, so later calls report wrong_state.
+     * Keep that order; idle after a successful final attempt owes no stop.
+     * Use blocked + failed_step==stop to identify an exhausted device stop,
+     * and an earlier failed_step to identify a stop never attempted.
+     */
     budget_spent,
 };
 
-/* WHAT TO TELL THE OPERATOR AFTER A FAILED STOP, decided once and testable.
- *
- * The shell used to choose this inline, and review found the choice wrong on the attempt that
- * matters most: with a budget of one, a device that refuses the stop leaves `blocked` at step
- * `stop` with no refusal recorded -- the attempt was made, so nothing refused it -- and the inline
- * branch printed "Retry it". The next stop() is then certain to be refused. The operator is told to
- * do the one thing that cannot work, on the one path where the device may still be measuring.
- *
- * So the decision is a function of the recorded state, and `retryable` is the part under test. */
+/* Derive stop advice from recorded state and remaining attempts.
+ * A final failed attempt needs a non-retryable answer immediately, before
+ * the next call is refused by the state guard.
+ */
 struct stop_report {
     /* True only when another stop() can still reach the device. */
     bool retryable{false};
@@ -195,50 +168,21 @@ public:
      * run instead of being treated as an empty address. */
     int bring_up();
 
-    /* TAKE OVER A DEVICE WHOSE STATE IS UNKNOWN.
-     *
-     * bring_up() refuses to open on top of a device that answered and could not be quiesced, which
-     * is the right default: opening a second session on a sensor that may be ranging is the one
-     * thing that ordering prevents. On 2026-10-12 that defence is where the Package sensor stopped
-     * -- the stop handshake timed out with every transfer succeeding -- and the ULD's own init
-     * begins with a software reboot sequence, a boot wait and a full firmware download, so there is
-     * a case for letting init be the thing that establishes the device's state.
-     *
-     * This entry makes that case something a human asks for explicitly, once, and nothing else can
-     * reach. It is NOT a retry of bring_up and NOT a cold start: `idle` means only that the
-     * software holds no session, never that the sensor stopped, and nothing here establishes that
-     * the device lost power. What it expresses is an authorisation to proceed without the
-     * quiesce -- and the full init that follows is then the only thing that will have touched the
-     * device's state.
-     *
-     * Everything else bring_up() does, it does: the blob verification, the probe, the identity
-     * refusal, close, open, configure, start, and the same state and step on every failure. A
-     * failure is left exactly as bring_up() would leave it -- blocked, or stop_owed after a start
-     * that did not confirm -- and is NOT wound back to idle so the caller can try again.
-     *
-     * Only from `idle`, and only when initialised. From ranging, stop_owed or blocked it returns
-     * -EPERM having touched no hardware and changed no field, so the evidence of whatever put the
-     * lifecycle there survives the attempt. */
+    /* Explicitly authorize initialization of a device whose state is unknown.
+     * Skip only quiesce; keep blob verification, probe/identity refusal, close,
+     * full init/configure/start, and normal failure states/stop debt.
+     * This is not proof of power loss or a retry bypass: idle means only that
+     * software holds no session. Failure does not reset the state for another try.
+     * Require initialized + idle. Other states return -EPERM without hardware
+     * access or changes to recorded state/evidence.
+     */
     int take_over_unknown_state();
 
-    /* WHETHER bring_up() WOULD ACCEPT A NEW ROUND, asked rather than predicted.
-     *
-     * bring_up() refuses from two places before it touches anything -- not initialised, and a
-     * state that is not idle -- and in both it leaves every earlier observation exactly as it
-     * found it. A caller that keeps per-round diagnostics has to know which of those happened,
-     * because clearing them for a round that never began destroys the evidence of the round that
-     * did. On 2026-10-13 review reproduced precisely that: a first `up` failed at open with a
-     * recorded port errno, a second `up` was refused for being in `blocked`, and the second had
-     * already wiped the first.
-     *
-     * THIS IS THE GUARD, not a copy of it. bring_up() asks this function, so the two cannot drift:
-     * a caller clearing on true clears exactly when a round starts. It is const and reads only the
-     * state, and nothing between the two calls can change that state -- every entry point here
-     * runs to completion on the caller's thread.
-     *
-     * It says nothing about whether the round will SUCCEED. A round that is accepted and then
-     * refused by the verification has still begun: it consulted something, and its diagnostics are
-     * its own. */
+    /* The guard used by bring_up() itself: initialized and idle, with no side effects.
+     * Call it before clearing per-round records; a refused round preserves evidence.
+     * Acceptance does not imply success, and verification refusal still belongs to
+     * the accepted round. Calls are serialized, so the guard cannot race the entry.
+     */
     bool can_begin_round() const;
 
     /* One poll. Refused unless ranging. */
@@ -250,16 +194,10 @@ public:
 
     status current() const { return status_; }
 
-    /* WHETHER THIS OBJECT CAN BE THROWN AWAY, which is the question a caller must ask before
-     * re-binding or re-initialising it. False whenever a device may still be measuring or holds a
-     * session nobody has accounted for: `ranging`, `stop_owed`, and `blocked` reached after
-     * something was opened. True from `idle`, and from a `blocked` that never opened anything --
-     * a refused verification, an unclassifiable probe, a wrong identity, a survivor that would not
-     * quiesce.
-     *
-     * Discarding a non-discardable object does not merely lose bookkeeping: it forgets a stop debt
-     * that only a successful stop may clear, and on this sensor the way back from a forgotten live
-     * session is a machine power cycle. */
+    /* Ask before rebind/reinitialization. Refuse disposal while ranging, owing stop,
+     * or blocked behind a potentially live session. Idle and safe pre-ranging
+     * failures are discardable; only confirmed stop clears a stop debt.
+     */
     bool discardable() const;
 
 private:

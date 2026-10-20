@@ -46,22 +46,10 @@ const device *dev_{nullptr};
 identifiers ids_{};
 bool configured_{false};
 
-/* HOW LONG TO WAIT FOR A TRANSMIT MAILBOX. One millisecond because a grid is 65 frames and a longer
- * per-frame wait would let a congested bus stall the shell thread for seconds.
- *
- * WHAT PASSING A CALLBACK BELOW DOES AND DOES NOT BUY. can_send() with a null callback is the
- * SYNCHRONOUS form: zephyr/drivers/can/can_common.c substitutes its own callback and then waits on
- * it with K_FOREVER, so the timeout argument bounds the mailbox wait and nothing bounds the wait for
- * completion. On a bus where nothing acknowledges -- an unterminated stub, a bench with the IPC
- * powered down -- the controller retransmits indefinitely, the completion never arrives, and the
- * shell thread blocks forever; the command's own budget check cannot run, because it is upstream of
- * a call that never returns. Passing a callback removes THAT wait.
- *
- * IT DOES NOT MAKE THIS A ONE-MILLISECOND CALL DEADLINE, and claiming so would be wrong in a way
- * that matters the next time somebody budgets around it. The driver below still takes its own locks
- * with K_FOREVER, so the call can be delayed by whatever holds them. What is gone is the unbounded
- * wait for an acknowledgement that may never come; what remains is ordinary contention, bounded by
- * nothing this module controls. */
+/* Wait up to 1 ms for a mailbox per frame. A non-null callback avoids the
+ * synchronous can_send() path's K_FOREVER wait for ACK completion.
+ * This is not a whole-call deadline: underlying driver locks may still wait.
+ */
 constexpr k_timeout_t kMailboxTimeout{K_MSEC(1)};
 
 /* Completion failures reported by the driver since the last init(). An atomic because the callback
