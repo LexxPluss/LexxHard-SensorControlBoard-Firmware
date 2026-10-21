@@ -54,9 +54,7 @@
 #include "tof_acquisition.hpp"
 #include "tof_enumerator.hpp"
 
-/* Declared rather than included: only the test seam at the bottom of this header names a
- * fingerprint, and pulling the proof module's header in would make every consumer of this one
- * depend on it for a door that does not exist in a production build. */
+/* Only the test seam needs the fingerprint type. */
 namespace lexxhard::tof_proof { struct fingerprint; }
 
 namespace lexxhard::tof_cliff_runtime {
@@ -163,16 +161,8 @@ void set_thread_stack_for_test(k_thread_stack_t *stack, size_t size);
 const tof_acq::source_desc *descriptors_for_test();
 // Rebuilds the table from the current spec, for cases that need the two to disagree.
 int force_rebuild_descriptors_for_test();
-/* The authority's install callback, reachable directly.
- *
- * It is what keys the descriptors, and a proof cannot stage the inputs it has to refuse: the
- * fingerprint a walk produces is built from the spec, so an out-of-range grid source id, a
- * position number that belongs to a neighbour or two positions claiming one id cannot be reached
- * through commissioning. They are defence against a fingerprint that disagrees with the
- * descriptors, and the only way to pin that defence is to hand it such a fingerprint.
- *
- * Returns what the callback returns: 0 with the table keyed, or a negative errno with the table
- * left exactly as it was. */
+/* Test invalid fingerprints that a normal proof cannot produce.
+ * Returns 0 with keys installed, or a negative errno with the table unchanged. */
 int install_from_mapping_for_test(const tof_proof::fingerprint &fp, uint8_t epoch);
 #endif
 

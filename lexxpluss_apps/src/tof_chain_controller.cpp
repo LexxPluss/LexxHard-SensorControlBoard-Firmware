@@ -74,9 +74,7 @@
 #include "tof_l7_blob_record.hpp"
 #include "tof_l7_runtime.hpp"
 #if defined(ENABLE_TOF_CLIFF_ULD)
-/* The grid publisher is guarded on all three flags, so this include carries the cliff guard the
- * surrounding block does not: a chain + L7 build without the cliff ULD is a configuration CMake
- * permits, and there is no publisher in it. */
+/* Chain + L7 builds without the cliff ULD have no grid publisher. */
 #include "tof_grid_publisher.hpp"
 #endif
 #endif
@@ -454,11 +452,7 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
         return -EIO;
     }
 
-    /* Proven, keyed, and deliberately going no further: starting acquisition is a separate command
-     * and there is no acquisition thread yet, so nothing is being read and nothing can be
-     * published. Saying so here keeps an operator from reading "proven" as "producing" -- which
-     * matters more since the PROVEN clamp was lifted, because now only the missing thread stands
-     * between this state and frames on the wire. */
+    /* Proof installs keys but does not start acquisition. */
     shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; acquisition NOT "
                        "started, so no measurement frame can leave this board yet",
                 parsed);
@@ -501,9 +495,7 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
     }
 
     shell_print(shell, "acquisition thread started");
-    /* Said explicitly, because "started" and "measurements are on the wire" are different claims.
-     * Since the clamp was lifted the second one depends on the authority alone: a mapping the
-     * authority reports as PROVEN publishes, anything else does not. */
+    /* A running thread still needs a PROVEN mapping to publish. */
     shell_print(shell, "measurement frames leave this board only while the mapping is PROVEN; "
                        "health frames were already flowing since boot");
     return 0;
@@ -526,10 +518,7 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
  * proven.
  *
  * THEY ARE NOT A BYPASS. Every refusal in both commands comes from the runtime's own gates rather
- * than from conditions re-checked here, and `start` still requires a proven mapping that the
- * authority currently reports. Since the PROVEN clamp was lifted that requirement is the only
- * thing standing between these commands and frames on the wire, so neither may grow a way to
- * assert a state the authority has not committed.
+ * than from conditions re-checked here. `start` requires the authority's committed PROVEN mapping.
  *
  * WHEN THEY GO: when the host issues commissioning requests and persists epochs, and a deployment
  * has turned `commission-profile-enabled` on. Until both are true, deleting them would remove the
@@ -581,32 +570,9 @@ int cmd_cliff_status(const struct shell *shell, size_t, char **)
 }
 
 #if defined(ENABLE_TOF_L7_ULD)
-/* WHY THE GRID NEEDS ITS OWN READER: nothing on a running board can currently say why the two L7
- * boards produce no grid.
- *
- * The three facts that answer it are each recorded once and then never repeated. The blob
- * verification happens at boot, in bootstrap(). The per-source open -> configure -> start outcome
- * is produced when an epoch begins, and logged there. Per-cycle grid reads log nothing at all, on
- * purpose: at 5 Hz against a 50 ms cycle nine cycles in ten find nothing ready, and a line for each
- * would bury everything else on the console. The console keeps no history, so once the boot
- * scrolled past -- or once the machine power-cycled, which an SCB reset does -- the whole diagnosis
- * is gone, and DS20002 on 2026-10-19 is the case in point: four cliff sensors publishing, no
- * 0x214/0x215, and no retained evidence of which stage failed.
- *
- * NOR IS IT ON THE BUS. 0x215 closes a burst of data frames rather than announcing a cycle, so a
- * grid that is never produced sends nothing; and the cliff health frame's masks are four bits wide
- * over the cliff sensors alone, so the two grid positions are absent from it by construction.
- *
- * WHAT THIS PRINTS, AND THAT IS ALL IT DOES: the blob state this boot reached, each grid source's
- * bring-up and last-read detail, and the publisher's counters. Every figure is copied from memory
- * that already holds it. Nothing is recomputed, no device is touched, no judgement is made and no
- * state changes -- so it is safe to run on a machine that is producing, which is the only kind of
- * machine that has this question.
- *
- * WHAT IT CANNOT SAY. The facts carry the classification of a failed call, not its rc: record_l7()
- * maps the rc into one of transport/protocol/unsupported/usage and keeps the device detail
- * (stage, port errno, ULD status). So this names where and in whose vocabulary an operation broke,
- * not the exact return value the log line carried. */
+/* Read retained blob, source and publisher facts without device access or state changes.
+ * 0x215 is not a heartbeat, and cliff health excludes L7, so CAN silence cannot locate a failure.
+ * Source facts retain the failure class and device detail, not the original operation rc. */
 int cmd_grid_status(const struct shell *shell, size_t, char **)
 {
     const tof_l7_runtime::snapshot blob{tof_l7_runtime::current()};
@@ -615,15 +581,8 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                 tof_l7_runtime::stage_name(blob.current_stage),
                 static_cast<int>(blob.firmware_available),
                 static_cast<unsigned>(blob.firmware_size));
-    /* ONLY A TERMINAL STAGE HAS A VERDICT TO PRINT. `verification` is default-constructed until
-     * bootstrap() fills it, and its default status is `unreadable` -- so printing the field
-     * unconditionally reports a flash controller failure on a board that has simply not been asked
-     * to verify anything yet, which is the most alarming of the diagnoses and the one furthest from
-     * the truth. not_started and verifying mean there is no answer, and that is what gets said.
-     *
-     * THE STORED HEADER BESIDE THE VERDICT, where there is one, because the verdict alone cannot
-     * say what is in flash: `absent` means the board was never provisioned, while a length_mismatch
-     * with a parsed header means it holds a different blob and prints which. */
+    /* Only terminal stages have a verdict; the default unreadable value is not a result.
+     * Include the parsed header to identify a stored-blob mismatch. */
     if (blob.current_stage == tof_l7_runtime::stage::available ||
         blob.current_stage == tof_l7_runtime::stage::refused) {
         shell_print(shell, "blob record=%s region=%u stored_parsed=%d stored_len=%u stored_fmt=%u",
@@ -638,19 +597,11 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                     tof_l7_runtime::stage_name(blob.current_stage));
     }
 
-    /* A FILE-SCOPE BUFFER RATHER THAN A LOCAL, and the reason is the stack this runs on. The shell
-     * thread has 2 KiB, the two structures are a few hundred bytes together, and an image in this
-     * family has already been halted by an MPU stack guard once (see overlays/tof_l7.conf). The
-     * shell is one thread and this command is the buffer's only user, so there is nothing to race
-     * with; a second reader would have to take a lock, which is a cost this diagnostic does not
-     * need to carry today. */
+    /* Keep snapshots off the 2 KiB shell stack. Only the single shell thread uses these buffers;
+     * concurrent command execution would require synchronization. */
     static tof_acq::cycle_facts facts{};
 
-    /* COPIED UNDER A BOUNDED WAIT, PRINTED AFTER IT IS RELEASED. shell_print() goes to a UART and
-     * must never run holding the chain lock -- that lock is what commissioning and every cycle
-     * take. The bound is the whole reason try_copy_facts() exists: a commissioning walk holds the
-     * lock for seconds and a wedged transfer holds it indefinitely, and the shell must survive
-     * both. 250 ms covers five cycle periods, so an ordinary cycle boundary never refuses. */
+    /* Bound the lock wait so a stuck transfer cannot hang the shell; print only after unlock. */
     if (const int rc{tof_acq::try_copy_facts(facts, 250)}; rc != 0) {
         shell_warn(shell, "chain busy: no per-source detail (rc %d). Something holds the chain "
                           "lock -- a commissioning walk, or a transfer that has not returned. "
@@ -672,9 +623,7 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                         tof_acq::operation_stage_name(f.status), f.status.port_errno,
                         f.status.uld_status, static_cast<int>(f.status.sample_present));
         }
-        /* COUNTED AND SAID, rather than left as an empty section. No grid line at all means this
-         * image's descriptor table holds no l7_grid source -- a build or spec question -- and that
-         * is a different answer from two sources that failed to start. */
+        /* Distinguish an empty descriptor table from sources that failed to start. */
         int grid_sources{0};
         for (int i{0}; i < facts.source_count; ++i)
             if (facts.sources[i].kind == tof_acq::model::l7_grid)
@@ -683,28 +632,19 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                     grid_sources, facts.source_count);
     }
 
-    /* WHETHER THERE IS A PUBLISHER AT ALL, which is the ambiguity the counter block below cannot
-     * resolve on its own: the grid publisher's init() is one of this bootstrap's steps, so
-     * stage::ready means it ran, and any earlier stage means the counters were never offered
-     * anything to count. Read from the runtime rather than from the publisher, which has no such
-     * accessor -- adding a field to the production path for a shell command's benefit would be the
-     * wrong way round. */
+    /* Runtime stage helps distinguish an uninitialized publisher from an idle one. */
     shell_print(shell, "cliff runtime ready=%d stage=%s",
                 static_cast<int>(tof_cliff_runtime::ready()),
                 tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
 
-    /* The publisher's own lock, taken by copy_counters(), is bounded by construction rather than by
-     * an argument: it is held while frames are built and dropped before they are offered to the
-     * bus, so it is never held across a blocking send. */
+    /* The publisher lock never spans a blocking CAN send. */
     static tof_grid_pub::counters sent{};
 
     tof_grid_pub::copy_counters(sent);
     shell_print(shell, "grids admitted=%u sent=%u data_frames=%u health_frames=%u retired=%u",
                 sent.grids_admitted, sent.grids_sent, sent.data_frames_sent,
                 sent.health_frames_sent, sent.generations_retired);
-    /* THE GATE'S REFUSALS, which are the ones that explain a silent bus while the sensors are fine:
-     * not_proven is the authority, the next three are the descriptor, and the role pair is the
-     * mapping's keying. */
+    /* Admission failures distinguish authority, descriptor and mapping problems. */
     shell_print(shell, "refused not_proven=%u wrong_model=%u wrong_domain=%u role_mismatch=%u "
                        "role_unassigned=%u", sent.suppressed_not_proven,
                 sent.suppressed_wrong_model, sent.suppressed_wrong_domain,
@@ -719,11 +659,7 @@ int cmd_grid_status(const struct shell *shell, size_t, char **)
                 sent.suppressed_cycle_not_begun, sent.queue_full, sent.frames_abandoned);
     shell_print(shell, "send_failed data=%u health=%u", sent.send_failed_data,
                 sent.send_failed_health);
-    /* THE READING RULE, beside the reading, and it stops short of a diagnosis on purpose. All-zero
-     * has several causes that this command cannot tell apart: a publisher that init() never
-     * accepted returns from every hook without counting, one that was never offered a sample
-     * counts nothing either, and so does a chain that is not acquiring. Naming one of them here
-     * would send an operator past the other two. */
+    /* Zero counters alone cannot distinguish missing initialization, acquisition or samples. */
     shell_print(shell, "note: all counters zero means no counted event, not a located fault; read "
                        "it against the runtime stage and the sources above, and against whether "
                        "the chain is acquiring at all");

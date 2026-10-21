@@ -767,25 +767,8 @@ const source_ops &l4_cliff_ops()
 
 mapping_state effective_mapping_state()
 {
-    // THE PROVEN CLAMP WAS LIFTED HERE on 2026-10-14, by the release decision this image is for.
-    // Until then this function rewrote PROVEN to NOT_READY unconditionally, so no measurement
-    // could be published by any path; that is why wiring a sender used to change what the board
-    // COULD do rather than what it did.
-    //
-    // WHAT THE LIFT DOES NOT SETTLE, and what therefore has to be measured on this image before
-    // it is used for anything else -- neither is a reason the clamp stayed, they are the two
-    // things it was hiding:
-    //
-    //   - The product bus speed. A proof runs at 100 kHz and the identity recheck that follows
-    //     runs at 400 kHz, which is the speed acquisition reads at. A first I2C timeout still
-    //     leaves the bus unrecovered -- the STM32 path ends the transfer and waits for cleanup
-    //     with no SWRST and no bit-bang release -- so a long 8x8 read that times out does not
-    //     come back on its own. Watch for it; it is a firmware defect, not the hardware's.
-    //   - The acquisition thread's stack. acq-stack-size is a devicetree number chosen without a
-    //     watermark, and the overlay says so.
-    //
-    // A state is still only as good as the authority that reported it: with no provider wired
-    // there is nothing to believe, so NOT_READY stands.
+    // Trust the authority; fail closed if no provider is wired.
+    // Timeout recovery at 400 kHz and acquisition stack margin need hardware validation.
     return cfg_.mapping_state_provider != nullptr ? cfg_.mapping_state_provider()
                                                   : mapping_state::not_ready;
 }
@@ -834,10 +817,7 @@ void copy_facts(cycle_facts &out)
 
 int try_copy_facts(cycle_facts &out, uint32_t wait_ms)
 {
-    /* Every k_mutex_lock() failure is reported as -EBUSY rather than passed through. The kernel
-     * returns -EAGAIN for the expiry and -EBUSY for a K_NO_WAIT that would have blocked; both mean
-     * the same thing to a caller that asked for a bounded read and did not get one, and two codes
-     * for one outcome would invite a caller to branch on which. */
+    /* Normalize timeout and no-wait contention to the same busy result. */
     if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_MSEC(wait_ms)) != 0)
         return -EBUSY;
     out = facts_;

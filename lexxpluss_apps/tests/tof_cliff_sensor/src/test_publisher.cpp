@@ -214,9 +214,7 @@ void begin(uint32_t cycle_seq)
     pub::on_cycle_begin(cycle_seq);
 }
 
-/* What the integration fixture's mapping authority reports, for the cases at the end of this file
- * that run acquisition for real. PROVEN is the default because those cases are about the path, not
- * about the gate; a case that is about the gate sets it and before() puts it back. */
+/* Integration cases default to PROVEN; gate tests override it. */
 acq::mapping_state integration_provider_state{acq::mapping_state::proven};
 
 void before(void *)
@@ -233,9 +231,7 @@ void before(void *)
     chain_flags_value = 0;
     failing_position_value = ctr::kChainPositionNone;
     authorise_calls = 0;
-    /* The integration fixture's authority answers PROVEN unless a case says otherwise, and it is
-     * restored here because acq::teardown() does not clear the provider the previous case
-     * installed -- a state left behind would decide the next case's gate. */
+    /* teardown() retains the provider, so reset its state between cases. */
     integration_provider_state = acq::mapping_state::proven;
     build_descs();
     zassert_equal(pub::init(make_pub_config()), 0);
@@ -253,10 +249,6 @@ void retire_acquisition(void *)
 ZTEST_SUITE(tof_cliff_publisher, NULL, NULL, before, retire_acquisition, NULL);
 
 /* ------------------------------------------------------------ the safety gate ----- */
-
-/* The gate's own case is at the end of this file, with the other cases that configure the
- * acquisition layer: since the 2026-10-14 lift the answer comes from the mapping authority, so a
- * case about the gate has to install one rather than assert a value the build fixes. */
 
 ZTEST(tof_cliff_publisher, test_no_measurement_is_sent_while_the_mapping_is_not_proven)
 {
@@ -917,12 +909,7 @@ ZTEST(tof_cliff_publisher, test_a_real_cycle_reaches_the_bus_through_the_packer)
 
 ZTEST(tof_cliff_publisher, test_a_real_cycle_publishes_through_the_production_gate)
 {
-    /* The same path with the gate wired the way production wires it, and the case that changed
-     * direction on 2026-10-14. The provider here reports PROVEN; until the clamp was lifted the
-     * gate rewrote that to NOT_READY and this asserted zero frames -- which was the behaviour a
-     * bring-up engineer saw on hardware and had no way to tell from a broken sensor path. Now
-     * every cliff source publishes once per cycle, and suppressed_not_proven staying at zero is
-     * what says the gate was open rather than the samples never arriving. */
+    /* A PROVEN provider must permit every fresh cliff source through the production gate. */
     integration::start_fails = false;
     build_descs();
     zassert_equal(acq::init(integration::make_acq_config()), 0);
@@ -948,10 +935,7 @@ ZTEST(tof_cliff_publisher, test_a_real_cycle_publishes_through_the_production_ga
 
 ZTEST(tof_cliff_publisher, test_the_production_gate_is_shut_until_something_proves_the_mapping)
 {
-    /* THE OTHER DIRECTION OF THE SAME CLAIM, and what used to be a structural one. Before the
-     * lift this asserted that PROVEN was unreachable whatever the authority said; now the
-     * authority decides, so the case installs one that has proved nothing. The refusal has to
-     * come from that evidence -- no proof, no publication -- and not from a default. */
+    /* An explicit unproven provider must refuse publication. */
     integration_provider_state = acq::mapping_state::not_ready;
     build_descs();
     zassert_equal(acq::init(integration::make_acq_config()), 0);

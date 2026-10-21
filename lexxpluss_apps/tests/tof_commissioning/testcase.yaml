@@ -2,11 +2,9 @@ common:
   platform_allow: native_sim
   tags: tof
 tests:
-  # The stub configuration: no grid driver in the image, so the two grid positions are stubs and
-  # stay unassigned. A real product configuration, and its own property.
+  # Without L7, grid stubs remain unassigned.
   tof.commissioning:
     extra_args: GRID_L7=0
-  # The build that ships the grid driver, where the keying has a consequence: the descriptors carry
-  # the grid source ids a proof installed, and a sample under them reaches the bus.
+  # With L7, proof-installed keys must reach the publisher.
   tof.commissioning.grid:
     extra_args: GRID_L7=1

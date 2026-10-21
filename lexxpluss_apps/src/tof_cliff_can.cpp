@@ -145,9 +145,7 @@ struct tof_grid_pub::can_sink grid_sink()
 
 struct tof_grid_pub::authorisation grid_production_authorisation()
 {
-    /* ONE read of the authority, and everything below derived from that one value -- the same
-     * rule and for the same reason as the cliff gate above: reading twice can yield a pair that
-     * never existed, and the publisher latches this per cycle. */
+    /* Keep state, epoch and permissions from one authority snapshot. */
     return grid_authorisation_from(tof_authority::current());
 }
 
@@ -191,12 +189,7 @@ struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::
 
 struct tof_cliff_pub::authorisation production_authorisation()
 {
-    /* ONE read of the authority, and the state taken from that same snapshot.
-     *
-     * Not effective_mapping_state() plus current().epoch: that reads the authority twice, and
-     * a proof committing between the two reads yields a pair that never existed -- LOST with
-     * the new epoch, say. The publisher latches this pair per cycle and re-checks it before
-     * flushing, so a pair that never existed would be latched as though it had. */
+    /* Separate state/epoch reads could straddle a proof commit. */
     const tof_authority::snapshot now{tof_authority::current()};
 
     struct tof_cliff_pub::authorisation a{};

@@ -22,16 +22,12 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 name: release
-# ONE TRIGGER, BECAUSE PUBLISHING A RELEASE ALSO PUSHES ITS TAG. This workflow used to listen for
-# `release: published` as well, which meant a release published from a draft built and uploaded the
-# same version twice. The tag push is the one event both routes have in common, and the upload step
-# below reuses the release when the drafter has already prepared one.
+# Use one trigger to avoid duplicate builds for the same tag.
 on:
   push:
     tags:
       - 'v*'
-# The upload step creates the release when the tag has none, which the read-only default token
-# cannot do.
+# Required to create releases and upload assets.
 permissions:
   contents: write
 jobs:
@@ -57,39 +53,23 @@ jobs:
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_initial
           make IN_HOST=1 WORKDIR=$(pwd) clean
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_two_state_ksw_initial
-          # The ToF build keeps its own build directory, so it needs no clean between it and the
-          # two above. firmware_tof_release is the whole release sequence -- guard, bootloader,
-          # application, image assertions, Initial image, manifest -- and any step failing fails the
-          # job before anything is uploaded. It is the same entry a person types locally, so a
-          # release built here and one built by hand cannot diverge in which steps ran.
-          #
-          # ITS GUARD REFUSES A MODIFIED WORKTREE, and that is why the checkout above must stay a
-          # plain checkout: a step that edited a tracked file before this point would stop the
-          # release rather than quietly stamp the wrong commit into the manifest.
+          # Use the local release entry; its guard requires unchanged tracked files.
+          # ToF has a separate build directory, so no clean is needed here.
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_tof_release
           mv ./out/firmware.bin LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
           mv ./out/firmware_two_state_ksw.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr_two_state_ksw.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
-          # The ToF set is three files and deliberately not four: the unpadded signed image is the
-          # input to the Initial image above and is NOT published, because written into slot1 by
-          # the CAN DFU it carries no trailer, never asks for a swap, and leaves a machine running
-          # its old firmware in a way that reads as a revert.
+          # Do not publish unpadded signed.bin: CAN DFU needs a trailer to request a swap.
           mv ./out/firmware_tof_release.bin LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr_tof_release.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
           mv ./out/zephyr_tof_release.test.bin LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
-          # The manifest is published because it answers what the filenames cannot: which commit,
-          # which build configuration, and whether the safety-lidar bypass is in. The build also
-          # writes out/SHA256SUMS-tof-release.txt, which is NOT published -- it names the files by
-          # their in-tree names, and two checksum files disagreeing about what a file is called is
-          # worse than one. The published sums are the ones computed below, over the released names.
+          # Publish the manifest; recompute checksums under the release asset names.
           mv ./out/zephyr_tof_release.MANIFEST.txt LexxHard-SensorControlBoard-Firmware-ToF-MANIFEST-${{ github.ref_name }}.txt
           sha256sum LexxHard-SensorControlBoard-Firmware-*-${{ github.ref_name }}.bin > SHA256SUMS-${{ github.ref_name }}.txt
           cat SHA256SUMS-${{ github.ref_name }}.txt
           cat LexxHard-SensorControlBoard-Firmware-ToF-MANIFEST-${{ github.ref_name }}.txt
-      # Creates the release when the tag has none, and reuses the drafter's when it has one. A tag
-      # carrying a pre-release suffix (v3.8.0-tof.1) is marked as such here: GitHub does not infer
-      # it from the name.
+      # Create or reuse the release; explicitly mark suffixed tags as prereleases.
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

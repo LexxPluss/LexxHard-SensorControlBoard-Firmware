@@ -67,10 +67,7 @@ int fake_send(uint16_t can_id, const uint8_t *, uint8_t)
 fake::fake_chain chain{};
 
 #if defined(ENABLE_TOF_L7_ULD)
-/* THE GRID FRAMES, COUNTED BY IDENTIFIER rather than collected. The question this suite asks of the
- * grid path is whether a mapping a proof installed reaches the bus at all, and the frames' contents
- * are the grid packer suite's subject -- it drives them from the contract's own vectors, which is a
- * stronger check than anything this file could restate. */
+/* Count delivery by CAN ID; the packer suite verifies payloads against golden vectors. */
 int grid_data_frames{0};
 int grid_health_frames{0};
 int grid_other_frames{0};
@@ -112,12 +109,7 @@ struct tof_grid_pub::can_sink grid_sink()
     return {grid_fake_send};
 }
 
-/* Reproduced from grid_authorisation_from() for the reason the comment above gives, and with its
- * one load-bearing detail kept: source_allowed comes from grid_source_mask, which is the
- * authority's statement about GRID sources. Taking it from enumerated_mask -- whose bits are
- * source_id_of(l4_role) -- would let a cliff sensor's permission admit a grid, and that is the
- * defect #118 fixed. A stub that permitted everything would also hide the whole keying question
- * this file now asks. */
+/* Mirror production permissions: grid_source_mask, not the cliff enumerated_mask. */
 struct tof_grid_pub::authorisation grid_production_authorisation()
 {
     const au::snapshot now{au::current()};
@@ -465,16 +457,11 @@ ZTEST(tof_cliff_runtime, test_descriptors_come_from_the_spec_and_are_keyed_only_
     zassert_equal(d[4].role_id, 2);
     zassert_equal(d[5].role_id, 3);
 #if defined(ENABLE_TOF_L7_ULD)
-    /* WITH THE GRID DRIVER IN THE IMAGE the two grid positions are keyed from the fingerprint's own
-     * source_id field, which the spec assigns and the proof verifies. Unassigned here is what kept
-     * every grid sample off the bus until 2026-10-20: the publisher refuses a sample whose source
-     * id was never keyed, and refusing it invalidates the cycle. */
+    /* Real grid descriptors take the proof's source IDs. */
     zassert_equal(d[0].role_id, 0, "position 1 (index 0) must key to grid source 0");
     zassert_equal(d[1].role_id, 1, "position 2 (index 1) must key to grid source 1");
 #else
-    /* The grid positions are stubs with no cliff source id, and they stay unassigned rather than
-     * being given a plausible-looking number. A stub cannot produce a sample, so there is nothing
-     * to publish and nothing to key. */
+    /* Stub positions cannot produce samples and remain unassigned. */
     zassert_equal(d[0].role_id, rt::kRoleUnassigned);
     zassert_equal(d[1].role_id, rt::kRoleUnassigned);
 #endif
@@ -703,19 +690,7 @@ ZTEST(tof_cliff_runtime, test_starting_twice_is_refused_rather_than_creating_a_s
 #if defined(ENABLE_TOF_L7_ULD)
 /* ------------------------------------------------ the grid keying, in a build that has L7 ------ */
 
-/* THIS CONFIGURATION EXISTS BECAUSE THE OTHER ONE CANNOT ASK THE QUESTION. Without
- * ENABLE_TOF_L7_ULD every grid position carries the stub, and the suite's own end-to-end case
- * asserted the two of them stay unassigned -- which was correct for a stub and silently stood in
- * for the real wiring. The real build keys them from the fingerprint, and on 2026-10-19 DS20002
- * showed what the gap costs: a committed epoch, four cliff sensors publishing, and not one grid
- * frame on 0x214 because every sample was refused as suppressed_role_unassigned.
- *
- * The checks below are reached by handing install_from_mapping() a fingerprint directly. A proof
- * cannot stage them: the fingerprint a walk produces is built from the spec, so an out-of-range
- * source id, a neighbour's position number or two positions claiming one id are not reachable
- * through commissioning. They guard against a fingerprint that disagrees with the descriptors,
- * which is a wiring fault rather than a chain fault, and the only way to pin that is to build one.
- */
+/* Direct callback tests cover invalid fingerprints a spec-driven proof cannot produce. */
 pf::fingerprint profile_fingerprint()
 {
     const enm::chain_spec &spec{rt::spec()};
@@ -733,8 +708,7 @@ pf::fingerprint profile_fingerprint()
     return fp;
 }
 
-/* A bootstrap with descriptors built and nothing keyed: the state every refusal case has to be
- * found in afterwards. */
+/* Refusal cases must leave this unkeyed state unchanged. */
 void bootstrap_unkeyed()
 {
     zassert_equal(rt::bootstrap(kTiming), 0);
@@ -773,16 +747,8 @@ ZTEST(tof_cliff_runtime, test_an_installed_mapping_keys_both_grid_positions_from
 
 ZTEST(tof_cliff_runtime, test_the_grid_key_follows_the_fingerprint_and_not_the_descriptor_index)
 {
-    /* THE SAME MAPPING WITH THE TWO GRID SOURCES SWAPPED, and this is the case that pins WHERE the
-     * key came from rather than what it happens to equal. In dasher_spec the grid source ids are 0
-     * and 1 at positions 1 and 2, so they coincide with the descriptor indices and `keys[i] = i`
-     * would satisfy every assertion in the case above. It cannot satisfy these.
-     *
-     * Both values are legal and both positions keep their own address, so a mapping is free to say
-     * either -- which is the whole reason the field exists. The index is where a board sits on the
-     * chain; source_id is which side of the machine it looks at. An index used as the key would
-     * publish left as right the first time somebody reordered the harness, with nothing on the
-     * wire looking wrong. */
+    /* Swap legal IDs at the install seam to distinguish fingerprint keys from descriptor indices.
+     * This exercises the callback directly, not production proof acceptance of a changed spec. */
     bootstrap_unkeyed();
 
     pf::fingerprint swapped{profile_fingerprint()};
@@ -819,8 +785,7 @@ ZTEST(tof_cliff_runtime, test_two_grid_positions_claiming_one_source_id_are_refu
 
     pf::fingerprint fp{profile_fingerprint()};
 
-    /* Both sides of the machine published as one source: the publisher would drop the cycle as a
-     * duplicate, and nothing downstream could tell which of the two was mis-keyed. */
+    /* Duplicate IDs must be rejected before the publisher sees them. */
     fp.at[1].source_id = 0;
     zassert_equal(rt::install_from_mapping_for_test(fp, 5), -EINVAL);
     assert_nothing_was_keyed("duplicate source id");
@@ -830,9 +795,7 @@ ZTEST(tof_cliff_runtime, test_a_grid_position_the_fingerprint_disagrees_about_is
 {
     bootstrap_unkeyed();
 
-    /* Four separate disagreements, each refused on its own. They are in one case because they
-     * share the fixture and the same consequence, not because any one of them stands in for the
-     * others. */
+    /* Exercise each disagreement independently against the same unkeyed fixture. */
     pf::fingerprint moved{profile_fingerprint()};
 
     moved.at[0].address = 0x2B;   // the entry describes the device at the NEXT position
@@ -860,10 +823,7 @@ ZTEST(tof_cliff_runtime, test_a_grid_position_the_fingerprint_disagrees_about_is
 
 ZTEST(tof_cliff_runtime, test_a_refusal_at_the_second_grid_position_leaves_the_first_unkeyed)
 {
-    /* THE TWO-PASS DISCIPLINE, which every case above depends on but none of them isolates: the
-     * first grid position validates cleanly and only the second is refused. A single-pass install
-     * would have written source 0 before it reached the refusal, leaving one side of the machine
-     * publishing under a mapping the commit rejected -- and nothing on the wire to say so. */
+    /* Refusing the second position must not leave the first position keyed. */
     bootstrap_unkeyed();
 
     pf::fingerprint fp{profile_fingerprint()};
@@ -879,13 +839,8 @@ ZTEST(tof_cliff_runtime, test_a_refusal_at_the_second_grid_position_leaves_the_f
 
 ZTEST(tof_cliff_runtime, test_a_proven_mapping_puts_both_grids_on_the_bus)
 {
-    /* THE WHOLE CHAIN, because keyed descriptors are not frames. A proof over the fake chain
-     * commits, the authority publishes its grid permission, the runtime keys the descriptors, and
-     * the publisher the bootstrap already wired is handed one sample per grid source. Everything
-     * between is production code; only the bus and the vendor are stubbed.
-     *
-     * This is the case that would have failed before the keying landed, and it fails for the right
-     * reason: suppressed_role_unassigned counts, and no frame is sent. */
+    /* Real proof, authority, keying and publisher with injected samples and stubbed CAN/vendor.
+     * Does not exercise acquisition callbacks or successful sensor bring-up. */
     zassert_equal(rt::bootstrap(kTiming), 0);
 
     const cm::outcome r{prove_over_the_fake_chain(9)};

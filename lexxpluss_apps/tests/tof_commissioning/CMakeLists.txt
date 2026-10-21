@@ -62,18 +62,8 @@ target_sources(app PRIVATE
 )
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD)
 
-# THE GRID CONFIGURATION, selected by twister with -DGRID_L7=1.
-#
-# It is not a variant of this suite's subject; it IS the subject in the build that ships the grid
-# driver. Without the flag every grid position carries the stub, so the keying the publisher depends
-# on has no observable consequence and the end-to-end case can only assert the two positions stay
-# unassigned -- which is right for a stub and stood in for the real wiring until a board showed
-# otherwise. Both configurations are kept: the stub build is a real product configuration and its
-# behaviour is a separate property.
-#
-# The extra sources are what tof_cliff_runtime.cpp reaches for once the flag is on: the grid
-# publisher and its packer, the L7 adapter named by the real grid ops table, and the link stubs for
-# the vendor entry points underneath it.
+# GRID_L7 tests real grid keying and publisher wiring; the default tests unassigned stubs.
+# Vendor/blob stubs satisfy linking without simulating sensor measurements.
 if(GRID_L7)
     target_compile_definitions(app PRIVATE ENABLE_TOF_L7_ULD)
     target_sources(app PRIVATE

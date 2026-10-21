@@ -62,26 +62,15 @@ int init();
 /* The sink to hand tof_cliff_pub::config. Valid only after a successful init(). */
 struct tof_cliff_pub::can_sink sink();
 
-/* The authorisation production uses: the mapping authority's state and epoch, taken from ONE
- * snapshot.
- *
- * ONE READ IS THE WHOLE RULE. The authority owns both halves, and a proof committing between two
- * reads would yield a state paired with an epoch that never held it. The publisher latches this
- * pair per cycle and re-checks it before flushing, so such a pair would be latched as though it
- * had existed. Until 2026-10-14 the state came through effective_mapping_state() instead, because
- * that is where the PROVEN clamp lived; the clamp is gone, and with it the reason to read twice. */
+/* State and epoch from one authority snapshot; separate reads could pair different commits. */
 struct tof_cliff_pub::authorisation production_authorisation();
 
 #if defined(ENABLE_TOF_L7_ULD)
-/* The grid pair's sender and gate. The sender is the same function the cliff frames use -- one bus,
- * one device, one timeout. The gate reads the authority once, like the cliff gate above. */
+/* Grid and cliff share the sender; both gates read one authority snapshot. */
 struct tof_grid_pub::can_sink grid_sink();
 struct tof_grid_pub::authorisation grid_production_authorisation();
 
-/* The conversion on its own, so that it can be exercised against a snapshot the authority would
- * take a full proof to reach. Splitting it out is what made the defect it now pins visible at all:
- * taking the grid permission from enumerated_mask, whose bits are the CLIFF roles, refuses and
- * permits identically to the correct mask on every snapshot a test can reach through the gate. */
+/* Exposed conversion tests grid_source_mask independently of the cliff enumerated_mask. */
 struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::snapshot &now);
 #endif
 

@@ -195,8 +195,7 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
      * published at all, and nothing on the wire to say which. */
     uint8_t keys[acq::kMaxSources];
 #if defined(ENABLE_TOF_L7_ULD)
-    /* Which grid source ids this mapping has already claimed, one bit per id. Local to the
-     * validation pass, so a refusal takes it with it. */
+    /* Source claims are local until the full mapping validates. */
     uint8_t grid_claimed{0};
 #endif
 
@@ -209,31 +208,8 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
         keys[i] = kRoleUnassigned;
 #if defined(ENABLE_TOF_L7_ULD)
         if (descs_[i].kind == acq::model::l7_grid) {
-            /* THE GRID SOURCE ID COMES FROM THE FINGERPRINT'S OWN FIELD.
-             *
-             * Not source_id_of(role): that answers a cliff question -- which corner a mounting role
-             * publishes as -- and an L7 has no cliff role at all. Not the descriptor index either:
-             * the index is where the board sits on the chain, while the contract's source_id is
-             * which side of the machine it looks at. They agree today by construction of the spec,
-             * and an index used as a source id would keep agreeing right up until somebody
-             * reorders the chain, at which point left and right swap with nothing on the wire
-             * looking wrong.
-             *
-             * THIS IS THE KEYING THAT WAS MISSING. Without it a grid position kept
-             * kRoleUnassigned, bring-up copied that into the facts, and the publisher refused
-             * every sample as suppressed_role_unassigned and invalidated the cycle -- so no image
-             * on this line could ever emit a grid frame, which is what DS20002 showed on
-             * 2026-10-19: four cliff sensors publishing under a committed epoch and not one
-             * 0x214. The gate was invisible until the PROVEN clamp was lifted, because before
-             * that nothing published at all.
-             *
-             * Five checks, and each one is a different way to publish a grid under a position
-             * nobody proved. The position, because the fingerprint entry has to be the one for
-             * THIS descriptor rather than a neighbour's. The model, because an L4 at a grid
-             * position would make an 8x8 claim about a part that has none. The address, because
-             * that is the device acquisition will actually read. The verified flag, because an
-             * unverified position proves nothing. The range, because the contract has two grid
-             * sources and a third would be unrepresentable. */
+            /* Use the verified fingerprint's grid ID, not a cliff role or chain index.
+             * Validate it against this descriptor before installing any keys. */
             const pf::position_fingerprint &pos{fp.at[i]};
 
             if (pos.position != static_cast<uint8_t>(i + 1))
@@ -249,9 +225,7 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
 
             const uint8_t src{static_cast<uint8_t>(pos.source_id)};
 
-            /* Two positions claiming one source id is a mapping that cannot be published: the
-             * publisher would drop the whole cycle as a duplicate, and which of the two is
-             * mis-keyed cannot be known from here. */
+            /* Duplicate grid IDs would make the publisher discard the cycle. */
             if ((grid_claimed & static_cast<uint8_t>(1U << src)) != 0)
                 return -EINVAL;
             grid_claimed |= static_cast<uint8_t>(1U << src);
@@ -314,10 +288,7 @@ int init_grid_publisher()
     cfg.sink = can::grid_sink();
     cfg.sources = descs_;
     cfg.source_count = static_cast<int>(spec_.positions);
-    /* THE SAME GATE AS THE CLIFF PATH, and since the PROVEN clamp was lifted on 2026-10-14 what
-     * holds it shut is the authority: the packer refuses anything that is not PROVEN, and only a
-     * committed proof makes the authority say PROVEN. Wiring this connects the path; a proof is
-     * what opens it. */
+    /* Publication requires the authority's committed PROVEN mapping. */
     cfg.authorise = can::grid_production_authorisation;
     /* NO DEFAULT INVENTED HERE. VL53L7CX target_status 6 and 9 are the low-confidence verdicts, and
      * whether a hanging-object detector should trust them is a product decision nobody has taken.

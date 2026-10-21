@@ -15,12 +15,8 @@
  * faked: the chain's control lines and the vendor ULDs, because what is under test is which
  * modules are connected to which, not what ST's drivers do.
  *
- * NOTHING REACHES A BUS, and since the PROVEN clamp was lifted on 2026-10-14 that is a property of
- * the AUTHORITY rather than of a rewrite in the acquisition layer: no proof commits in this
- * fixture, so the mapping is never PROVEN and the gate refuses every grid before a send is
- * reached. can2 here is a loopback controller, present because tof_cliff_can.cpp names the node at
- * compile time; no case asserts on a frame. That is the state these cases want: it shows the
- * modules are connected while the gate stays shut for a reason the authority owns.
+ * No proof commits here, so the authority remains unproven and no frames reach CAN.
+ * can2 is a loopback device needed by tof_cliff_can.cpp; frame payloads are tested elsewhere.
  */
 
 #include <errno.h>
@@ -215,12 +211,7 @@ ZTEST(tof_integration_wiring, test_a_proven_grid_source_is_permitted_by_its_own_
     zassert_false(a.other_position_enumeration_failed, "");
 }
 
-/* THE GATE NOW REPORTS WHAT THE AUTHORITY BELIEVES, AND NOTHING ELSE DECIDES. Until 2026-10-14 the
- * conversion ran the state through the PROVEN clamp, so this pair of assertions read the other way
- * round and the mask confusion above could not be seen from outside. The first case is what the
- * lift means: a snapshot that says PROVEN arrives at the publisher saying PROVEN, and anything
- * re-introducing a rewrite in between fails here. The second is the other half of the same claim
- * -- the gate is open only when a proof opened it, and this fixture performs none. */
+/* Conversion preserves PROVEN, while the live gate remains unproven without a committed proof. */
 ZTEST(tof_integration_wiring, test_the_grid_gate_carries_the_authority_state)
 {
     au::snapshot n{};

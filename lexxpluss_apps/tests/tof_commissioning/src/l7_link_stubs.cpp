@@ -4,20 +4,8 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * The VL53L7CX entry points and the verified-blob accessor, present so the grid configuration of
- * this suite links.
- *
- * WHY THEY ARE NOT A SIMULATION. This configuration exists to ask one question -- does a mapping a
- * proof installed key the grid descriptors, and do keyed descriptors reach the bus -- and it asks
- * it by handing the publisher a sample directly. Nothing here is meant to range: what a real sample
- * does to the ULD belongs to tests/tof_l7_port and tests/tof_l7_sensor, and reproducing it here
- * would freeze a second opinion about the vendor's behaviour into a suite about wiring.
- *
- * SO EVERY FUNCTION FAILS, deliberately. A test in this binary that reaches a sensor gets an error
- * rather than a plausible-looking sample, and a grid bring-up during the end-to-end case refuses at
- * the firmware stage instead of pretending a device is ranging. That refusal is expected: one
- * source that will not open must not stop the others, and the cliff path these tests also drive is
- * unaffected by it.
+ * Link stubs for mapping-to-publisher tests, which inject samples directly.
+ * No blob is available and vendor operations fail; this does not simulate ranging.
  */
 
 #include <stddef.h>
