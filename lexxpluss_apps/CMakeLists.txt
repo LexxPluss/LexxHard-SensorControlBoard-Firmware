@@ -23,6 +23,13 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
+# The variant feature file is read before find_package(Zephyr): besides plain flags it adds
+# devicetree overlays and Kconfig fragments (EXTRA_DTC_OVERLAY_FILE, EXTRA_CONF_FILE), which are
+# fixed by find_package(Zephyr) and would be silently ignored if the file were read later.
+if(FEATURES_FILE)
+    include(${FEATURES_FILE})
+endif()
+
 # The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
 # nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
 # find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
@@ -146,6 +153,10 @@ if(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST)
     message(WARNING "UNSAFE BUILD: BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST is enabled. "
                     "Safety lidar assertion is forced to false. "
                     "DO NOT flash to a robot allowed to drive.")
+endif()
+
+if(ENABLE_PUSH_MODE)
+    add_definitions(-DENABLE_PUSH_MODE)
 endif()
 
 # ToF chain enumeration glue (AMRSW-2322 Phase 2). Owns i2c2: the tug

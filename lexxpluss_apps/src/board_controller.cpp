@@ -37,6 +37,7 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/util.h>
 #include "adc_reader.hpp"
+#include "auto_charge_transitions.hpp"
 #include "board_controller.hpp"
 #include "bmu_lipy041_decode.hpp"
 #include "can_controller.hpp"
@@ -516,8 +517,19 @@ private:
             return;
         }
 
+#ifdef ENABLE_PUSH_MODE
+        std::optional<bool> const previous{last_written_disable};
+        last_written_disable = disable;
+        if (previous != last_written_disable) {
+            LOG_INF("wheel_en: %d -> %d", previous.has_value() ? static_cast<int>(!previous.value()) : -1,
+                    static_cast<int>(!disable));
+        }
+#endif
         gpio_pin_set_dt(&gpio_dev, static_cast<int>(!disable));
     }
+#ifdef ENABLE_PUSH_MODE
+    std::optional<bool> last_written_disable{std::nullopt};
+#endif
 };
 
 class manual_charger { // Variables Implemented
@@ -1427,7 +1439,12 @@ private:
 
     void poll() {
         auto wheel_relay_control = [&](){
+#ifdef ENABLE_PUSH_MODE
+            // The ESW means the robot is pushed by hand, so an ROS cut must not drop the wheel supply.
+            bool wheel_poweroff{mbd.is_wheel_poweroff() && !esw_keeps_wheel()};
+#else
             bool wheel_poweroff{mbd.is_wheel_poweroff()};
+#endif
             if (last_wheel_poweroff != wheel_poweroff) {
                 last_wheel_poweroff = wheel_poweroff;
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
@@ -1439,7 +1456,20 @@ private:
                 gpio_pin_set_dt(&gpio_dev, wheel_poweroff ? 0 : 1);
                 LOG_DBG("wheel power control %d!\n", wheel_poweroff);
             }
+#ifdef ENABLE_PUSH_MODE
+            if (esw_keeps_wheel()) {
+                // Keep the wheel supplied while the robot is pushed by hand.
+                gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
+                if (!gpio_is_ready_dt(&gpio_dev)) {
+                    LOG_ERR("gpio_is_ready_dt Failed\n");
+                    return;
+                }
+
+                gpio_pin_set_dt(&gpio_dev, 1);
+            } else if (!ksw.is_running()) {
+#else
             if (!ksw.is_running()) {
+#endif
                 gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
                 if (!gpio_is_ready_dt(&gpio_dev)) {
                     LOG_ERR("gpio_is_ready_dt Failed\n");
@@ -1543,6 +1573,7 @@ private:
                 LOG_DBG("emergency switch asserted\n");
                 use_software_brake = true;
                 set_new_state(POWER_STATE::SUSPEND);
+#ifndef ENABLE_PUSH_MODE
             } else if (sl.is_asserted()) {
                 LOG_DBG("safety lidar asserted\n");
                 set_new_state(POWER_STATE::SUSPEND);
@@ -1553,6 +1584,7 @@ private:
             } else if (mbd.is_dead()) {
                 LOG_DBG("mainboard is dead\n");
                 set_new_state(POWER_STATE::SUSPEND);
+#endif
             } else if (!charge_guard_asserted && ac.is_docked() && bmu.is_chargable()) {
                 if(ac.is_charger_ready() == true){
                     LOG_DBG("docked to auto charger\n");
@@ -1632,49 +1664,35 @@ private:
             break;
         case POWER_STATE::AUTO_CHARGE:
             ac.update_rsoc(bmu.get_rsoc());
-            if (should_turn_off()) {
-               set_new_state(POWER_STATE::OFF_WAIT);
-            } else if (ksw.is_transition_to_running()) {
-                can_skip_wait_sw = true;
-               set_new_state(POWER_STATE::OFF_WAIT);
-            } else if (psw.get_state() != power_switch::STATE::RELEASED) {
-                LOG_DBG("detect power switch\n");
-                set_new_state(POWER_STATE::STANDBY);
-            } else if (mbd.power_off_from_ros()) {
-                LOG_DBG("receive power off from ROS\n");
-                set_new_state(POWER_STATE::STANDBY);
-            } else if (!bmu.is_ok()) {
-                LOG_DBG("BMU failure\n");
-                set_new_state(POWER_STATE::STANDBY);
-            } else if (!dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running())) {
-                LOG_DBG("DCDC failure\n");
-                set_new_state(POWER_STATE::STANDBY);
-            } else if (esw.is_asserted()) {
-                LOG_DBG("emergency switch asserted\n");
-                use_software_brake = true;
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (sl.is_asserted()) {
-                LOG_DBG("safety lidar asserted\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (mbd.emergency_stop_from_ros()) {
-                LOG_DBG("receive emergency stop from ROS\n");
-                use_software_brake = true;
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (mbd.is_dead()) {
-                LOG_DBG("main board or ROS dead\n");
-                set_new_state(POWER_STATE::SUSPEND);
-            } else if (bmu.is_full_charge()) {
-                LOG_DBG("full charge\n");
-                set_new_state(POWER_STATE::NORMAL);
-            } else if (!ac.is_docked()) {
-                LOG_DBG("undocked from auto charger\n");
-                set_new_state(POWER_STATE::NORMAL);
-            } else if (mc.is_plugged()) {
-                LOG_DBG("manual charger plugged\n");
-                set_new_state(POWER_STATE::NORMAL);
-            } else if (current_check_enable && !bmu.is_charging()) {
-                LOG_DBG("not charging\n");
-                set_new_state(POWER_STATE::NORMAL);
+            {
+                const auto_charge_inputs in{
+                    .should_turn_off = should_turn_off(),
+                    .ksw_transition_to_running = ksw.is_transition_to_running(),
+                    .psw_pushed = psw.get_state() != power_switch::STATE::RELEASED,
+                    .power_off_from_ros = mbd.power_off_from_ros(),
+                    .bmu_ok = bmu.is_ok(),
+                    .dcdc_ok = dcdc.is_ok(ksw.is_maintenance() || ksw.is_transition_to_running()),
+                    .esw_asserted = esw.is_asserted(),
+                    .sl_asserted = sl.is_asserted(),
+                    .emergency_stop_from_ros = mbd.emergency_stop_from_ros(),
+                    .is_dead = mbd.is_dead(),
+                    .bmu_full_charge = bmu.is_full_charge(),
+                    .ac_docked = ac.is_docked(),
+                    .mc_plugged = mc.is_plugged(),
+                    .current_check_enable = current_check_enable,
+                    .bmu_charging = bmu.is_charging(),
+                };
+                const auto_charge_decision decision = eval_auto_charge_transitions(in);
+                if (decision.next != POWER_STATE::AUTO_CHARGE) {
+                    logAutoChargeExit(decision.reason);
+                    if (decision.can_skip_wait_sw) {
+                        can_skip_wait_sw = true;
+                    }
+                    if (decision.use_software_brake) {
+                        use_software_brake = true;
+                    }
+                    set_new_state(decision.next);
+                }
             }
             break;
         case POWER_STATE::MANUAL_CHARGE:
@@ -1706,6 +1724,65 @@ private:
             break;
         }
     }
+    void applyWheelEnAction(const wheel_en_action action) {
+        switch (action) {
+        case wheel_en_action::NONE:
+            break;
+        case wheel_en_action::ENABLE:
+            wsw.set_disable(false);
+            break;
+        case wheel_en_action::DISABLE_IMMEDIATE:
+            wsw.set_disable(true);
+            break;
+        case wheel_en_action::DISABLE_DELAYED:
+            wsw.set_disable(true, true);
+            break;
+        }
+    }
+    void logAutoChargeExit(const auto_charge_exit_reason reason) {
+        switch (reason) {
+        case auto_charge_exit_reason::PSW:
+            LOG_DBG("detect power switch\n");
+            break;
+        case auto_charge_exit_reason::POWER_OFF_FROM_ROS:
+            LOG_DBG("receive power off from ROS\n");
+            break;
+        case auto_charge_exit_reason::BMU_FAILURE:
+            LOG_DBG("BMU failure\n");
+            break;
+        case auto_charge_exit_reason::DCDC_FAILURE:
+            LOG_DBG("DCDC failure\n");
+            break;
+        case auto_charge_exit_reason::ESW:
+            LOG_DBG("emergency switch asserted\n");
+            break;
+        case auto_charge_exit_reason::SAFETY_LIDAR:
+            LOG_DBG("safety lidar asserted\n");
+            break;
+        case auto_charge_exit_reason::EMERGENCY_STOP_FROM_ROS:
+            LOG_DBG("receive emergency stop from ROS\n");
+            break;
+        case auto_charge_exit_reason::DEAD:
+            LOG_DBG("main board or ROS dead\n");
+            break;
+        case auto_charge_exit_reason::FULL_CHARGE:
+            LOG_DBG("full charge\n");
+            break;
+        case auto_charge_exit_reason::UNDOCKED:
+            LOG_DBG("undocked from auto charger\n");
+            break;
+        case auto_charge_exit_reason::MANUAL_CHARGER:
+            LOG_DBG("manual charger plugged\n");
+            break;
+        case auto_charge_exit_reason::NOT_CHARGING:
+            LOG_DBG("not charging\n");
+            break;
+        case auto_charge_exit_reason::NONE:
+        case auto_charge_exit_reason::TURN_OFF:
+        case auto_charge_exit_reason::KSW_TO_RUNNING:
+            break;
+        }
+    }
     void set_new_state(POWER_STATE newstate) {
         switch (state) {
         case POWER_STATE::OFF: {
@@ -1721,7 +1798,9 @@ private:
         case POWER_STATE::NORMAL: {
             LOG_INF("leave NORMAL");
             k_timer_stop(&charge_guard_timeout);
+#ifndef ENABLE_PUSH_MODE
             wsw.set_disable(true, use_software_brake);
+#endif
         } break;
         case POWER_STATE::POST: {
             LOG_INF("leave POST\n");
@@ -1738,9 +1817,14 @@ private:
         } break;
         case POWER_STATE::AUTO_CHARGE: {
             LOG_INF("leave AUTO_CHARGE");
-            k_timer_stop(&current_check_timeout);
-            ac.force_stop();
-            wsw.set_disable(true, use_software_brake);
+            const leave_auto_charge_plan plan = plan_leave_auto_charge(use_software_brake);
+            if (plan.stop_current_check_timer) {
+                k_timer_stop(&current_check_timeout);
+            }
+            if (plan.force_stop_charger) {
+                ac.force_stop();
+            }
+            applyWheelEnAction(plan.wheel_en);
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("leave MANUAL_CHARGE\n");
@@ -1757,11 +1841,17 @@ private:
             break;
         }
 
+#ifdef ENABLE_PUSH_MODE
+        // The ESW means the robot is pushed by hand, so the wheel stays supplied.
+        int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running() || esw_keeps_wheel())};
+#else
         int bat_out_state{static_cast<int>(mbd.is_wheel_poweroff() || ksw.is_running())};
+#endif
 
         switch (newstate) {
         case POWER_STATE::OFF: {
             LOG_INF("enter OFF\n");
+            applyWheelEnAction(plan_shutdown_wheel_en(POWER_STATE::OFF, use_software_brake));
             poweron_by_switch = false;
             mbd.reset();
             psw.set_led(false);
@@ -1801,7 +1891,7 @@ private:
             mbd.reset_heartbeat();
             psw.set_led(true);
             dcdc.set_enable(true);
-            wsw.set_disable(true);
+            applyWheelEnAction(plan_enter_wheel_en(POWER_STATE::STANDBY, ksw.is_maintenance()));
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
@@ -1816,7 +1906,7 @@ private:
         } break;
         case POWER_STATE::NORMAL: {
             LOG_INF("enter NORMAL\n");
-            wsw.set_disable(ksw.is_maintenance());
+            applyWheelEnAction(plan_enter_wheel_en(POWER_STATE::NORMAL, ksw.is_maintenance()));
             gpio_dt_spec gpio_dev = GET_GPIO(v_wheel);
             if (!gpio_is_ready_dt(&gpio_dev)) {
                 LOG_ERR("gpio_is_ready_dt Failed\n");
@@ -1845,7 +1935,7 @@ private:
         } break;
         case POWER_STATE::AUTO_CHARGE: {
             LOG_INF("enter AUTO_CHARGE\n");
-            wsw.set_disable(ksw.is_maintenance());
+            applyWheelEnAction(plan_enter_wheel_en(POWER_STATE::AUTO_CHARGE, ksw.is_maintenance()));
             ac.set_enable(true);
             current_check_enable = false;
             use_software_brake = false;
@@ -1886,6 +1976,7 @@ private:
         } break;
         case POWER_STATE::OFF_WAIT: {
             LOG_INF("enter OFF_WAIT\n");
+            applyWheelEnAction(plan_shutdown_wheel_en(POWER_STATE::OFF_WAIT, use_software_brake));
             timer_shutdown = k_uptime_get();    // timer reset
             if (psw.get_state() == power_switch::STATE::PUSHED || should_turn_off() || should_manual_charge() || ksw.is_transition_to_running())
                 shutdown_reason = SHUTDOWN_REASON::SWITCH;
@@ -1967,6 +2058,10 @@ private:
     bool should_lockdown() const {
         return (mbd.is_dead() || mbd.lockdown_from_ros()) && !esw.is_asserted();
     }
+    // Pushing by hand keeps the wheel supplied only while the key switch is running; maintenance follows the standard build.
+    bool esw_keeps_wheel() const {
+        return esw.is_asserted() && ksw.is_running();
+    }
     bool is_emergency_state() const {
         return state == POWER_STATE::SUSPEND || state == POWER_STATE::RESUME_WAIT;
     }
@@ -1976,7 +2071,6 @@ private:
     bool should_manual_charge() {
         return mc.is_plugged();
     }
-    
     power_switch psw;
     resume_switch rsw;
     key_switch ksw;
