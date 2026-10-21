@@ -432,14 +432,18 @@ firmware_bypass_safety_lidar:
 # main.cpp confirms the image after thread creation, so a crash in main initialisation (which is
 # where the cliff bootstrap runs) rolls back on the next boot.
 #
-# This image produces the 0x217 health heartbeat and does NOT produce measurement frames, because
-# the PROVEN clamp is applied unconditionally at the single authorisation exit.
+# THIS IMAGE PRODUCES THE 0x217 HEALTH HEARTBEAT FROM BOOT AND NO MEASUREMENT FRAME UNTIL AN
+# OPERATOR PROVES A MAPPING. It carries no commissioning permission, so nothing proves itself: the
+# publisher accepts only a PROVEN authority snapshot and there is none until `tof cliff prove`
+# succeeds from the shell. After that it does publish -- the PROVEN clamp that used to hold this
+# shut regardless of the authority has been removed from the tree, so an operator proving a mapping
+# on this image is the act that puts 0x216 on the bus.
 #
-# That is the only thing the clamp decides. It does not decide the proof: `tof cliff prove` succeeds
-# or fails on its evidence, and the four cliff roles are no longer unknown -- they are frozen from
-# the assembly connectivity drawing in tof_chain_spec.hpp, which is what makes the production spec
-# provable at all. What is still open is the hardware: walk 1 has never reached COMPLETE at the
-# 400 kHz this overlay pins, so a run on a real machine fails there rather than at the role table.
+# The proof decides on its own evidence, and the four cliff roles are frozen from the assembly
+# connectivity drawing in tof_chain_spec.hpp, which is what makes the production spec provable at
+# all. The bitrate objection that used to sit here -- walk 1 never reaching COMPLETE at 400 kHz --
+# was answered by making the 100 kHz walk and the 400 kHz identity recheck one transaction inside
+# the proof's commit; six positions prove routinely on dasher2.
 #
 # NO SAFETY-LIDAR BYPASS, unlike firmware_tof_chain, which this target was first copied from. That
 # flag belongs to a bench image and this one is meant to be a product build; carrying it by
@@ -511,8 +515,10 @@ firmware_tof_cliff:
 # flash map, the update path and the partition layout are unchanged.
 #
 # IT COMMISSIONS NOTHING. commission-profile-enabled and commission-enumeration-permitted are absent
-# from overlays/auto_commission.overlay, so the downlink answers `disabled`; and the PROVEN clamp
-# still refuses every grid. Being wired is not being enabled.
+# from overlays/auto_commission.overlay, so the downlink answers `disabled`, no mapping is ever
+# proven, and the publisher emits nothing for want of a PROVEN authority snapshot. Being wired is
+# not being enabled. The reason used to be given as the PROVEN clamp as well; that clamp no longer
+# exists anywhere in the tree, and the authorisation rule is what holds this image shut.
 .PHONY: firmware_tof_full
 firmware_tof_full:
 	./scripts/manage_zephyr_patches.sh verify
@@ -530,13 +536,25 @@ firmware_tof_full:
 # buildable and byte-identical while this candidate is being accepted, so the two can be compared
 # on a bench rather than argued about.
 #
-# WHAT IT STILL DOES NOT DO: lift the PROVEN clamp. clamp_mapping_state() refuses PROVEN
-# unconditionally with no build flag, so this image commissions, installs a mapping and starts
-# acquisition, and then publishes no measurement frame. That is the point of building it first --
-# the commissioning sequence can be accepted on its own evidence (proof, identity recheck at the
-# product speed, mapping install, acquisition start, boot timing, stack watermark) before the clamp
-# is removed in its own commit. An image that did both at once would offer no way to tell which
-# half a failure came from.
+# THE CLAMP IS GONE AND THE AUTHORITY DECIDES. clamp_mapping_state() was removed in its own commit,
+# after the commissioning sequence had been accepted on its own evidence -- which is why it was
+# built clamped first: an image that commissioned and published at once would have offered no way
+# to tell which half a failure came from. A mapping the proof installed now authorises measurement
+# frames, and an unproven one still emits nothing.
+#
+# THE GRID DESCRIPTORS ARE KEYED FROM THE FINGERPRINT, and that is the defect the first flash of
+# this image was carrying rather than a feature of it. A proven grid whose descriptor was never
+# keyed reaches the publisher as role-unassigned, every frame is suppressed and the cycle is voided,
+# so the board reads as healthy on the cliff path and silent on the grid -- deterministically, on
+# every image built this way.
+#
+# WHAT ACCEPTANCE THIS TARGET DOES NOT CARRY. Static verification on one machine is not a product
+# release. Boot timing, the acquisition stack watermark, cycle overruns, cold starts and any
+# endurance run are outstanding, and the rate requirement is unsettled rather than met: the
+# configured cadence is 50 ms, so a corner runs at about 20 Hz, and a >=50 Hz requirement is not
+# satisfied by this configuration. Per-corner figures recorded before a1d8e15d -- which made the
+# configured period a deadline rather than a delay added to the work -- remain valid measurements
+# of that configuration and are not comparable with this one.
 #
 # THE SAFETY-LIDAR BYPASS IS CARRIED DELIBERATELY, AND THE FLAG IS MISNAMED FOR WHAT IT DOES HERE.
 # BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST was written for a bench, but the machines this image is
@@ -554,8 +572,65 @@ firmware_tof_full:
 # raw bytes into slot1 and never calls boot_request_upgrade, so only a trailer embedded in the file
 # can request a swap, and an unpadded signed.bin sits there doing nothing while the machine keeps
 # running the old firmware -- which looks identical to a revert.
+# THE RELEASE ENTRY POINT. One command produces everything a release publishes, in an order where a
+# failure stops before any file exists that someone could mistake for a release artefact.
+#
+#     make firmware_tof_release VERSION=<version>
+#
+# It builds nothing by hand: each step below is its own target, so a step can be re-run on its own
+# while a release is being debugged and the sequence still has exactly one definition.
+#
+# THE ORDER IS THE POINT, and one step sits earlier than a reader might expect. Verification runs
+# BEFORE the Initial image is derived, because the Initial image is the signed image with a
+# bootloader in front of it: verifying afterwards would leave a publishable-looking file on disk
+# built from an image that had already failed its assertions.
+#
+# IT DOES NOT FLASH, PROVISION OR TAG, and must not grow those. Writing to a board and naming a
+# release are decisions with a person behind them; a build target that did either would make them
+# a side effect of typing make.
 .PHONY: firmware_tof_release
 firmware_tof_release:
+	$(MAKE) tof_release_guard
+	$(MAKE) bootloader
+	$(MAKE) tof_release_application
+	$(MAKE) verify_tof_release_images
+	$(MAKE) tof_release_initial_image
+	$(MAKE) tof_release_manifest
+
+# WHY A RELEASE REFUSES A MODIFIED WORKTREE. The manifest records a commit SHA beside the image
+# hashes, and that pairing is the only route from a published file back to the source it came from.
+# Built from a modified tree the SHA names a commit that is not what was compiled, which is worse
+# than recording nothing at all: it reads as provenance.
+#
+# TRACKED FILES ONLY, and that is not laziness. `make setup` creates bootloader/, modules/, tools/,
+# zephyr/, out/ and .west/ inside the worktree, and the release workflow runs it before this target,
+# so a check that counted untracked paths would refuse every release ever built here.
+#
+# The patch tree is not checked again here: tof_release_application verifies it, and this entry
+# point always runs that step, so a release cannot reach an image without it having passed.
+.PHONY: tof_release_guard
+tof_release_guard:
+	@set -e; \
+	if [ -z "$(VERSION)" ]; then \
+	    echo "VERSION is empty -- pass it, e.g. make firmware_tof_release VERSION=3.8.0" >&2; exit 1; \
+	fi; \
+	if ! git rev-parse --git-dir >/dev/null 2>&1; then \
+	    echo "not a git worktree, so no manifest could identify the source of these images" >&2; exit 1; \
+	fi; \
+	if ! git diff-index --quiet HEAD --; then \
+	    echo "tracked files are modified; a release image must be built from a committed tree:" >&2; \
+	    git diff-index --name-only HEAD -- >&2; \
+	    exit 1; \
+	fi; \
+	echo "release guard: VERSION=$(VERSION) commit=$$(git rev-parse HEAD) tree clean"
+
+# THE APPLICATION BUILD, and the one step a bench may run on its own. It produces the three images
+# and asserts nothing about the tree it was built from, which is what a bench image needs -- an
+# uncommitted experiment is the normal case there. firmware_tof_release is the release entry and is
+# what refuses that, so the distinction between a bench image and a release image lives in which
+# target was typed rather than in anyone's memory.
+.PHONY: tof_release_application
+tof_release_application:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-release -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay;overlays/tof_release.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
@@ -613,14 +688,55 @@ verify_tof_release_images:
 # firmware_initial leaves, because the file is built the same way. The L7 driver blob lives in
 # storage_partition, so a board flashed with this image has no blob until one is provisioned, and
 # nobody should promise six data paths from this file alone.
-.PHONY: firmware_tof_release_initial
-firmware_tof_release_initial:
-	$(MAKE) bootloader
-	$(MAKE) firmware_tof_release
-	$(MAKE) verify_tof_release_images
+.PHONY: tof_release_initial_image
+tof_release_initial_image:
 	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
 	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
 	cat out/bl_with_ff.bin out/zephyr_tof_release.signed.bin > out/firmware_tof_release.bin
+
+# THE MANIFEST AND THE CHECKSUMS, written last because they describe files that have already passed
+# their assertions. A release is read months later by someone holding a machine, and what they need
+# is which commit, which configuration and which bytes -- so it is recorded next to the images
+# rather than left in a build log that nobody keeps.
+#
+# IT READS THE BUILD, NOT THIS MAKEFILE. Every configuration line comes out of the CMake cache the
+# compiler actually saw, so the manifest cannot assert a flag the build did not have: drop
+# -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST from the recipe above and this file says `absent`,
+# where a sentence spelled out here would have gone on claiming it. The bypass gets its own line
+# because it is the property that decides which machines the image may go to, and a reader must not
+# have to infer it from a target name.
+.PHONY: tof_release_manifest
+tof_release_manifest:
+	@set -e; \
+	cache=build-tof-release/CMakeCache.txt; \
+	bypass=absent; \
+	if grep -q '^BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST:[^=]*=1$$' $$cache; then \
+	    bypass="ENABLED -- no safety lidar may be fitted to a machine running this image"; \
+	fi; \
+	{ \
+	  echo "target:   firmware_tof_release"; \
+	  echo "version:  $(VERSION)"; \
+	  echo "commit:   $$(git rev-parse HEAD)"; \
+	  echo "built:    $$(date -Is)"; \
+	  echo "safety_lidar_bypass: $$bypass"; \
+	  for key in ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD ENABLE_TOF_L7_ULD ENABLE_TOF_AUTO_COMMISSION \
+	             EXTRA_DTC_OVERLAY_FILE EXTRA_CONF_FILE; do \
+	      echo "$$key: $$(sed -n "s/^$$key:[^=]*=//p" $$cache)"; \
+	  done; \
+	  echo "signed:   $$(stat -c%s out/zephyr_tof_release.signed.bin) B of $(SIGNED_IMAGE_CEILING) B ceiling"; \
+	  echo "padded:   $$(stat -c%s out/zephyr_tof_release.signed.confirmed.bin) B confirmed, $$(stat -c%s out/zephyr_tof_release.test.bin) B test"; \
+	  echo "initial:  $$(stat -c%s out/firmware_tof_release.bin) B"; \
+	} > out/zephyr_tof_release.MANIFEST.txt; \
+	cd out && sha256sum zephyr_tof_release.signed.bin zephyr_tof_release.signed.confirmed.bin \
+	    zephyr_tof_release.test.bin firmware_tof_release.bin > SHA256SUMS-tof-release.txt; \
+	cat zephyr_tof_release.MANIFEST.txt SHA256SUMS-tof-release.txt
+
+# A COMPATIBILITY ALIAS. firmware_tof_release used to build only the application, and this target
+# was the one that added the bootloader, the Initial image and the assertions; the release workflow
+# and the on-machine runbooks still name it. It is deliberately a leaf: it must never call back into
+# the entry point that now calls every step, or the two would chase each other.
+.PHONY: firmware_tof_release_initial
+firmware_tof_release_initial: firmware_tof_release
 
 # The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
