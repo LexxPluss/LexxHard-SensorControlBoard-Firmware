@@ -12,6 +12,8 @@
 #include <errno.h>
 #include <string.h>
 
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/ztest.h>
 
@@ -22,15 +24,22 @@
 
 #define TEST_ADDR7 0x29
 
+/* The port no longer compiles a bus in, so the test names one -- which is the behaviour under
+ * test as much as it is setup. */
+static struct vl53l7cx_port_context ctx;
 static VL53L7CX_Platform platform;
 
 static void before(void *fixture)
 {
 	ARG_UNUSED(fixture);
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.bus = DEVICE_DT_GET(DT_NODELABEL(i2c2));
 	memset(&platform, 0, sizeof(platform));
+	platform.port = &ctx;
 	platform.address = TEST_ADDR7 << 1; /* ST's 8-bit wire convention */
 	fake_i2c_reset();
-	vl53l7cx_port_clear_error();
+	vl53l7cx_port_clear_error(&ctx);
+	vl53l7cx_port_clear_argument_fault();
 }
 
 ZTEST_SUITE(tof_l7_port, NULL, NULL, before, NULL, NULL);
@@ -96,13 +105,13 @@ ZTEST(tof_l7_port, test_odd_or_out_of_range_address_is_refused_before_the_bus)
 	platform.address = 0x29; /* a 7-bit address mistakenly left in the ST field */
 	zassert_equal(VL53L7CX_RdByte(&platform, 0, &byte), VL53L7CX_STATUS_INVALID_PARAM);
 	zassert_equal(fake_i2c_count, 0);
-	zassert_equal(vl53l7cx_port_error(), -EINVAL);
+	zassert_equal(vl53l7cx_port_error(&ctx), -EINVAL);
 
-	vl53l7cx_port_clear_error();
+	vl53l7cx_port_clear_error(&ctx);
 	platform.address = 0x100;
 	zassert_equal(VL53L7CX_WrByte(&platform, 0, 0), VL53L7CX_STATUS_INVALID_PARAM);
 	zassert_equal(fake_i2c_count, 0);
-	zassert_equal(vl53l7cx_port_error(), -EINVAL);
+	zassert_equal(vl53l7cx_port_error(&ctx), -EINVAL);
 }
 
 ZTEST(tof_l7_port, test_large_transfer_is_split_at_the_proven_bound_and_reindexed)
@@ -128,7 +137,7 @@ ZTEST(tof_l7_port, test_register_range_overflow_is_refused_without_a_partial_wri
 
 	zassert_equal(VL53L7CX_WrMulti(&platform, 0xFF00, payload, sizeof(payload)),
 		      VL53L7CX_STATUS_INVALID_PARAM);
-	zassert_equal(vl53l7cx_port_error(), -EOVERFLOW);
+	zassert_equal(vl53l7cx_port_error(&ctx), -EOVERFLOW);
 	zassert_equal(fake_i2c_count, 0, "an impossible operation must not leave a partial write");
 }
 
@@ -140,7 +149,7 @@ ZTEST(tof_l7_port, test_segment_failure_stops_the_operation_and_preserves_errno)
 	zassert_equal(VL53L7CX_WrMulti(&platform, 0x0100, payload, sizeof(payload)),
 		      VL53L7CX_STATUS_ERROR);
 	zassert_equal(fake_i2c_count, 2, "no transaction may follow the failed middle piece");
-	zassert_equal(vl53l7cx_port_error(), -ETIMEDOUT);
+	zassert_equal(vl53l7cx_port_error(&ctx), -ETIMEDOUT);
 }
 
 ZTEST(tof_l7_port, test_every_transport_errno_is_preserved_behind_the_uld_status)
@@ -149,11 +158,11 @@ ZTEST(tof_l7_port, test_every_transport_errno_is_preserved_behind_the_uld_status
 
 	for (size_t i = 0; i < ARRAY_SIZE(errnos); ++i) {
 		fake_i2c_reset();
-		vl53l7cx_port_clear_error();
+		vl53l7cx_port_clear_error(&ctx);
 		fake_i2c_fail_on(1, errnos[i]);
 
 		zassert_equal(VL53L7CX_WrByte(&platform, 0, 0), VL53L7CX_STATUS_ERROR);
-		zassert_equal(vl53l7cx_port_error(), errnos[i]);
+		zassert_equal(vl53l7cx_port_error(&ctx), errnos[i]);
 	}
 }
 
@@ -164,10 +173,10 @@ ZTEST(tof_l7_port, test_sticky_error_keeps_the_first_transport_failure)
 
 	fake_i2c_fail_on(2, -ETIMEDOUT);
 	zassert_equal(VL53L7CX_WrByte(&platform, 1, 0), VL53L7CX_STATUS_ERROR);
-	zassert_equal(vl53l7cx_port_error(), -EIO);
+	zassert_equal(vl53l7cx_port_error(&ctx), -EIO);
 
-	vl53l7cx_port_clear_error();
-	zassert_equal(vl53l7cx_port_error(), 0);
+	vl53l7cx_port_clear_error(&ctx);
+	zassert_equal(vl53l7cx_port_error(&ctx), 0);
 }
 
 ZTEST(tof_l7_port, test_failed_read_does_not_fabricate_bytes)
@@ -203,10 +212,15 @@ ZTEST(tof_l7_port, test_swap_buffer_matches_the_uld_word_conversion)
 	VL53L7CX_SwapBuffer(data, sizeof(data));
 	static const uint8_t expected[] = {0x44, 0x33, 0x22, 0x11};
 	zassert_mem_equal(data, expected, sizeof(data));
-	zassert_equal(vl53l7cx_port_error(), 0);
+	zassert_equal(vl53l7cx_port_argument_fault(), 0);
 
+	/* A misaligned length is still refused, but it is now recorded as an image-wide argument
+	 * fault rather than as a transport error on whichever device happened to be in scope.
+	 * SwapBuffer is the one ST callback with no platform pointer, so there is no device to
+	 * attribute it to and pretending otherwise was the bug. */
 	VL53L7CX_SwapBuffer(data, 3);
-	zassert_equal(vl53l7cx_port_error(), -EINVAL);
+	zassert_equal(vl53l7cx_port_argument_fault(), -EINVAL);
+	zassert_equal(vl53l7cx_port_error(&ctx), 0, "no device did this");
 }
 
 /* ---- how many transactions completed, which the error alone cannot say ---- */
@@ -221,15 +235,15 @@ ZTEST(tof_l7_port, test_completed_transfers_counts_what_got_through)
 {
 	uint8_t byte = 0;
 
-	zassert_equal(vl53l7cx_port_completed_transfers(), 0U, "cleared in the fixture");
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 0U, "cleared in the fixture");
 
 	zassert_equal(VL53L7CX_WrByte(&platform, 0, 0), VL53L7CX_STATUS_OK);
-	zassert_equal(vl53l7cx_port_completed_transfers(), 1U);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 1U);
 	zassert_equal(VL53L7CX_RdByte(&platform, 0, &byte), VL53L7CX_STATUS_OK);
-	zassert_equal(vl53l7cx_port_completed_transfers(), 2U);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 2U);
 
-	vl53l7cx_port_clear_error();
-	zassert_equal(vl53l7cx_port_completed_transfers(), 0U,
+	vl53l7cx_port_clear_error(&ctx);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 0U,
 		      "the count belongs to one ULD operation, so the clear resets it with the error");
 }
 
@@ -240,8 +254,8 @@ ZTEST(tof_l7_port, test_a_failed_transaction_is_not_counted)
 {
 	fake_i2c_fail_on(1, -ENXIO);
 	zassert_equal(VL53L7CX_WrByte(&platform, 0, 0), VL53L7CX_STATUS_ERROR);
-	zassert_equal(vl53l7cx_port_completed_transfers(), 0U, "a NACK is not a completion");
-	zassert_equal(vl53l7cx_port_error(), -ENXIO);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 0U, "a NACK is not a completion");
+	zassert_equal(vl53l7cx_port_error(&ctx), -ENXIO);
 }
 
 /* AND THE PARTIAL EXCHANGE, which is the whole case this exists for: one transaction through, the
@@ -255,8 +269,8 @@ ZTEST(tof_l7_port, test_a_partial_exchange_shows_both_an_error_and_a_completion)
 	fake_i2c_fail_on(2, -ENXIO);
 	zassert_equal(VL53L7CX_RdByte(&platform, 1, &byte), VL53L7CX_STATUS_ERROR);
 
-	zassert_equal(vl53l7cx_port_error(), -ENXIO, "the refusal is recorded");
-	zassert_equal(vl53l7cx_port_completed_transfers(), 1U, "and so is what got through");
+	zassert_equal(vl53l7cx_port_error(&ctx), -ENXIO, "the refusal is recorded");
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 1U, "and so is what got through");
 }
 
 /* A segmented operation that fails midway counts the pieces that landed, not the operation. The
@@ -269,6 +283,115 @@ ZTEST(tof_l7_port, test_segments_are_counted_individually)
 	fake_i2c_fail_on(2, -ETIMEDOUT);
 	zassert_equal(VL53L7CX_WrMulti(&platform, 0x0100, payload, sizeof(payload)),
 		      VL53L7CX_STATUS_ERROR);
-	zassert_equal(vl53l7cx_port_completed_transfers(), 1U,
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 1U,
 		      "the first segment landed, the second did not, and the rest never ran");
+}
+
+
+/* ---- what the per-device context is for -------------------------------------------------- */
+
+/* THE STATE IS PER DEVICE, NOT PER IMAGE. Before this, one atomic held the first errno for every
+ * L7 in the build, so a failure on one bus was indistinguishable from a failure on another and a
+ * recovery pass asking "did anything answer" could be answered about the wrong sensor. */
+ZTEST(tof_l7_port, test_two_contexts_do_not_share_error_or_completion_state)
+{
+	struct vl53l7cx_port_context other = {.bus = DEVICE_DT_GET(DT_NODELABEL(i2c2))};
+	VL53L7CX_Platform other_platform = {.address = TEST_ADDR7 << 1, .port = &other};
+	uint8_t byte = 0;
+
+	fake_i2c_fail_on(1, -ENXIO);
+	zassert_equal(VL53L7CX_RdByte(&platform, 0x0010, &byte), VL53L7CX_STATUS_ERROR);
+
+	fake_i2c_fail_on(0, 0);
+	zassert_equal(VL53L7CX_RdByte(&other_platform, 0x0010, &byte), VL53L7CX_STATUS_OK);
+
+	zassert_equal(vl53l7cx_port_error(&ctx), -ENXIO, "the failing device keeps its errno");
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 0U, "and nothing completed for it");
+	zassert_equal(vl53l7cx_port_error(&other), 0, "the healthy device is not blamed for it");
+	zassert_equal(vl53l7cx_port_completed_transfers(&other), 1U, "and its own work is counted");
+}
+
+/* THE BUS COMES FROM THE CONTEXT. A context naming no controller must refuse before any traffic:
+ * if the port still reached a compiled-in bus, the fake would record a transfer here. */
+ZTEST(tof_l7_port, test_a_context_without_a_bus_refuses_before_any_traffic)
+{
+	struct vl53l7cx_port_context busless = {.bus = NULL};
+	VL53L7CX_Platform busless_platform = {.address = TEST_ADDR7 << 1, .port = &busless};
+	uint8_t byte = 0;
+
+	zassert_equal(VL53L7CX_RdByte(&busless_platform, 0x0010, &byte), VL53L7CX_STATUS_ERROR);
+	zassert_equal(fake_i2c_count, 0, "no controller was named, so nothing may have been driven");
+	zassert_equal(vl53l7cx_port_error(&busless), -ENODEV);
+
+	zassert_equal(VL53L7CX_RdByte(&platform, 0x0010, &byte), VL53L7CX_STATUS_OK,
+		      "a context that does name one still works");
+	zassert_equal(fake_i2c_count, 1);
+}
+
+/* A PLATFORM WITH NO CONTEXT AT ALL is a programming error, and must not fall back to anything. */
+ZTEST(tof_l7_port, test_a_platform_without_a_context_refuses_before_any_traffic)
+{
+	VL53L7CX_Platform orphan = {.address = TEST_ADDR7 << 1, .port = NULL};
+	uint8_t byte = 0;
+
+	zassert_equal(VL53L7CX_RdByte(&orphan, 0x0010, &byte), VL53L7CX_STATUS_ERROR);
+	zassert_equal(fake_i2c_count, 0);
+	zassert_equal(vl53l7cx_port_error(NULL), -ENODEV, "a question that could not be asked");
+}
+
+/* THE ONE FAULT WITH NO DEVICE TO BLAME stays out of every device's errno. Folding it into one
+ * would report an image-wide bug as a transport failure on whichever sensor ran last. */
+ZTEST(tof_l7_port, test_swap_buffer_argument_fault_is_not_a_device_error)
+{
+	struct vl53l7cx_port_context other = {.bus = DEVICE_DT_GET(DT_NODELABEL(i2c2))};
+
+	VL53L7CX_SwapBuffer(NULL, 4);
+
+	zassert_equal(vl53l7cx_port_argument_fault(), -EINVAL, "latched where a test can see it");
+	zassert_equal(vl53l7cx_port_error(&ctx), 0, "and attributed to no device");
+	zassert_equal(vl53l7cx_port_error(&other), 0);
+
+	vl53l7cx_port_clear_argument_fault();
+	zassert_equal(vl53l7cx_port_argument_fault(), 0);
+}
+
+/* THE TRANSFER GOES TO THE CONTROLLER THE CONTEXT NAMES, which the two-context test above does
+ * NOT show: both of its contexts sit on the same bus, so a port that validated the context and
+ * then drove a compiled-in i2c2 would have passed it. Two controllers and the recorded bus are
+ * what separate those two implementations. */
+ZTEST(tof_l7_port, test_each_context_drives_its_own_controller)
+{
+	const struct device *const bus_a = DEVICE_DT_GET(DT_NODELABEL(i2c2));
+	const struct device *const bus_b = DEVICE_DT_GET(DT_NODELABEL(i2c4));
+	struct vl53l7cx_port_context ctx_b = {.bus = bus_b};
+	VL53L7CX_Platform platform_b = {.address = TEST_ADDR7 << 1, .port = &ctx_b};
+	uint8_t byte = 0;
+
+	zassert_not_equal(bus_a, bus_b, "the overlay must give two distinct controllers");
+	zassert_true(device_is_ready(bus_b), "the second controller is usable");
+
+	zassert_equal(VL53L7CX_RdByte(&platform, 0x0010, &byte), VL53L7CX_STATUS_OK);
+	zassert_equal(VL53L7CX_RdByte(&platform_b, 0x0010, &byte), VL53L7CX_STATUS_OK);
+
+	zassert_equal(fake_i2c_count, 2);
+	zassert_equal(fake_i2c_log[0].bus, bus_a, "the first context's bus carried the first read");
+	zassert_equal(fake_i2c_log[1].bus, bus_b, "and the second context's bus the second");
+}
+
+/* And the counters follow the controller, not the order of calls. */
+ZTEST(tof_l7_port, test_a_failure_on_one_controller_leaves_the_other_countable)
+{
+	struct vl53l7cx_port_context ctx_b = {.bus = DEVICE_DT_GET(DT_NODELABEL(i2c4))};
+	VL53L7CX_Platform platform_b = {.address = TEST_ADDR7 << 1, .port = &ctx_b};
+	uint8_t byte = 0;
+
+	fake_i2c_fail_on(1, -EIO);
+	zassert_equal(VL53L7CX_RdByte(&platform, 0x0010, &byte), VL53L7CX_STATUS_ERROR);
+	fake_i2c_fail_on(0, 0);
+	zassert_equal(VL53L7CX_RdByte(&platform_b, 0x0010, &byte), VL53L7CX_STATUS_OK);
+
+	zassert_equal(vl53l7cx_port_error(&ctx), -EIO);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx), 0U);
+	zassert_equal(vl53l7cx_port_error(&ctx_b), 0);
+	zassert_equal(vl53l7cx_port_completed_transfers(&ctx_b), 1U);
 }

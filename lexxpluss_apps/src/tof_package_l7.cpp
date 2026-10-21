@@ -1,0 +1,332 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#include "tof_package_l7.hpp"
+
+#if defined(ENABLE_TOF_L7_ULD)
+
+#include <errno.h>
+
+namespace lexxhard::tof_package {
+
+int lifecycle::refuse(step s, int rc)
+{
+    status_.failed_step = s;
+    status_.errno_value = rc;
+    return rc;
+}
+
+int lifecycle::init(const hooks &h, const config &c)
+{
+    /* EVERY HOOK IS REQUIRED, with no optional ones. An absent hook is not a feature a caller
+     * chose to leave out: this lifecycle has one device and no fallback, so a missing probe or a
+     * missing stop would silently remove the only check standing between an unknown device and an
+     * open. Refusing here is the only place the omission is visible. */
+    if (h.ensure_verified == nullptr || h.probe == nullptr || h.quiesce == nullptr ||
+        h.close == nullptr || h.open == nullptr || h.configure == nullptr || h.start == nullptr ||
+        h.read == nullptr || h.stop == nullptr)
+        return -EINVAL;
+    /* RE-INITIALISING OVER A LIVE OR UNACCOUNTED SESSION IS REFUSED, and refused before anything
+     * is written, so a rejected call leaves the object exactly as it was. init() otherwise resets
+     * the state wholesale, which would discard a stop debt that only a successful stop may clear
+     * -- and the way back from a forgotten live session on this sensor is a machine power cycle. */
+    if (initialised_ && !discardable())
+        return -EPERM;
+    /* The ULD accepts 1..15 Hz; the value is the caller's because the sustainable rate for this
+     * geometry has not been accepted yet. Zero is refused rather than defaulted, so a caller that
+     * forgot it finds out here instead of ranging at whatever the ULD does with 0. */
+    if (c.frequency_hz < 1U || c.frequency_hz > 15U)
+        return -EINVAL;
+    if (c.address_7bit < 0x08U || c.address_7bit > 0x77U)
+        return -EINVAL;
+    /* See config::stop_attempts: a budget of zero would make stop_owed inescapable. */
+    if (c.stop_attempts == 0U)
+        return -EINVAL;
+
+    hooks_ = h;
+    config_ = c;
+    status_ = status{};
+    initialised_ = true;
+    return 0;
+}
+
+/* Only from idle, and only once initialised. ranging would stack a session, stop_owed cannot be
+ * left except by stop(), and blocked is waiting on a decision this module does not make. Both
+ * refusals return -EPERM having touched nothing, which is why a caller needs to be able to ask the
+ * question before calling: see the header. */
+bool lifecycle::can_begin_round() const
+{
+    return initialised_ && status_.current == state::idle;
+}
+
+int lifecycle::bring_up()
+{
+    return begin_round(true);
+}
+
+int lifecycle::take_over_unknown_state()
+{
+    return begin_round(false);
+}
+
+int lifecycle::begin_round(bool quiesce_a_survivor)
+{
+    /* THE SAME QUESTION THE CALLER ASKS, so a caller that cleared its per-round records on a true
+     * answer cleared them for a round that really is starting here.
+     *
+     * IT IS ALSO WHAT MAKES THE TAKEOVER SAFE TO OFFER. Refused here, nothing is probed, no blob
+     * is consulted and no hook runs, so reaching for the takeover from `blocked` leaves the
+     * evidence that put it there exactly as it was. */
+    if (!can_begin_round())
+        return -EPERM;
+
+    status_.failed_step = step::none;
+    status_.errno_value = 0;
+    status_.survivor_found = false;
+    status_.entered_by_takeover = !quiesce_a_survivor;
+
+    /* ASKED, NOT PERFORMED. One payload serves every L7 in the image, so this consults the one
+     * verification rather than starting another. A refusal stops the run here: without a verified
+     * payload there is nothing to download, and probing a device we could not then open would only
+     * disturb it. */
+    if (const int rc{hooks_.ensure_verified()}; rc != 0) {
+        /* -EINPROGRESS MEANS ASK AGAIN, NOT GIVE UP. Another consumer is mid-verification, so the
+         * answer is not in yet; blocking on it would turn a few milliseconds of contention into a
+         * permanent refusal. The state is left untouched -- still idle, nothing opened, no device
+         * disturbed -- so a later call simply runs. Every other errno is a verdict and blocks. */
+        if (rc != -EINPROGRESS)
+            status_.current = state::blocked;
+        return refuse(step::firmware, rc);
+    }
+
+    bool present{false};
+    bool wrong_identity{false};
+    const int probe_rc{
+        hooks_.probe(hooks_.ctx, config_.address_7bit, &present, &wrong_identity)};
+
+    /* THE RULE THIS MODULE EXISTS FOR. A probe that did not complete tells us nothing about
+     * presence, and `present` is meaningless. The chain could record that and carry on to other
+     * positions; here there is no other position and no enumerator to cross-check against, so
+     * continuing would mean opening a device that may already be ranging. Blocked, and no open. */
+    if (probe_rc != 0) {
+        status_.current = state::blocked;
+        return refuse(step::probe, probe_rc);
+    }
+
+    /* Refuse a responding non-L7 device before quiesce or firmware download.
+     * This fixed address has no enumerator to resolve an identity mismatch.
+     */
+    if (wrong_identity) {
+        status_.current = state::blocked;
+        return refuse(step::identity, -ENOTSUP);
+    }
+
+    if (present) {
+        /* RECORDED WHETHER OR NOT IT IS ACTED ON. A takeover round still found something answering
+         * before it opened anything, and that belongs in the evidence even though this round was
+         * authorised not to stop it. */
+        status_.survivor_found = true;
+
+        /* A SURVIVOR, which on this sensor is the warm-reset case: an SCB reset does not reset the
+         * device and there is no reset line to use, so it may still be powered and measuring.
+         * Quiesced over the bus before anything else, and a failure to quiesce is terminal for this
+         * run -- opening on top of a live session is the one thing this ordering prevents.
+         *
+         * THE TAKEOVER ENTRY IS THE ONE THING THAT SKIPS IT, and skipping it is the whole of what
+         * that entry authorises. Everything after this point is identical for both. */
+        if (quiesce_a_survivor) {
+            if (const int rc{hooks_.quiesce(hooks_.ctx, config_.address_7bit)}; rc != 0) {
+                status_.current = state::blocked;
+                return refuse(step::survivor, rc);
+            }
+        }
+    }
+
+    /* Always fully initialize after quiesce; a successful stop does not restore
+     * host configuration lost at reset. Close before every open: stop leaves the
+     * adapter configured, while open requires empty. Closing empty is a no-op.
+     */
+    if (const int rc{hooks_.close(hooks_.ctx)}; rc != 0) {
+        status_.current = state::blocked;
+        return refuse(step::close, rc);
+    }
+    if (const int rc{hooks_.open(hooks_.ctx, config_.address_7bit)}; rc != 0) {
+        status_.current = state::blocked;
+        return refuse(step::open, rc);
+    }
+    if (const int rc{hooks_.configure(hooks_.ctx, config_.frequency_hz)}; rc != 0) {
+        status_.current = state::blocked;
+        return refuse(step::configure, rc);
+    }
+
+    status_.stop_attempts_used = 0;
+    if (const int rc{hooks_.start(hooks_.ctx)}; rc != 0) {
+        /* A FAILED START OWES A STOP, not a close. The command may have gone out and the device
+         * may or may not have acted on it, so the session is unaccounted for and the sensor layer
+         * records the same debt. Landing in blocked here would strand a possibly-ranging device
+         * with no way to stop it. */
+        status_.current = state::stop_owed;
+        return refuse(step::start, rc);
+    }
+
+    status_.current = state::ranging;
+    return 0;
+}
+
+int lifecycle::read_once(bool *fresh)
+{
+    if (fresh == nullptr)
+        return -EINVAL;
+    *fresh = false;
+    if (!initialised_)
+        return -EPERM;
+    /* ranging only. stop_owed refuses by construction: a session we cannot account for must not
+     * have its data trusted. */
+    if (status_.current != state::ranging)
+        return -EPERM;
+
+    const int rc{hooks_.read(hooks_.ctx, fresh)};
+    if (rc != 0) {
+        /* A READ ERROR DOES NOT MEAN RANGING STOPPED. The state stays `ranging`, so the way out is
+         * still a stop() the device acknowledges; dropping to idle here would let a later open
+         * start a second session on a device that never stopped. The step and errno record what
+         * happened for the caller to act on. */
+        *fresh = false;
+        return refuse(step::read, rc);
+    }
+    return 0;
+}
+
+stop_report report_for(const status &s)
+{
+    switch (s.last_stop_refusal) {
+    case stop_refusal::not_initialised:
+        return {false, "the lifecycle is not initialised; bind first."};
+    case stop_refusal::wrong_state:
+        /* NOTHING OWED A STOP, SO THIS CALL ASKED NOTHING. Whether an EARLIER one did is the
+         * question that matters, and the step answers it. */
+        if (s.failed_step == step::stop)
+            return {false, "the stop was asked as many times as configured and never acknowledged. "
+                           "The device may still be measuring and this tool cannot stop it; report "
+                           "it rather than re-binding."};
+        return {false, "nothing here owes a stop, so the device was NOT asked and the retry budget "
+                       "is untouched. The step it is blocked at is what to report."};
+    case stop_refusal::budget_spent:
+        /* Unreachable while the state guard precedes the budget guard; see stop_refusal. */
+        return {false, "the retry budget is spent."};
+    case stop_refusal::none:
+        /* THE DEVICE WAS ASKED AND REFUSED, and the two outcomes of that are not the same advice.
+         * `stop_owed` means the budget has something left, so a retry can still reach the device.
+         * `blocked` means THIS attempt was the last one allowed -- telling an operator to retry
+         * then is telling them to do the one thing that is certain to be refused. */
+        if (s.current == state::stop_owed)
+            return {true, "the stop was not acknowledged. Retry it: reads and a reopen stay refused "
+                          "until one succeeds."};
+        return {false, "that was the last attempt the retry budget allows and it was not "
+                       "acknowledged. No further stop will reach the device; it may still be "
+                       "measuring. Report it rather than re-binding."};
+    }
+    /* No default above, so a new refusal is a compile error here rather than a silent message. */
+    return {false, "unreported"};
+}
+
+int lifecycle::stop()
+{
+    if (!initialised_) {
+        status_.last_stop_refusal = stop_refusal::not_initialised;
+        return -EPERM;
+    }
+    /* Accepts both, and that is the point: stop_owed exists so that cleanup is possible after an
+     * outcome nobody could confirm, and refusing it here would make the state a dead end.
+     *
+     * AND THE REFUSAL IS RECORDED, because the three -EPERM paths here are not the same event and
+     * the caller cannot tell them apart from the return value. Reaching this one means NO DEVICE
+     * CALL IS MADE and the budget is untouched -- see stop_refusal for the run where that was
+     * reported as a spent budget. */
+    if (status_.current != state::ranging && status_.current != state::stop_owed) {
+        status_.last_stop_refusal = stop_refusal::wrong_state;
+        return -EPERM;
+    }
+
+    if (status_.stop_attempts_used >= config_.stop_attempts) {
+        status_.last_stop_refusal = stop_refusal::budget_spent;
+        return -EPERM;
+    }
+
+    status_.last_stop_refusal = stop_refusal::none;
+    ++status_.stop_attempts_used;
+    const int rc{hooks_.stop(hooks_.ctx)};
+    if (rc == 0) {
+        status_.current = state::idle;
+        status_.failed_step = step::none;
+        status_.errno_value = 0;
+        return 0;
+    }
+
+    /* The debt is kept so the caller can try again, and only the budget running out turns it into
+     * something to report. Blocked rather than silently idle: a device that may still be
+     * measuring, that we have given up on stopping, is exactly the state an operator has to be
+     * told about. */
+    status_.current = status_.stop_attempts_used >= config_.stop_attempts ? state::blocked
+                                                                         : state::stop_owed;
+    return refuse(step::stop, rc);
+}
+
+bool lifecycle::discardable() const
+{
+    switch (status_.current) {
+    case state::idle:
+        return true;
+    case state::ranging:
+    case state::stop_owed:
+        /* A device that is measuring, or one whose session nobody can account for. */
+        return false;
+    case state::blocked:
+        /* Whitelist only failures that cannot leave ranging active. open/configure
+         * do not start measurements. A failed start owes stop; failed close may hide
+         * a live session, and failed stop means its retry budget is spent.
+         * New steps remain non-discardable until explicitly reviewed.
+         */
+        return status_.failed_step == step::firmware || status_.failed_step == step::probe ||
+               status_.failed_step == step::identity || status_.failed_step == step::survivor ||
+               status_.failed_step == step::open || status_.failed_step == step::configure;
+    }
+    return false;
+}
+
+const char *state_name(state s)
+{
+    switch (s) {
+    case state::idle:      return "idle";
+    case state::ranging:   return "ranging";
+    case state::stop_owed: return "stop_owed";
+    case state::blocked:   return "blocked";
+    }
+    return "unknown";
+}
+
+const char *step_name(step s)
+{
+    switch (s) {
+    case step::none:      return "none";
+    case step::firmware:  return "firmware";
+    case step::probe:     return "probe";
+    case step::identity:  return "identity";
+    case step::survivor:  return "survivor";
+    case step::close:     return "close";
+    case step::open:      return "open";
+    case step::configure: return "configure";
+    case step::start:     return "start";
+    case step::read:      return "read";
+    case step::stop:      return "stop";
+    }
+    return "unknown";
+}
+
+}  // namespace lexxhard::tof_package
+
+#endif  // ENABLE_TOF_L7_ULD

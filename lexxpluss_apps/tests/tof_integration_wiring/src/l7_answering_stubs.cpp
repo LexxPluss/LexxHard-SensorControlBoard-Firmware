@@ -23,6 +23,7 @@
 
 extern "C" {
 #include "vl53l7cx_api.h"
+#include "vl53l7cx_port.h"
 }
 
 namespace lexxhard::tof_l7_runtime {
@@ -48,12 +49,29 @@ size_t firmware_size()
 
 extern "C" {
 
-void vl53l7cx_port_clear_error(void) {}
+/* THE PORT, ANSWERING AS A HEALTHY BUS. It takes a context now -- one per device, so two sensors do
+ * not share a first-error record -- and the stub ignores it because nothing here fails. The
+ * argument fault is separate on purpose: it is the one fault with no device to blame, so it cannot
+ * live in a context, and a build that trips it should be caught by a test rather than silently
+ * swapping nothing. */
+void vl53l7cx_port_clear_error(struct vl53l7cx_port_context *) {}
 
-int vl53l7cx_port_error(void)
+int vl53l7cx_port_error(const struct vl53l7cx_port_context *)
 {
     return 0;
 }
+
+uint32_t vl53l7cx_port_completed_transfers(const struct vl53l7cx_port_context *)
+{
+    return 0;
+}
+
+int vl53l7cx_port_argument_fault(void)
+{
+    return 0;
+}
+
+void vl53l7cx_port_clear_argument_fault(void) {}
 
 /* A SENSOR THAT ANSWERS, which the cliff suite's stubs deliberately are not: there, the grid
  * publisher is driven directly and the vendor half only has to link. Here the whole chain is under

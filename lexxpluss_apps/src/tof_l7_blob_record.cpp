@@ -7,17 +7,13 @@
 
 #include "tof_l7_blob_record.hpp"
 
-/* Both flags, where the development images asked only for the chain. Nothing in a chain image
- * without the L7 ULD calls this on THIS branch, and the Kconfig the record needs -- CRC and
- * tinycrypt SHA-256 -- is scoped to L7 builds by overlays/tof_l7.conf, so the wider guard
- * compiled a translation unit whose headers the image had not been configured to provide. It
- * only linked at all because those images enabled tinycrypt globally.
- *
- * If the header-only validation command is ever brought over for a chain image with no ULD --
- * it exists on the development branch and reports the stored record without being able to use
- * it -- then this guard and that Kconfig scope widen together, which is the pairing that was
- * missing. */
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+/* GUARDED ON THE L7 FLAG, which is the flag the Kconfig follows. CONFIG_CRC and tinycrypt SHA-256
+ * come from overlays/tof_l7.conf, applied by CMakeLists.txt under `if(ENABLE_TOF_L7_ULD)`, so that
+ * flag alone is the condition under which these headers exist. An earlier revision also required
+ * ENABLE_TOF_CHAIN; the chain flag gates no part of that fragment, so it added nothing and would
+ * have kept this layer out of any L7 configuration that is not on the chain. See
+ * tof_l7_blob_record.hpp for the whole argument. */
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <string.h>
 
@@ -249,4 +245,4 @@ status verify(const reader &r, size_t region_size, const accept_list &accepted, 
 
 }  // namespace lexxhard::tof_l7_blob
 
-#endif  // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif  // ENABLE_TOF_L7_ULD

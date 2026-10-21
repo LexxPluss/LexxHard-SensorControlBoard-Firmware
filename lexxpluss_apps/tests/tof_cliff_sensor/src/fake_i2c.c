@@ -61,12 +61,11 @@ static int fake_transfer(const struct emul *target, struct i2c_msg *msgs, int nu
 {
 	int idx = fake_i2c_count++;
 
-	ARG_UNUSED(target);
-
 	if (idx < FAKE_I2C_MAX_XFERS) {
 		struct fake_i2c_xfer *rec = &fake_i2c_log[idx];
 		int segs = (num_msgs > FAKE_I2C_MAX_SEGS) ? FAKE_I2C_MAX_SEGS : num_msgs;
 
+		rec->bus = (target != NULL) ? target->dev : NULL;
 		rec->addr = (uint16_t)addr;
 		rec->num_segs = (uint8_t)num_msgs;
 		for (int i = 0; i < segs; i++) {
@@ -110,12 +109,35 @@ static const struct emul fake_emul_target = {
 	.dev = DEVICE_DT_GET(DT_NODELABEL(i2c2)),
 };
 
+/* A SECOND controller, only where the test declares one. Suites whose overlay has no i2c4 node
+ * compile this away, so the shared fake stays usable by all of them unchanged. */
+#if DT_NODE_EXISTS(DT_NODELABEL(i2c4))
+static struct i2c_emul fake_emul_b;
+
+static const struct emul fake_emul_target_b = {
+	.dev = DEVICE_DT_GET(DT_NODELABEL(i2c4)),
+};
+#endif
+
 static int fake_i2c_init(void)
 {
 	fake_emul.target = &fake_emul_target;
 	fake_emul.api = &fake_api;
 	fake_emul.addr = FAKE_I2C_ADDR;
-	return i2c_emul_register(DEVICE_DT_GET(DT_NODELABEL(i2c2)), &fake_emul);
+
+	int rc = i2c_emul_register(DEVICE_DT_GET(DT_NODELABEL(i2c2)), &fake_emul);
+
+#if DT_NODE_EXISTS(DT_NODELABEL(i2c4))
+	if (rc != 0) {
+		return rc;
+	}
+	fake_emul_b.target = &fake_emul_target_b;
+	fake_emul_b.api = &fake_api;
+	fake_emul_b.addr = FAKE_I2C_ADDR;
+	rc = i2c_emul_register(DEVICE_DT_GET(DT_NODELABEL(i2c4)), &fake_emul_b);
+#endif
+
+	return rc;
 }
 
 SYS_INIT(fake_i2c_init, APPLICATION, 1);

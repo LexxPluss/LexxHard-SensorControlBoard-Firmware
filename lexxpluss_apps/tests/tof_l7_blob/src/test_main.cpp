@@ -111,9 +111,16 @@ blob::accept_list golden_accept_list()
     return {accepted, 1};
 }
 
+/* Counted so the reuse cases can assert that one verification served every consumer, which is the
+ * property the architecture rests on: one payload, one record, one accept-list. */
+int verify_calls;
+int reentrant_answer;
+
 blob::report verify_for_runtime(const blob::accept_list &list, blob::blob_view &out)
 {
     blob::report rep{};
+
+    ++verify_calls;
 
     rep.region_size = region_size;
     (void)blob::read_header(make_reader(), region_size, rep.stored);
@@ -133,6 +140,8 @@ void before(void *)
     accepted[0] = make_golden_expectation();
     accepted[1] = blob::expectation{};
     map_for_runtime = true;
+    verify_calls = 0;
+    reentrant_answer = 0;
     runtime::reset_for_test();
 }
 
@@ -521,4 +530,92 @@ ZTEST(tof_l7_blob, test_a_partition_that_will_not_open_clears_a_view_from_an_ear
     zassert_equal(view.size(), 0U);
 
     flash_open_rc = 0;
+}
+
+/* ---- one verification, more than one consumer ---------------------------------------------- */
+
+/* THE SECOND SENSOR'S QUESTION IS NOT THE FIRST SENSOR'S QUESTION. bootstrap() reports what the
+ * call did, so the loser of the CAS gets -EALREADY whether the blob is fine, refused, or still
+ * being checked. ensure_verified() answers what a consumer actually needs. */
+ZTEST(tof_l7_blob, test_a_second_consumer_is_told_the_blob_is_available)
+{
+    zassert_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), 0);
+
+    zassert_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), -EALREADY,
+                  "bootstrap still reports what the call did");
+    zassert_ok(runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list()),
+               "and ensure_verified reports that the firmware is usable");
+    zassert_equal(runtime::firmware_data(), region + blob::kHeaderSize,
+                  "the same payload, not a second verification of it");
+}
+
+/* AND IT MUST NOT TURN A REFUSAL INTO A SUCCESS, which is the failure mode that matters: a second
+ * sensor reading -EALREADY as "someone else handled it" would open on a blob nothing authorised. */
+ZTEST(tof_l7_blob, test_a_second_consumer_is_told_the_blob_was_refused)
+{
+    region[blob::kHeaderSize + 10] ^= 0x01;
+    const int first{runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list())};
+    zassert_not_equal(first, 0);
+
+    zassert_equal(runtime::bootstrap_for_test(verify_for_runtime, golden_accept_list()), -EALREADY);
+    zassert_equal(runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list()), first,
+                  "the second consumer gets the same refusal errno the first did");
+    zassert_is_null(runtime::firmware_data());
+}
+
+/* The first consumer through still performs the verification and gets its own result, so
+ * ensure_verified() is usable as the only entry point rather than something bolted beside
+ * bootstrap(). */
+ZTEST(tof_l7_blob, test_ensure_verified_performs_the_verification_when_it_is_first)
+{
+    zassert_ok(runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list()));
+
+    const runtime::snapshot state{runtime::current()};
+    zassert_equal(state.current_stage, runtime::stage::available);
+    zassert_equal(runtime::firmware_size(), blob::golden::kPayloadLen);
+    zassert_equal(verify_calls, 1, "exactly one verification happened");
+}
+
+/* A CONSUMER ASKING WHILE ANOTHER IS MID-VERIFICATION gets -EAGAIN, not a verdict. Driven from
+ * inside the injected verifier, which is the only point at which the stage is observably
+ * `verifying`. */
+blob::report reentrant_verify(const blob::accept_list &list, blob::blob_view &out)
+{
+    reentrant_answer = runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list());
+    return verify_for_runtime(list, out);
+}
+
+ZTEST(tof_l7_blob, test_a_consumer_asking_mid_verification_is_told_to_ask_again)
+{
+    reentrant_answer = 0x7fffffff;
+    zassert_ok(runtime::ensure_verified_for_test(reentrant_verify, golden_accept_list()));
+
+    zassert_equal(reentrant_answer, -EINPROGRESS,
+                  "mid-verification is not a verdict, and must not read as one");
+    zassert_equal(verify_calls, 1, "and the re-entrant ask did not start a second verification");
+}
+
+/* THE BUSY CODE MUST NOT COLLIDE WITH A REFUSAL ERRNO, and one refusal already used -EAGAIN:
+ * status::uncommitted, an interrupted provisioning attempt. It is TERMINAL -- the stage is
+ * `refused` and no further verification will happen -- so a second consumer told -EAGAIN would
+ * poll for a result that had already arrived. */
+ZTEST(tof_l7_blob, test_an_uncommitted_record_does_not_look_like_a_verification_in_flight)
+{
+    memset(region + blob::kHeaderSize + blob::golden::kPayloadLen, 0xFF,
+           blob::kCommitMarkerSize);
+
+    zassert_equal(runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list()),
+                  -EAGAIN, "the first consumer gets the refusal errno for uncommitted");
+
+    const runtime::snapshot state{runtime::current()};
+    zassert_equal(state.current_stage, runtime::stage::refused, "and the stage is terminal");
+    zassert_equal(state.verification.st, blob::status::uncommitted);
+
+    const int second{runtime::ensure_verified_for_test(verify_for_runtime, golden_accept_list())};
+    zassert_equal(second, -EAGAIN,
+                  "the second consumer gets the same terminal refusal, not the busy code");
+    zassert_not_equal(second, -EINPROGRESS,
+                      "which is the whole point: waiting here would never end");
+    zassert_equal(verify_calls, 1, "and no second verification was attempted");
+    zassert_is_null(runtime::firmware_data());
 }

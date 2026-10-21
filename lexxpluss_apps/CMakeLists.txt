@@ -74,6 +74,14 @@ if(wdt_feed_callers)
         "interrupt -- restores the failure this was built to end. See tof_watchdog_feeder.hpp.")
 endif()
 
+# The bench driver runs the whole ULD path on the shell thread, which the default shell stack does
+# not cover: see overlays/tof_package_bench.conf for the measurement. Appended here rather than in
+# the ENABLE_TOF_PACKAGE_BENCH block further down, because Kconfig is fixed by find_package(Zephyr)
+# below and that block runs after it.
+if(ENABLE_TOF_PACKAGE_BENCH)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_bench.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
@@ -241,11 +249,10 @@ endif()
 # The explicit source list compiles the ULD core and our platform only. The plugins and the STM32
 # BSP wrapper stay vendored and do not enter any image; see third_party/st/vl53l7cx_uld/UPSTREAM.md.
 if(ENABLE_TOF_L7_ULD)
-    # Same dependency, and for the same reason, as the cliff ULD: i2c2 belongs to the tug encoder
-    # until ENABLE_TOF_CHAIN hands it over. Refuse the combination at configure time.
-    if(NOT ENABLE_TOF_CHAIN)
-        message(FATAL_ERROR "ENABLE_TOF_L7_ULD requires ENABLE_TOF_CHAIN")
-    endif()
+    # L7 receives its bus from a per-device context, so this flag needs no chain.
+    # open() and every transfer refuse an absent/unbound context. Callers must
+    # avoid controllers already owned by another device. The L4 chain guard stays:
+    # its port still resolves i2c2 directly.
 
     # THE FILESYSTEM IS NOT REMOVED HERE, and the reason is a measurement rather than inheritance.
     #
@@ -296,6 +303,17 @@ if(ENABLE_TOF_L7_ULD)
     set_source_files_properties(${VL53L7CX_PATCHED_DIR}/vl53l7cx_api.c PROPERTIES
         COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-but-set-variable")
     add_definitions(-DENABLE_TOF_L7_ULD)
+endif()
+
+# Package bench: registers shell commands only, with no automatic acquisition.
+# Requires the L7 driver and a provisioned blob; no product target enables it.
+if(ENABLE_TOF_PACKAGE_BENCH)
+    if(NOT ENABLE_TOF_L7_ULD)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_BENCH requires ENABLE_TOF_L7_ULD: the bench driver exists to call "
+            "the L7 lifecycle, and without the driver there is nothing to call.")
+    endif()
+    add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
 endif()
 
 if(VERSION)

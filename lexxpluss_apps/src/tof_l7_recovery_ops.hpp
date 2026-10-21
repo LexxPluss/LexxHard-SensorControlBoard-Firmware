@@ -31,6 +31,12 @@
 
 #pragma once
 
+/* STILL GUARDED ON BOTH FLAGS, and not because this adapter touches the chain -- it does not. All
+ * it does is probe and stop one device by address, which works on any bus given a port context.
+ * What is chain-specific is the boot flow ABOVE it: the pass that walks the enable chain's
+ * positions and decides what a cold or a surviving address means there. Until that upper layer has
+ * a non-chain caller there is nothing to widen this for, so the pairing is left alone rather than
+ * loosened speculatively. The adapter is reusable; the guard records who calls it today. */
 #if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
 
 #include "tof_l7_recovery.hpp"
@@ -39,12 +45,15 @@ namespace lexxhard::tof_l7 {
 struct sensor;
 }
 
+struct vl53l7cx_port_context;
+
 namespace lexxhard::tof_l7_recovery {
 
-/* `scratch` must be a sensor object that is not open. It is zeroed on every call, so passing one
- * that holds a live session would discard the firmware's side of it -- which is why the product
- * path calls this before any open and never after. */
-ops uld_ops(tof_l7::sensor *scratch);
+/* Use an unopened scratch sensor: every probe zeroes it, destroying any session.
+ * Install the supplied port after zeroing. The port owns this bus's error/count
+ * history and must outlive the pass; another bus needs another context.
+ */
+ops uld_ops(tof_l7::sensor *scratch, vl53l7cx_port_context *port);
 
 }  // namespace lexxhard::tof_l7_recovery
 

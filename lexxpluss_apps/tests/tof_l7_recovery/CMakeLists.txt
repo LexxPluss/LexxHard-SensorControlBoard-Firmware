@@ -23,6 +23,9 @@ target_sources(app PRIVATE
     src/test_order.cpp
     ${APP_SRC_DIR}/tof_l7_recovery.cpp
     ${APP_SRC_DIR}/tof_l7_recovery_ops.cpp
+    # The probe classification the adapter delegates to. Compiled here as well as in the Package
+    # build, which is the point of extracting it: one rule, two callers.
+    ${APP_SRC_DIR}/tof_l7_probe_verdict.cpp
     ${APP_SRC_DIR}/tof_l7_boot_order.cpp)
 target_compile_definitions(app PRIVATE ENABLE_TOF_CHAIN ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE

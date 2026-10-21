@@ -4,8 +4,12 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * The production port resolves DT_NODELABEL(i2c2), so the test uses that exact label and puts a
- * recording target behind Zephyr's real emulated-controller path.
+ * TWO controllers, because the port now takes its bus from the caller and that has to be checked
+ * rather than asserted. Both carry a recording target behind Zephyr's real emulated-controller
+ * path, so a transfer can be traced to the controller that actually carried it.
+ *
+ * The labels mirror the two real buses -- J29's i2c2 and J22's i2c4 -- but nothing in the port
+ * resolves either one any more; they are node labels this test picks, not a dependency.
  */
 
 / {
@@ -16,5 +20,14 @@
 		reg = <0x11112222 0x1000>;
 		status = "okay";
 		clock-frequency = <400000>;
+	};
+
+	i2c4: i2c@11113333 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "zephyr,i2c-emul-controller";
+		reg = <0x11113333 0x1000>;
+		status = "okay";
+		clock-frequency = <100000>;
 	};
 };
