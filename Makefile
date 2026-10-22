@@ -91,6 +91,11 @@ bootloader:
 	$(RUNNER) west build -b lexxpluss_scb bootloader/mcuboot/boot/zephyr -d build-mcuboot -- -DBOARD_ROOT=${WORKDIR}/extra
 	mv build-mcuboot/zephyr/zephyr.bin out/zephyr.bin
 
+# Defaulted so CI, which passes nothing, builds the variant flags too.
+# Pass an empty value to build without them: make firmware FEATURES_FILE=
+FEATURES_FILE ?= cmake/features_dasher.cmake
+FEATURES_FILE_ARG:=$(if $(FEATURES_FILE),-DFEATURES_FILE=$(FEATURES_FILE))
+
 # Host-side tests for the ToF grid packer, driven by the golden vectors in
 # docs/can/ and pinning the contract SHA-256 (the firmware half of the
 # cross-repository lock; SCBDriver pins the same SHA on the decoder side).
@@ -367,7 +372,7 @@ check_language_boundary:
 firmware:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- $(FEATURES_FILE_ARG) -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr.signed.confirmed.bin
 
@@ -375,7 +380,7 @@ firmware:
 firmware_two_state_ksw:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- $(FEATURES_FILE_ARG) -DUSE_TWO_STATE_KEY_SWITCH=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_two_state_ksw.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_two_state_ksw.signed.confirmed.bin
 
@@ -383,7 +388,7 @@ firmware_two_state_ksw:
 firmware_interlock:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- -DENABLE_INTERLOCK=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -b lexxpluss_scb lexxpluss_apps -- $(FEATURES_FILE_ARG) -DENABLE_INTERLOCK=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build/zephyr/zephyr.signed.bin out/zephyr_interlock.signed.bin
 	mv build/zephyr/zephyr.signed.confirmed.bin out/zephyr_interlock.signed.confirmed.bin
 
@@ -397,7 +402,7 @@ firmware_interlock:
 firmware_bypass_safety_lidar:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-bypass-safety-lidar -- $(FEATURES_FILE_ARG) -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 -DBOARD_ROOT=${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=${WORKDIR}/extra -DVERSION=${VERSION}
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.bin out/zephyr_bypass_safety_lidar.signed.bin
 	mv build-bypass-safety-lidar/zephyr/zephyr.signed.confirmed.bin out/zephyr_bypass_safety_lidar.signed.confirmed.bin
 
@@ -675,4 +680,5 @@ firmware_interlock_initial:
 	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
 	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
 	cat out/bl_with_ff.bin out/zephyr_interlock.signed.bin > out/firmware_interlock.bin
+
 
