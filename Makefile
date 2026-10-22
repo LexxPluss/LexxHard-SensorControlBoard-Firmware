@@ -29,13 +29,12 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
-# Board slot size and signed-image limit, reserving 432 B for the MCUboot trailer.
-# image_ok is 24 B from the slot end: 01 confirmed, ff unconfirmed.
-# IMAGE_MAGIC_LE is MCUboot's 0x96f3b83d header magic in file byte order.
+# Slot geometry, used by the asset check in dfu_test_image. The signed ceiling is the slot minus
+# the 432 B MCUboot trailer; image_ok sits 24 B from the slot end, 01 confirmed and ff unconfirmed,
+# and that one byte is the whole difference between the Update and DFU-Test assets.
 SLOT_SIZE := 262144
 SIGNED_IMAGE_CEILING := 261712
 IMAGE_OK_OFFSET_FROM_END := 24
-IMAGE_MAGIC_LE := 3db8f396
 
 .PHONY: all
 all: bootloader firmware
@@ -55,7 +54,7 @@ clean:
 	        build-test-tof-commission-runtime build-test-tof-commission-worker build-test-tof-commission-bind \
 	        build-test-tof-commission-bind-session build-test-tof-commission-entropy-poll build-auto-commission \
 	        build-test-tof-l7-boot-order-no-grid build-test-tof-integration-wiring build-tof-full \
-	        build-check-l7-no-cliff build-tof-integration build-tof-release \
+	        build-check-l7-no-cliff build-tof-integration \
 	        build-test-tof-commissioning-grid
 
 .PHONY: distclean
@@ -506,123 +505,60 @@ firmware_tof_full:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-full -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
-# Full L4/L7 release candidate with commissioning enabled by tof_release.overlay.
-# The host must keep the machine stationary while commissioning; firmware cannot enforce this.
-# SAFETY-LIDAR BYPASS: DS20002 has no fitted safety lidar. Do not use this image with one fitted.
-# The 50 ms cadence targets 20 Hz per cliff source, not >=50 Hz. Product acceptance is separate.
-# CAN DFU needs a padded trailer to request a swap; the application self-confirms before workers run.
+# THE ToF RELEASE IMAGE HAS NO BUILD TARGET OF ITS OWN. It is `make firmware` with a feature file:
 #
-# make firmware_tof_release VERSION=<version>
-# Verify application images before deriving Initial. Does not flash, provision or tag.
-.PHONY: firmware_tof_release
-firmware_tof_release:
-	$(MAKE) tof_release_guard
-	$(MAKE) bootloader
-	$(MAKE) tof_release_application
-	$(MAKE) verify_tof_release_images
-	$(MAKE) tof_release_initial_image
-	$(MAKE) tof_release_manifest
+#   make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_tof_release.cmake
+#
+# lexxpluss_apps/cmake/features_tof_release.cmake carries the flags, overlays and Kconfig fragments
+# that firmware_tof_full passes on the command line above, plus tof_release.overlay, which is the
+# only one that grants commissioning permission. The outputs are therefore the ordinary
+# out/zephyr.signed.bin, out/zephyr.signed.confirmed.bin and out/firmware.bin.
+#
+# BECAUSE build/ IS SHARED, `make clean` before building this and before building anything after
+# it: a stale CMake cache would otherwise carry this feature selection into the next image, or a
+# previous selection into this one. .github/workflows/release.yml does that, and moves the earlier
+# assets out of out/ first, since the file names collide.
+#
+# SAFETY-LIDAR BYPASS, inherited from features_dasher.cmake: DS20002 has no safety lidar fitted, so
+# do not run this image on a machine that has one. Commissioning additionally requires a stationary
+# machine, which the firmware cannot enforce. The 50 ms cadence targets 20 Hz per cliff source, not
+# >=50 Hz; product acceptance is separate.
 
-# Require a committed tracked tree so the manifest SHA identifies the source.
-# Ignore untracked dependency/output directories created by setup; the application verifies patches.
-.PHONY: tof_release_guard
-tof_release_guard:
+# CAN DFU requests a slot swap only while the trailer's image_ok is still unwritten, so the
+# test-boot asset is the confirmed image with that one byte reset to 0xff. Derived rather than
+# built, which is what makes it provably the same image as the Update asset.
+#
+# A TEST BOOT IS NOT ROLLBACK: the application self-confirms before the subsystem threads start, so
+# an image that boots far enough to do that will not revert on a later runtime failure.
+#
+# The check that follows is on the ASSETS, not on the build: imgtool already signed the image and
+# refused a slot overflow. What it catches is a padded pair that is no longer a pair -- a wrong
+# offset, an unpadded confirmed image, or a dd that landed in the wrong place -- which would ship an
+# asset that either never requests a swap or never reverts, and both look like a working update.
+.PHONY: dfu_test_image
+dfu_test_image:
+	cp out/zephyr.signed.confirmed.bin out/zephyr.test.bin
+	printf '\377' | dd of=out/zephyr.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr.test.bin) - $(IMAGE_OK_OFFSET_FROM_END))) conv=notrunc status=none
 	@set -e; \
-	if [ -z "$(VERSION)" ]; then \
-	    echo "VERSION is empty -- pass it, e.g. make firmware_tof_release VERSION=3.8.0" >&2; exit 1; \
-	fi; \
-	if ! git rev-parse --git-dir >/dev/null 2>&1; then \
-	    echo "not a git worktree, so no manifest could identify the source of these images" >&2; exit 1; \
-	fi; \
-	if ! git diff-index --quiet HEAD --; then \
-	    echo "tracked files are modified; a release image must be built from a committed tree:" >&2; \
-	    git diff-index --name-only HEAD -- >&2; \
-	    exit 1; \
-	fi; \
-	echo "release guard: VERSION=$(VERSION) commit=$$(git rev-parse HEAD) tree clean"
-
-# Bench-only application entry permits uncommitted experiments; release builds use the guard above.
-.PHONY: tof_release_application
-tof_release_application:
-	./scripts/manage_zephyr_patches.sh verify
-	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-release -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 -DBYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay;overlays/tof_release.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
-	mv build-tof-release/zephyr/zephyr.signed.bin out/zephyr_tof_release.signed.bin
-	mv build-tof-release/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_release.signed.confirmed.bin
-	cp out/zephyr_tof_release.signed.confirmed.bin out/zephyr_tof_release.test.bin
-	printf '\377' | dd of=out/zephyr_tof_release.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_release.test.bin) - $(IMAGE_OK_OFFSET_FROM_END))) conv=notrunc status=none
-
-# Check header magic, image sizes and the one-byte confirmed/test trailer difference.
-# These release assertions supplement imgtool's signing and slot-fit checks.
-.PHONY: verify_tof_release_images
-verify_tof_release_images:
-	@set -e; \
-	for image in out/zephyr_tof_release.signed.bin out/zephyr_tof_release.signed.confirmed.bin \
-	             out/zephyr_tof_release.test.bin; do \
-	    magic=$$(od -An -tx1 -N4 "$$image" | tr -d ' \n'); \
-	    if [ "$$magic" != "$(IMAGE_MAGIC_LE)" ]; then \
-	        echo "$$image starts with '$$magic', not the MCUboot magic $(IMAGE_MAGIC_LE)" >&2; exit 1; \
-	    fi; \
-	done; \
-	signed=$$(stat -c%s out/zephyr_tof_release.signed.bin); \
-	confirmed=$$(stat -c%s out/zephyr_tof_release.signed.confirmed.bin); \
-	test_image=$$(stat -c%s out/zephyr_tof_release.test.bin); \
+	signed=$$(stat -c%s out/zephyr.signed.bin); \
+	confirmed=$$(stat -c%s out/zephyr.signed.confirmed.bin); \
+	tested=$$(stat -c%s out/zephyr.test.bin); \
 	if [ $$signed -gt $(SIGNED_IMAGE_CEILING) ]; then \
 	    echo "signed image is $$signed B, over the $(SIGNED_IMAGE_CEILING) B ceiling" >&2; exit 1; \
 	fi; \
-	if [ $$confirmed -ne $(SLOT_SIZE) ] || [ $$test_image -ne $(SLOT_SIZE) ]; then \
-	    echo "padded images are $$confirmed B and $$test_image B, expected $(SLOT_SIZE) B each" >&2; exit 1; \
+	if [ $$confirmed -ne $(SLOT_SIZE) ] || [ $$tested -ne $(SLOT_SIZE) ]; then \
+	    echo "padded images are $$confirmed B and $$tested B, expected $(SLOT_SIZE) B each" >&2; exit 1; \
 	fi; \
-	ok_confirmed=$$(od -An -tx1 -j $$(($$confirmed - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr_tof_release.signed.confirmed.bin | tr -d ' '); \
-	ok_test=$$(od -An -tx1 -j $$(($$test_image - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr_tof_release.test.bin | tr -d ' '); \
-	if [ "$$ok_confirmed" != "01" ] || [ "$$ok_test" != "ff" ]; then \
-	    echo "image_ok is $$ok_confirmed (confirmed) and $$ok_test (test), expected 01 and ff" >&2; exit 1; \
+	ok_confirmed=$$(od -An -tx1 -j $$(($$confirmed - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr.signed.confirmed.bin | tr -d ' '); \
+	ok_tested=$$(od -An -tx1 -j $$(($$tested - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr.test.bin | tr -d ' '); \
+	if [ "$$ok_confirmed" != "01" ] || [ "$$ok_tested" != "ff" ]; then \
+	    echo "image_ok is $$ok_confirmed (confirmed) and $$ok_tested (test), expected 01 and ff" >&2; exit 1; \
 	fi; \
-	differing=$$(cmp -l out/zephyr_tof_release.signed.confirmed.bin out/zephyr_tof_release.test.bin | wc -l); \
+	differing=$$(cmp -l out/zephyr.signed.confirmed.bin out/zephyr.test.bin | wc -l); \
 	if [ $$differing -ne 1 ]; then \
 	    echo "test image differs from the confirmed image in $$differing bytes, expected 1" >&2; exit 1; \
 	fi; \
-	echo "tof release images: signed $$signed B of $(SIGNED_IMAGE_CEILING) B, padded $(SLOT_SIZE) B, image_ok 01/ff, one differing byte"
-
-# SWD image at 0x08000000: bootloader, 0xff storage padding, then application.
-# This erases the stored L7 blob; provision it again before expecting L7 data.
-.PHONY: tof_release_initial_image
-tof_release_initial_image:
-	dd if=/dev/zero bs=1k count=256 | tr "\000" "\377" > out/bl_with_ff.bin
-	dd if=out/zephyr.bin of=out/bl_with_ff.bin conv=notrunc
-	cat out/bl_with_ff.bin out/zephyr_tof_release.signed.bin > out/firmware_tof_release.bin
-
-# Record source, cached build configuration and hashes after verification.
-# Report the safety-lidar bypass separately because it restricts compatible hardware.
-.PHONY: tof_release_manifest
-tof_release_manifest:
-	@set -e; \
-	cache=build-tof-release/CMakeCache.txt; \
-	bypass=absent; \
-	if grep -q '^BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST:[^=]*=1$$' $$cache; then \
-	    bypass="ENABLED -- no safety lidar may be fitted to a machine running this image"; \
-	fi; \
-	{ \
-	  echo "target:   firmware_tof_release"; \
-	  echo "version:  $(VERSION)"; \
-	  echo "commit:   $$(git rev-parse HEAD)"; \
-	  echo "built:    $$(date -Is)"; \
-	  echo "safety_lidar_bypass: $$bypass"; \
-	  for key in ENABLE_TOF_CHAIN ENABLE_TOF_CLIFF_ULD ENABLE_TOF_L7_ULD ENABLE_TOF_AUTO_COMMISSION \
-	             EXTRA_DTC_OVERLAY_FILE EXTRA_CONF_FILE; do \
-	      echo "$$key: $$(sed -n "s/^$$key:[^=]*=//p" $$cache)"; \
-	  done; \
-	  echo "signed:   $$(stat -c%s out/zephyr_tof_release.signed.bin) B of $(SIGNED_IMAGE_CEILING) B ceiling"; \
-	  echo "padded:   $$(stat -c%s out/zephyr_tof_release.signed.confirmed.bin) B confirmed, $$(stat -c%s out/zephyr_tof_release.test.bin) B test"; \
-	  echo "initial:  $$(stat -c%s out/firmware_tof_release.bin) B"; \
-	} > out/zephyr_tof_release.MANIFEST.txt; \
-	cd out && sha256sum zephyr_tof_release.signed.bin zephyr_tof_release.signed.confirmed.bin \
-	    zephyr_tof_release.test.bin firmware_tof_release.bin > SHA256SUMS-tof-release.txt; \
-	cat zephyr_tof_release.MANIFEST.txt SHA256SUMS-tof-release.txt
-
-# Compatibility alias; the release sequence must not depend on this alias.
-.PHONY: firmware_tof_release_initial
-firmware_tof_release_initial: firmware_tof_release
+	echo "assets: signed $$signed B of $(SIGNED_IMAGE_CEILING) B, padded $(SLOT_SIZE) B, image_ok 01/ff, one differing byte"
 
 # The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the

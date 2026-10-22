@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-/* Deployment permissions for firmware_tof_release, stacked after the chain and
- * commissioning overlays. Other targets keep their existing permissions. */
+/* Deployment permissions for the ToF release image, stacked after the chain and
+ * commissioning overlays by cmake/features_tof_release.cmake. Every other image
+ * keeps the permissions it has, which is none. */
 
 &tof_chain {
 	/* Accept commissioning requests instead of replying disabled. */

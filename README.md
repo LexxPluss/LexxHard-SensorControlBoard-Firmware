@@ -85,7 +85,15 @@ a different image, not a different way of delivering the same one.
   over the CAN DFU. The board reverts to the previous firmware on the next reset unless the
   application confirms itself.
 
-`SHA256SUMS-v?.?.?.txt` lists every asset in the release.
+These are built by the ordinary firmware entry with a different feature file. `make clean` first:
+`build/` is shared between configurations, and a cache left by a previous `make firmware` would
+otherwise carry that configuration into this image.
+
+```
+$ make clean
+$ make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_tof_release.cmake
+$ make dfu_test_image
+```
 
 **Flashing the ToF Initial image does not install the L7 driver blob.** Its first 256 KiB are the
 bootloader partition and `storage_partition`, and the storage half is `0xff`; the blob lives in

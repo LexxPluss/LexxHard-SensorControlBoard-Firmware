@@ -22,14 +22,12 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 name: release
-# Use one trigger to avoid duplicate builds for the same tag.
 on:
+  release:
+    types: [published]
   push:
     tags:
       - 'v*'
-# Required to create releases and upload assets.
-permissions:
-  contents: write
 jobs:
   build:
     runs-on: lp-4core-runner
@@ -53,39 +51,33 @@ jobs:
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_initial
           make IN_HOST=1 WORKDIR=$(pwd) clean
           make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_two_state_ksw_initial
-          # Use the local release entry; its guard requires unchanged tracked files.
-          # ToF has a separate build directory, so no clean is needed here.
-          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} firmware_tof_release
           mv ./out/firmware.bin LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
           mv ./out/firmware_two_state_ksw.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr_two_state_ksw.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
-          # Do not publish unpadded signed.bin: CAN DFU needs a trailer to request a swap.
-          mv ./out/firmware_tof_release.bin LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
-          mv ./out/zephyr_tof_release.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
-          mv ./out/zephyr_tof_release.test.bin LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
-          # Publish the manifest; recompute checksums under the release asset names.
-          mv ./out/zephyr_tof_release.MANIFEST.txt LexxHard-SensorControlBoard-Firmware-ToF-MANIFEST-${{ github.ref_name }}.txt
-          sha256sum LexxHard-SensorControlBoard-Firmware-*-${{ github.ref_name }}.bin > SHA256SUMS-${{ github.ref_name }}.txt
-          cat SHA256SUMS-${{ github.ref_name }}.txt
-          cat LexxHard-SensorControlBoard-Firmware-ToF-MANIFEST-${{ github.ref_name }}.txt
-      # Create or reuse the release; explicitly mark suffixed tags as prereleases.
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+          # The ToF image is this same entry with a different feature file, so it writes the same
+          # out/ names -- which is why the four assets above are moved out of the way first, and
+          # why build/ is cleaned: a stale cache would mix the two feature selections.
+          make IN_HOST=1 WORKDIR=$(pwd) clean
+          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} FEATURES_FILE=cmake/features_tof_release.cmake firmware_initial
+          make IN_HOST=1 WORKDIR=$(pwd) dfu_test_image
+          mv ./out/firmware.bin LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
+          mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
+          # The unpadded signed.bin is not published: CAN DFU needs the trailer to request a swap.
+          mv ./out/zephyr.test.bin LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
+      - name: Upload release binaries
+        uses: alexellis/upload-assets@0.4.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
+          UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
+          INITIAL_FIRMWARE_TWO_STATE_KSW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
+          UPDATE_FIRMWARE_TWO_STATE_SKW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
+          TOF_INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
+          TOF_UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
+          TOF_DFU_TEST_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
         with:
-          tag_name: ${{ github.ref_name }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          fail_on_unmatched_files: true
-          files: |
-            LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
-            LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
-            LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
-            LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
-            LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
-            LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
-            LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
-            LexxHard-SensorControlBoard-Firmware-ToF-MANIFEST-${{ github.ref_name }}.txt
-            SHA256SUMS-${{ github.ref_name }}.txt
+          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}", "${{ env.INITIAL_FIRMWARE_TWO_STATE_KSW_PATH }}", "${{ env.UPDATE_FIRMWARE_TWO_STATE_SKW_PATH }}", "${{ env.TOF_INITIAL_FIRMWARE_PATH }}", "${{ env.TOF_UPDATE_FIRMWARE_PATH }}", "${{ env.TOF_DFU_TEST_FIRMWARE_PATH }}"]'
       - name: Notification
         uses: act10ns/slack@v1
         with:
