@@ -29,6 +29,13 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
+# Slot geometry, used by the asset check in dfu_test_image. The signed ceiling is the slot minus
+# the 432 B MCUboot trailer; image_ok sits 24 B from the slot end, 01 confirmed and ff unconfirmed,
+# and that one byte is the whole difference between the Update and DFU-Test assets.
+SLOT_SIZE := 262144
+SIGNED_IMAGE_CEILING := 261712
+IMAGE_OK_OFFSET_FROM_END := 24
+
 .PHONY: all
 all: bootloader firmware
 
@@ -47,7 +54,8 @@ clean:
 	        build-test-tof-commission-runtime build-test-tof-commission-worker build-test-tof-commission-bind \
 	        build-test-tof-commission-bind-session build-test-tof-commission-entropy-poll build-auto-commission \
 	        build-test-tof-l7-boot-order-no-grid build-test-tof-integration-wiring build-tof-full \
-	        build-check-l7-no-cliff build-tof-integration
+	        build-check-l7-no-cliff build-tof-integration \
+	        build-test-tof-commissioning-grid
 
 .PHONY: distclean
 distclean: clean
@@ -148,6 +156,12 @@ test_tof_mapping_authority:
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Run the commissioning suite with real grid wiring; `make test` covers both variants.
+.PHONY: test_tof_commissioning_grid
+test_tof_commissioning_grid:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning-grid -t run -- -DBOARD_ROOT=/${WORKDIR}/extra -DGRID_L7=1
 
 .PHONY: test_tof_commission_runtime
 test_tof_commission_runtime:
@@ -409,14 +423,10 @@ firmware_bypass_safety_lidar:
 # main.cpp confirms the image after thread creation, so a crash in main initialisation (which is
 # where the cliff bootstrap runs) rolls back on the next boot.
 #
-# This image produces the 0x217 health heartbeat and does NOT produce measurement frames, because
-# the PROVEN clamp is applied unconditionally at the single authorisation exit.
+# Health (0x217) starts at boot; measurement (0x216) requires a PROVEN mapping.
+# No automatic commissioning: use `tof cliff prove`, then start acquisition.
 #
-# That is the only thing the clamp decides. It does not decide the proof: `tof cliff prove` succeeds
-# or fails on its evidence, and the four cliff roles are no longer unknown -- they are frozen from
-# the assembly connectivity drawing in tof_chain_spec.hpp, which is what makes the production spec
-# provable at all. What is still open is the hardware: walk 1 has never reached COMPLETE at the
-# 400 kHz this overlay pins, so a run on a real machine fails there rather than at the role table.
+# Roles come from tof_chain_spec.hpp. Proof combines a 100 kHz walk and 400 kHz identity recheck.
 #
 # NO SAFETY-LIDAR BYPASS, unlike firmware_tof_chain, which this target was first copied from. That
 # flag belongs to a bench image and this one is meant to be a product build; carrying it by
@@ -487,14 +497,68 @@ firmware_tof_cliff:
 # calls FAT, and firmware update and the L7 blob both go through flash_area_*. MCUboot, signing, the
 # flash map, the update path and the partition layout are unchanged.
 #
-# IT COMMISSIONS NOTHING. commission-profile-enabled and commission-enumeration-permitted are absent
-# from overlays/auto_commission.overlay, so the downlink answers `disabled`; and the PROVEN clamp
-# still refuses every grid. Being wired is not being enabled.
+# auto_commission.overlay grants no commissioning permission: requests return `disabled`.
+# Publication still requires a PROVEN authority snapshot.
 .PHONY: firmware_tof_full
 firmware_tof_full:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-full -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
+# THE ToF RELEASE IMAGE HAS NO BUILD TARGET OF ITS OWN. It is `make firmware` with a feature file:
+#
+#   make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_tof_release.cmake
+#
+# lexxpluss_apps/cmake/features_tof_release.cmake carries the flags, overlays and Kconfig fragments
+# that firmware_tof_full passes on the command line above, plus tof_release.overlay, which is the
+# only one that grants commissioning permission. The outputs are therefore the ordinary
+# out/zephyr.signed.bin, out/zephyr.signed.confirmed.bin and out/firmware.bin.
+#
+# BECAUSE build/ IS SHARED, `make clean` before building this and before building anything after
+# it: a stale CMake cache would otherwise carry this feature selection into the next image, or a
+# previous selection into this one. .github/workflows/release.yml does that, and moves the earlier
+# assets out of out/ first, since the file names collide.
+#
+# SAFETY-LIDAR BYPASS, inherited from features_dasher.cmake: DS20002 has no safety lidar fitted, so
+# do not run this image on a machine that has one. Commissioning additionally requires a stationary
+# machine, which the firmware cannot enforce. The 50 ms cadence targets 20 Hz per cliff source, not
+# >=50 Hz; product acceptance is separate.
+
+# CAN DFU requests a slot swap only while the trailer's image_ok is still unwritten, so the
+# test-boot asset is the confirmed image with that one byte reset to 0xff. Derived rather than
+# built, which is what makes it provably the same image as the Update asset.
+#
+# A TEST BOOT IS NOT ROLLBACK: the application self-confirms before the subsystem threads start, so
+# an image that boots far enough to do that will not revert on a later runtime failure.
+#
+# The check that follows is on the ASSETS, not on the build: imgtool already signed the image and
+# refused a slot overflow. What it catches is a padded pair that is no longer a pair -- a wrong
+# offset, an unpadded confirmed image, or a dd that landed in the wrong place -- which would ship an
+# asset that either never requests a swap or never reverts, and both look like a working update.
+.PHONY: dfu_test_image
+dfu_test_image:
+	cp out/zephyr.signed.confirmed.bin out/zephyr.test.bin
+	printf '\377' | dd of=out/zephyr.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr.test.bin) - $(IMAGE_OK_OFFSET_FROM_END))) conv=notrunc status=none
+	@set -e; \
+	signed=$$(stat -c%s out/zephyr.signed.bin); \
+	confirmed=$$(stat -c%s out/zephyr.signed.confirmed.bin); \
+	tested=$$(stat -c%s out/zephyr.test.bin); \
+	if [ $$signed -gt $(SIGNED_IMAGE_CEILING) ]; then \
+	    echo "signed image is $$signed B, over the $(SIGNED_IMAGE_CEILING) B ceiling" >&2; exit 1; \
+	fi; \
+	if [ $$confirmed -ne $(SLOT_SIZE) ] || [ $$tested -ne $(SLOT_SIZE) ]; then \
+	    echo "padded images are $$confirmed B and $$tested B, expected $(SLOT_SIZE) B each" >&2; exit 1; \
+	fi; \
+	ok_confirmed=$$(od -An -tx1 -j $$(($$confirmed - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr.signed.confirmed.bin | tr -d ' '); \
+	ok_tested=$$(od -An -tx1 -j $$(($$tested - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr.test.bin | tr -d ' '); \
+	if [ "$$ok_confirmed" != "01" ] || [ "$$ok_tested" != "ff" ]; then \
+	    echo "image_ok is $$ok_confirmed (confirmed) and $$ok_tested (test), expected 01 and ff" >&2; exit 1; \
+	fi; \
+	differing=$$(cmp -l out/zephyr.signed.confirmed.bin out/zephyr.test.bin | wc -l); \
+	if [ $$differing -ne 1 ]; then \
+	    echo "test image differs from the confirmed image in $$differing bytes, expected 1" >&2; exit 1; \
+	fi; \
+	echo "assets: signed $$signed B of $(SIGNED_IMAGE_CEILING) B, padded $(SLOT_SIZE) B, image_ok 01/ff, one differing byte"
 
 # The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the

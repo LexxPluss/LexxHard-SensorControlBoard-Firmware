@@ -54,6 +54,9 @@
 #include "tof_acquisition.hpp"
 #include "tof_enumerator.hpp"
 
+/* Only the test seam needs the fingerprint type. */
+namespace lexxhard::tof_proof { struct fingerprint; }
+
 namespace lexxhard::tof_cliff_runtime {
 
 /* How far the bootstrap got. One value, so a refusal can say which step failed rather than "not
@@ -158,6 +161,9 @@ void set_thread_stack_for_test(k_thread_stack_t *stack, size_t size);
 const tof_acq::source_desc *descriptors_for_test();
 // Rebuilds the table from the current spec, for cases that need the two to disagree.
 int force_rebuild_descriptors_for_test();
+/* Test invalid fingerprints that a normal proof cannot produce.
+ * Returns 0 with keys installed, or a negative errno with the table unchanged. */
+int install_from_mapping_for_test(const tof_proof::fingerprint &fp, uint8_t epoch);
 #endif
 
 }  // namespace lexxhard::tof_cliff_runtime

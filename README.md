@@ -72,6 +72,34 @@ $ st-flash --reset --connect-under-reset erase
 $ st-flash --reset --connect-under-reset write LexxHard-SensorControlBoard-Firmware-Initial-v?.?.? 0x8000000
 ```
 
+### ToF assets
+
+A release that carries the ToF configuration (L4 cliff, L7 hanging-object grid and host
+commissioning) adds three files. They are separate from the standard assets above because they are
+a different image, not a different way of delivering the same one.
+
+- `...-ToF-Initial-v?.?.?.bin` — bootloader and application in one file, written from `0x8000000`
+  after an erase, exactly like the standard Initial image.
+- `...-ToF-Update-v?.?.?.bin` — the padded, confirmed image for an ordinary update.
+- `...-ToF-DFU-Test-v?.?.?.bin` — the same image with `image_ok` left at `0xff`, for a test boot
+  over the CAN DFU. The board reverts to the previous firmware on the next reset unless the
+  application confirms itself.
+
+These are built by the ordinary firmware entry with a different feature file. `make clean` first:
+`build/` is shared between configurations, and a cache left by a previous `make firmware` would
+otherwise carry that configuration into this image.
+
+```
+$ make clean
+$ make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_tof_release.cmake
+$ make dfu_test_image
+```
+
+**Flashing the ToF Initial image does not install the L7 driver blob.** Its first 256 KiB are the
+bootloader partition and `storage_partition`, and the storage half is `0xff`; the blob lives in
+`storage_partition`, so an erased board has none. Provision the blob after flashing. Until that is
+done the L7 paths stay silent, however complete the rest of the chain looks.
+
 ## Update via ROS
 
 (There is no updater for SensorControlBoard yet)

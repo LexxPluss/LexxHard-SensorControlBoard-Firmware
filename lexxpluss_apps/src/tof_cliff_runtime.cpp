@@ -194,6 +194,10 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
      * half-keyed table on the first refusal -- some corners published correctly, the rest not
      * published at all, and nothing on the wire to say which. */
     uint8_t keys[acq::kMaxSources];
+#if defined(ENABLE_TOF_L7_ULD)
+    /* Source claims are local until the full mapping validates. */
+    uint8_t grid_claimed{0};
+#endif
 
     if (!ready())
         return -EPERM;
@@ -202,8 +206,35 @@ int install_from_mapping(const pf::fingerprint &fp, uint8_t epoch)
 
     for (size_t i{0}; i < spec_.positions; ++i) {
         keys[i] = kRoleUnassigned;
+#if defined(ENABLE_TOF_L7_ULD)
+        if (descs_[i].kind == acq::model::l7_grid) {
+            /* Use the verified fingerprint's grid ID, not a cliff role or chain index.
+             * Validate it against this descriptor before installing any keys. */
+            const pf::position_fingerprint &pos{fp.at[i]};
+
+            if (pos.position != static_cast<uint8_t>(i + 1))
+                return -EINVAL;
+            if (pos.expected != enm::model::l7cx)
+                return -EINVAL;
+            if (pos.address != descs_[i].addr_7bit)
+                return -EINVAL;
+            if (!pos.verified)
+                return -EINVAL;
+            if (pos.source_id < 0 || pos.source_id >= gpub::kGridSources)
+                return -EINVAL;
+
+            const uint8_t src{static_cast<uint8_t>(pos.source_id)};
+
+            /* Duplicate grid IDs would make the publisher discard the cycle. */
+            if ((grid_claimed & static_cast<uint8_t>(1U << src)) != 0)
+                return -EINVAL;
+            grid_claimed |= static_cast<uint8_t>(1U << src);
+            keys[i] = src;
+            continue;
+        }
+#endif
         if (descs_[i].kind != acq::model::l4_cliff)
-            continue;   // the grid stubs have no cliff source id and stay unassigned
+            continue;   // a stubbed position has no source id and stays unassigned
 
         /* The address, because role_id is the key a measurement is published under: if the mapping
          * proved front_left at 0x2C and the descriptor acquisition reads is 0x2D, keying it would
@@ -257,9 +288,7 @@ int init_grid_publisher()
     cfg.sink = can::grid_sink();
     cfg.sources = descs_;
     cfg.source_count = static_cast<int>(spec_.positions);
-    /* THE SAME STRUCTURALLY SHUT GATE as the cliff path, and that is what makes wiring this safe:
-     * the clamp inside it makes PROVEN unreachable, and the packer refuses anything that is not
-     * PROVEN. So this connects the path without opening it. */
+    /* Publication requires the authority's committed PROVEN mapping. */
     cfg.authorise = can::grid_production_authorisation;
     /* NO DEFAULT INVENTED HERE. VL53L7CX target_status 6 and 9 are the low-confidence verdicts, and
      * whether a hanging-object detector should trust them is a product decision nobody has taken.
@@ -564,6 +593,11 @@ int force_rebuild_descriptors_for_test()
                       cfg_.grid_frequency_hz);
     keyed_ = false;
     return 0;
+}
+
+int install_from_mapping_for_test(const pf::fingerprint &fp, uint8_t epoch)
+{
+    return install_from_mapping(fp, epoch);
 }
 #endif
 

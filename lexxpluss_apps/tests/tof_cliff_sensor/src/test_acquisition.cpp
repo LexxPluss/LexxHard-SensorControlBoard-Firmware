@@ -725,18 +725,8 @@ ZTEST(tof_acquisition, test_the_ops_table_has_exactly_five_entries)
 
 /* ------------------------------------------------------------ publication gate ----- */
 
-/* The PROVEN clamp's one-time warning sits in effective_mapping_state(), which has callers on
- * two threads: the acquisition path reaches it through publish_snapshot() and
- * publication_allowed(), and health_work_handler() reaches it from the system workqueue. Its
- * guard was a plain function-local bool, read and written from both -- a data race.
- *
- * WHAT THIS CASE IS. The fix is an atomic one-time guard and changes no observable value, so
- * there is nothing new to assert about the result: the clamp is pinned by the cases below. What
- * this adds is the two-thread exercise the old guard never got in this suite -- the heartbeat
- * running while cycles run, with the provider reporting PROVEN, so both callers reach the guard.
- * Under the old code that was undefined behaviour; it is not a proof that the race is gone, and
- * a sanitizer build is where it would be caught. */
-ZTEST(tof_acquisition, test_the_clamp_holds_from_both_the_health_and_the_acquisition_paths)
+/* Exercise authority passthrough while acquisition and heartbeat callers run concurrently. */
+ZTEST(tof_acquisition, test_both_the_health_and_the_acquisition_paths_see_a_proven_mapping)
 {
     zassert_equal(acq::init(make_config(2)), 0);
     zassert_equal(acq::bring_up(), 0);
@@ -750,34 +740,29 @@ ZTEST(tof_acquisition, test_the_clamp_holds_from_both_the_health_and_the_acquisi
     zassert_true(rec.health_beats > beats_before,
                  "the health path has to have run for this case to exercise anything");
 
-    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready,
-                 "the clamp must still hold with both callers active");
-    zassert_false(acq::publication_allowed(),
-                  "and nothing may be published on an unproven mapping");
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::proven,
+                 "the state the authority reports did not survive both callers");
+    zassert_true(acq::publication_allowed(),
+                  "publication is refused on a mapping the authority calls PROVEN");
 }
 
-ZTEST(tof_acquisition, test_proven_is_unreachable_and_has_no_bypass_flag)
+/* Authority states pass through unchanged; only PROVEN permits publication. */
+ZTEST(tof_acquisition, test_the_authority_decides_and_only_proven_publishes)
 {
     zassert_equal(acq::init(make_config(4)), 0);
 
     provider_state = acq::mapping_state::proven;
-
-    // A chain that cannot be enumerated across both boards cannot have a proven
-    // mapping, so the firmware is not entitled to claim one.
-    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready);
-    zassert_false(acq::publication_allowed(),
-                  "no role measurement may be published on an unproven mapping");
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::proven);
+    zassert_true(acq::publication_allowed(),
+                  "a proven mapping must be publishable; is the state being rewritten again?");
 
     provider_state = acq::mapping_state::fault;
     zassert_true(acq::effective_mapping_state() == acq::mapping_state::fault);
     zassert_false(acq::publication_allowed());
 
-    // There is no build flag that lifts the clamp: a conditional safety bypass is one
-    // careless -D away from shipping, and it would not appear in a diff of the code it
-    // disables. Lifting it is an edit in its own commit against fixed hardware.
-    provider_state = acq::mapping_state::proven;
-    zassert_false(acq::publication_allowed(),
-                  "publication became possible - was a bypass reintroduced?");
+    provider_state = acq::mapping_state::not_ready;
+    zassert_true(acq::effective_mapping_state() == acq::mapping_state::not_ready);
+    zassert_false(acq::publication_allowed());
 }
 
 ZTEST(tof_acquisition, test_health_is_sent_from_startup_before_any_sensor_is_open)
@@ -2681,6 +2666,114 @@ ZTEST(tof_acquisition, test_try_stop_leaves_the_heartbeat_running)
     k_msleep(kHealthPeriodMs * 4);
     zassert_true(rec.health_beats >= before + 3,
                  "try_stop() stopped the heartbeat: %d -> %d", before, rec.health_beats);
+}
+
+/* --------------------------------------------------- the bounded facts read -------- */
+
+/* A separate thread must hold the recursive mutex to exercise contention. */
+
+/* Compare fields, not padding. Size assertions flag layout growth but cannot detect
+ * additions that fit existing padding; review the field list when these types change. */
+static_assert(sizeof(acq::source_status) == 16,
+              "source_status gained or lost a field: add it to assert_facts_match()");
+static_assert(sizeof(acq::source_facts) == 28,
+              "source_facts gained or lost a field: add it to assert_facts_match()");
+static_assert(sizeof(acq::cycle_facts) == 180,
+              "cycle_facts gained or lost a field: add it to assert_facts_match()");
+
+static void assert_facts_match(const acq::cycle_facts &expected, const acq::cycle_facts &actual)
+{
+    zassert_equal(actual.cycle_seq, expected.cycle_seq);
+    zassert_equal(actual.began_ms, expected.began_ms);
+    zassert_equal(actual.source_count, expected.source_count);
+    /* Include unused entries to catch partial copies. */
+    for (int i{0}; i < acq::kMaxSources; ++i) {
+        const acq::source_facts &e{expected.sources[i]};
+        const acq::source_facts &a{actual.sources[i]};
+
+        zassert_equal(a.kind, e.kind, "source %d kind", i);
+        zassert_equal(a.addr_7bit, e.addr_7bit, "source %d addr", i);
+        zassert_equal(a.role_id, e.role_id, "source %d role_id", i);
+        zassert_equal(a.configured, e.configured, "source %d configured", i);
+        zassert_equal(a.started, e.started, "source %d started", i);
+        zassert_equal(a.sample_produced, e.sample_produced, "source %d sample_produced", i);
+        zassert_equal(a.transport_error, e.transport_error, "source %d transport_error", i);
+        zassert_equal(a.protocol_error, e.protocol_error, "source %d protocol_error", i);
+        zassert_equal(a.unsupported, e.unsupported, "source %d unsupported", i);
+        zassert_equal(a.usage_error, e.usage_error, "source %d usage_error", i);
+        zassert_equal(a.rearm_failed, e.rearm_failed, "source %d rearm_failed", i);
+        zassert_equal(a.cleanup_pending, e.cleanup_pending, "source %d cleanup_pending", i);
+        zassert_equal(a.status.domain, e.status.domain, "source %d status domain", i);
+        zassert_equal(a.status.stage, e.status.stage, "source %d status stage", i);
+        zassert_equal(a.status.port_errno, e.status.port_errno, "source %d port_errno", i);
+        zassert_equal(a.status.uld_status, e.status.uld_status, "source %d uld_status", i);
+        zassert_equal(a.status.sample_present, e.status.sample_present, "source %d sample_present",
+                      i);
+    }
+}
+
+ZTEST(tof_acquisition, test_try_copy_facts_sees_what_copy_facts_sees)
+{
+    /* Mix a failed source and a fresh sample so omitted fields cannot hide in default values. */
+    zassert_equal(acq::init(make_config(2)), 0);
+    devs[0].open_rc = -EIO;
+    zassert_equal(acq::bring_up(), 0);
+    devs[1].fresh = true;
+    acq::run_cycle();
+
+    acq::cycle_facts blocking{};
+    acq::cycle_facts bounded{};
+
+    acq::copy_facts(blocking);
+    zassert_equal(acq::try_copy_facts(bounded, 250), 0, "a free chain has to be copied");
+    assert_facts_match(blocking, bounded);
+
+    // Confirm the snapshot contains both staged outcomes.
+    zassert_false(bounded.sources[0].started, "source 0 was supposed to fail its bring-up");
+    zassert_true(bounded.sources[0].transport_error);
+    zassert_true(bounded.sources[1].sample_produced, "source 1 was supposed to produce a sample");
+}
+
+ZTEST(tof_acquisition, test_try_copy_facts_refuses_a_held_chain_within_its_bound)
+{
+    zassert_equal(acq::init(make_config(2)), 0);
+    zassert_equal(acq::bring_up(), 0);
+
+    k_sem_reset(&holder_took_it);
+    k_sem_reset(&holder_release);
+    k_thread_create(&chain_holder, chain_holder_stack, K_THREAD_STACK_SIZEOF(chain_holder_stack),
+                    chain_holder_entry, nullptr, nullptr, nullptr, K_PRIO_PREEMPT(1), 0, K_NO_WAIT);
+    zassert_equal(k_sem_take(&holder_took_it, K_MSEC(500)), 0, "the holder never took the chain");
+
+    /* Equal byte patterns, including padding, detect any write on refusal. */
+    acq::cycle_facts out;
+    acq::cycle_facts pattern;
+
+    /* Deliberate byte initialization, rather than the type's default member initializers. */
+    memset(static_cast<void *>(&out), 0xA5, sizeof out);
+    memset(static_cast<void *>(&pattern), 0xA5, sizeof pattern);
+
+    const uint32_t began_ms{k_uptime_get_32()};
+    const int rc{acq::try_copy_facts(out, 50)};
+    const uint32_t waited_ms{k_uptime_get_32() - began_ms};
+
+    zassert_equal(rc, -EBUSY, "a held chain has to be refused, not waited for");
+    /* Allow native_sim scheduling slack while rejecting an unbounded wait. */
+    zassert_true(waited_ms < 400, "a 50 ms bound waited %u ms", waited_ms);
+    zassert_equal(memcmp(&out, &pattern, sizeof out), 0,
+                  "a refusal wrote into the caller's buffer");
+
+    k_sem_give(&holder_release);
+    zassert_equal(k_thread_join(&chain_holder, K_MSEC(500)), 0);
+
+    zassert_equal(acq::try_copy_facts(out, 250), 0, "a released chain has to be copied");
+    /* A successful read must replace the pattern. */
+    zassert_not_equal(memcmp(&out, &pattern, sizeof out), 0,
+                      "the successful read overwrote nothing");
+    acq::cycle_facts expected{};
+
+    acq::copy_facts(expected);
+    assert_facts_match(expected, out);
 }
 
 ZTEST(tof_acquisition, test_a_cycle_that_lost_the_race_to_a_quiesce_does_not_run)
