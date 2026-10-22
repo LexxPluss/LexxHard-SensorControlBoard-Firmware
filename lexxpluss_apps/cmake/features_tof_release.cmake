@@ -7,9 +7,9 @@
 # comes from, which is what confines this image to a machine with no safety lidar fitted (DS20002).
 include(${CMAKE_CURRENT_LIST_DIR}/features_dasher.cmake)
 
-# The whole ToF feature in one image: the chain, the L4 cliff path, the L7 hanging-object grid and
-# the host commissioning downlink. firmware_tof_full is the same selection without the deployment
-# permissions below, and is the comparison target for size.
+# The whole ToF feature in one image: chain, L4 cliff, L7 grid and commissioning downlink.
+# firmware_tof_full shares these four ToF flags, but lacks the release permissions and the
+# inherited Dasher flags; its size is not a like-for-like comparison.
 set(ENABLE_TOF_CHAIN 1)
 set(ENABLE_TOF_CLIFF_ULD ON)
 set(ENABLE_TOF_L7_ULD ON)
