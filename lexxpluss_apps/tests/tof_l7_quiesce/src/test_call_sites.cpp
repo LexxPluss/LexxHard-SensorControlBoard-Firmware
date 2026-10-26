@@ -173,6 +173,14 @@ constexpr const char *kClearer{"tof_l7_quiesce::forget_all("};
  * demonstrated. Naming what is allowed catches every substitution rather than one. */
 constexpr const char *kApprovedClock{"k_ticks_to_us_floor64(k_uptime_ticks())"};
 
+/* The scoped declaration that keeps a 5.43 s quiesce from being a reset, and the L7 progress
+ * bracket it has to wrap. Spelled as the declarations rather than the type names, so the struct
+ * definition itself is not counted as a use. */
+constexpr const char *kDeclaredLongOperation{"declared_long_operation declared"};
+constexpr const char *kWatchedBracket{"watched_uld_operation watched"};
+constexpr const char *kFeederBegin{"tof_watchdog_feeder::long_operation_begin("};
+constexpr const char *kFeederEnd{"tof_watchdog_feeder::long_operation_end("};
+
 constexpr const char *kStepWriter{"tof_l7_steps::remember("};
 constexpr const char *kStepClearer{"tof_l7_steps::forget_all("};
 /* HOW THE APPLICATION CLEARS, and the whole expression, not just the call. The argument is the
@@ -263,6 +271,52 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_application_source_clears_the_record_or
     zassert_true(seen > 1U, "the generated source list had %zu entries, so this case checked "
                             "nothing -- the list is what makes it a statement about the tree",
                  seen);
+}
+
+/* ONLY THE QUIESCE MAY DECLARE A LONG OPERATION, AND THE DECLARATION MUST WRAP THE BRACKET.
+ *
+ * The watchdog cases for this live in tests/tof_task_watchdog, but they set `long_operation`
+ * themselves: delete the declaration from the adapter and every one of them still passes. This is
+ * the half that reads the adapter, so removing it fails here.
+ *
+ * WRAPPING MATTERS AND IS CHECKED BY POSITION. The declaration is constructed first, so it is
+ * destroyed last: the L7 timing ends before the declaration is withdrawn, and the sample that
+ * follows the operation is still covered. Constructed the other way round, the declaration would
+ * be gone while the bracket's clock was still the one being judged.
+ *
+ * NOT THE WHOLE CLAIM. The declaration suspends the in-flight bound over whatever it spans, and
+ * the probe, the firmware download and the start have no other guard -- so a declaration that
+ * covered them would relax the one bound that watches three operations with no reason to be slow.
+ */
+ZTEST(tof_l7_quiesce_call_sites, test_only_the_quiesce_declares_a_long_operation_and_it_wraps_the_bracket)
+{
+    read_and_strip(DEVICE_SOURCE);
+
+    /* The feeder's declaration API is reached from the scoped type and from nowhere else, so a
+     * hand-rolled begin/end that forgets a return path cannot appear. */
+    zassert_equal(count_of(stripped_, kFeederBegin), 1U,
+                  "the adapter must call %s exactly once -- from the scoped type's constructor",
+                  kFeederBegin);
+    zassert_equal(count_of(stripped_, kFeederEnd), 1U,
+                  "the adapter must call %s exactly once -- from the scoped type's destructor",
+                  kFeederEnd);
+
+    copy_quiesce_body();
+    zassert_equal(count_of(body_, kDeclaredLongOperation), 1U,
+                  "hook_quiesce() declares the long operation exactly once; without it a 5.43 s "
+                  "stop handshake trips the 5,000 ms in-flight bound and the board resets");
+
+    const char *const declared{strstr(body_, kDeclaredLongOperation)};
+    const char *const watched{strstr(body_, kWatchedBracket)};
+    zassert_not_null(watched, "hook_quiesce() no longer brackets its ULD call as L7 progress");
+    zassert_true(declared < watched,
+                 "the declaration must be constructed BEFORE the L7 bracket, so that it is "
+                 "destroyed after it");
+
+    /* And no other hook declares one. Each of these is judged at l7_ms on purpose. */
+    zassert_equal(count_of(stripped_, kDeclaredLongOperation), 1U,
+                  "only hook_quiesce() may declare a long operation: the probe, the download and "
+                  "the start are the operations l7_ms exists to bound");
 }
 
 ZTEST(tof_l7_quiesce_call_sites, test_the_quiesce_is_timed_from_the_approved_sixty_four_bit_source)

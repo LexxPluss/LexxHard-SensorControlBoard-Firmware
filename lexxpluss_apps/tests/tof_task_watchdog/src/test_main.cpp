@@ -137,6 +137,185 @@ ZTEST(tof_task_watchdog, test_a_first_l7_open_that_never_returns_stops_the_feed)
                   "an operation that never had a chance to complete is stuck, not silent");
 }
 
+/* THE PACKAGE QUIESCE, WHICH IS THE ONE ULD CALL MEASURED LONGER THAN bounds::l7_ms.
+ *
+ * vl53l7cx_stop_ranging() polls 500 times at 10 ms for the MCU stop, and a device that never
+ * answers spends all of it; the whole poll sits inside ONE bracketed L7 operation, measured at
+ * 5.43 s on 2026-10-12. The in-flight bound is 5,000 ms, so before tof_package_device declared
+ * that hook the default configuration -- quiesce_first = true -- reset the board on a device that
+ * could not answer its stop.
+ *
+ * BOTH PHASES, because they are different code paths and the one that matters here is the one a
+ * package image actually lives in. A package-only image carries no chain, so no baseline is ever
+ * taken and the feeder stays in phase::waiting for the whole boot; the armed cases cover a build
+ * where something else did reach the baseline. The waiting path judges the L7 in flight and
+ * nothing else, so a declaration is the only thing standing between a slow quiesce and a reset.
+ *
+ * These cases pin the window the declaration opens and, as importantly, where it closes. What
+ * they do NOT pin is that production declares at all -- they set the flag themselves. The gate in
+ * tests/tof_l7_quiesce reads the adapter and is what fails if the declaration is removed.
+ */
+ZTEST(tof_task_watchdog, test_a_declared_quiesce_outlasts_the_l7_bound_without_resetting)
+{
+    harness h{};
+    h.arm();
+
+    /* The quiesce goes in and stays in, declared for as long as it runs. */
+    h.in.l7.begun = h.in.l7.ended + 1;
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+
+    /* 5.43 s, the measured figure, in samples the feeder would really take. */
+    for (int i{0}; i < 11; ++i)
+        zassert_true(h.tick(500, advance{.l7 = false}),
+                     "a declared quiesce must survive its own measured duration");
+    zassert_true(h.tick(430, advance{.l7 = false}));
+    zassert_equal(h.st.current, wd::phase::armed);
+    zassert_equal(h.st.why, 0U, "nothing was wrong: the operation was declared and still running");
+}
+
+ZTEST(tof_task_watchdog, test_a_declared_quiesce_that_wedges_is_still_bounded)
+{
+    harness h{};
+    h.arm();
+
+    h.in.l7.begun = h.in.l7.ended + 1;
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+
+    /* The declaration buys 30 s, not forever. A quiesce that never returns is still a reset. */
+    zassert_true(h.run_until_stopped(80, 1000, advance{.l7 = false}),
+                 "a declaration is a window, not an exemption");
+    zassert_true((h.st.why & wd::long_operation_over) != 0U,
+                 "the cap on the declaration is what must fire, not the l7 bound it suspends");
+}
+
+ZTEST(tof_task_watchdog, test_the_l7_bound_returns_as_soon_as_the_quiesce_is_done)
+{
+    harness h{};
+    h.arm();
+
+    /* A long quiesce, declared, completes. */
+    h.in.l7.begun = h.in.l7.ended + 1;
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+    for (int i{0}; i < 11; ++i)
+        zassert_true(h.tick(500, advance{.l7 = false}));
+    ++h.in.l7.ended;
+    h.in.long_operation = false;   /* what the scoped declaration does on the way out */
+    zassert_true(h.tick(1, advance{.l7 = false}));
+
+    /* The NEXT open is ordinary work again and gets the ordinary five seconds, not thirty. */
+    h.in.l7.begun = h.in.l7.ended + 1;
+    zassert_true(h.run_until_stopped(20, 1000, advance{.l7 = false}),
+                 "an undeclared open must be judged at l7_ms once the declaration has ended");
+    zassert_true((h.st.why & wd::stuck_l7) != 0U);
+    zassert_equal(h.st.why & wd::long_operation_over, 0U,
+                  "no declaration was in force, so its cap cannot be the reason");
+}
+
+ZTEST(tof_task_watchdog, test_a_takeover_after_a_failed_quiesce_inherits_no_declaration)
+{
+    harness h{};
+    h.arm();
+
+    /* The quiesce fails and returns -- the hook's scope ends the declaration on that path too --
+     * and the policy moves on to a takeover, whose ULD calls are ordinary operations. */
+    h.in.l7.begun = h.in.l7.ended + 1;
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+    for (int i{0}; i < 11; ++i)
+        zassert_true(h.tick(500, advance{.l7 = false}));
+    ++h.in.l7.ended;
+    h.in.long_operation = false;
+    zassert_true(h.tick(1, advance{.l7 = false}));
+
+    /* The takeover's first operation hangs. Five seconds, because nothing declared it. */
+    h.in.l7.begun = h.in.l7.ended + 1;
+    uint32_t elapsed{0};
+    bool stopped{false};
+    for (int i{0}; i < 20 && !stopped; ++i) {
+        stopped = !h.tick(1000, advance{.l7 = false});
+        elapsed += 1000;
+    }
+    zassert_true(stopped);
+    zassert_true((h.st.why & wd::stuck_l7) != 0U);
+    zassert_true(elapsed < 10000U,
+                 "a takeover that inherited the 30 s window would have run far longer than this");
+}
+
+/* ---- the same three statements in the phase a package-only image really runs in ---- */
+
+/* The claim sequence as the lifecycle really runs it, with no baseline: no chain, so
+ * `baseline_point` never goes true and the feeder stays in `waiting` for the whole boot.
+ *
+ * THE PROBE COMES FIRST AND COMPLETES. tof_package_l7::claim() calls probe() and quiesces only a
+ * device that answered it (`present`), so the quiesce is never the first L7 operation of a boot --
+ * the probe is, and hook_probe is bracketed too. Modelling the quiesce as the first operation
+ * would open the monitor on the call under test, which is not where the monitor opens on a real
+ * board, and would leave the clocks the quiesce is judged against untested against a predecessor
+ * that already moved them. */
+void waiting_with_the_quiesce_in_flight(harness &h)
+{
+    h.in.l7_expected = true;
+    h.in.baseline_point = false;
+
+    /* The probe: one bracketed operation that begins and ends. It is what opens the monitor. */
+    h.in.l7 = {1, 1};
+    zassert_true(h.tick(1, advance{.l7 = false}));
+    zassert_equal(h.st.current, wd::phase::waiting,
+                  "a package-only image never reaches the baseline; the waiting path is the one "
+                  "that has to get this right");
+    zassert_true(h.st.l7_watching, "the monitor opens at the first operation, which is the probe");
+
+    /* Only then the quiesce, declared, on a device that answered. */
+    h.in.l7.begun = h.in.l7.ended + 1;
+    h.in.long_operation = true;
+    h.in.long_operation_began_ms = h.in.now_ms;
+    zassert_true(h.tick(1, advance{.l7 = false}));
+}
+
+ZTEST(tof_task_watchdog, test_a_declared_quiesce_before_any_baseline_outlasts_the_l7_bound)
+{
+    harness h{};
+    waiting_with_the_quiesce_in_flight(h);
+
+    for (int i{0}; i < 11; ++i)
+        zassert_true(h.tick(500, advance{.l7 = false}));
+    zassert_true(h.tick(430, advance{.l7 = false}));
+    zassert_equal(h.st.current, wd::phase::waiting);
+    zassert_equal(h.st.why, 0U);
+}
+
+ZTEST(tof_task_watchdog, test_a_declared_quiesce_that_wedges_before_any_baseline_is_still_bounded)
+{
+    harness h{};
+    waiting_with_the_quiesce_in_flight(h);
+
+    zassert_true(h.run_until_stopped(80, 1000, advance{.l7 = false}));
+    zassert_true((h.st.why & wd::long_operation_over) != 0U,
+                 "the waiting path judges a declaration that never ends; that is its one cap");
+}
+
+ZTEST(tof_task_watchdog, test_the_l7_bound_returns_before_any_baseline_too)
+{
+    harness h{};
+    waiting_with_the_quiesce_in_flight(h);
+
+    for (int i{0}; i < 11; ++i)
+        zassert_true(h.tick(500, advance{.l7 = false}));
+    h.in.l7.ended = h.in.l7.begun;
+    h.in.long_operation = false;
+    zassert_true(h.tick(1, advance{.l7 = false}));
+
+    /* Still no baseline. The next operation is judged at l7_ms all the same: the waiting path's
+     * whole purpose is that an L7 operation is bounded before anything periodic exists. */
+    h.in.l7.begun = h.in.l7.ended + 1;
+    zassert_true(h.run_until_stopped(20, 1000, advance{.l7 = false}));
+    zassert_true((h.st.why & wd::stuck_l7) != 0U);
+    zassert_equal(h.st.why & wd::long_operation_over, 0U);
+}
+
 /* ONE CAN SENDER WEDGES WHILE THE OTHER RUNS. With a single summed counter the live heartbeat
  * refreshes the wedged sender's timestamp forever and this is invisible. The diagnostic images
  * split the two slots for exactly this reason. */

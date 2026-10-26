@@ -49,6 +49,7 @@ extern "C" {
 #include "tof_l7_quiesce.hpp"
 #include "tof_l7_runtime.hpp"
 #include "tof_l7_step_record.hpp"
+#include "tof_watchdog_feeder.hpp"
 
 namespace lexxhard::tof_package_device {
 namespace {
@@ -122,6 +123,41 @@ struct watched_uld_operation {
     ~watched_uld_operation() { runtime_progress::end(runtime_progress::activity::l7); }
     watched_uld_operation(const watched_uld_operation &) = delete;
     watched_uld_operation &operator=(const watched_uld_operation &) = delete;
+};
+
+/* THE ONE ULD CALL THAT OUTLASTS bounds::l7_ms, declared so that outlasting it is not a reset.
+ *
+ * vl53l7cx_stop_ranging() polls for the MCU stop 500 times with a 10 ms wait -- ST's own comment
+ * calls it five seconds -- and a device that never answers spends all of it. The whole poll is
+ * inside ONE watched_uld_operation, so the watchdog sees a single L7 operation in flight for the
+ * 5.43 s this geometry measured on 2026-10-12 (tof_package_auto.hpp, `quiesce_first`) against an
+ * in-flight bound of 5,000 ms. Without a declaration that is stuck_l7, the feeder latches
+ * phase::stopped, and the reset that follows is the default configuration working as designed.
+ *
+ * SCOPED TO THIS HOOK, NOT TO THE CLAIM. Wrapping the whole claim would relax the same 5 s bound
+ * over the probe, the firmware download and the start -- three operations whose in-flight bound is
+ * the only thing watching them, and none of which has a reason to exceed it. The alternatives were
+ * weighed and rejected for the same shape of reason: raising l7_ms globally moves the bound for
+ * every image, and defaulting quiesce_first to false is what this file's own header forbids.
+ *
+ * STILL BOUNDED, AND WIDER THAN THE L7 ALONE. kLongOperationSuspends is
+ * stuck_cycle | silent_cycle | stuck_l7 | silent_l7, so the declaration also stops the acquisition
+ * cycle being judged for as long as it is held -- harmless in a package image, which runs no
+ * chain cycle, and a reason not to hold it any longer than this one call. The declaration carries
+ * bounds::long_operation_ms -- 30 s -- so a quiesce that wedges forever is still a reset, just not
+ * at five seconds.
+ *
+ * THE DECLARATION IS A FLAG, NOT A COUNT, so a nested declaration would be cleared by the inner
+ * scope. No build target combines this file with the commissioning path that also declares: the
+ * two package targets in the Makefile set neither ENABLE_TOF_CHAIN nor ENABLE_TOF_AUTO_COMMISSION,
+ * and features_tof_release.cmake sets no package flag. CMake does not FORBID the combination,
+ * though, so a custom build that enabled both would need a counted declaration rather than this.
+ */
+struct declared_long_operation {
+    declared_long_operation() { tof_watchdog_feeder::long_operation_begin(); }
+    ~declared_long_operation() { tof_watchdog_feeder::long_operation_end(); }
+    declared_long_operation(const declared_long_operation &) = delete;
+    declared_long_operation &operator=(const declared_long_operation &) = delete;
 };
 
 /* ---- hooks: thin, and each one maps to exactly one layer below ---- */
@@ -208,6 +244,9 @@ tof_l7_quiesce::go2_observation observed_go2(const struct vl53l7cx_go2_observati
 
 int hook_quiesce(void *, uint8_t addr_7bit)
 {
+    /* Declared before the bracket and released after it, so the declaration covers the whole time
+     * the operation is in flight and the sample that follows it. */
+    const declared_long_operation declared{};
     const watched_uld_operation watched{};
     /* Stops a device that answered before this run began, using calls that need only an address.
      * Deliberately NOT tof_l7::stop(), which requires a lifecycle this sensor object does not have
