@@ -29,6 +29,13 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
 
+# Slot geometry, used by the asset check in dfu_test_image. The signed ceiling is the slot minus
+# the 432 B MCUboot trailer; image_ok sits 24 B from the slot end, 01 confirmed and ff unconfirmed,
+# and that one byte is the whole difference between the Update and DFU-Test assets.
+SLOT_SIZE := 262144
+SIGNED_IMAGE_CEILING := 261712
+IMAGE_OK_OFFSET_FROM_END := 24
+
 .PHONY: all
 all: bootloader firmware
 
@@ -497,6 +504,62 @@ firmware_tof_full:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-full -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
+# THE ToF RELEASE IMAGE HAS NO BUILD TARGET OF ITS OWN. It is the ordinary release entry with a
+# feature file:
+#
+#   make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_tof_release.cmake
+#
+# lexxpluss_apps/cmake/features_tof_release.cmake carries the flags, overlays and Kconfig fragments
+# that firmware_tof_full passes on the command line above, plus tof_release.overlay, which is the
+# only one that grants commissioning permission. The outputs are therefore the ordinary
+# out/zephyr.signed.bin, out/zephyr.signed.confirmed.bin and out/firmware.bin.
+#
+# A TAG DOES NOT BUILD IT. .github/workflows/release.yml is untouched here, so a release publishes
+# the standard assets only and this image is built by hand when it is needed. Wiring it into the
+# tag build would mean deciding whether the existing Initial/Update assets should be built from
+# this feature file, which is a release-policy question, not a build one.
+#
+# BECAUSE build/ IS SHARED, run `make clean` before building this and before building anything
+# after it: a stale CMake cache would otherwise carry this feature selection into the next image,
+# or a previous selection into this one. The out/ names collide with the standard image as well, so
+# move what is already there before building.
+
+# CAN DFU requests a slot swap only while the trailer's image_ok is still unwritten, so the
+# test-boot asset is the confirmed image with that one byte reset to 0xff. Derived rather than
+# built, which is what makes it provably the same image as the Update asset.
+#
+# A TEST BOOT IS NOT ROLLBACK: the application self-confirms before the subsystem threads start, so
+# an image that boots far enough to do that will not revert on a later runtime failure.
+#
+# The check that follows is on the ASSETS, not on the build: imgtool already signed the image and
+# refused a slot overflow. What it catches is a padded pair that is no longer a pair -- a wrong
+# offset, an unpadded confirmed image, or a dd that landed in the wrong place -- which would ship an
+# asset that either never requests a swap or never reverts, and both look like a working update.
+.PHONY: dfu_test_image
+dfu_test_image:
+	cp out/zephyr.signed.confirmed.bin out/zephyr.test.bin
+	printf '\377' | dd of=out/zephyr.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr.test.bin) - $(IMAGE_OK_OFFSET_FROM_END))) conv=notrunc status=none
+	@set -e; \
+	signed=$$(stat -c%s out/zephyr.signed.bin); \
+	confirmed=$$(stat -c%s out/zephyr.signed.confirmed.bin); \
+	tested=$$(stat -c%s out/zephyr.test.bin); \
+	if [ $$signed -gt $(SIGNED_IMAGE_CEILING) ]; then \
+	    echo "signed image is $$signed B, over the $(SIGNED_IMAGE_CEILING) B ceiling" >&2; exit 1; \
+	fi; \
+	if [ $$confirmed -ne $(SLOT_SIZE) ] || [ $$tested -ne $(SLOT_SIZE) ]; then \
+	    echo "padded images are $$confirmed B and $$tested B, expected $(SLOT_SIZE) B each" >&2; exit 1; \
+	fi; \
+	ok_confirmed=$$(od -An -tx1 -j $$(($$confirmed - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr.signed.confirmed.bin | tr -d ' '); \
+	ok_tested=$$(od -An -tx1 -j $$(($$tested - $(IMAGE_OK_OFFSET_FROM_END))) -N1 out/zephyr.test.bin | tr -d ' '); \
+	if [ "$$ok_confirmed" != "01" ] || [ "$$ok_tested" != "ff" ]; then \
+	    echo "image_ok is $$ok_confirmed (confirmed) and $$ok_tested (test), expected 01 and ff" >&2; exit 1; \
+	fi; \
+	differing=$$(cmp -l out/zephyr.signed.confirmed.bin out/zephyr.test.bin | wc -l); \
+	if [ $$differing -ne 1 ]; then \
+	    echo "test image differs from the confirmed image in $$differing bytes, expected 1" >&2; exit 1; \
+	fi; \
+	echo "assets: signed $$signed B of $(SIGNED_IMAGE_CEILING) B, padded $(SLOT_SIZE) B, image_ok 01/ff, one differing byte"
 
 # The cliff image plus the commissioning downlink compiled in: the runtime, the bus binding and the
 # hardware entropy the session token needs, with the RNG overlay and Kconfig fragment that are the
