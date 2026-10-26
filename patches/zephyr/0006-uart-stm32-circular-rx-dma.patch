@@ -1,0 +1,244 @@
+Subject: [PATCH] drivers: serial: stm32: backport of the circular RX DMA mode
+
+Baseline: zephyr v3.6.0 (468eb56cf242eedba62006ee758700ee6148763f)
+Applies to: drivers/serial/uart_stm32.c (async API) and
+include/zephyr/drivers/dma/dma_stm32.h.
+
+Backported from upstream Zephyr, which is the specification here (all
+after v3.6.0; the mode is in v4.1.0 and later):
+
+  6292997b03  include: zephyr: drivers: dma: add support for circular DMA
+              (STM32_DMA_CONFIG_CYCLIC)
+  450e63ea7a  drivers: serial: add circular mode in uart driver
+  0468c5fb42  drivers: serial: stm32: don't disable DMA in circular mode
+  ed7dd4f011  drivers: serial: stm32: split cyclic RX wrap into two contiguous events
+  da79ce7c80  drivers: serial: stm32: fix C23 extension usage in uart_stm32_dma_rx_flush
+  b593ed2abf  drivers: serial: stm32: simplify rx dma flushing, fix double emit on wrap
+
+The first five apply to v3.6.0 in this order without changes. b593ed2abf
+does not apply as a whole; its hunks were applied one by one: the rewritten
+uart_stm32_dma_rx_flush() (now identical to upstream main), its four call
+sites, and the check that a cyclic RX buffer holds at least two bytes. Left
+out: the hunk that belongs to the hardware RX timeout branch of the ISR,
+which v3.6.0 does not have.
+
+What it does: the cyclic bit (5) of the channel-config cell of the "rx" entry
+in the devicetree dmas property (STM32_DMA_MODE_CYCLIC) selects a circular RX
+DMA. The DMA never stops, there is no buffer swap, and UART_RX_RDY is raised
+at the IDLE interrupt and at the half and full transfer; a wrap of the buffer
+is reported as two contiguous events. Without the bit the driver behaves as
+before.
+
+What it does not do: upstream's check that the buffers lie in non-cacheable
+memory, the hardware RX timeout, and the other power-management and wake-up
+changes. The caller places the buffers.
+
+---
+--- a/drivers/serial/uart_stm32.c
++++ b/drivers/serial/uart_stm32.c
+@@ -1102,11 +1102,16 @@
+ 		.data.rx.offset = data->dma_rx.offset
+ 	};
+ 
+-	/* update the current pos for new data */
+-	data->dma_rx.offset = data->dma_rx.counter;
+-
+-	/* send event only for new data */
+-	if (event.data.rx.len > 0) {
++	/* When cyclic DMA is used, buffer positions are not updated - call callback every time*/
++	if (data->dma_rx.dma_cfg.cyclic == 0) {
++		/* update the current pos for new data */
++		data->dma_rx.offset = data->dma_rx.counter;
++
++		/* send event only for new data */
++		if (event.data.rx.len > 0) {
++			async_user_callback(data, &event);
++		}
++	} else {
+ 		async_user_callback(data, &event);
+ 	}
+ }
+@@ -1189,21 +1194,48 @@
+ 	}
+ }
+ 
++/* Report everything the DMA has written since the previous flush.
++ *
++ * The write position is read from the DMA on every call, so it does not matter
++ * what woke us up - a half-transfer, a transfer completion or an RX timeout -
++ * nor how late that wakeup is. A stale wakeup simply reports no new data.
++ */
+ static void uart_stm32_dma_rx_flush(const struct device *dev)
+ {
++	struct uart_stm32_data *data = dev->data;
+ 	struct dma_status stat;
+-	struct uart_stm32_data *data = dev->data;
+-
+-	if (dma_get_status(data->dma_rx.dma_dev,
+-				data->dma_rx.dma_channel, &stat) == 0) {
+-		size_t rx_rcv_len = data->dma_rx.buffer_length -
+-					stat.pending_length;
+-		if (rx_rcv_len > data->dma_rx.offset) {
+-			data->dma_rx.counter = rx_rcv_len;
+-
++	size_t rx_pos;
++	int ret;
++
++	ret = dma_get_status(data->dma_rx.dma_dev, data->dma_rx.dma_channel, &stat);
++	if (ret != 0) {
++		LOG_ERR("Failed to read RX DMA status: %d", ret);
++		return;
++	}
++
++	rx_pos = data->dma_rx.buffer_length - stat.pending_length;
++
++	/* The DMA wrapped around since the previous flush: report the tail
++	 * [offset..end) of the finished lap before the head [0..rx_pos). There is
++	 * no tail at all if the previous flush already ended at the end of the
++	 * buffer, and reporting one anyway would be a zero-length event.
++	 */
++	if (rx_pos < data->dma_rx.offset) {
++		if (data->dma_rx.offset < data->dma_rx.buffer_length) {
++			data->dma_rx.counter = data->dma_rx.buffer_length;
+ 			async_evt_rx_rdy(data);
+ 		}
+-	}
++
++		data->dma_rx.offset = 0;
++	}
++
++	data->dma_rx.counter = rx_pos;
++
++	if (data->dma_rx.counter > data->dma_rx.offset) {
++		async_evt_rx_rdy(data);
++	}
++
++	data->dma_rx.offset = rx_pos;
+ }
+ 
+ #endif /* CONFIG_UART_ASYNC_API */
+@@ -1473,27 +1505,32 @@
+ 
+ 	(void)k_work_cancel_delayable(&data->dma_rx.timeout_work);
+ 
+-	/* true since this functions occurs when buffer if full */
+-	data->dma_rx.counter = data->dma_rx.buffer_length;
+-
+-	async_evt_rx_rdy(data);
+-
+-	if (data->rx_next_buffer != NULL) {
+-		async_evt_rx_buf_release(data);
+-
+-		/* replace the buffer when the current
+-		 * is full and not the same as the next
+-		 * one.
+-		 */
+-		uart_stm32_dma_replace_buffer(uart_dev);
++	/* If we are in NORMAL MODE */
++	if (data->dma_rx.dma_cfg.cyclic == 0) {
++
++		/* true since this functions occurs when buffer is full */
++		data->dma_rx.counter = data->dma_rx.buffer_length;
++		async_evt_rx_rdy(data);
++		if (data->rx_next_buffer != NULL) {
++			async_evt_rx_buf_release(data);
++
++			/* replace the buffer when the current
++			 * is full and not the same as the next
++			 * one.
++			 */
++			uart_stm32_dma_replace_buffer(uart_dev);
++		} else {
++			/* Buffer full without valid next buffer,
++			 * an UART_RX_DISABLED event must be generated,
++			 * but uart_stm32_async_rx_disable() cannot be
++			 * called in ISR context. So force the RX timeout
++			 * to minimum value and let the RX timeout to do the job.
++			 */
++			k_work_reschedule(&data->dma_rx.timeout_work, K_TICKS(1));
++		}
+ 	} else {
+-		/* Buffer full without valid next buffer,
+-		 * an UART_RX_DISABLED event must be generated,
+-		 * but uart_stm32_async_rx_disable() cannot be
+-		 * called in ISR context. So force the RX timeout
+-		 * to minimum value and let the RX timeout to do the job.
+-		 */
+-		k_work_reschedule(&data->dma_rx.timeout_work, K_TICKS(1));
++		/* CIRCULAR MODE */
++		uart_stm32_dma_rx_flush(data->uart_dev);
+ 	}
+ }
+ 
+@@ -1570,6 +1607,15 @@
+ 	if (data->dma_rx.enabled) {
+ 		LOG_WRN("RX was already enabled");
+ 		return -EBUSY;
++	}
++
++	/* A cyclic DMA is tracked by where its write position has got to, which
++	 * cannot tell a full lap apart from no progress at all. One byte leaves no
++	 * room between those two, so the position never reports anything.
++	 */
++	if (data->dma_rx.dma_cfg.cyclic && buf_size < 2) {
++		LOG_ERR("Rx buffer must hold at least 2 bytes in cyclic DMA mode");
++		return -EINVAL;
+ 	}
+ 
+ 	data->dma_rx.offset = 0;
+@@ -1659,7 +1705,9 @@
+ 
+ 	LOG_DBG("rx timeout");
+ 
+-	if (data->dma_rx.counter == data->dma_rx.buffer_length) {
++	/* When cyclic DMA is used, do not disable the RX on timeout */
++	if (data->dma_rx.dma_cfg.cyclic == 0 &&
++	    data->dma_rx.counter == data->dma_rx.buffer_length) {
+ 		uart_stm32_async_rx_disable(dev);
+ 	} else {
+ 		uart_stm32_dma_rx_flush(dev);
+@@ -1749,9 +1797,10 @@
+ 		data->dma_rx.blk_cfg.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+ 	}
+ 
+-	/* RX disable circular buffer */
+-	data->dma_rx.blk_cfg.source_reload_en  = 0;
+-	data->dma_rx.blk_cfg.dest_reload_en = 0;
++	/* Enable/disable RX circular buffer */
++	data->dma_rx.blk_cfg.source_reload_en = data->dma_rx.dma_cfg.cyclic;
++	data->dma_rx.blk_cfg.dest_reload_en = data->dma_rx.dma_cfg.cyclic;
++
+ 	data->dma_rx.blk_cfg.fifo_mode_control = data->dma_rx.fifo_threshold;
+ 
+ 	data->dma_rx.dma_cfg.head_block = &data->dma_rx.blk_cfg;
+@@ -1787,6 +1836,10 @@
+ 	} else {
+ 		data->dma_tx.blk_cfg.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+ 	}
++
++	/* Enable/disable TX circular buffer */
++	data->dma_tx.blk_cfg.source_reload_en = data->dma_tx.dma_cfg.cyclic;
++	data->dma_tx.blk_cfg.dest_reload_en = data->dma_tx.dma_cfg.cyclic;
+ 
+ 	data->dma_tx.blk_cfg.fifo_mode_control = data->dma_tx.fifo_threshold;
+ 
+@@ -2144,6 +2197,8 @@
+ 		.dma_slot = STM32_DMA_SLOT(index, dir, slot),\
+ 		.channel_direction = STM32_DMA_CONFIG_DIRECTION(	\
+ 					STM32_DMA_CHANNEL_CONFIG(index, dir)),\
++		.cyclic =  STM32_DMA_CONFIG_CYCLIC(			\
++				STM32_DMA_CHANNEL_CONFIG(index, dir)),  \
+ 		.channel_priority = STM32_DMA_CONFIG_PRIORITY(		\
+ 				STM32_DMA_CHANNEL_CONFIG(index, dir)),	\
+ 		.source_data_size = STM32_DMA_CONFIG_##src_dev##_DATA_SIZE(\
+--- a/include/zephyr/drivers/dma/dma_stm32.h
++++ b/include/zephyr/drivers/dma/dma_stm32.h
+@@ -56,6 +56,8 @@
+ 		DT_INST_DMAS_CELL_BY_IDX(id, idx, channel_config)
+ 
+ /* macros for channel-config */
++/* enable circular buffer */
++#define STM32_DMA_CONFIG_CYCLIC(config)                 ((config >> 5) & 0x1)
+ /* direction defined on bits 6-7 */
+ /* 0 -> MEM_TO_MEM, 1 -> MEM_TO_PERIPH, 2 -> PERIPH_TO_MEM */
+ #define STM32_DMA_CONFIG_DIRECTION(config)		((config >> 6) & 0x3)

@@ -30,6 +30,18 @@ if(FEATURES_FILE)
     include(${FEATURES_FILE})
 endif()
 
+# PGV is part of every image unless the features file says the robot has none.
+# This is the one option that defaults to on.
+if(NOT DEFINED ENABLE_PGV)
+    set(ENABLE_PGV 1)
+endif()
+
+# LCS and PGV cannot coexist: both need the same RS485 port and enable pins.
+if(ENABLE_LCS AND ENABLE_PGV)
+    message(FATAL_ERROR
+        "ENABLE_LCS and ENABLE_PGV both claim uart4 and the pgv_en/pgv_en_n pins: set ENABLE_PGV to 0")
+endif()
+
 # The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
 # nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
 # find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
@@ -92,11 +104,27 @@ if(ENABLE_TOF_PACKAGE_AUTO AND TOF_PACKAGE_AUTO_DEADMAN)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_auto_deadman.conf)
 endif()
 
+# The LCS host owns uart4 with DMA and the async UART API: see overlays/lcs_uart4_dma.overlay and
+# overlays/lcs.conf. Kconfig and the devicetree are fixed by find_package(Zephyr) below, so both
+# are added here, and only for LCS builds.
+if(ENABLE_LCS)
+    list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/lcs_uart4_dma.overlay)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/lcs.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
 FILE(GLOB app_sources src/*.cpp)
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
+# The glob would otherwise compile it and register the pgv shell command.
+if(NOT ENABLE_PGV)
+    list(FILTER app_sources EXCLUDE REGEX "/pgv_controller\\.cpp$")
+endif()
+# The glob would otherwise compile it in every image, and it needs the async UART API of the LCS build.
+if(NOT ENABLE_LCS)
+    list(FILTER app_sources EXCLUDE REGEX "/lcs_controller\\.cpp$")
+endif()
 target_sources(app PRIVATE ${app_sources} ${ros_sources})
 
 # LOAD-BEARING, NOT TIDY, AND -Werror=switch-enum ALONE DID NOT DO IT.
@@ -175,6 +203,15 @@ endif()
 
 if(ENABLE_PUSH_MODE)
     add_definitions(-DENABLE_PUSH_MODE)
+endif()
+
+if(ENABLE_PGV)
+    add_definitions(-DENABLE_PGV)
+endif()
+
+# The LCS host owns uart4 with DMA and the async UART API.
+if(ENABLE_LCS)
+    add_definitions(-DENABLE_LCS)
 endif()
 
 # ToF chain enumeration glue (AMRSW-2322 Phase 2). Owns i2c2: the tug
