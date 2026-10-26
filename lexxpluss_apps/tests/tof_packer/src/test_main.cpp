@@ -85,6 +85,7 @@ ZTEST(tof_grid_packer, test_can_id_assignment)
         0x208, 0x209, 0x20a, 0x20b,                                            // actuator
         0x20c, 0x20d, 0x20e, 0x20f,                                            // board, DFU
         0x210, 0x211, 0x212, 0x213,                                            // tug encoder, GPIO, actuator service
+        0x220, 0x221, 0x222, 0x223,                                            // LCS load cell data ID0, ID1, reserved
     };
     for (auto const existing : kExisting)
         for (auto const assigned : kAssigned)
