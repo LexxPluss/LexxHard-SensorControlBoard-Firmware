@@ -25,7 +25,8 @@
 
 #pragma once
 
-// CAN identifiers for the ToF grid transport (AMRSW-2322).
+// CAN identifiers for the ToF transports: the grid (AMRSW-2322) and the
+// package stream (AMRSW-3681).
 //
 // Self-assigned integration allocation, authorized by the team (2026-08-06)
 // and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
@@ -42,6 +43,26 @@ namespace lexxhard::tof_can_ids {
 
 inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
 inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
+
+// Package ToF (AMRSW-3681), authorized by the CAN identifier owner on
+// 2026-10-26. These two were the experimental candidates every earlier comment
+// in this subsystem called unregistered; they are the allocation now, and this
+// header is where that is recorded. The block argument is the same one 0x214
+// rests on, continued: 0x216/0x217 are the cliff pair and 0x218/0x219 its
+// commissioning channel, all four owned by the generated cliff contract, so
+// 0x21A is the first free value above a contiguously occupied block and both
+// values still arbitrate below every control and safety identifier.
+//
+// WHY THIS IS THE ONLY PLACE EITHER NUMBER IS WRITTEN IN THIS REPOSITORY. The
+// transport takes its identifiers as configuration and refuses a zero, so for
+// as long as they were unregistered the build flags carried them and no header
+// could hold a default without becoming the allocation by being the only
+// number anybody could find. Registration inverts that: a literal in a build
+// target is now a duplicate of this declaration, free to drift from it while
+// both keep compiling -- which is exactly why the cliff values are not copied
+// here either.
+inline constexpr uint16_t PACKAGE_TOF_DATA_ID{0x21A};
+inline constexpr uint16_t PACKAGE_TOF_HEALTH_ID{0x21B};
 
 // The cliff/drop-sense frames at 0x216 (measurement) and 0x217 (health) are
 // deliberately NOT declared here. They are owned by the generated cliff wire

@@ -54,19 +54,29 @@ ZTEST(tof_grid_packer, test_contract_sha_pin)
 ZTEST(tof_grid_packer, test_can_id_assignment)
 {
     namespace ids = lexxhard::tof_can_ids;
-    // Every identifier the two ToF transports actually put on the bus. The
-    // cliff pair is read from the generated contract rather than copied here,
-    // so this check cannot pass against a stale duplicate of those values.
+    // Every identifier allocated to a ToF transport: grid, cliff and package.
+    // The cliff values are read from the generated contract rather than copied
+    // here, so this check cannot pass against a stale duplicate of them.
     //
     // 0x217 used to be missing from this test altogether: tof_can_ids.hpp knew
     // only about 0x214-0x216, so the health identifier the publisher has been
     // emitting all along was neither checked against the existing allocation
     // nor available for a future identifier to be checked against.
+    //
+    // The cliff commissioning pair is listed for the same reason, even though
+    // no ToF transport puts it on the bus during normal operation: this test is
+    // the only mechanical check that one ToF allocation does not land on
+    // another, and a value left out of the list is a value it cannot protect.
+    // That is what admitting the package pair at 0x21A/0x21B depends on.
     static constexpr uint16_t kAssigned[]{
         ids::TOF_GRID_DATA_ID,        // 0x214 grid data
         ids::TOF_GRID_HEALTH_ID,      // 0x215 grid health
         tof_cliff_contract::kMeasId,  // 0x216 cliff measurement
         tof_cliff_contract::kHealthId,// 0x217 cliff health
+        tof_cliff_contract::kCommissionRequestId, // 0x218 cliff commissioning
+        tof_cliff_contract::kCommissionStatusId,  // 0x219 cliff commissioning
+        ids::PACKAGE_TOF_DATA_ID,     // 0x21A package data
+        ids::PACKAGE_TOF_HEALTH_ID,   // 0x21B package health
     };
     constexpr size_t kAssignedCount{sizeof kAssigned / sizeof kAssigned[0]};
 

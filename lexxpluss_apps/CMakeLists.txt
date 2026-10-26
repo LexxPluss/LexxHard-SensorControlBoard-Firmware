@@ -321,19 +321,30 @@ if(ENABLE_TOF_PACKAGE_BENCH)
     add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
 endif()
 
-# Auto runtime reuses the device and publication layers. Require explicit
-# CAN IDs and acquisition rate from the build; none has a product default.
+# Auto runtime reuses the device and publication layers. The CAN identifiers
+# come from src/tof_can_ids.hpp, which records the 2026-10-26 allocation;
+# passing them here overrides that for a bench run. The acquisition rate has no
+# default and must still be named: no rate has been accepted for this geometry.
 if(ENABLE_TOF_PACKAGE_AUTO)
     if(NOT ENABLE_TOF_L7_ULD)
         message(FATAL_ERROR
             "ENABLE_TOF_PACKAGE_AUTO requires ENABLE_TOF_L7_ULD: the runtime exists to drive the "
             "L7 lifecycle, and without the driver there is nothing to drive.")
     endif()
-    foreach(required TOF_PACKAGE_AUTO_DATA_ID TOF_PACKAGE_AUTO_HEALTH_ID TOF_PACKAGE_AUTO_HZ)
-        if(NOT DEFINED ${required})
-            message(FATAL_ERROR
-                "ENABLE_TOF_PACKAGE_AUTO needs ${required}: nothing about this stream is "
-                "registered or accepted, so there is no default to fall back to.")
+    if(NOT DEFINED TOF_PACKAGE_AUTO_HZ)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_AUTO needs TOF_PACKAGE_AUTO_HZ: no sustainable rate has been "
+            "accepted for this geometry, so there is no default to fall back to.")
+    endif()
+    # Only an override reaches the compiler. An empty -D would look defined to
+    # the source and shadow the registry with nothing, which is why these two
+    # are not in the unconditional block below.
+    foreach(override TOF_PACKAGE_AUTO_DATA_ID TOF_PACKAGE_AUTO_HEALTH_ID)
+        if(DEFINED ${override})
+            add_definitions(-D${override}=${${override}})
+            message(WARNING
+                "package_tof runtime: ${override}=${${override}} overrides the allocation in "
+                "src/tof_can_ids.hpp. Bench use only.")
         endif()
     endforeach()
     # The budget the policy runs on. Defaulted, because unlike the identifiers these are this
@@ -362,8 +373,6 @@ if(ENABLE_TOF_PACKAGE_AUTO)
             "against a reset that comes from somewhere else.")
     endif()
     add_definitions(-DENABLE_TOF_PACKAGE_AUTO
-                    -DTOF_PACKAGE_AUTO_DATA_ID=${TOF_PACKAGE_AUTO_DATA_ID}
-                    -DTOF_PACKAGE_AUTO_HEALTH_ID=${TOF_PACKAGE_AUTO_HEALTH_ID}
                     -DTOF_PACKAGE_AUTO_HZ=${TOF_PACKAGE_AUTO_HZ}
                     -DTOF_PACKAGE_AUTO_CLAIMS=${TOF_PACKAGE_AUTO_CLAIMS}
                     -DTOF_PACKAGE_AUTO_TAKEOVERS=${TOF_PACKAGE_AUTO_TAKEOVERS}

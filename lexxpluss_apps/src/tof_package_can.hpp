@@ -26,10 +26,12 @@
 #pragma once
 
 /* Package CAN transport on can2 for bench or auto builds; neither is a default
- * product configuration. Supply both IDs explicitly: zero means unset and
- * 0x21A/0x21B remain candidates. A listen window rejects observed traffic;
- * silence does not establish ownership. Consult the allocation registry.
- * Do not duplicate that registry or reconfigure can2: zcan_main owns it.
+ * product configuration. Supply both IDs explicitly: zero means unset, and
+ * this module refuses rather than reaching for the allocation itself, so that
+ * a caller putting a candidate pair on the bench bus and the automatic runtime
+ * sending the allocated stream go through the same door. The allocation is
+ * 0x21A data / 0x21B health, recorded in src/tof_can_ids.hpp -- do not
+ * duplicate it here, and do not reconfigure can2: zcan_main owns it.
  */
 
 #include <stdint.h>

@@ -36,16 +36,21 @@
 #error "ENABLE_TOF_PACKAGE_AUTO and ENABLE_TOF_PACKAGE_BENCH claim the same device: pick one."
 #endif
 
-/* THE IDENTIFIERS HAVE NO DEFAULT, and the build fails without them. 0x21A and 0x21B are the
- * candidates this path has been observed on, and writing either into this file would make it the
- * allocation by being the only number anybody could find -- the same rule the driver's registry
- * and the bench's `stream` arguments follow. A Makefile target names them; that target is where
- * the decision is visible. */
-#if !defined(TOF_PACKAGE_AUTO_DATA_ID) || !defined(TOF_PACKAGE_AUTO_HEALTH_ID)
-#error "ENABLE_TOF_PACKAGE_AUTO needs TOF_PACKAGE_AUTO_DATA_ID and TOF_PACKAGE_AUTO_HEALTH_ID: no "
-       "identifier is registered for this stream, so there is no default to fall back to."
+/* THE IDENTIFIERS COME FROM THE REGISTRY HEADER, not from this file and no longer from a build
+ * flag. They were unregistered until 2026-10-26, and while that was true the build had to fail
+ * without them: a literal written here would have become the allocation by being the only number
+ * anybody could find. Now that tof_can_ids.hpp records the allocation, the build flags would be
+ * the duplicate -- so they remain only as an override, for putting a candidate pair on the bus
+ * without editing the registry. */
+#if !defined(TOF_PACKAGE_AUTO_DATA_ID)
+#define TOF_PACKAGE_AUTO_DATA_ID (lexxhard::tof_can_ids::PACKAGE_TOF_DATA_ID)
 #endif
-/* The acquisition rate, likewise: the sustainable one for this geometry has not been accepted. */
+#if !defined(TOF_PACKAGE_AUTO_HEALTH_ID)
+#define TOF_PACKAGE_AUTO_HEALTH_ID (lexxhard::tof_can_ids::PACKAGE_TOF_HEALTH_ID)
+#endif
+/* The acquisition rate still has no default, for the reason the identifiers no longer lack one:
+ * the sustainable rate for this geometry has not been measured and accepted, so there is nothing
+ * for a header to record. The build names it or the build fails. */
 #if !defined(TOF_PACKAGE_AUTO_HZ)
 #error "ENABLE_TOF_PACKAGE_AUTO needs TOF_PACKAGE_AUTO_HZ"
 #endif
@@ -53,6 +58,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "tof_can_ids.hpp"
 #include "tof_package_auto.hpp"
 #include "tof_package_can.hpp"
 #include "tof_package_device.hpp"
@@ -71,10 +77,11 @@ namespace {
 namespace pkg = lexxhard::tof_package;
 namespace auto_policy = lexxhard::tof_package_auto;
 
-/* HOW LONG TO LISTEN BEFORE TRANSMITTING ON AN UNREGISTERED IDENTIFIER. Silence here is not
- * evidence that either number is free -- the registry is -- but traffic IS evidence that it is
- * taken, and that is the half worth checking before a board starts transmitting by itself at
- * every boot. */
+/* HOW LONG TO LISTEN BEFORE TRANSMITTING. The identifiers are allocated, so this is no longer a
+ * question of ownership; traffic on them now means a second transmitter configured for the same
+ * stream, or an override pointing at somebody else's number, and either is worth catching before
+ * a board starts transmitting by itself at every boot. Silence proves nothing in either
+ * direction, as it never did. */
 constexpr int32_t kListenWindowMs{1000};
 
 /* HOW OFTEN THE LOOP WAKES. Shorter than one acquisition period on purpose: a poll that found
@@ -246,8 +253,9 @@ void wire_the_transport()
         return;
     }
     if (heard != 0U) {
-        LOG_ERR("package tof: %u frames on 0x%x/0x%x in %d ms. Somebody is already using these "
-                "identifiers; this board will send nothing, including diagnostics.",
+        LOG_ERR("package tof: %u frames on 0x%x/0x%x in %d ms. These identifiers are allocated to "
+                "this stream, so another transmitter is misconfigured; this board will send "
+                "nothing, including diagnostics.",
                 heard, ids.data_id, ids.health_id, kListenWindowMs);
         return;
     }
@@ -264,9 +272,8 @@ void wire_the_transport()
     /* The wait for a first grid starts now rather than at uptime zero, so the listen window and
      * whatever boot took before it are not counted as a sensor that went quiet. */
     last_grid_ms_ = k_uptime_get();
-    LOG_INF("package tof: data 0x%x, health 0x%x, 11-bit, boot-local sequence. Silence on both for "
-            "%d ms is not evidence that either number is unallocated; check the registry.",
-            ids.data_id, ids.health_id, kListenWindowMs);
+    LOG_INF("package tof: data 0x%x, health 0x%x, 11-bit, boot-local sequence, quiet through a "
+            "%d ms listen.", ids.data_id, ids.health_id, kListenWindowMs);
 }
 
 }  // namespace

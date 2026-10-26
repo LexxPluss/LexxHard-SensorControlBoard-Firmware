@@ -580,8 +580,9 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
 
     shell_print(sh, "data 0x%x, health 0x%x, 11-bit, source %s", ids.data_id, ids.health_id,
                 kBootLocalSource);
-    shell_print(sh, "silent for %d ms on both: nobody transmitted while we listened, which is NOT "
-                    "evidence that either number is unallocated. Check the registry.",
+    shell_print(sh, "silent for %d ms on both: nobody transmitted while we listened. That is all "
+                    "it means -- this command takes whatever pair you give it, so check the two "
+                    "numbers above against the registry yourself.",
                 kListenWindowMs);
     shell_warn(sh, "sequence numbers are boot-local and repeat after a reset. This stream is an "
                    "observation of the path, not evidence that candidate N's identity holds.");
@@ -704,8 +705,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_pkg_tof,
     SHELL_CMD(stop, NULL, "stop ranging; retryable while the debt stands", cmd_stop),
     SHELL_CMD_ARG(stream, NULL,
                   "stream <data_id> <health_id> boot-local <grids> [budget_ms] - publish grids as "
-                  "candidate N frames on can2. Identifiers are arguments because none is "
-                  "registered; the sequence source is named because it is boot-local",
+                  "candidate N frames on can2. Identifiers stay arguments so a bench run can use "
+                  "a pair that is NOT the allocation; the sequence source is named because it is "
+                  "boot-local",
                   cmd_stream, 5, 1),
     SHELL_CMD_ARG(hold, NULL,
                   "hold [minutes] - extend the unattended revert; bounded, and no confirm exists",
