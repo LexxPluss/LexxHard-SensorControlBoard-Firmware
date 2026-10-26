@@ -1,5 +1,6 @@
 # Feature selection for the ToF release image.
-# Built with the ordinary entry: make firmware FEATURES_FILE=cmake/features_tof_release.cmake
+# Built with the ordinary release entry, which is the one that also produces out/firmware.bin:
+#   make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_tof_release.cmake
 #
 # This is the Dasher variant PLUS the ToF chain, so it includes features_dasher.cmake rather than
 # restating its flags: a Dasher that gains ToF must not silently lose ROS-controlled braking
