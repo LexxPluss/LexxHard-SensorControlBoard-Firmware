@@ -4,40 +4,10 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * BENCH ONLY. The SHELL half of the Package ToF path: the commands, and nothing else. The device
- * itself -- the port context, the ULD scratch objects, the lifecycle hooks and the bind -- is
- * tof_package_device, which this file drives rather than duplicates. Compiled only under
- * ENABLE_TOF_PACKAGE_BENCH, which no product configuration sets and which the build refuses to
- * combine with ENABLE_TOF_PACKAGE_AUTO: one owner per image, so these commands are the only thing
- * touching that device in a bench build.
- *
- * WHY IT EXISTS AT ALL. tof_package_l7 has no caller, so --gc-sections drops it and every size
- * measured so far says nothing about what it costs. Something has to call the path before the
- * linked cost is a number rather than a guess, and that something must not be a product entry
- * point: binding it into one would make a bring-up decision that belongs to the Package
- * configuration, which does not exist yet.
- *
- * WHAT IT DELIBERATELY DOES NOT DO, each because it is a decision this file is not entitled to
- * make:
- *
- *   - it does not provision the blob. It calls tof_l7_runtime::ensure_verified() and reports what
- *     it was told. An unprovisioned board is a refusal to read, not a cue to write 86 KB into
- *     storage_partition from a shell command.
- *   - it registers no CAN identifier. `stream` publishes, but both identifiers are arguments and
- *     the command says so: none is allocated, and a number written into this file would become the
- *     allocation by being the only one anybody could find.
- *   - it touches no shutter and no door state. FW-5 is a safety interlock whose entry conditions
- *     are an open requirements question; a tool that moved the shutter would be answering it.
- *   - it starts no thread and no timer. Every command runs on the shell's stack and returns, so
- *     there is nothing THIS MODULE started running between commands. That is a claim about this
- *     module only: the image around it is the ordinary firmware, and the threads main() brings up --
- *     CAN, the shutter, the rest -- are running throughout. An earlier wording read as though the
- *     image were otherwise quiet, which it is not.
- *
- * STACK. Every command runs on the shell thread, and the device layer's objects are the reason
- * none of them is a local: sizeof(VL53L7CX_Configuration) is 2,324 B against a 2,048 B default
- * shell stack. The shell stack is sized against a measured figure in
- * overlays/tof_package_bench.conf.
+ * Bench shell commands use tof_package_device as the sole sensor owner; the
+ * build excludes automatic runtime. They verify an existing blob and accept
+ * explicit CAN IDs, but do not provision, move the shutter or start threads.
+ * ULD scratch stays off the measured shell stack.
  */
 #include <errno.h>
 #include <stdlib.h>
@@ -72,10 +42,7 @@ void report(const struct shell *sh)
 {
     const tof_package::status s{tof_package_device::lifecycle().current()};
 
-    /* WHICH ENTRY STARTED THE ROUND IS PART OF THE READING. A survivor found by `up` was stopped
-     * before anything opened; the same survivor found by `takeover` was not, so any later result
-     * sits on a different footing. Printed on every report rather than only on the takeover, so a
-     * reader comparing two runs is never left to remember which command produced which. */
+    /* Report the entry on every run: up stops a survivor; takeover does not. */
     shell_print(sh, "state %s  step %s  errno %d  survivor %s  stop_attempts %u  entry %s",
                 tof_package::state_name(s.current), tof_package::step_name(s.failed_step),
                 s.errno_value, s.survivor_found ? "yes" : "no", s.stop_attempts_used,
@@ -135,10 +102,7 @@ int run_round(const struct shell *sh, bool takeover)
         return -EPERM;
     }
 
-    /* THE ROUND AND ITS BOUNDARY ARE ONE CALL, in the device layer. The ordering it carries -- ask
-     * the lifecycle whether a round begins, clear the step records only then -- is a rule this
-     * command must not hold a second copy of: there is another caller now, an unattended runtime,
-     * and the call-site gate asserts the boundary exists in exactly one place. */
+    /* Device layer owns the round boundary for both shell and runtime callers. */
     const int rc{tof_package_device::begin_round(takeover)};
 
     report(sh);
@@ -187,20 +151,14 @@ int cmd_up(const struct shell *sh, size_t, char **)
 
 int cmd_takeover(const struct shell *sh, size_t, char **)
 {
-    /* SAID BEFORE IT RUNS, because the one thing this command must not become is a habit. It is not
-     * a retry of `up` and not a cold start: it proceeds without establishing that the device is
-     * stopped, so the full init that follows is the only thing that will have touched the device's
-     * state. */
+    /* Warn before takeover: it skips stop confirmation and is neither retry nor cold start. */
     shell_warn(sh, "taking over a device whose state is UNKNOWN: the stop that `up` requires is "
                    "skipped, and nothing here establishes that the sensor lost power or stopped "
                    "ranging. The init that follows is what will have changed it.");
     return run_round(sh, true);
 }
 
-/* Between readiness polls. The device publishes a complete grid at the configured rate -- 66 ms
- * apart at 15 Hz, 100 ms at 10 Hz -- so a tight loop spends hundreds of I2C transactions per frame
- * and never yields the shell thread. 2 ms is short enough that the measured interval still reflects
- * the device rather than the sampling, and long enough to leave the bus and the CPU alone. */
+/* A 2 ms readiness poll yields the shell thread without masking grid cadence. */
 constexpr int32_t kPollIntervalMs{2};
 
 void show_frame(const struct shell *sh, unsigned index, int64_t interval_ms,
@@ -220,20 +178,14 @@ void show_frame(const struct shell *sh, unsigned index, int64_t interval_ms,
             high = s.distance_mm[i];
     }
 
-    /* `index` IS THIS TOOL'S OWN COUNT, not a device sequence number -- the L7 result carries none.
-     * So it establishes how many complete grids this command accepted and in what order, and it
-     * cannot by itself tell a genuinely new frame from a repeat. The interval and the content are
-     * what speak to that, which is why both are printed. */
+    /* index counts accepted grids here; the L7 provides no sequence number. */
     shell_print(sh, "frame %u  +%lld ms  %u/64 zones  %u..%u mm  %d C", index, interval_ms, targets,
                 targets == 0U ? 0U : low, high, static_cast<int>(s.silicon_temperature_degc));
 }
 
 void show_grid(const struct shell *sh, const tof_l7::sample &s)
 {
-    /* The whole last grid, distance and status, because a frame count says nothing about whether
-     * the content is a measurement. Status is printed raw: the per-code meaning is ST's, this file
-     * has no accepted classification table for the L7, and inventing one here would turn a bench
-     * reading into a judgement nobody has agreed. */
+    /* Print distances and raw ST status; this tool does not classify zones. */
     shell_print(sh, "last grid, mm per zone then raw target_status (0 targets prints as -----):");
     for (size_t r{0}; r < 8U; ++r) {
         const size_t o{r * 8U};
@@ -251,10 +203,7 @@ void show_grid(const struct shell *sh, const tof_l7::sample &s)
     }
 }
 
-/* Count N fresh, complete grids within the deadline, not N polls.
- * Print each grid's interval and content; tight polling alone neither measures
- * sensor rate nor proves that returned data is usable.
- */
+/* Count complete grids, not polls; print intervals and content. */
 int cmd_read(const struct shell *sh, size_t argc, char **argv)
 {
     if (!tof_package_device::bound()) {
@@ -366,10 +315,7 @@ const char *go2_exit_name(tof_l7_quiesce::go2_exit e)
     return "unnamed";
 }
 
-/* A BYTE THAT WAS NEVER READ PRINTS AS `--`, NOT AS `0x00`. The whole point of carrying validity
- * beside each value is that an unread register and a register reading zero are different
- * observations, and a reader scanning a log cannot recover the difference from a plausible-looking
- * hex byte. The caller supplies the buffer because shell_print takes its arguments by value. */
+/* Print unread registers as `--`, distinct from a valid zero. */
 void go2_byte(char *out, size_t len, bool valid, uint8_t value)
 {
     if (valid)
@@ -384,19 +330,13 @@ int cmd_status(const struct shell *sh, size_t, char **)
     if (tof_package_device::bound())
         report(sh);
 
-    /* THE QUIESCE RECORD, PRINTED WHENEVER THERE IS ONE. This is the half of a survivor refusal
-     * that the 2026-10-12 run could not report: the -5 it printed was four observations folded into
-     * one errno. `taken` is printed as its own line rather than as zeroes, because a run that never
-     * quiesced must not read as one that quiesced cleanly. */
+    /* Distinguish no quiesce attempt from a successful zero-valued observation. */
     if (const tof_l7_quiesce::record &q{tof_l7_quiesce::last()}; q.taken) {
         shell_print(sh, "quiesce #%u: %s  rc %d  uld_status 0x%02x  port_errno %d  completed %u  "
                         "%u us",
                     q.sequence, quiesce_layer_name(q.which), q.rc, q.raw.uld_status,
                     q.raw.port_errno, q.raw.completed, q.elapsed_us);
-        /* WHAT THE DEVICE ACTUALLY ANSWERED, from the reads the stop sequence already makes. The
-         * 2026-10-12 run polled 501 times and kept none of the bytes, so the only thing its five
-         * seconds produced was that they had passed. Printed after the call, never inside the poll,
-         * so observing it cannot change what is being observed. */
+        /* Report observed bytes after the stop poll, without changing its timing. */
         char first_s[5];
         char last_s[5];
         char after_s[5];
@@ -502,10 +442,7 @@ int cmd_hold(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
-/* THE SEQUENCE SOURCE IS NAMED BY THE OPERATOR, not selected by the firmware. There is exactly one
- * in this build and it is the non-compliant one, so typing its name is the acknowledgement: numbers
- * come from RAM and start again at one after any reset. A command that picked it silently would
- * turn "this board cannot number acquisitions durably" into a stream that looks numbered. */
+/* Require the operator to name boot-local numbering; it repeats after reset. */
 constexpr const char *kBootLocalSource{"boot-local"};
 
 /* Long enough to catch a 10 Hz talker twice over and short enough that nobody skips the check.
@@ -513,12 +450,8 @@ constexpr const char *kBootLocalSource{"boot-local"};
  */
 constexpr int32_t kListenWindowMs{200};
 
-/* Hand each fresh acquisition to tof_package_stream; numbering and publication
- * rules belong there. IDs are explicit experimental choices, printed before
- * use and checked for traffic. This command supports only 11-bit frames.
- * Ending stream stops publication, not ranging. No periodic diagnostic runs
- * afterwards; the consumer must detect the silence.
- */
+/* Stream fresh grids on explicit 11-bit IDs after the traffic check. Ending
+ * the command stops publication, not ranging; consumers detect later silence. */
 int cmd_stream(const struct shell *sh, size_t argc, char **argv)
 {
     if (!tof_package_device::bound()) {
@@ -597,10 +530,7 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
         return rc;
     }
 
-    /* Check lifecycle state: -EPERM alone cannot distinguish uninitialized from
-     * not ranging. Report never_started with availability, not a sensor failure.
-     * Send one diagnostic and exit rather than reporting at every poll.
-     */
+    /* Report never_started once when not ranging; -EPERM alone is ambiguous. */
     if (tof_package_device::lifecycle().current().current != tof_package::state::ranging) {
         tof_package_stream::input nothing{};
         nothing.outcome = tof_package_health::acquisition::never_started;
@@ -678,10 +608,7 @@ int cmd_stream(const struct shell *sh, size_t argc, char **argv)
                     "%u numbers issued this boot, %lu polls in %lld ms",
                 published, c.grids_abandoned, c.diagnostics_sent, c.send_failures, c.last_sequence,
                 tof_package_device::boot_sequence().issued(), polls, k_uptime_get() - started);
-    /* REPORTED SEPARATELY FROM THE PUBLISHER'S COUNT, because they answer different questions. The
-     * publisher counts frames no mailbox would take within a millisecond; this counts frames a
-     * mailbox took and the controller then failed to transmit. A run with zero of the first and a
-     * non-zero second looks healthy from the producer's side and put nothing on the bus. */
+    /* Separate mailbox refusals from later transmit completion failures. */
     shell_print(sh, "%u transmit completions failed (frames still queued have reported nothing)",
                 tof_package_can::transmit_errors());
     shell_print(sh, "ranging is untouched; `pkg_tof stop` when done. Nothing further is sent on "

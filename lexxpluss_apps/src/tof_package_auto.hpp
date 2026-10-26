@@ -25,12 +25,9 @@
 
 #pragma once
 
-/* Pure unattended-device policy; no hardware, clock or Zephyr calls.
- * Try normal bring_up() first. Only a quiesce failure permits a budgeted
- * unknown-state takeover (one per boot by default); it proves no power history.
- * Budget exhaustion stops new claims, not reads or owed stops. Keep reporting
- * faults. Rates, IDs and publication content belong to other layers.
- */
+/* Hardware-free startup policy. Try normal bring_up() first; only a quiesce
+ * failure permits budgeted takeover. Exhaustion stops new claims, while reads,
+ * owed stops and diagnostics continue. Takeover proves no power history. */
 
 #include <stdint.h>
 
@@ -58,10 +55,7 @@ enum class action : uint8_t {
     acquire,
     /* A stop is owed. Nothing may be read until it is paid, and the lifecycle refuses anyway. */
     pay_stop,
-    /* NOTHING LEFT TO TRY WITHOUT A HUMAN. The runtime keeps publishing diagnostics -- a consumer
-     * must be able to tell a dead producer from a silent one -- and touches no hardware at all.
-     * This is a destination, not a pause: nothing in this policy leaves it, because everything
-     * that could has already been spent. */
+    /* No claims remain; keep reporting diagnostics until human intervention. */
     report_only,
 };
 
@@ -87,19 +81,12 @@ struct limits {
      * never skipped -- the stop defence absolute, and a device that cannot be quiesced is reported
      * rather than taken over. */
     uint8_t takeovers{1};
-    /* Whether the FIRST claim of a boot attempts the quiesce. True keeps the stop defence in front
-     * of every takeover, at the cost of the quiesce's full polling budget on a device that cannot
-     * answer it -- measured at 5.43 s on this geometry on 2026-10-12. Set false only where that
-     * failure has been OBSERVED on the board being configured, and never as a default: skipping
-     * straight to a takeover on an unexamined board is the one thing the bench's ordering exists
-     * to prevent. */
+    /* Keep true by default. A stop failure took 5.43 s on this board; set false only
+     * after that failure has been observed on the board being configured. */
     bool quiesce_first{true};
 };
 
-/* Choose grid, diagnostic or silence for each pass, independently of device action.
- * Fresh grids bypass throttling. Failed reads and prolonged not-ready report
- * on the diagnostic cadence; a read attempt alone is not a publishable grid.
- */
+/* Publish every fresh grid; throttle failed reads and prolonged not-ready reports. */
 enum class report : uint8_t {
     /* A complete grid is in hand. Grids are never rate limited: the rate is the sensor's. */
     publish_grid,
@@ -137,10 +124,8 @@ struct cadence {
     int64_t grid_overdue_ms{500};
 };
 
-/* Pure, and no state of its own: the caller keeps the timestamps because the caller owns the
- * clock. A non-positive interval in `c` means "no floor" and a non-positive overdue means "every
- * poll without a grid is overdue" -- both are honoured rather than corrected, because a
- * configuration that asked for them is making a choice this file cannot second-guess. */
+/* Caller owns the clock. A non-positive diagnostic interval removes its floor;
+ * a non-positive overdue interval treats each empty poll as overdue. */
 report what_to_send(const pass &p, const cadence &c);
 
 struct counters {

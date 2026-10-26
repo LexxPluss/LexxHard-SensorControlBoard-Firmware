@@ -25,16 +25,9 @@
 
 #pragma once
 
-/* Boot-driven Package ToF thread using the shared device, stream and CAN layers.
- * ENABLE_TOF_PACKAGE_AUTO starts it; the bench build cannot own the same sensor.
- *
- * Before sending, listen on both configured IDs. Observed traffic refuses the
- * whole run, including diagnostics; silence does not prove an ID is unallocated.
- * Claims are budgeted. Exhaustion stops new claims while diagnostics, existing
- * ranging reads and owed stops continue. Verify the provisioned blob; never
- * provision it unattended. Boot-local numbering restarts at 1 after reset,
- * so this image does not establish persistent acquisition identity.
- */
+/* Boot-driven Package ToF thread. Refuse the whole run if either CAN ID is busy.
+ * Exhausted claims still allow reads, owed stops and diagnostics. It verifies,
+ * but never provisions, the blob. Sequence numbers restart after reset. */
 
 #if defined(ENABLE_TOF_PACKAGE_AUTO)
 

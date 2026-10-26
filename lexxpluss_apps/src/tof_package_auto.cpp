@@ -72,10 +72,7 @@ report what_to_send(const pass &p, const cadence &c)
     if (p.read_rc == 0 && p.fresh)
         return report::publish_grid;
 
-    /* A READINESS POLL THAT FOUND NOTHING IS NOT AN EVENT, for as long as a grid is not overdue.
-     * The poll interval is deliberately shorter than one acquisition period, so most passes land
-     * here and publishing for each would bury the stream in frames reporting that nothing has
-     * happened yet. */
+    /* A poll before the next grid is due is not a publishable event. */
     if (p.read_rc == 0 && p.now_ms - p.last_grid_ms < c.grid_overdue_ms)
         return report::say_nothing;
 
@@ -117,10 +114,7 @@ action policy::next(const observation &o)
         return counters_.last = action::bind;
 
     if (o.current == tof_package::state::blocked) {
-        /* WHICH BLOCKED STEP IT WAS IS REMEMBERED HERE, because a rebind resets it. The lifecycle
-         * clears `failed_step` on its way back to idle, so by the time a takeover could be chosen
-         * the reason for choosing it is gone. Recorded before the discardable check so that a
-         * quiesce failure this policy cannot act on is still part of the record. */
+        /* Save the failed step before rebind clears it, even if takeover is unavailable. */
         if (o.failed_step == tof_package::step::survivor)
             counters_.quiesce_refused = true;
 
@@ -138,11 +132,8 @@ action policy::next(const observation &o)
     if (counters_.claims_used >= limits_.claims)
         return counters_.last = action::report_only;
 
-    /* A TAKEOVER IS FOR A QUIESCE THAT WAS REFUSED, not for a claim that failed somewhere else. A
-     * claim that stopped at the probe or at open says nothing about whether the device can be
-     * stopped, so repeating it with the stop defence removed would skip a defence to fix an
-     * unrelated fault. The one exception is a configuration that has already seen this geometry
-     * refuse the quiesce and said so: `quiesce_first` false authorises the first claim to skip it. */
+    /* Only a failed quiesce authorizes takeover. quiesce_first=false is an explicit
+     * exception for a board with a previously observed stop failure. */
     const bool skip_the_quiesce{counters_.quiesce_refused ||
                                 (!limits_.quiesce_first && counters_.claims_used == 0U)};
     if (skip_the_quiesce && counters_.takeovers_used < limits_.takeovers) {

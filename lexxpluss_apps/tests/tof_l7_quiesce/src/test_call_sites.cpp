@@ -273,21 +273,9 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_application_source_clears_the_record_or
                  seen);
 }
 
-/* ONLY THE QUIESCE MAY DECLARE A LONG OPERATION, AND THE DECLARATION MUST WRAP THE BRACKET.
- *
- * The watchdog cases for this live in tests/tof_task_watchdog, but they set `long_operation`
- * themselves: delete the declaration from the adapter and every one of them still passes. This is
- * the half that reads the adapter, so removing it fails here.
- *
- * WRAPPING MATTERS AND IS CHECKED BY POSITION. The declaration is constructed first, so it is
- * destroyed last: the L7 timing ends before the declaration is withdrawn, and the sample that
- * follows the operation is still covered. Constructed the other way round, the declaration would
- * be gone while the bracket's clock was still the one being judged.
- *
- * NOT THE WHOLE CLAIM. The declaration suspends the in-flight bound over whatever it spans, and
- * the probe, the firmware download and the start have no other guard -- so a declaration that
- * covered them would relax the one bound that watches three operations with no reason to be slow.
- */
+/* Watchdog cases set the declaration flag directly, so this gate checks the
+ * production call site. Only quiesce may declare, and it must enclose its L7
+ * progress bracket; probe, open and start retain the 5 s bound. */
 ZTEST(tof_l7_quiesce_call_sites, test_only_the_quiesce_declares_a_long_operation_and_it_wraps_the_bracket)
 {
     read_and_strip(DEVICE_SOURCE);

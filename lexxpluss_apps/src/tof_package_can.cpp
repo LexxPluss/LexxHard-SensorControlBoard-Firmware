@@ -46,10 +46,8 @@ const device *dev_{nullptr};
 identifiers ids_{};
 bool configured_{false};
 
-/* Wait up to 1 ms for a mailbox per frame. A non-null callback avoids the
- * synchronous can_send() path's K_FOREVER wait for ACK completion.
- * This is not a whole-call deadline: underlying driver locks may still wait.
- */
+/* Wait up to 1 ms for a mailbox. The callback avoids can_send()'s synchronous
+ * K_FOREVER completion wait; driver locks may still block. */
 constexpr k_timeout_t kMailboxTimeout{K_MSEC(1)};
 
 /* Completion failures reported by the driver since the last init(). An atomic because the callback
@@ -88,12 +86,7 @@ int send(uint32_t can_id, const uint8_t *frame_bytes, size_t frame_len)
         frame.flags |= CAN_FRAME_IDE;
     memcpy(frame.data, frame_bytes, frame_len);
 
-    /* SUCCESS HERE MEANS THE CONTROLLER TOOK THE FRAME, NOT THAT ANYBODY RECEIVED IT. Zero says a
-     * mailbox accepted it within kMailboxTimeout. Whether it then won arbitration, was acknowledged
-     * by another node, or was retransmitted until the controller gave up is reported later and
-     * elsewhere -- on_transmit_complete() counts the failures, and transmit_errors() is how a
-     * caller sees them. Waiting here for that answer is exactly what the null-callback form does,
-     * and what this must not do. */
+    /* Success means mailbox acceptance; transmit_errors() reports later failures. */
     return can_send(dev_, &frame, kMailboxTimeout, on_transmit_complete, nullptr);
 }
 

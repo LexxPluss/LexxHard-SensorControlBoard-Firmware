@@ -533,14 +533,9 @@ firmware_tof_package_bench:
 	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin
 	printf '\377' | dd of=out/zephyr_tof_package_bench.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_bench.test.bin) - 24)) conv=notrunc status=none
 
-# Auto Package image: one owner, no pkg_tof commands; ordinary shell remains.
-# The identifiers come from src/tof_can_ids.hpp (0x21A/0x21B, allocated
-# 2026-10-26) and are deliberately not repeated here. The 5 Hz is still a
-# configured number, not an accepted one: the sustainable rate remains an open
-# acceptance item. A one-second listen rejects observed traffic.
-# Keep the deadman armed for candidate tests: unconfirmed images revert only
-# after reset. Auto has no hold command. Permanent residency requires an
-# explicit TOF_PACKAGE_AUTO_DEADMAN=OFF decision and its own acceptance.
+# Auto Package image. IDs come from tof_can_ids.hpp; 5 Hz still needs rate
+# acceptance. Listen for one second before sending. The default deadman resets
+# the unconfirmed test image; permanent use needs explicit OFF and acceptance.
 .PHONY: firmware_tof_package_auto
 firmware_tof_package_auto:
 	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify

@@ -36,12 +36,7 @@
 #error "ENABLE_TOF_PACKAGE_AUTO and ENABLE_TOF_PACKAGE_BENCH claim the same device: pick one."
 #endif
 
-/* THE IDENTIFIERS COME FROM THE REGISTRY HEADER, not from this file and no longer from a build
- * flag. They were unregistered until 2026-10-26, and while that was true the build had to fail
- * without them: a literal written here would have become the allocation by being the only number
- * anybody could find. Now that tof_can_ids.hpp records the allocation, the build flags would be
- * the duplicate -- so they remain only as an override, for putting a candidate pair on the bus
- * without editing the registry. */
+/* Use registered IDs by default; build flags are bench overrides only. */
 #if !defined(TOF_PACKAGE_AUTO_DATA_ID)
 #define TOF_PACKAGE_AUTO_DATA_ID (lexxhard::tof_can_ids::PACKAGE_TOF_DATA_ID)
 #endif
@@ -77,11 +72,7 @@ namespace {
 namespace pkg = lexxhard::tof_package;
 namespace auto_policy = lexxhard::tof_package_auto;
 
-/* HOW LONG TO LISTEN BEFORE TRANSMITTING. The identifiers are allocated, so this is no longer a
- * question of ownership; traffic on them now means a second transmitter configured for the same
- * stream, or an override pointing at somebody else's number, and either is worth catching before
- * a board starts transmitting by itself at every boot. Silence proves nothing in either
- * direction, as it never did. */
+/* Refuse observed traffic on either ID before transmitting. Silence proves no ownership. */
 constexpr int32_t kListenWindowMs{1000};
 
 /* HOW OFTEN THE LOOP WAKES. Shorter than one acquisition period on purpose: a poll that found
@@ -89,11 +80,8 @@ constexpr int32_t kListenWindowMs{1000};
  * and the cost of polling late is latency added to every grid. */
 constexpr int32_t kPollIntervalMs{20};
 
-/* Diagnostics have a 500 ms minimum interval, not one per 20 ms poll.
- * A grid is overdue after max(five nominal periods, 500 ms). This tolerance
- * comes from the observed ~195 ms cadence at configured 5 Hz; it is not a
- * sampling-freshness or sustainable-rate guarantee.
- */
+/* Throttle diagnostics to 500 ms. A grid is overdue after the greater of five
+ * nominal periods and 500 ms; this does not establish sample freshness. */
 constexpr int64_t kNominalPeriodMs{1000 / TOF_PACKAGE_AUTO_HZ};
 constexpr int64_t kDiagnosticIntervalMs{500};
 constexpr int64_t kGridOverdueMs{5 * kNominalPeriodMs > kDiagnosticIntervalMs ? 5 * kNominalPeriodMs
@@ -127,12 +115,8 @@ auto_policy::observation look()
     return o;
 }
 
-/* Sends what the cadence rule asked for, and nothing on say_nothing. Returns nothing: every
- * outcome is a counter the publisher already keeps, and a caller that branched on them would be
- * making the publication rule's decisions a second time.
- *
- * THE TWO CLOCKS ARE STAMPED HERE because this is where a frame actually goes out. Stamping them
- * at the decision instead would advance them for a pass that sent nothing. */
+/* Send only what the cadence rule selected. Stamp clocks when sending, not when
+ * deciding; the publisher owns the outcome counters. */
 void send(auto_policy::report what, const tof_package_stream::input &in, int64_t now)
 {
     if (what == auto_policy::report::say_nothing || !transport_ready_)
@@ -159,13 +143,8 @@ auto_policy::cadence the_cadence()
     return c;
 }
 
-/* One round on the device, and the restart of the grid wait that a successful one earns.
- *
- * WHY THE WAIT RESTARTS HERE. `last_grid_ms_` means "when a grid was last in hand, or when the
- * runtime last began expecting one". A bring-up takes seconds -- the blob verification alone is
- * most of them -- so without this the first poll after a successful claim would find a grid
- * overdue by the whole duration of the claim and report a stall the instant the sensor started
- * working. A claim that FAILED earns nothing: the silence it leaves behind is real. */
+/* Restart the grid wait after a successful claim; otherwise bring-up time
+ * would count as a missing grid. A failed claim does not reset the clock. */
 void claim(bool by_takeover)
 {
     const int rc{tof_package_device::begin_round(by_takeover)};
@@ -198,21 +177,13 @@ void acquire()
         in.status = tof_package_device::last_sample().target_status;
         in.zone_count = tof_package_stream::kZones;
     } else {
-        /* A failed read, or a grid overdue long enough to be a stall. The grid still sitting in
-         * the sample may be perfectly good and is deliberately NOT passed: `failed` is what
-         * happened to THIS acquisition, and the publication rule is what keeps a held grid off
-         * the bus. */
+        /* Never publish a held sample after this acquisition fails. */
         in.outcome = tof_package_health::acquisition::failed;
     }
     send(what, in, p.now_ms);
 }
 
-/* Says the device is not producing, on the diagnostic cadence. `never_started` rather than
- * `failed` whenever nothing has been brought up: the two are different claims about the device,
- * and the availability flag the consumer reads is what distinguishes them.
- *
- * This is not an acquisition, so it asks the same rule with a read that did not happen: a non-zero
- * read_rc is how a pass says it has no grid and no excuse, which is exactly the case here. */
+/* Report never_started until bring-up, then failed. No acquisition occurred. */
 void report(bool ever_claimed)
 {
     auto_policy::pass p{};
@@ -293,12 +264,7 @@ void run(void *, void *, void *)
         return;
     }
 
-    /* TELL THE FEEDER THERE IS A GRID SENSOR TO WATCH. Without this the L7 monitor never arms and
-     * the bracketing in tof_package_device.cpp is inert -- feed_allowed() only starts watching when
-     * l7_expected is set AND an operation has begun. Set after the budget check, because a thread
-     * that is about to do nothing must not ask to be judged, and before the first bind, because the
-     * probe inside it is already a bracketed operation. The chain's own caller is not compiled into
-     * this image, so this is the only call. */
+    /* Arm L7 monitoring before the first probe, after rejecting an exhausted budget. */
     tof_watchdog_feeder::set_l7_expected(true);
 
     wire_the_transport();

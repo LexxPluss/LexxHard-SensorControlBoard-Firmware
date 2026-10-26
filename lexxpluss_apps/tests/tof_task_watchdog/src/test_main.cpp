@@ -137,24 +137,9 @@ ZTEST(tof_task_watchdog, test_a_first_l7_open_that_never_returns_stops_the_feed)
                   "an operation that never had a chance to complete is stuck, not silent");
 }
 
-/* THE PACKAGE QUIESCE, WHICH IS THE ONE ULD CALL MEASURED LONGER THAN bounds::l7_ms.
- *
- * vl53l7cx_stop_ranging() polls 500 times at 10 ms for the MCU stop, and a device that never
- * answers spends all of it; the whole poll sits inside ONE bracketed L7 operation, measured at
- * 5.43 s on 2026-10-12. The in-flight bound is 5,000 ms, so before tof_package_device declared
- * that hook the default configuration -- quiesce_first = true -- reset the board on a device that
- * could not answer its stop.
- *
- * BOTH PHASES, because they are different code paths and the one that matters here is the one a
- * package image actually lives in. A package-only image carries no chain, so no baseline is ever
- * taken and the feeder stays in phase::waiting for the whole boot; the armed cases cover a build
- * where something else did reach the baseline. The waiting path judges the L7 in flight and
- * nothing else, so a declaration is the only thing standing between a slow quiesce and a reset.
- *
- * These cases pin the window the declaration opens and, as importantly, where it closes. What
- * they do NOT pin is that production declares at all -- they set the flag themselves. The gate in
- * tests/tof_l7_quiesce reads the adapter and is what fails if the declaration is removed.
- */
+/* Quiesce took 5.43 s against a 5 s L7 bound. Test both watchdog phases:
+ * Package-only stays in waiting; another build may reach armed. These cases
+ * set the flag directly; tof_l7_quiesce checks the production call site. */
 ZTEST(tof_task_watchdog, test_a_declared_quiesce_outlasts_the_l7_bound_without_resetting)
 {
     harness h{};
@@ -246,15 +231,8 @@ ZTEST(tof_task_watchdog, test_a_takeover_after_a_failed_quiesce_inherits_no_decl
 
 /* ---- the same three statements in the phase a package-only image really runs in ---- */
 
-/* The claim sequence as the lifecycle really runs it, with no baseline: no chain, so
- * `baseline_point` never goes true and the feeder stays in `waiting` for the whole boot.
- *
- * THE PROBE COMES FIRST AND COMPLETES. tof_package_l7::claim() calls probe() and quiesces only a
- * device that answered it (`present`), so the quiesce is never the first L7 operation of a boot --
- * the probe is, and hook_probe is bracketed too. Modelling the quiesce as the first operation
- * would open the monitor on the call under test, which is not where the monitor opens on a real
- * board, and would leave the clocks the quiesce is judged against untested against a predecessor
- * that already moved them. */
+/* Match claim() with no baseline: a completed probe opens the L7 monitor before
+ * quiesce starts. The quiesce must be judged against that earlier progress. */
 void waiting_with_the_quiesce_in_flight(harness &h)
 {
     h.in.l7_expected = true;

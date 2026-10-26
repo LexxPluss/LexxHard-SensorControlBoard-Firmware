@@ -25,11 +25,8 @@
 
 #pragma once
 
-/* One owner for the I2C4 port, ULD scratch, lifecycle hooks and binding.
- * Bench and auto builds are mutually exclusive, allowing serialized access
- * without locks. Callers use this layer rather than duplicating device state.
- * Retries, backoff, entry selection and rate belong to their policies.
- */
+/* Own I2C4, ULD scratch, lifecycle hooks and binding. Bench and auto builds
+ * are mutually exclusive; retry and rate policy belong to callers. */
 
 #include <stdint.h>
 
@@ -66,11 +63,8 @@ enum class bind_refusal : uint8_t {
 
 const char *bind_refusal_name(bind_refusal r);
 
-/* Binds the lifecycle to i2c4 @0x29 at `frequency_hz`, opening nothing. 0, or a negative errno
- * with `*why` saying which refusal it was. `why` may be null.
- *
- * The frequency is the caller's, with no default here: the sustainable rate for this geometry has
- * not been accepted, and a default in this file would quietly become that answer. */
+/* Bind i2c4 @0x29 without opening. Caller supplies the frequency; there is no
+ * accepted default. Return 0 or negative errno; `why` may be null. */
 int bind(uint8_t frequency_hz, bind_refusal *why);
 
 /* Whether a bind has succeeded. False means every call below acts on an unbound lifecycle, which
@@ -85,11 +79,8 @@ const tof_l7::sample &last_sample();
 tof_package_stream::publisher &publisher();
 tof_seq_boot_local::source &boot_sequence();
 
-/* Apply the round boundary, then call bring_up() or take_over_unknown_state().
- * Clear step records only when the lifecycle accepts a new round, before its
- * first step; preserve evidence on refusal. Keep the separate quiesce record.
- * All callers use this entry so the boundary ordering has one owner.
- */
+/* Start a normal or takeover round. Clear step records only after acceptance;
+ * keep quiesce evidence separate. */
 int begin_round(bool by_takeover);
 
 /* The adapter the publisher's injected sequence source needs. It exists only because a member

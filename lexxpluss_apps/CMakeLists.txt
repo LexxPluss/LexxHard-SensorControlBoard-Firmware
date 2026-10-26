@@ -321,10 +321,8 @@ if(ENABLE_TOF_PACKAGE_BENCH)
     add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
 endif()
 
-# Auto runtime reuses the device and publication layers. The CAN identifiers
-# come from src/tof_can_ids.hpp, which records the 2026-10-26 allocation;
-# passing them here overrides that for a bench run. The acquisition rate has no
-# default and must still be named: no rate has been accepted for this geometry.
+# Auto runtime uses registered IDs unless bench overrides them. Rate has no
+# accepted default.
 if(ENABLE_TOF_PACKAGE_AUTO)
     if(NOT ENABLE_TOF_L7_ULD)
         message(FATAL_ERROR
@@ -336,9 +334,7 @@ if(ENABLE_TOF_PACKAGE_AUTO)
             "ENABLE_TOF_PACKAGE_AUTO needs TOF_PACKAGE_AUTO_HZ: no sustainable rate has been "
             "accepted for this geometry, so there is no default to fall back to.")
     endif()
-    # Only an override reaches the compiler. An empty -D would look defined to
-    # the source and shadow the registry with nothing, which is why these two
-    # are not in the unconditional block below.
+    # Pass only defined overrides; an empty -D would shadow the registry.
     foreach(override TOF_PACKAGE_AUTO_DATA_ID TOF_PACKAGE_AUTO_HEALTH_ID)
         if(DEFINED ${override})
             add_definitions(-D${override}=${${override}})
@@ -347,9 +343,7 @@ if(ENABLE_TOF_PACKAGE_AUTO)
                 "src/tof_can_ids.hpp. Bench use only.")
         endif()
     endforeach()
-    # The budget the policy runs on. Defaulted, because unlike the identifiers these are this
-    # project's own decisions about how far an unattended board may go without a human, and they
-    # are documented where the policy defines them.
+    # Startup budgets are policy defaults, unlike CAN IDs and rate.
     if(NOT DEFINED TOF_PACKAGE_AUTO_CLAIMS)
         set(TOF_PACKAGE_AUTO_CLAIMS 6)
     endif()
@@ -359,10 +353,8 @@ if(ENABLE_TOF_PACKAGE_AUTO)
     if(NOT DEFINED TOF_PACKAGE_AUTO_QUIESCE_FIRST)
         set(TOF_PACKAGE_AUTO_QUIESCE_FIRST 1)
     endif()
-    # Default the deadman ON: an unconfirmed image needs a reset to revert, and
-    # a wedged Package thread may leave the board watchdog fed. Permanent
-    # residency explicitly opts out. No pkg_tof/hold command exists in auto;
-    # the ordinary Zephyr shell remains available.
+    # Default ON: rollback needs a reset, and a wedged Package thread may leave
+    # the board watchdog fed. Auto has no pkg_tof hold command.
     if(TOF_PACKAGE_AUTO_DEADMAN)
         add_definitions(-DENABLE_TOF_PACKAGE_AUTO_DEADMAN)
         message(STATUS "package_tof runtime: unattended revert ARMED (one window per flash)")

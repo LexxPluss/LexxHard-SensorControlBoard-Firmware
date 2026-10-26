@@ -65,34 +65,21 @@ tof_l7::scratch scratch_;
 tof_package::lifecycle lifecycle_;
 bool bound_{false};
 
-/* Keep the 2,324 B address-only scratch in .bss. One owner serializes probe
- * and quiesce; zero it per call. Never use sensor_ as scratch or overwrite
- * its live session. Caller stack measurements are separate.
- */
+/* Keep address-only scratch in .bss; zero it per call without touching sensor_. */
 VL53L7CX_Configuration addressed_scratch_;
 
-/* WHERE PATCH 0005 WRITES. Beside the scratch configuration and for the same stack reason, and
- * separate from it because the patched stop sequence clears this on entry while `addressed()`
- * clears the configuration -- two owners, two moments, and neither may silently do the other's
- * job. The pointer is handed over in addressed(), so the only ULD calls that can observe anything
- * are the ones this bench makes through that scratch object. */
+/* Patch 0005 writes here. Keep this separate from scratch: each is cleared at a different point. */
 struct vl53l7cx_go2_observation go2_scratch_;
 
 /* The last complete grid, kept so `read` can show what arrived rather than only how many did. In
  * .bss for the stack reason above, and because the content has to outlive the hook that filled it. */
 tof_l7::sample last_sample_;
 
-/* THE PUBLISHER AND ITS SEQUENCE SOURCE, in .bss so that their counts survive the command that
- * produced them: an operator reading "17 grids, 1 abandoned" wants it after the run, not inside it.
- * They are re-initialised at the start of every `stream`, so a second run never reports the first
- * one's totals -- see tof_package_stream::init() on why a re-init is a new stream. */
+/* Keep stream counters in .bss for post-run status; stream init resets them per run. */
 tof_package_stream::publisher publisher_;
 tof_seq_boot_local::source boot_sequence_;
 
-/* Tie sample array size to the wire's zone count where the buffers cross layers.
- * The publisher trusts that count; a resolution change must fail at compile
- * time instead of reading past the sample.
- */
+/* Fail at compile time if sample and wire zone counts diverge. */
 static_assert(tof_l7::kZoneCount == tof_package_stream::kZones,
               "the sensor's grid and the wire's grid must have the same number of zones: "
               "every caller hands last_sample_'s arrays to the publisher with the wire's count, "
@@ -110,14 +97,8 @@ VL53L7CX_Configuration *addressed(uint8_t addr_7bit)
 
 /* ---- what the watchdog can see of this thread ---- */
 
-/* Bracket ULD operations with scoped L7 progress so the feeder's waiting phase
- * can bound an operation that never returns (bounds::l7_ms). Package does not
- * satisfy the chain baseline; do not claim it.
- * This does not monitor silence between operations or ensure_verified().
- * Blob verification has no measured bound against l7_ms; refused claims,
- * exhausted budgets and not-ready responses must not create reset loops.
- * The scope guarantees end() on every returning path.
- */
+/* Scope L7 progress to each ULD call, including the waiting phase. This does not
+ * monitor silence between calls or blob verification. */
 struct watched_uld_operation {
     watched_uld_operation() { runtime_progress::begin(runtime_progress::activity::l7); }
     ~watched_uld_operation() { runtime_progress::end(runtime_progress::activity::l7); }
@@ -125,34 +106,11 @@ struct watched_uld_operation {
     watched_uld_operation &operator=(const watched_uld_operation &) = delete;
 };
 
-/* THE ONE ULD CALL THAT OUTLASTS bounds::l7_ms, declared so that outlasting it is not a reset.
- *
- * vl53l7cx_stop_ranging() polls for the MCU stop 500 times with a 10 ms wait -- ST's own comment
- * calls it five seconds -- and a device that never answers spends all of it. The whole poll is
- * inside ONE watched_uld_operation, so the watchdog sees a single L7 operation in flight for the
- * 5.43 s this geometry measured on 2026-10-12 (tof_package_auto.hpp, `quiesce_first`) against an
- * in-flight bound of 5,000 ms. Without a declaration that is stuck_l7, the feeder latches
- * phase::stopped, and the reset that follows is the default configuration working as designed.
- *
- * SCOPED TO THIS HOOK, NOT TO THE CLAIM. Wrapping the whole claim would relax the same 5 s bound
- * over the probe, the firmware download and the start -- three operations whose in-flight bound is
- * the only thing watching them, and none of which has a reason to exceed it. The alternatives were
- * weighed and rejected for the same shape of reason: raising l7_ms globally moves the bound for
- * every image, and defaulting quiesce_first to false is what this file's own header forbids.
- *
- * STILL BOUNDED, AND WIDER THAN THE L7 ALONE. kLongOperationSuspends is
- * stuck_cycle | silent_cycle | stuck_l7 | silent_l7, so the declaration also stops the acquisition
- * cycle being judged for as long as it is held -- harmless in a package image, which runs no
- * chain cycle, and a reason not to hold it any longer than this one call. The declaration carries
- * bounds::long_operation_ms -- 30 s -- so a quiesce that wedges forever is still a reset, just not
- * at five seconds.
- *
- * THE DECLARATION IS A FLAG, NOT A COUNT, so a nested declaration would be cleared by the inner
- * scope. No build target combines this file with the commissioning path that also declares: the
- * two package targets in the Makefile set neither ENABLE_TOF_CHAIN nor ENABLE_TOF_AUTO_COMMISSION,
- * and features_tof_release.cmake sets no package flag. CMake does not FORBID the combination,
- * though, so a custom build that enabled both would need a counted declaration rather than this.
- */
+/* Stop polling took 5.43 s on this board, beyond the ordinary 5 s L7 bound.
+ * Declare only quiesce as long-running; probe, open and start keep the 5 s bound.
+ * The declaration has a 30 s cap and also suspends chain-cycle checks, so keep
+ * its scope narrow. It is a flag, not a nesting-safe count: custom builds that
+ * combine Package with commissioning must revisit this. */
 struct declared_long_operation {
     declared_long_operation() { tof_watchdog_feeder::long_operation_begin(); }
     ~declared_long_operation() { tof_watchdog_feeder::long_operation_end(); }
@@ -206,12 +164,8 @@ static_assert(tof_l7_quiesce::kUldTimeout == VL53L7CX_STATUS_TIMEOUT_ERROR,
 static_assert(tof_l7_quiesce::kUldOk == VL53L7CX_STATUS_OK,
               "the pure classifier's OK code no longer matches the ULD's");
 
-/* THE C STRUCTURE THE PATCH FILLS, READ ONCE INTO THE PURE ONE THE RECORD KEEPS. Translating here
- * rather than storing the vendor type is what lets tof_l7_quiesce stay testable without a bus, and
- * it is the same boundary `inputs` already draws for the port's errno and completed count.
- *
- * The exit value is mapped by name, with no default: a value the patch grows later is a compile
- * error here rather than a silently wrong label. */
+/* Copy vendor observations into the testable record. Exhaustive exit mapping makes new
+ * vendor values a compile error. */
 tof_l7_quiesce::go2_observation observed_go2(const struct vl53l7cx_go2_observation &raw)
 {
     tof_l7_quiesce::go2_exit exit{tof_l7_quiesce::go2_exit::not_polled};
@@ -254,10 +208,7 @@ int hook_quiesce(void *, uint8_t addr_7bit)
     VL53L7CX_Configuration *const probe_dev{addressed(addr_7bit)};
 
     vl53l7cx_port_clear_error(&port_ctx);
-    /* A 64-BIT MONOTONIC SOURCE. This was `k_cycle_get_32()`, which wraps every 19.884 s at
-     * 216 MHz -- review measured a 30-second call recorded as 10.116 s -- and a quiesce whose polled
-     * reads each spend the I2C timeout runs far longer than that. `k_uptime_ticks()` is 64-bit and
-     * the subtraction is done in `span_us`, where it is tested. */
+    /* Use a 64-bit clock: k_cycle_get_32() wraps in 19.884 s at 216 MHz. */
     const int64_t started_us{k_ticks_to_us_floor64(k_uptime_ticks())};
     const uint8_t uld_status{vl53l7cx_stop_ranging(probe_dev)};
     const uint32_t elapsed_us{
@@ -295,10 +246,7 @@ int hook_open(void *, uint8_t addr_7bit)
     /* The ULD firmware download lives inside this call and is the longest single operation on the
      * path -- the two seconds bounds::l7_ms was chosen to cover. */
     const watched_uld_operation watched{};
-    /* RECORDED FROM `st`, NEVER FROM THE PORT CONTEXT. open() refuses a null argument or a wrong
-     * lifecycle state before anything clears the port, so its sticky errno and completed count
-     * still belong to the previous operation -- in a bring-up, the quiesce and its 511 transfers.
-     * See tof_l7_step_record.hpp. */
+    /* A refused open leaves port counters from the previous operation; record from st. */
     tof_l7::operation_status st{};
     const int rc{tof_l7::open(&sensor_, &port_ctx, addr_7bit, &st)};
     tof_l7_steps::remember(tof_l7_steps::which::open, rc, st);
@@ -402,10 +350,7 @@ int issue_boot_local(void *, uint32_t *out)
 
 int begin_round(bool by_takeover)
 {
-    /* Cleared only if a round really begins, which is the lifecycle's answer and not a guess made
-     * here: can_begin_round() IS bring_up()'s entry guard rather than a copy of it. Cleared on
-     * acceptance rather than after a successful round, so a round that fails at its first step
-     * shows that step and nothing from the run before it. */
+    /* Clear prior step evidence only after the lifecycle accepts a new round. */
     tof_l7_steps::begin_round(lifecycle_.can_begin_round());
 
     return by_takeover ? lifecycle_.take_over_unknown_state() : lifecycle_.bring_up();
@@ -413,10 +358,7 @@ int begin_round(bool by_takeover)
 
 int bind(uint8_t frequency_hz, bind_refusal *why)
 {
-    /* Check lifecycle discardability before changing objects. The independent
-     * close() guard also rejects running/stop_unconfirmed, so rebind cannot erase
-     * a live session or unpaid stop debt.
-     */
+    /* Reject rebind before touching a live session or unpaid stop debt. */
     if (why != nullptr)
         *why = bind_refusal::none;
 
@@ -468,11 +410,7 @@ int bind(uint8_t frequency_hz, bind_refusal *why)
     c.frequency_hz = frequency_hz;
     c.stop_attempts = 3;
 
-    /* RE-INITIALISED IN PLACE, NOT REPLACED. `lifecycle_ = {}` was the other half of the problem
-     * above: it discards the object rather than asking it, so the refusal the lifecycle now carries
-     * would never have been reached. init() resets its own state when it accepts, and refuses with
-     * -EPERM when the object still owns a session -- which is the same question the guard at the top
-     * of this function asks, answered by the one object that can answer it. */
+    /* Reinitialize in place so lifecycle init can refuse a live session. */
     if (const int rc{lifecycle_.init(h, c)}; rc != 0) {
         if (why != nullptr)
             *why = bind_refusal::lifecycle_refused;
