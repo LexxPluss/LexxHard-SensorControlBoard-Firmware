@@ -47,7 +47,8 @@ clean:
 	        build-test-tof-commission-runtime build-test-tof-commission-worker build-test-tof-commission-bind \
 	        build-test-tof-commission-bind-session build-test-tof-commission-entropy-poll build-auto-commission \
 	        build-test-tof-l7-boot-order-no-grid build-test-tof-integration-wiring build-tof-full \
-	        build-check-l7-no-cliff build-tof-integration
+	        build-check-l7-no-cliff build-tof-integration \
+	        build-test-tof-commissioning-grid
 
 .PHONY: distclean
 distclean: clean
@@ -148,6 +149,12 @@ test_tof_mapping_authority:
 test_tof_commissioning:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning -t run -- -DBOARD_ROOT=/${WORKDIR}/extra
+
+# Run the commissioning suite with real grid wiring; `make test` covers both variants.
+.PHONY: test_tof_commissioning_grid
+test_tof_commissioning_grid:
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p auto -b native_sim lexxpluss_apps/tests/tof_commissioning -d build-test-tof-commissioning-grid -t run -- -DBOARD_ROOT=/${WORKDIR}/extra -DGRID_L7=1
 
 .PHONY: test_tof_commission_runtime
 test_tof_commission_runtime:
@@ -409,14 +416,10 @@ firmware_bypass_safety_lidar:
 # main.cpp confirms the image after thread creation, so a crash in main initialisation (which is
 # where the cliff bootstrap runs) rolls back on the next boot.
 #
-# This image produces the 0x217 health heartbeat and does NOT produce measurement frames, because
-# the PROVEN clamp is applied unconditionally at the single authorisation exit.
+# Health (0x217) starts at boot; measurement (0x216) requires a PROVEN mapping.
+# No automatic commissioning: use `tof cliff prove`, then start acquisition.
 #
-# That is the only thing the clamp decides. It does not decide the proof: `tof cliff prove` succeeds
-# or fails on its evidence, and the four cliff roles are no longer unknown -- they are frozen from
-# the assembly connectivity drawing in tof_chain_spec.hpp, which is what makes the production spec
-# provable at all. What is still open is the hardware: walk 1 has never reached COMPLETE at the
-# 400 kHz this overlay pins, so a run on a real machine fails there rather than at the role table.
+# Roles come from tof_chain_spec.hpp. Proof combines a 100 kHz walk and 400 kHz identity recheck.
 #
 # NO SAFETY-LIDAR BYPASS, unlike firmware_tof_chain, which this target was first copied from. That
 # flag belongs to a bench image and this one is meant to be a product build; carrying it by
@@ -487,9 +490,8 @@ firmware_tof_cliff:
 # calls FAT, and firmware update and the L7 blob both go through flash_area_*. MCUboot, signing, the
 # flash map, the update path and the partition layout are unchanged.
 #
-# IT COMMISSIONS NOTHING. commission-profile-enabled and commission-enumeration-permitted are absent
-# from overlays/auto_commission.overlay, so the downlink answers `disabled`; and the PROVEN clamp
-# still refuses every grid. Being wired is not being enabled.
+# auto_commission.overlay grants no commissioning permission: requests return `disabled`.
+# Publication still requires a PROVEN authority snapshot.
 .PHONY: firmware_tof_full
 firmware_tof_full:
 	./scripts/manage_zephyr_patches.sh verify

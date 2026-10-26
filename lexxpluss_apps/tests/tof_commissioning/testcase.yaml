@@ -1,4 +1,10 @@
+common:
+  platform_allow: native_sim
+  tags: tof
 tests:
+  # Without L7, grid stubs remain unassigned.
   tof.commissioning:
-    platform_allow: native_sim
-    tags: tof
+    extra_args: GRID_L7=0
+  # With L7, proof-installed keys must reach the publisher.
+  tof.commissioning.grid:
+    extra_args: GRID_L7=1
