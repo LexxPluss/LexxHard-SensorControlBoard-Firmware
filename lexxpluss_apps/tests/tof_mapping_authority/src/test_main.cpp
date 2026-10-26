@@ -1097,9 +1097,9 @@ ZTEST(tof_mapping_authority, test_a_chain_fault_publishes_fault_with_its_positio
 
 /* Builds the health frame the PUBLISHER would build from a snapshot, and asks the REAL encoder
  * whether it is acceptable. The field copies mirror production: tof_cliff_can.cpp's
- * production_authorisation() takes epoch, both masks, chain_flags and failing_position straight
- * from the snapshot and clamps only the state, and the heartbeat in tof_cliff_publisher.cpp zeroes
- * the per-cycle fields because it describes no cycle.
+ * production_authorisation() takes the state, epoch, both masks, chain_flags and failing_position
+ * straight from one snapshot, and the heartbeat in tof_cliff_publisher.cpp zeroes the per-cycle
+ * fields because it describes no cycle.
  *
  * What is deliberately NOT restated here is any of encode_health()'s refusal conditions. Copying
  * those would pin what this test believes the contract says, and would go on passing on the day
@@ -1110,8 +1110,8 @@ bool the_publisher_could_send(const au::snapshot &s)
     h.mapping_epoch = s.epoch;
     h.health_seq = 1;
     /* FAULT on the wire is 3, and the two enumerations agree on nothing but zero -- a cast would
-     * put PROVEN on the wire. clamp_mapping_state() rewrites only `proven`, so a faulted snapshot
-     * reaches the encoder unchanged. */
+     * put PROVEN on the wire. The state is carried from the snapshot untouched, so a faulted
+     * snapshot reaches the encoder as FAULT. */
     h.mapping_state = 0x3;
     h.flags = static_cast<uint8_t>(s.chain_flags & 0x7);
     h.enumerated_mask = s.enumerated_mask;

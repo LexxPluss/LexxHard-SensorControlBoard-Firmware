@@ -15,10 +15,8 @@
  * faked: the chain's control lines and the vendor ULDs, because what is under test is which
  * modules are connected to which, not what ST's drivers do.
  *
- * NOTHING REACHES A BUS, and that is a property of the clamp rather than of the fixture. can2 here
- * is a loopback controller, present because tof_cliff_can.cpp names the node at compile time; no
- * case asserts on a frame, because the PROVEN clamp refuses every grid before a send is reached.
- * That is the state these cases want: it shows the modules are connected while the gate stays shut.
+ * No proof commits here, so the authority remains unproven and no frames reach CAN.
+ * can2 is a loopback device needed by tof_cliff_can.cpp; frame payloads are tested elsewhere.
  */
 
 #include <errno.h>
@@ -130,16 +128,17 @@ ZTEST(tof_integration_wiring, test_the_grid_positions_are_bound_to_the_real_adap
 
 /* THE WHOLE PATH, AND THE COUNTER SAYS WHICH LINK HELD. A stubbed sensor answers with a full grid;
  * acquisition reads it, the adapter converts it, the hook carries it to the publisher, and the
- * clamp refuses it. Three different failures are told apart by WHICH counter moves:
+ * gate refuses it because nothing in this fixture ever proved the mapping. Three different
+ * failures are told apart by WHICH counter moves:
  *
  *   nothing moves                 the hook is not wired, or the publisher was never initialised
  *   suppressed_cycle_not_begun    on_grid_sample arrived but on_cycle_begin did not -- the fan-out
  *                                 has one arm, which is exactly what a flag-off build compiles
- *   suppressed_not_proven         everything is connected and the clamp did its job
+ *   suppressed_not_proven         everything is connected and the gate did its job
  *
  * In a build without the grid flag none of this exists, which is why twenty green cases next door
  * said nothing about it. */
-ZTEST(tof_integration_wiring, test_a_grid_sample_reaches_the_publisher_and_the_clamp_refuses_it)
+ZTEST(tof_integration_wiring, test_a_grid_sample_reaches_the_publisher_and_the_gate_refuses_it)
 {
     zassert_equal(rt::bootstrap(timing()), 0, "stage %s", rt::stage_name(rt::current_stage()));
     zassert_equal(acq::bring_up(), 0);
@@ -160,7 +159,7 @@ ZTEST(tof_integration_wiring, test_a_grid_sample_reaches_the_publisher_and_the_c
                  "on_grid_sample hook is not wired, or the publisher was never initialised",
                  before.suppressed_not_proven, after.suppressed_not_proven);
     zassert_equal(after.grids_sent, before.grids_sent,
-                  "the clamp must refuse every grid; lifting it is a release decision");
+                  "a grid was sent from a mapping no proof ever established");
 
     acq::stop();
 }
@@ -171,10 +170,9 @@ ZTEST(tof_integration_wiring, test_a_grid_sample_reaches_the_publisher_and_the_c
  * permission only by coincidence of the current chain profile.
  *
  * It is checked against a hand-built snapshot rather than through the live gate because reaching a
- * snapshot with these two masks disagreeing takes a full proof, and because under the clamp a gate
- * reading the wrong mask refuses exactly as a gate reading the right one does. The two cases are
- * the two directions of the confusion: cliff bits set with no grid proven must permit nothing, and
- * a grid bit set with no cliff bit must permit that grid. */
+ * snapshot with these two masks disagreeing takes a full proof, which no fixture here performs.
+ * The two cases are the two directions of the confusion: cliff bits set with no grid proven must
+ * permit nothing, and a grid bit set with no cliff bit must permit that grid. */
 ZTEST(tof_integration_wiring, test_the_grid_permission_ignores_the_cliff_mask)
 {
     au::snapshot n{};
@@ -218,20 +216,19 @@ ZTEST(tof_integration_wiring, test_a_proven_grid_source_is_permitted_by_its_own_
     zassert_false(a.other_position_enumeration_failed, "");
 }
 
-/* AND THE CLAMP KEEPS THE GATE SHUT whatever the masks say. This is why nobody would have noticed
- * the mask confusion, and it is also the thing that must not change by accident: wiring the sender
- * did not open the gate, and lifting the clamp is a separate release decision. */
-ZTEST(tof_integration_wiring, test_the_live_grid_gate_is_never_proven)
+/* Conversion preserves PROVEN, while the live gate remains unproven without a committed proof. */
+ZTEST(tof_integration_wiring, test_the_grid_gate_carries_the_authority_state)
 {
     au::snapshot n{};
 
     n.state = acq::mapping_state::proven;
     n.grid_source_mask = 0x3;
-    zassert_not_equal(can::grid_authorisation_from(n).state, acq::mapping_state::proven,
-                      "the clamp must refuse a snapshot that believes PROVEN");
+    zassert_equal(can::grid_authorisation_from(n).state, acq::mapping_state::proven,
+                  "a PROVEN snapshot reached the publisher as something else: the state is being "
+                  "rewritten between the authority and the gate");
 
     zassert_not_equal(can::grid_production_authorisation().state, acq::mapping_state::proven,
-                      "the live gate must not be PROVEN either");
+                      "the live gate is PROVEN although no proof has committed in this fixture");
 }
 
 /* Same reason as the commissioning suite: tof_cliff_runtime.cpp marks the watchdog's baseline from

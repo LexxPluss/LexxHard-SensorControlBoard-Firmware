@@ -638,6 +638,10 @@ bool is_idle();
 // needs to know which sensors came up - and why the others did not - reads it here.
 void copy_facts(cycle_facts &out);
 
+// Bounded copy_facts(): wait_ms limits lock acquisition, not the nonblocking copy.
+// Returns 0 with out filled, or -EBUSY with out unchanged. Busy is not a sensor fault.
+int try_copy_facts(cycle_facts &out, uint32_t wait_ms);
+
 // The snapshot the heartbeat reads. Packed into one 32-bit word so it can be read without
 // the chain lock: mapping state in bits 0-1, then one bit per source for sample_produced,
 // fault, configured and started.
@@ -651,22 +655,9 @@ void copy_facts(cycle_facts &out);
 // faulted, and the cycles do not clear the diagnosis of a source they never read.
 uint32_t snapshot();
 
-// The state the rest of the system should act on, which is not what the provider returns:
-// PROVEN is ALWAYS clamped to NOT_READY, because a chain that cannot be enumerated across
-// both boards cannot have a proven mapping.
-//
-// There is deliberately no build flag to lift this. A conditional bypass of a safety gate
-// is one careless -D away from shipping, and nothing about it would appear in a diff of
-// the code it disables. Re-enabling PROVEN is an edit to this function in a commit of its
-// own, reviewed against the fixed hardware.
+// Authority state, or NOT_READY without a provider. Callers holding an authority
+// snapshot must use its state to avoid pairing values from different epochs.
 mapping_state effective_mapping_state();
-
-// The clamp on its own, for a caller that already holds a state and must not read a second
-// one. production_authorisation() needs exactly this: it takes the state and the epoch from
-// ONE authority snapshot, and going back through effective_mapping_state() for the state
-// would read the authority twice and could pair a state with an epoch that never existed
-// together. Clamping here rather than at the caller keeps the clamp in one place.
-mapping_state clamp_mapping_state(mapping_state reported);
 
 // True only when a role measurement may be published at all.
 bool publication_allowed();

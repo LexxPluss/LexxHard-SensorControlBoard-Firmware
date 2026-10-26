@@ -73,6 +73,10 @@
 #if defined(ENABLE_TOF_L7_ULD)
 #include "tof_l7_blob_record.hpp"
 #include "tof_l7_runtime.hpp"
+#if defined(ENABLE_TOF_CLIFF_ULD)
+/* Chain + L7 builds without the cliff ULD have no grid publisher. */
+#include "tof_grid_publisher.hpp"
+#endif
 #endif
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
@@ -448,12 +452,9 @@ int cmd_cliff_prove(const struct shell *shell, size_t argc, char **argv)
         return -EIO;
     }
 
-    /* Proven, keyed, and deliberately going no further. Starting acquisition is the next commit's
-     * job -- there is no acquisition thread yet -- and the PROVEN clamp is still shut regardless, so
-     * no measurement frame can leave this board even now. Saying so here keeps an operator from
-     * reading "proven" as "producing". */
+    /* Proof installs keys but does not start acquisition. */
     shell_print(shell, "mapping installed under epoch %lu and descriptors keyed; acquisition NOT "
-                       "started (no thread yet) and the PROVEN clamp is still in force",
+                       "started, so no measurement frame can leave this board yet",
                 parsed);
     return 0;
 }
@@ -494,9 +495,8 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
     }
 
     shell_print(shell, "acquisition thread started");
-    /* Said explicitly, because "started" and "measurements are on the wire" are different claims
-     * and only the clamp decides the second one. */
-    shell_print(shell, "measurement frames leave this board only if the PROVEN clamp is lifted; "
+    /* A running thread still needs a PROVEN mapping to publish. */
+    shell_print(shell, "measurement frames leave this board only while the mapping is PROVEN; "
                        "health frames were already flowing since boot");
     return 0;
 }
@@ -518,9 +518,7 @@ int cmd_cliff_start(const struct shell *shell, size_t, char **)
  * proven.
  *
  * THEY ARE NOT A BYPASS. Every refusal in both commands comes from the runtime's own gates rather
- * than from conditions re-checked here, `start` still requires a proven mapping that the authority
- * currently reports, and neither touches the PROVEN clamp -- lifting that is a separate release
- * decision and is not made from a console.
+ * than from conditions re-checked here. `start` requires the authority's committed PROVEN mapping.
  *
  * WHEN THEY GO: when the host issues commissioning requests and persists epochs, and a deployment
  * has turned `commission-profile-enabled` on. Until both are true, deleting them would remove the
@@ -571,6 +569,112 @@ int cmd_cliff_status(const struct shell *shell, size_t, char **)
     return 0;
 }
 
+#if defined(ENABLE_TOF_L7_ULD)
+/* Read retained blob, source and publisher facts without device access or state changes.
+ * 0x215 is not a heartbeat, and cliff health excludes L7, so CAN silence cannot locate a failure.
+ * Source facts retain the failure class and device detail, not the original operation rc. */
+int cmd_grid_status(const struct shell *shell, size_t, char **)
+{
+    const tof_l7_runtime::snapshot blob{tof_l7_runtime::current()};
+
+    shell_print(shell, "blob stage=%s available=%d size=%u",
+                tof_l7_runtime::stage_name(blob.current_stage),
+                static_cast<int>(blob.firmware_available),
+                static_cast<unsigned>(blob.firmware_size));
+    /* Only terminal stages have a verdict; the default unreadable value is not a result.
+     * Include the parsed header to identify a stored-blob mismatch. */
+    if (blob.current_stage == tof_l7_runtime::stage::available ||
+        blob.current_stage == tof_l7_runtime::stage::refused) {
+        shell_print(shell, "blob record=%s region=%u stored_parsed=%d stored_len=%u stored_fmt=%u",
+                    tof_l7_blob::status_name(blob.verification.st),
+                    static_cast<unsigned>(blob.verification.region_size),
+                    static_cast<int>(blob.verification.stored.parsed),
+                    static_cast<unsigned>(blob.verification.stored.payload_len),
+                    static_cast<unsigned>(blob.verification.stored.format_version));
+    } else {
+        shell_print(shell, "blob record: no verification result yet (stage %s); storage has not "
+                           "been judged",
+                    tof_l7_runtime::stage_name(blob.current_stage));
+    }
+
+    /* Keep snapshots off the 2 KiB shell stack. Only the single shell thread uses these buffers;
+     * concurrent command execution would require synchronization. */
+    static tof_acq::cycle_facts facts{};
+
+    /* Bound the lock wait so a stuck transfer cannot hang the shell; print only after unlock. */
+    if (const int rc{tof_acq::try_copy_facts(facts, 250)}; rc != 0) {
+        shell_warn(shell, "chain busy: no per-source detail (rc %d). Something holds the chain "
+                          "lock -- a commissioning walk, or a transfer that has not returned. "
+                          "This is not a sensor fault; try again", rc);
+    } else {
+        for (int i{0}; i < facts.source_count; ++i) {
+            const tof_acq::source_facts &f{facts.sources[i]};
+
+            if (f.kind != tof_acq::model::l7_grid)
+                continue;
+            shell_print(shell, "grid pos=%d addr=0x%02x started=%d cleanup_pending=%d "
+                               "rearm_failed=%d", i, f.addr_7bit, static_cast<int>(f.started),
+                        static_cast<int>(f.cleanup_pending), static_cast<int>(f.rearm_failed));
+            shell_print(shell, "  outcome transport=%d protocol=%d unsupported=%d usage=%d "
+                               "sample_produced=%d", static_cast<int>(f.transport_error),
+                        static_cast<int>(f.protocol_error), static_cast<int>(f.unsupported),
+                        static_cast<int>(f.usage_error), static_cast<int>(f.sample_produced));
+            shell_print(shell, "  last stage=%s port_errno=%d uld_status=%d sample_present=%d",
+                        tof_acq::operation_stage_name(f.status), f.status.port_errno,
+                        f.status.uld_status, static_cast<int>(f.status.sample_present));
+        }
+        /* Distinguish an empty descriptor table from sources that failed to start. */
+        int grid_sources{0};
+        for (int i{0}; i < facts.source_count; ++i)
+            if (facts.sources[i].kind == tof_acq::model::l7_grid)
+                ++grid_sources;
+        shell_print(shell, "grid sources in the table: %d of %d configured positions",
+                    grid_sources, facts.source_count);
+    }
+
+    /* Runtime stage helps distinguish an uninitialized publisher from an idle one. */
+    shell_print(shell, "cliff runtime ready=%d stage=%s",
+                static_cast<int>(tof_cliff_runtime::ready()),
+                tof_cliff_runtime::stage_name(tof_cliff_runtime::current_stage()));
+
+    /* The publisher lock never spans a blocking CAN send. */
+    static tof_grid_pub::counters sent{};
+
+    tof_grid_pub::copy_counters(sent);
+    shell_print(shell, "grids admitted=%u sent=%u data_frames=%u health_frames=%u retired=%u",
+                sent.grids_admitted, sent.grids_sent, sent.data_frames_sent,
+                sent.health_frames_sent, sent.generations_retired);
+    /* Admission failures distinguish authority, descriptor and mapping problems. */
+    shell_print(shell, "refused not_proven=%u wrong_model=%u wrong_domain=%u role_mismatch=%u "
+                       "role_unassigned=%u", sent.suppressed_not_proven,
+                sent.suppressed_wrong_model, sent.suppressed_wrong_domain,
+                sent.suppressed_role_mismatch, sent.suppressed_role_unassigned);
+    shell_print(shell, "refused not_permitted=%u permission_withdrawn=%u duplicate_source=%u "
+                       "sample_contradiction=%u not_admitted=%u", sent.suppressed_not_permitted,
+                sent.suppressed_permission_withdrawn, sent.suppressed_duplicate_source,
+                sent.suppressed_sample_contradiction, sent.suppressed_not_admitted);
+    shell_print(shell, "dropped cycles_invalid=%u cycles_unauthorised=%u stale_cycle=%u "
+                       "cycle_not_begun=%u queue_full=%u frames_abandoned=%u",
+                sent.cycles_invalid, sent.cycles_discarded_unauthorised, sent.discarded_stale_cycle,
+                sent.suppressed_cycle_not_begun, sent.queue_full, sent.frames_abandoned);
+    shell_print(shell, "send_failed data=%u health=%u", sent.send_failed_data,
+                sent.send_failed_health);
+    /* Zero counters alone cannot distinguish missing initialization, acquisition or samples. */
+    shell_print(shell, "note: all counters zero means no counted event, not a located fault; read "
+                       "it against the runtime stage and the sources above, and against whether "
+                       "the chain is acquiring at all");
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_grid,
+    SHELL_CMD(status, NULL,
+              "read the L7 grid path: blob verification, per-source bring-up detail, publisher "
+              "counters (read-only, bounded wait on the chain lock)",
+              cmd_grid_status),
+    SHELL_SUBCMD_SET_END
+);
+#endif  // ENABLE_TOF_L7_ULD
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof_cliff,
     SHELL_CMD(status, NULL,
               "read the acquisition cadence: thread state, configured period, overrun count "
@@ -594,6 +698,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tof,
               cmd_enum),
 #if defined(ENABLE_TOF_CLIFF_ULD)
     SHELL_CMD(cliff, &sub_tof_cliff, "cliff mapping commissioning", NULL),
+#if defined(ENABLE_TOF_L7_ULD)
+    SHELL_CMD(grid, &sub_tof_grid, "L7 grid path diagnostics, read-only", NULL),
+#endif
 #endif
     SHELL_SUBCMD_SET_END
 );

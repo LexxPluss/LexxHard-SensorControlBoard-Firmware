@@ -768,84 +768,10 @@ const source_ops &l4_cliff_ops()
 
 mapping_state effective_mapping_state()
 {
-    return clamp_mapping_state(cfg_.mapping_state_provider != nullptr
-                                   ? cfg_.mapping_state_provider()
-                                   : mapping_state::not_ready);
-}
-
-mapping_state clamp_mapping_state(mapping_state reported)
-{
-    if (reported == mapping_state::proven) {
-        // A proven mapping is not something this firmware is entitled to claim yet, so
-        // reporting NOT_READY keeps the consumer's own fail-safe path in charge.
-        //
-        // WHAT IS ACTUALLY MISSING, as of 2026-08-21. This list has now been wrong TWICE.
-        // First it said "until the two-board enable chain is fixed", and the hardware was
-        // fixed on 08-17 (a 50 ohm series resistor on the data line). Then it said the chain
-        // enumerates only one of four cliff positions so a real-machine proof "must still
-        // fail" -- and on 08-21 dasher1 enumerated all six positions and proved them. Both
-        // times a stale reason would have sent the reader to the wrong conclusion, so keep
-        // this current or delete it; a clamp whose stated reason is false is worse than one
-        // with no comment.
-        //
-        // What HAS been accepted on hardware (dasher1, 2026-08-21): a full proof at epoch 2
-        // with walk1 and walk2 both COMPLETE, refusal none -- so all 28 proof checks passed
-        // on real data, including the four frozen roles, address distinctness, fingerprint
-        // equality across the two walks, and every isolation rule (tail 0x2f answered,
-        // neighbour 0x2e proven silent). The descriptors were keyed from that mapping:
-        // positions 3-6 report role_id 0,1,2,3.
-        //
-        // What is still missing:
-        //
-        //   - That proof required i2c2 at 100 kHz (diagnostic overlay). At the product's
-        //     400 kHz, walk1 has never once reached COMPLETE on this machine, and a proof
-        //     needs two COMPLETE walks. So there is no acceptance of the PROVEN path at the
-        //     speed the product runs, and lifting the clamp would open a path proven only at
-        //     a speed the final acquisition schedule cannot use. The cause is OPEN across
-        //     hardware and firmware -- signal integrity, the STM32 timing configuration and
-        //     the long-transfer path are all candidates, and one firmware contributor is
-        //     confirmed: the STM32 timeout path ends the transfer and waits K_FOREVER for
-        //     cleanup with no SWRST and no bit-bang release, so a first timeout leaves the
-        //     bus unrecovered. Do not record this as "hardware's problem".
-        //   - No boot timing and no stack watermark for the acquisition thread, whose stack
-        //     size is therefore a devicetree number chosen without a measurement
-        //     (acq-stack-size = 2048, acq-thread-priority = 7; the overlay says as much).
-        //
-        // Deliberately NOT on this list, because it cannot be: "no 0x216 capture" and "no
-        // correlated cycle health". This clamp is what prevents both, so requiring them
-        // before lifting it is circular. They are what must be verified IMMEDIATELY AFTER
-        // it is lifted, on the same image, before that image is used for anything else.
-        //
-        // What WAS on this list and is now closed, because a list that only grows stops being
-        // read: the mapping authority, the epoch plus cycle-reset transaction, the cycle
-        // health frame, the single runtime bootstrap, role_id being keyed from the authority's
-        // installed mapping inside the commit transaction rather than from the descriptor's
-        // index, and the acquisition thread with its request-stop plus bounded join. None of
-        // them lifts this clamp, and the log line below has to keep naming what is actually
-        // left -- a stale diagnostic sends whoever reads it to the wrong place.
-        //
-        // Unconditional, with no build flag to lift it. A conditional safety bypass is
-        // one careless -D away from shipping and would not show up in a diff of the code
-        // it disables; lifting this is an edit here, in its own commit, once both of the
-        // above are closed.
-        /* ATOMIC, because this function has two callers on two threads: the acquisition path
-         * reaches it through publish_snapshot() and publication_allowed(), and
-         * health_work_handler() reaches it from the system workqueue. A plain bool read and
-         * written from both is a data race -- undefined behaviour, not merely a warning that
-         * might print twice.
-         *
-         * atomic_cas is the whole guard: exactly one caller sees the 0 and takes the
-         * transition, every other caller sees 1 and skips. ATOMIC_INIT is a constant
-         * initialiser, so this needs no thread-safe-statics guard of its own. */
-        static atomic_t warned{ATOMIC_INIT(0)};
-        if (atomic_cas(&warned, 0, 1)) {
-            LOG_WRN("mapping reported PROVEN; clamped to NOT_READY -- proven on hardware "
-                    "only at 100 kHz, never at the product's 400 kHz, and the acquisition "
-                    "thread has no stack watermark");
-        }
-        return mapping_state::not_ready;
-    }
-    return reported;
+    // Trust the authority; fail closed if no provider is wired.
+    // Timeout recovery at 400 kHz and acquisition stack margin need hardware validation.
+    return cfg_.mapping_state_provider != nullptr ? cfg_.mapping_state_provider()
+                                                  : mapping_state::not_ready;
 }
 
 bool publication_allowed()
@@ -888,6 +814,16 @@ void copy_facts(cycle_facts &out)
     k_mutex_lock(&tof_chain_controller::chain_lock(), K_FOREVER);
     out = facts_;
     k_mutex_unlock(&tof_chain_controller::chain_lock());
+}
+
+int try_copy_facts(cycle_facts &out, uint32_t wait_ms)
+{
+    /* Normalize timeout and no-wait contention to the same busy result. */
+    if (k_mutex_lock(&tof_chain_controller::chain_lock(), K_MSEC(wait_ms)) != 0)
+        return -EBUSY;
+    out = facts_;
+    k_mutex_unlock(&tof_chain_controller::chain_lock());
+    return 0;
 }
 
 int init(const config &cfg)

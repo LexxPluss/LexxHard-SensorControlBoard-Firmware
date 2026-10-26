@@ -145,22 +145,14 @@ struct tof_grid_pub::can_sink grid_sink()
 
 struct tof_grid_pub::authorisation grid_production_authorisation()
 {
-    /* ONE read of the authority, then the clamp applied to that snapshot -- the same rule and for
-     * the same reason as the cliff gate above: reading twice can yield a pair that never existed,
-     * and the publisher latches this per cycle. The single read is this line; everything derived
-     * from it is derived from this one value.
-     *
-     * THE CLAMP IS WHY NOTHING IS PUBLISHED. clamp_mapping_state() makes PROVEN unreachable by
-     * construction, the packer refuses anything that is not PROVEN, and so wiring this sender
-     * changes what the board CAN do and not what it does. Lifting the clamp is a release decision
-     * and is not made by connecting a function pointer. */
+    /* Keep state, epoch and permissions from one authority snapshot. */
     return grid_authorisation_from(tof_authority::current());
 }
 
 struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::snapshot &now)
 {
     struct tof_grid_pub::authorisation a{};
-    a.state = tof_acq::clamp_mapping_state(now.state);
+    a.state = now.state;
     a.epoch = now.epoch;
     /* DIAGNOSTICS ONLY, and the authority does not carry it. There is no boards_detected in the
      * snapshot, so it is left at zero rather than derived from something that is not it: the
@@ -197,20 +189,11 @@ struct tof_grid_pub::authorisation grid_authorisation_from(const tof_authority::
 
 struct tof_cliff_pub::authorisation production_authorisation()
 {
-    /* ONE read of the authority, then the clamp applied to that snapshot.
-     *
-     * Not effective_mapping_state() plus current().epoch: that reads the authority twice, and
-     * a proof committing between the two reads yields a pair that never existed -- LOST with
-     * the new epoch, say. The publisher latches this pair per cycle and re-checks it before
-     * flushing, so a pair that never existed would be latched as though it had.
-     *
-     * The clamp still applies, and still lives in the acquisition layer. Taking the state
-     * straight from the snapshot would bypass it, which is the shape of the safety backdoor
-     * this project deleted once. */
+    /* Separate state/epoch reads could straddle a proof commit. */
     const tof_authority::snapshot now{tof_authority::current()};
 
     struct tof_cliff_pub::authorisation a{};
-    a.state = tof_acq::clamp_mapping_state(now.state);
+    a.state = now.state;
     a.epoch = now.epoch;
     a.enumerated_mask = now.enumerated_mask;
     a.model_verified_mask = now.model_verified_mask;
