@@ -55,16 +55,6 @@ jobs:
           mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
           mv ./out/firmware_two_state_ksw.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr_two_state_ksw.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
-          # The ToF image is this same entry with a different feature file, so it writes the same
-          # out/ names -- which is why the four assets above are moved out of the way first, and
-          # why build/ is cleaned: a stale cache would mix the two feature selections.
-          make IN_HOST=1 WORKDIR=$(pwd) clean
-          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} FEATURES_FILE=cmake/features_tof_release.cmake firmware_initial
-          make IN_HOST=1 WORKDIR=$(pwd) dfu_test_image
-          mv ./out/firmware.bin LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
-          mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
-          # The unpadded signed.bin is not published: CAN DFU needs the trailer to request a swap.
-          mv ./out/zephyr.test.bin LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
       - name: Upload release binaries
         uses: alexellis/upload-assets@0.4.0
         env:
@@ -73,11 +63,8 @@ jobs:
           UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
           INITIAL_FIRMWARE_TWO_STATE_KSW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
           UPDATE_FIRMWARE_TWO_STATE_SKW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
-          TOF_INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-ToF-Initial-${{ github.ref_name }}.bin
-          TOF_UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-ToF-Update-${{ github.ref_name }}.bin
-          TOF_DFU_TEST_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-ToF-DFU-Test-${{ github.ref_name }}.bin
         with:
-          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}", "${{ env.INITIAL_FIRMWARE_TWO_STATE_KSW_PATH }}", "${{ env.UPDATE_FIRMWARE_TWO_STATE_SKW_PATH }}", "${{ env.TOF_INITIAL_FIRMWARE_PATH }}", "${{ env.TOF_UPDATE_FIRMWARE_PATH }}", "${{ env.TOF_DFU_TEST_FIRMWARE_PATH }}"]'
+          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}", "${{ env.INITIAL_FIRMWARE_TWO_STATE_KSW_PATH }}", "${{ env.UPDATE_FIRMWARE_TWO_STATE_SKW_PATH }}"]'
       - name: Notification
         uses: act10ns/slack@v1
         with:
