@@ -21,6 +21,7 @@
 #include <zephyr/ztest.h>
 
 #include "tof_acquisition.hpp"
+#include "vl53l7cx_port.h"
 #include "tof_cliff_sensor.h"
 
 namespace lexxhard::tof_chain_controller {
@@ -233,13 +234,24 @@ const acq::source_ops kFakeOps{fake_open, fake_configure, fake_start, fake_read,
  * same facts for both models, and that only means something if one script reaches both paths. */
 namespace l7f = lexxhard::tof_l7;
 
-int fake_grid_open(void *dev, uint8_t, l7f::operation_status *st)
+/* The bus the descriptors name. One object for the fakes, which is the same arrangement the chain
+ * itself has: one controller, one context, one reader. */
+vl53l7cx_port_context grid_port_{};
+
+int fake_grid_open(void *dev, vl53l7cx_port_context *port, uint8_t, l7f::operation_status *st)
 {
     auto &d{*static_cast<fake_dev *>(dev)};
 
     ++d.open_calls;
     record_caller();
     *st = l7f::operation_status{};
+    /* REFUSED LIKE THE REAL ONE. tof_l7::open() rejects a null context -- a sensor that cannot say
+     * which controller it is on has nothing to open -- so a descriptor that lost its port fails
+     * here rather than passing a test the board would not pass. */
+    if (port == nullptr) {
+        st->failed_stage = l7f::stage::state;
+        return -EINVAL;
+    }
     /* open() requires an unopened sensor, exactly as tof_l7::open does. This is the check whose
      * absence made the re-bring-up cases green while the board returned -EPERM. */
     if (d.grid_life != fake_dev::life::empty) {
@@ -541,6 +553,7 @@ acq::config make_config(int count)
         if (d.kind == acq::model::l7_grid) {
             d.ops = &kTrapOps;
             d.grid_ops = &kFakeGridOps;
+            d.grid_port = &grid_port_;
             d.grid_frequency_hz = 10;
         } else {
             d.ops = &kFakeOps;
@@ -3656,6 +3669,7 @@ ZTEST(tof_acquisition, test_bring_up_rereads_roles_keyed_after_init)
         if (d.kind == acq::model::l7_grid) {
             d.ops = &kTrapOps;
             d.grid_ops = &kFakeGridOps;
+            d.grid_port = &grid_port_;
             d.grid_frequency_hz = 10;
         } else {
             d.ops = &kFakeOps;
@@ -3867,6 +3881,7 @@ ZTEST(tof_acquisition, test_a_bound_grid_table_must_carry_close)
     static acq::grid_source_ops incomplete{kFakeGridOps};
     incomplete.close = nullptr;
 
+    four_cliff_two_grid[4].grid_port = &grid_port_;
     four_cliff_two_grid[4].grid_ops = &incomplete;
     zassert_equal(acq::init(c), -EINVAL, "a half-filled grid table is refused at init");
 
@@ -3921,6 +3936,7 @@ static void exercise_grid_timeout_wire_flags(int port_error, uint8_t expected_fl
     ops.read_grid_sample = grid_wire_probe::readiness_timeout;
     four_cliff_two_grid[4].role_id = 0;
     four_cliff_two_grid[5].role_id = 1;
+    four_cliff_two_grid[4].grid_port = &grid_port_;
     four_cliff_two_grid[4].grid_ops = &ops;
     zassert_ok(acq::init(c));
     zassert_ok(acq::bring_up());

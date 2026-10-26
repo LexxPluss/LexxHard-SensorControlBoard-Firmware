@@ -30,6 +30,7 @@
 #include <zephyr/ztest.h>
 
 #include "tof_acquisition.hpp"
+#include "vl53l7cx_port.h"
 #include "tof_cliff_contract_vectors.h"
 #include "tof_cliff_publisher.hpp"
 
@@ -771,7 +772,12 @@ const acq::source_ops kOps{op_open, op_configure, op_start, op_read, op_stop};
  * sources never ran. */
 namespace l7i = lexxhard::tof_l7;
 
-int grid_open(void *, uint8_t, l7i::operation_status *st) { *st = l7i::operation_status{}; return 0; }
+/* The bus the descriptor names. A stub, but a real object: the descriptor's port is required by
+ * init() and travels into open(), so a test that left it null would be testing a wiring the
+ * production path refuses. */
+vl53l7cx_port_context grid_port_{};
+
+int grid_open(void *, vl53l7cx_port_context *, uint8_t, l7i::operation_status *st) { *st = l7i::operation_status{}; return 0; }
 int grid_configure(void *, uint8_t, l7i::operation_status *st)
 {
     *st = l7i::operation_status{};
@@ -840,6 +846,7 @@ acq::config make_acq_config()
         if (descs[i].kind == acq::model::l7_grid) {
             descs[i].ops = &kTrapOps;
             descs[i].grid_ops = &kGridOps;
+            descs[i].grid_port = &grid_port_;
             descs[i].grid_frequency_hz = 10;
             continue;
         }

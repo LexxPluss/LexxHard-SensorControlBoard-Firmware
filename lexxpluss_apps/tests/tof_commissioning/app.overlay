@@ -1,0 +1,28 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * The GRID_L7=1 variant compiles tof_cliff_runtime.cpp with ENABLE_TOF_L7_ULD, and the L7 port
+ * object it then defines resolves its bus at COMPILE TIME with DT_NODELABEL(i2c2). Without a node
+ * carrying that label the build fails on a missing device ordinal, not at run time -- so this
+ * overlay is a build prerequisite of that variant, not a fixture.
+ *
+ * The label has to match the production one exactly: a test that renamed the node would stop
+ * covering the production lookup. Same reasoning and same node as tests/tof_cliff_sensor.
+ *
+ * It applies to the GRID_L7=0 variant as well, which does not reference the bus. An emulated
+ * controller nothing opens costs that build nothing.
+ */
+
+/ {
+	i2c2: i2c@11112222 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "zephyr,i2c-emul-controller";
+		reg = <0x11112222 0x1000>;
+		status = "okay";
+		clock-frequency = <400000>;
+	};
+};

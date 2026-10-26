@@ -93,6 +93,8 @@
 #endif
 #include "tof_mapping_state.hpp"
 
+struct vl53l7cx_port_context;
+
 namespace lexxhard::tof_acq {
 
 // Four cliff L4 plus two grid L7.
@@ -185,7 +187,13 @@ const source_ops &l4_cliff_ops();
  * previous one from the same device; the grid adapter has no such history to keep. */
 #if defined(ENABLE_TOF_L7_ULD)
 struct grid_source_ops {
-    int (*open)(void *dev, uint8_t addr_7bit, tof_l7::operation_status *st);
+    /* `port` NAMES THE CONTROLLER, and travels with the call rather than being known to the
+     * adapter. The ULD port keeps one first-error and one completed-transfer count per context, so
+     * two sensors sharing one context share that record and must stay on one thread; a sensor whose
+     * context says nothing about a bus has nothing to open and is refused. Passing it here is what
+     * lets a second position on a second bus exist at all -- see tof_l7_sensor.hpp. */
+    int (*open)(void *dev, vl53l7cx_port_context *port, uint8_t addr_7bit,
+                tof_l7::operation_status *st);
     int (*configure)(void *dev, uint8_t frequency_hz, tof_l7::operation_status *st);
     int (*start)(void *dev, tof_l7::operation_status *st);
     int (*read_grid_sample)(void *dev, void *scratch, tof_l7::sample *out,
@@ -236,6 +244,11 @@ struct source_desc {
      * carried, is a wiring mistake the compiler cannot see. */
     uint32_t cliff_timing_budget_us{0};
     uint8_t cliff_distance_mode{0};
+    /* THE BUS THIS GRID SOURCE IS ON, required for an l7_grid source and null on an l4_cliff one.
+     * Required rather than defaulted for the same reason as the frequency above: the controller a
+     * sensor is opened on is a deployment fact, and init() refuses a bound grid source without one
+     * rather than reaching for whichever bus happened to be first. */
+    vl53l7cx_port_context *grid_port{nullptr};
     void *dev{nullptr};      // VL53L4CX_Object_t* for l4_cliff
     void *scratch{nullptr};  // tof_cliff_scratch* for l4_cliff, deliberately SHARED
     // tof_cliff_stream_state* for l4_cliff, and deliberately NOT shared: the replay

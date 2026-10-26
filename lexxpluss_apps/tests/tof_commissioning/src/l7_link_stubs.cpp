@@ -38,6 +38,13 @@ int vl53l7cx_port_error(void)
     return 0;
 }
 
+/* Latched by the real port when VL53L7CX_SwapBuffer() is handed a bad buffer. This suite links no
+ * ULD, so nothing can trip it and "no fault" is the only honest answer. */
+int vl53l7cx_port_argument_fault(void)
+{
+    return 0;
+}
+
 uint8_t vl53l7cx_init(VL53L7CX_Configuration *)
 {
     return VL53L7CX_STATUS_ERROR;

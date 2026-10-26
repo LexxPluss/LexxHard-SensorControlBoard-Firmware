@@ -114,6 +114,11 @@ ZTEST(tof_integration_wiring, test_the_grid_positions_are_bound_to_the_real_adap
                       d[i].grid_frequency_hz);
         zassert_not_null(d[i].dev, "position %zu has no device object", i + 1);
         zassert_not_null(d[i].scratch, "position %zu has no scratch", i + 1);
+        /* AND THE BUS, which is the same object for both positions and the same one the boot
+         * recovery probed. Two contexts for one controller would split the first-error and
+         * completed-transfer record between the recovery pass and the open that follows it. */
+        zassert_true(d[i].grid_port == rt::grid_port(),
+                     "position %zu is not on the chain's grid context", i + 1);
         /* And no L4 profile on it -- acquisition refuses a descriptor that carries one. */
         zassert_equal(d[i].cliff_timing_budget_us, 0U, "");
         zassert_equal(d[i].cliff_distance_mode, 0, "");

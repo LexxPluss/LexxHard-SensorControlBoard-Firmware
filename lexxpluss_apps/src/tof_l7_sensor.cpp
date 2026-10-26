@@ -7,7 +7,7 @@
 
 #include "tof_l7_sensor.hpp"
 
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <errno.h>
 #include <string.h>
@@ -57,9 +57,21 @@ int mapped_error(uint8_t uld_status) {
   }
 }
 
-int finish(operation_status &status, stage failed_stage, uint8_t uld_status) {
+/* Takes the sensor because the transport errno is now the CONTEXT'S, not the image's: reading a
+ * process-global here would report whichever device failed most recently rather than this one. */
+int finish(const sensor &device, operation_status &status, stage failed_stage,
+           uint8_t uld_status) {
   status.uld_status = uld_status;
-  status.port_errno = vl53l7cx_port_error();
+  /* A SwapBuffer argument fault outranks transport and ULD status.
+   * It is a sticky programming error shared by the image, not device state;
+   * no device operation clears it. Explicit clearing has no production caller.
+   */
+  status.argument_fault = vl53l7cx_port_argument_fault();
+  if (status.argument_fault != 0) {
+    status.failed_stage = failed_stage;
+    return status.argument_fault;
+  }
+  status.port_errno = vl53l7cx_port_error(device.uld.platform.port);
   if (status.port_errno != 0) {
     status.failed_stage = failed_stage;
     return status.port_errno;
@@ -78,7 +90,8 @@ int state_refusal(operation_status &status) {
 
 } // namespace
 
-int open(sensor *device, uint8_t address_7bit, operation_status *status) {
+int open(sensor *device, vl53l7cx_port_context *port, uint8_t address_7bit,
+         operation_status *status) {
   if (status == nullptr)
     return -EINVAL;
   reset(*status);
@@ -88,6 +101,13 @@ int open(sensor *device, uint8_t address_7bit, operation_status *status) {
   }
   if (device->current != lifecycle::empty)
     return state_refusal(*status);
+  /* A context that names no controller is refused as an argument rather than left to fail as a
+   * transfer: -ENODEV from deep inside the ULD would be reported against a stage that did not
+   * cause it. */
+  if (port == nullptr || port->bus == nullptr) {
+    status->failed_stage = stage::arguments;
+    return -EINVAL;
+  }
   if (address_7bit < 0x08U || address_7bit > 0x77U) {
     status->failed_stage = stage::address;
     return -EINVAL;
@@ -105,6 +125,9 @@ int open(sensor *device, uint8_t address_7bit, operation_status *status) {
   }
 
   memset(&device->uld, 0, sizeof(device->uld));
+  /* AFTER the memset, which would otherwise erase it: the context is the only field here the
+   * caller owns, and a zeroed one would make every later transfer refuse with no bus to name. */
+  device->uld.platform.port = port;
   device->uld.platform.address = static_cast<uint16_t>(address_7bit) << 1;
   /* This is the single production assignment of an L7 ULD object's firmware
    * pointer. Tests replace the runtime symbols at link time; there is no
@@ -113,8 +136,8 @@ int open(sensor *device, uint8_t address_7bit, operation_status *status) {
   device->uld.platform.firmware = firmware;
   device->uld.platform.firmware_size = firmware_size;
 
-  vl53l7cx_port_clear_error();
-  const int rc{finish(*status, stage::initialise, vl53l7cx_init(&device->uld))};
+  vl53l7cx_port_clear_error(device->uld.platform.port);
+  const int rc{finish(*device, *status, stage::initialise, vl53l7cx_init(&device->uld))};
   if (rc != 0) {
     memset(&device->uld, 0, sizeof(device->uld));
     return rc;
@@ -139,15 +162,15 @@ int configure(sensor *device, uint8_t frequency_hz, operation_status *status) {
     return -EINVAL;
   }
 
-  vl53l7cx_port_clear_error();
+  vl53l7cx_port_clear_error(device->uld.platform.port);
   int rc{
-      finish(*status, stage::resolution,
+      finish(*device, *status, stage::resolution,
              vl53l7cx_set_resolution(&device->uld, VL53L7CX_RESOLUTION_8X8))};
   if (rc != 0)
     return rc;
 
-  vl53l7cx_port_clear_error();
-  rc = finish(*status, stage::frequency,
+  vl53l7cx_port_clear_error(device->uld.platform.port);
+  rc = finish(*device, *status, stage::frequency,
               vl53l7cx_set_ranging_frequency_hz(&device->uld, frequency_hz));
   if (rc != 0)
     return rc;
@@ -167,9 +190,9 @@ int start(sensor *device, operation_status *status) {
   if (device->current != lifecycle::configured)
     return state_refusal(*status);
 
-  vl53l7cx_port_clear_error();
+  vl53l7cx_port_clear_error(device->uld.platform.port);
   const int rc{
-      finish(*status, stage::start, vl53l7cx_start_ranging(&device->uld))};
+      finish(*device, *status, stage::start, vl53l7cx_start_ranging(&device->uld))};
   /* A FAILURE HERE DOES NOT MEAN THE DEVICE IS NOT RANGING. The ULD writes the
    * start command and then polls and reads back, so a failure in any step after
    * the command went out leaves the device's state unknown. Record the debt
@@ -194,9 +217,9 @@ int stop(sensor *device, operation_status *status) {
       device->current != lifecycle::stop_unconfirmed)
     return state_refusal(*status);
 
-  vl53l7cx_port_clear_error();
+  vl53l7cx_port_clear_error(device->uld.platform.port);
   const int rc{
-      finish(*status, stage::stop, vl53l7cx_stop_ranging(&device->uld))};
+      finish(*device, *status, stage::stop, vl53l7cx_stop_ranging(&device->uld))};
   /* Only a confirmed stop clears the debt. A failed stop from `running` incurs
    * it, for the same reason start() does: the stop command may have been sent
    * and the device may or may not have acted on it. */
@@ -273,8 +296,8 @@ int read_once(sensor *device, scratch *work, sample *out,
     return state_refusal(*status);
 
   uint8_t ready{0};
-  vl53l7cx_port_clear_error();
-  int rc{finish(*status, stage::ready_check,
+  vl53l7cx_port_clear_error(device->uld.platform.port);
+  int rc{finish(*device, *status, stage::ready_check,
                 vl53l7cx_check_data_ready(&device->uld, &ready))};
   if (rc != 0)
     return rc;
@@ -286,8 +309,8 @@ int read_once(sensor *device, scratch *work, sample *out,
     return 0;
 
   memset(&work->results, 0, sizeof(work->results));
-  vl53l7cx_port_clear_error();
-  rc = finish(*status, stage::fetch,
+  vl53l7cx_port_clear_error(device->uld.platform.port);
+  rc = finish(*device, *status, stage::fetch,
               vl53l7cx_get_ranging_data(&device->uld, &work->results));
   if (rc != 0)
     return rc;
@@ -305,4 +328,4 @@ int read_once(sensor *device, scratch *work, sample *out,
 
 } // namespace lexxhard::tof_l7
 
-#endif // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif // ENABLE_TOF_L7_ULD

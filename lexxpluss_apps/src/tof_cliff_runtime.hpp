@@ -54,6 +54,9 @@
 #include "tof_acquisition.hpp"
 #include "tof_enumerator.hpp"
 
+/* grid_port() hands the L7 port out by pointer, so the type need not be complete here. */
+struct vl53l7cx_port_context;
+
 /* Only the test seam needs the fingerprint type. */
 namespace lexxhard::tof_proof { struct fingerprint; }
 
@@ -147,6 +150,13 @@ constexpr uint8_t kRoleUnassigned{0xFF};
  * the same epoch the descriptors were keyed under. A cycle whose descriptors carry kRoleUnassigned,
  * or keys from a mapping that has since been revoked, produces facts nothing can be keyed by. */
 int start_acquisition();
+
+#if defined(ENABLE_TOF_L7_ULD)
+/* The chain's grid pair and boot recovery share this i2c2 port context.
+ * Both sensors run on one thread; a sensor on another bus needs its own context.
+ */
+vl53l7cx_port_context *grid_port();
+#endif
 
 #ifdef CONFIG_ZTEST
 // Lets a suite exercise the single-shot rule more than once per image.

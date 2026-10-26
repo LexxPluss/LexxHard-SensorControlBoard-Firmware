@@ -46,6 +46,9 @@
 #include <zephyr/dfu/mcuboot.h>
 #include "tof_chain_controller.hpp"
 #endif
+#ifdef ENABLE_TOF_PACKAGE_BENCH
+#include "tof_package_bench_deadman.hpp"
+#endif
 
 namespace {
 
@@ -368,6 +371,13 @@ int main()
         printk("tof_chain: image confirmed\n");
     else
         printk("tof_chain: image confirm failed (%d), will revert on next boot\n", rc);
+#endif
+
+#ifdef ENABLE_TOF_PACKAGE_BENCH
+    // Package bench stays unconfirmed. Arm the reset that applies rollback even
+    // if a command wedges while the board continues feeding the watchdog.
+    // See tof_package_bench_deadman.hpp; no shell command can confirm this image.
+    lexxhard::tof_package_bench_deadman::arm();
 #endif
 
     gpio_dt_spec heart_beat_led = GPIO_DT_SPEC_GET(DT_NODELABEL(dbg_led1), gpios);

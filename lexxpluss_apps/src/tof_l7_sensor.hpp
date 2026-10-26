@@ -11,7 +11,11 @@
 
 #pragma once
 
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+/* GUARDED ON THE L7 FLAG ALONE. This file drives one already-addressed device through a port
+ * context the caller supplies; it names no bus, no enable chain and no scheduler, so the chain
+ * flag was never its condition. Narrowing it does not reach the acquisition layer, which carries
+ * its own gate -- ENABLE_TOF_CHAIN && ENABLE_TOF_CLIFF_ULD in tof_acquisition.cpp. */
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <stdint.h>
 
@@ -63,18 +67,17 @@ struct scratch {
   VL53L7CX_ResultsData results{};
 };
 
-/* CONCURRENCY: none. Every operation belongs to the one acquisition thread
- * while it owns the chain. The port's first-error record is process-global
- * because ST's callback carries no device context; a second caller could clear
- * another operation's transport error even if it used a different sensor and
- * scratch buffer. */
+/* Serialize all calls sharing a port context on one thread: clear/call/read
+ * is not atomic. Separate contexts may run independently. Transfer callbacks
+ * carry context; only SwapBuffer lacks a device argument.
+ */
 
-/* Initialise one already-addressed device. The 7-bit address is converted
- * exactly once for ST's 8-bit field. The firmware pointer has no
- * caller-supplied path: it is assigned only from
- * tof_l7_runtime::firmware_data(), after that runtime verified storage against
- * the signed-image accept-list. */
-int open(sensor *device, uint8_t address_7bit, operation_status *status);
+/* Open an already-addressed device on port's bus; convert the 7-bit address
+ * once to ST's 8-bit field. Firmware comes only from verified runtime storage.
+ * Reject a null/unbound port; the context must outlive every sensor call.
+ */
+int open(sensor *device, vl53l7cx_port_context *port, uint8_t address_7bit,
+         operation_status *status);
 
 /* The grid contract fixes 8x8. Frequency remains an explicit input because
  * scheduling and the sustainable rate have not been accepted yet; no production
@@ -125,4 +128,4 @@ int copy_raw(const VL53L7CX_ResultsData *input, sample *out);
 
 } // namespace lexxhard::tof_l7
 
-#endif // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif // ENABLE_TOF_L7_ULD

@@ -12,7 +12,6 @@
 #include <stddef.h>
 
 #include <zephyr/device.h>
-#include <zephyr/devicetree.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
@@ -24,40 +23,61 @@
 _Static_assert(VL53L7CX_MAX_RESULTS_SIZE <= VL53L7CX_PORT_MAX_TRANSFER,
                "the selected L7 grid fields must fit one proven transfer");
 
-static const struct device *const l7_bus = DEVICE_DT_GET(DT_NODELABEL(i2c2));
-static atomic_t first_error;
-static atomic_t completed_transfers;
+/* The only state left at file scope, and it is not a device's. See vl53l7cx_port.h. */
+static atomic_t argument_fault;
 
-static void remember_error(int rc)
+static void remember_error(struct vl53l7cx_port_context *port, int rc)
 {
-    if (rc != 0) {
-        (void)atomic_cas(&first_error, 0, rc);
+    if (port != NULL && rc != 0) {
+        (void)atomic_cas(&port->first_error, 0, rc);
     }
 }
 
 /* Only where a transaction actually completed. Deliberately not "attempted": the caller uses a
  * non-zero count as evidence that something on the bus answered. */
-static void remember_completion(void)
+static void remember_completion(struct vl53l7cx_port_context *port)
 {
-    (void)atomic_inc(&completed_transfers);
+    if (port != NULL) {
+        (void)atomic_inc(&port->completed_transfers);
+    }
 }
 
-void vl53l7cx_port_clear_error(void)
+void vl53l7cx_port_clear_error(struct vl53l7cx_port_context *port)
 {
-    atomic_set(&first_error, 0);
-    atomic_set(&completed_transfers, 0);
+    if (port == NULL) {
+        return;
+    }
+    atomic_set(&port->first_error, 0);
+    atomic_set(&port->completed_transfers, 0);
 }
 
-int vl53l7cx_port_error(void)
+int vl53l7cx_port_error(const struct vl53l7cx_port_context *port)
 {
-    return (int)atomic_get(&first_error);
+    /* A caller with no context never issued a transfer, so there is no device errno to report.
+     * -ENODEV rather than 0: reporting success for a question that could not be asked is how a
+     * missing context would be mistaken for a healthy bus. */
+    return port == NULL ? -ENODEV : (int)atomic_get(&port->first_error);
 }
 
-uint32_t vl53l7cx_port_completed_transfers(void)
+uint32_t vl53l7cx_port_completed_transfers(const struct vl53l7cx_port_context *port)
 {
-    const atomic_val_t seen = atomic_get(&completed_transfers);
+    if (port == NULL) {
+        return 0U;
+    }
+
+    const atomic_val_t seen = atomic_get(&port->completed_transfers);
 
     return seen < 0 ? UINT32_MAX : (uint32_t)seen;
+}
+
+int vl53l7cx_port_argument_fault(void)
+{
+    return (int)atomic_get(&argument_fault);
+}
+
+void vl53l7cx_port_clear_argument_fault(void)
+{
+    atomic_set(&argument_fault, 0);
 }
 
 static int address7(const VL53L7CX_Platform *platform, uint16_t *out)
@@ -70,7 +90,8 @@ static int address7(const VL53L7CX_Platform *platform, uint16_t *out)
     return 0;
 }
 
-static int write_chunk(uint16_t address, uint16_t reg, const uint8_t *data, uint32_t size)
+static int write_chunk(const struct device *bus, uint16_t address, uint16_t reg,
+                       const uint8_t *data, uint32_t size)
 {
     uint8_t index[2] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFFU)};
     struct i2c_msg messages[2] = {
@@ -80,12 +101,13 @@ static int write_chunk(uint16_t address, uint16_t reg, const uint8_t *data, uint
 
     if (size == 0U) {
         messages[0].flags |= I2C_MSG_STOP;
-        return i2c_transfer(l7_bus, messages, 1, address);
+        return i2c_transfer(bus, messages, 1, address);
     }
-    return i2c_transfer(l7_bus, messages, 2, address);
+    return i2c_transfer(bus, messages, 2, address);
 }
 
-static int read_chunk(uint16_t address, uint16_t reg, uint8_t *data, uint32_t size)
+static int read_chunk(const struct device *bus, uint16_t address, uint16_t reg, uint8_t *data,
+                      uint32_t size)
 {
     uint8_t index[2] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFFU)};
     struct i2c_msg messages[2] = {
@@ -93,7 +115,7 @@ static int read_chunk(uint16_t address, uint16_t reg, uint8_t *data, uint32_t si
         {.buf = data, .len = size, .flags = I2C_MSG_READ | I2C_MSG_RESTART | I2C_MSG_STOP},
     };
 
-    return i2c_transfer(l7_bus, messages, 2, address);
+    return i2c_transfer(bus, messages, 2, address);
 }
 
 static uint8_t transfer(VL53L7CX_Platform *platform, uint16_t register_address, uint8_t *values,
@@ -101,30 +123,39 @@ static uint8_t transfer(VL53L7CX_Platform *platform, uint16_t register_address, 
 {
     uint16_t address;
     int rc = address7(platform, &address);
+    /* Resolved before the argument checks so that their errno still lands somewhere when the
+     * address is also wrong; a platform with no context records nothing, which is why the null
+     * context is refused on its own below rather than being allowed to fail silently later. */
+    struct vl53l7cx_port_context *const port = platform != NULL ? platform->port : NULL;
 
     if (rc != 0 || (size != 0U && values == NULL)) {
-        remember_error(rc != 0 ? rc : -EINVAL);
+        remember_error(port, rc != 0 ? rc : -EINVAL);
         return VL53L7CX_STATUS_INVALID_PARAM;
+    }
+    /* No context means no controller to address. Refused here, before any argument is trusted,
+     * because the alternative is dereferencing a compiled-in bus that this port no longer has. */
+    if (port == NULL) {
+        return VL53L7CX_STATUS_ERROR;
     }
     /* Reject the whole request before the first transaction. Detecting the overflow only when a
      * later chunk begins would leave a partial register write behind and then report an ordinary
      * parameter error, which is not an operation the caller can safely retry. */
     if (size != 0U && (size - 1U) > (uint32_t)UINT16_MAX - register_address) {
-        remember_error(-EOVERFLOW);
+        remember_error(port, -EOVERFLOW);
         return VL53L7CX_STATUS_INVALID_PARAM;
     }
-    if (!device_is_ready(l7_bus)) {
-        remember_error(-ENODEV);
+    if (!device_is_ready(port->bus)) {
+        remember_error(port, -ENODEV);
         return VL53L7CX_STATUS_ERROR;
     }
 
     if (size == 0U) {
-        rc = write_chunk(address, register_address, NULL, 0);
+        rc = write_chunk(port->bus, address, register_address, NULL, 0);
         if (rc != 0) {
-            remember_error(rc);
+            remember_error(port, rc);
             return VL53L7CX_STATUS_ERROR;
         }
-        remember_completion();
+        remember_completion(port);
         return VL53L7CX_STATUS_OK;
     }
 
@@ -136,13 +167,13 @@ static uint8_t transfer(VL53L7CX_Platform *platform, uint16_t register_address, 
                                   : VL53L7CX_PORT_MAX_TRANSFER;
         const uint32_t indexed = (uint32_t)register_address + done;
 
-        rc = read ? read_chunk(address, (uint16_t)indexed, values + done, take)
-                  : write_chunk(address, (uint16_t)indexed, values + done, take);
+        rc = read ? read_chunk(port->bus, address, (uint16_t)indexed, values + done, take)
+                  : write_chunk(port->bus, address, (uint16_t)indexed, values + done, take);
         if (rc != 0) {
-            remember_error(rc);
+            remember_error(port, rc);
             return VL53L7CX_STATUS_ERROR;
         }
-        remember_completion();
+        remember_completion(port);
         done += take;
     } while (done < size);
 
@@ -163,7 +194,7 @@ uint8_t VL53L7CX_RdMulti(VL53L7CX_Platform *platform, uint16_t register_address,
                          uint32_t size)
 {
     if (size == 0U) {
-        remember_error(-EINVAL);
+        remember_error(platform != NULL ? platform->port : NULL, -EINVAL);
         return VL53L7CX_STATUS_INVALID_PARAM;
     }
     return transfer(platform, register_address, values, size, true);
@@ -177,8 +208,10 @@ uint8_t VL53L7CX_WrMulti(VL53L7CX_Platform *platform, uint16_t register_address,
 
 void VL53L7CX_SwapBuffer(uint8_t *buffer, uint16_t size)
 {
+    /* The one callback ST gives no platform pointer, so this fault belongs to the image rather
+     * than to any device. See vl53l7cx_port.h on why it is kept separate from a context's errno. */
     if (buffer == NULL || (size % sizeof(uint32_t)) != 0U) {
-        remember_error(-EINVAL);
+        (void)atomic_cas(&argument_fault, 0, -EINVAL);
         return;
     }
     for (uint16_t i = 0; i + sizeof(uint32_t) <= size; i += sizeof(uint32_t)) {

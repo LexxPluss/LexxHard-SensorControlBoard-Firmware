@@ -1,0 +1,125 @@
+vl53l7cx_stop_ranging() keeps what GO2 status said while it waited.
+
+On 2026-10-12 a bench run on dasher1 spent the whole five-second poll with
+every transfer succeeding and the MCU stop never confirmed. The classification
+that came out of it -- port_errno 0, completed 511, uld_status 0x01 -- places
+the failure in the handshake layer, and that is as far as it goes: the loop had
+read the device's answer 501 times and tested one bit of it, and the bytes
+themselves were gone. The question still open after that run is what the device
+was actually reporting, and the reads that would answer it had already been paid
+for.
+
+So this records them. It adds no transfer, changes no wait, and changes no
+branch: every value comes from a read the unmodified sequence already performs,
+and the only writes are into a caller-supplied structure. With no structure
+supplied the function behaves exactly as it did before, which is how the
+production image carries none of this.
+
+WHY THE READ STATUS IS SPLIT OUT. `status |= VL53L7CX_RdByte(...)` accumulates,
+so after the first failure the running status can no longer say whether THIS
+read succeeded -- and the Zephyr port leaves the caller's buffer untouched when
+a transfer fails, so the byte in `tmp` would be the previous sample wearing the
+current one's clothes. Each read's own return is therefore kept in `rd`,
+OR-ed into `status` exactly as before, and used to decide whether the value it
+produced may be recorded at all. A recorded value always has its `_valid`
+companion set; an unrecorded one is zero because the structure was cleared on
+entry, never because a read half-happened.
+
+THE TWO EXITS ARE NAMED SEPARATELY FROM THE BIT. `exit_reason` says how this
+loop ended -- not polled at all on the auto-stop path, the condition satisfied,
+or the 500 iterations exhausted -- while `saw_mcu_stop` says whether bit 7 was
+ever observed in a sample that was really read. For this loop the two happen to
+agree, because `tmp` changes only on a successful read. They are kept apart
+anyway: one is a property of the control flow and the other is a property of the
+device's answer, and a later reader deciding which one they need should not have
+to re-derive that they coincide here.
+
+AND IT IS NOT A COLD-START DETECTOR. _vl53l7cx_poll_for_mcu_boot() treats bit 0
+of the same register as an exit condition AFTER the firmware download and the
+MCU reset, so a value seen here is consistent with more than one device history
+and establishes nothing about whether the part was ever powered down. This patch
+produces evidence about GO2 status. Any conclusion drawn from it has to be named
+after what actually supports it.
+
+--- a/modules/vl53l7cx_api.c
++++ b/modules/vl53l7cx_api.c
+@@ -638,8 +638,14 @@
+ 		VL53L7CX_Configuration		*p_dev)
+ {
+ 	uint8_t tmp = 0, status = VL53L7CX_STATUS_OK;
++	uint8_t rd = VL53L7CX_STATUS_OK;
+ 	uint16_t timeout = 0;
+ 	uint32_t auto_stop_flag = 0;
++	struct vl53l7cx_go2_observation *obs = p_dev->platform.go2;
++
++	if(obs != NULL){
++		memset(obs, 0, sizeof(*obs));
++	}
+ 
+ 	status |= VL53L7CX_RdMulti(&(p_dev->platform),
+                           0x2FFC, (uint8_t*)&auto_stop_flag, 4);
+@@ -655,12 +661,31 @@
+ 	        /* Poll for G02 status 0 MCU stop */
+ 	        while(((tmp & (uint8_t)0x80) >> 7) == (uint8_t)0x00)
+ 	        {
+-	        	status |= VL53L7CX_RdByte(&(p_dev->platform), 0x6, &tmp);
++	        	rd = VL53L7CX_RdByte(&(p_dev->platform), 0x6, &tmp);
++	        	status |= rd;
++	        	if(obs != NULL){
++	        		obs->polls++;
++	        		if(rd == VL53L7CX_STATUS_OK){
++	        			if(obs->valid_polls == (uint16_t)0){
++	        				obs->first = tmp;
++	        				obs->first_valid = 1;
++	        			}
++	        			obs->last = tmp;
++	        			obs->last_valid = 1;
++	        			obs->valid_polls++;
++	        			if((tmp & (uint8_t)0x80) != (uint8_t)0){
++	        				obs->saw_mcu_stop = 1;
++	        			}
++	        		}
++	        	}
+ 	        	status |= VL53L7CX_WaitMs(&(p_dev->platform), 10);
+ 	        	timeout++;	/* Timeout reached after 5 seconds */
+ 
+ 	        	if(timeout > (uint16_t)500)
+ 				{
++					if(obs != NULL){
++						obs->exit_reason = VL53L7CX_GO2_EXIT_EXHAUSTED;
++					}
+ 					if(status == VL53L7CX_STATUS_OK)
+ 					{
+ 						status = VL53L7CX_STATUS_TIMEOUT_ERROR;
+@@ -668,12 +693,29 @@
+ 					break;
+ 				}
+         	}
++	        if((obs != NULL)
++	        	&& (obs->exit_reason == (uint8_t)VL53L7CX_GO2_EXIT_NOT_POLLED)){
++	        	obs->exit_reason = VL53L7CX_GO2_EXIT_CONFIRMED;
++	        }
+         }
+ 
+ 	/* Check GO2 status 1 if status is still OK */
+-	status |= VL53L7CX_RdByte(&(p_dev->platform), 0x6, &tmp);
++	rd = VL53L7CX_RdByte(&(p_dev->platform), 0x6, &tmp);
++	status |= rd;
++	if((obs != NULL) && (rd == VL53L7CX_STATUS_OK)){
++		obs->after_loop = tmp;
++		obs->after_loop_valid = 1;
++		if((tmp & (uint8_t)0x80) != (uint8_t)0){
++			obs->saw_mcu_stop = 1;
++		}
++	}
+ 	if((tmp & (uint8_t)0x80) != (uint8_t)0){
+-		status |= VL53L7CX_RdByte(&(p_dev->platform), 0x7, &tmp);
++		rd = VL53L7CX_RdByte(&(p_dev->platform), 0x7, &tmp);
++		status |= rd;
++		if((obs != NULL) && (rd == VL53L7CX_STATUS_OK)){
++			obs->status1 = tmp;
++			obs->status1_valid = 1;
++		}
+ 		if((tmp != (uint8_t)0x84) && (tmp != (uint8_t)0x85)){
+ 		   if(status == VL53L7CX_STATUS_OK){
+ 		      status = VL53L7CX_STATUS_ERROR;

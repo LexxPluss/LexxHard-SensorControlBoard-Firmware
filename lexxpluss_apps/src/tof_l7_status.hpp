@@ -73,6 +73,11 @@ inline constexpr uint8_t kUldTimeoutStatus{1};
 struct operation_status {
   stage failed_stage{stage::none};
   int port_errno{0};
+  /* An image-wide port argument fault, reported separately from port_errno because it is not
+   * something a device did: VL53L7CX_SwapBuffer() is the one ST callback with no platform
+   * pointer, so a buffer it cannot process belongs to this build rather than to a bus. Kept out
+   * of port_errno so a programming error is never filed as a transport failure. */
+  int argument_fault{0};
   uint8_t uld_status{0};
   bool sample_present{false};
 };

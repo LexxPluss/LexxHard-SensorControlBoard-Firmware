@@ -28,6 +28,17 @@ VERSION:=$(shell git describe --tags HEAD | cut -c2-)
 # make IN_HOST=1 WORKDIR=$PWD firmware
 WORKDIR:=$(if $(WORKDIR),$(WORKDIR),/workdir)
 RUNNER:=$(if $(IN_HOST),$(),docker compose run --rm zephyrbuilder)
+# The west workspace root -- the directory that holds zephyr/ next to the manifest repository. Found
+# by walking up, exactly as scripts/manage_zephyr_patches.sh does, because in a git worktree of the
+# app repository it is NOT $(CURDIR): the worktree has no zephyr/ of its own and shares the
+# workspace's.
+WSROOT:=$(shell d="$(CURDIR)"; while [ "$$d" != "/" ]; do if [ -e "$$d/zephyr/.git" ]; then echo "$$d"; break; fi; d=$$(dirname "$$d"); done)
+# Use ZBASE relative to the workspace root (e.g. zephyr-clean).
+# Patch verification and the build must use the same tree; compute host and
+# container paths separately because the workspace is mounted at WORKDIR.
+ZBASE:=
+ZBASE_VERIFY:=$(if $(ZBASE),ZEPHYR_TREE=$(WSROOT)/$(ZBASE),)
+ZBASE_BUILD:=$(if $(ZBASE),-DZEPHYR_BASE=$(WORKDIR)/$(ZBASE),)
 
 # Slot geometry, used by the asset check in dfu_test_image. The signed ceiling is the slot minus
 # the 432 B MCUboot trailer; image_ok sits 24 B from the slot end, 01 confirmed and ff unconfirmed,
@@ -577,6 +588,20 @@ firmware_auto_commission:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-auto-commission -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+
+# Shell-driven Package L7 on I2C4 at 0x29; no chain or safety-LiDAR bypass.
+# Deliver a padded test image: CAN DFU writes raw slot1 bytes, so the embedded
+# trailer must request a swap and leave image_ok=0xff. The image never confirms
+# itself; the deadman or another reset applies MCUboot rollback.
+.PHONY: firmware_tof_package_bench
+firmware_tof_package_bench:
+	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-bench -- $(ZBASE_BUILD) -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_BENCH=ON -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-package-bench/zephyr/zephyr.signed.bin out/zephyr_tof_package_bench.signed.bin
+	mv build-tof-package-bench/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_package_bench.signed.confirmed.bin
+	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin
+	printf '\377' | dd of=out/zephyr_tof_package_bench.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_bench.test.bin) - 24)) conv=notrunc status=none
 
 #
 # The `tof enum` command is present but is NOT expected to complete on this

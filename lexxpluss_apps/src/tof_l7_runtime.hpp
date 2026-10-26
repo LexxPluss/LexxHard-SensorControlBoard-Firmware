@@ -13,7 +13,7 @@
 
 #pragma once
 
-#if defined(ENABLE_TOF_CHAIN) && defined(ENABLE_TOF_L7_ULD)
+#if defined(ENABLE_TOF_L7_ULD)
 
 #include <stddef.h>
 #include <stdint.h>
@@ -37,8 +37,19 @@ struct snapshot {
 };
 
 /* Verify storage exactly once. A refusal is local to L7: the cliff path and its health channel must
- * still boot, while every L7 operation remains unavailable. */
+ * still boot, while every L7 operation remains unavailable.
+ *
+ * Reports what THIS CALL did, which is why it is not the entry point for a second consumer: the
+ * caller that loses the race gets -EALREADY. */
 int bootstrap();
+
+/* Share the image's single blob verification across sensors.
+ * Returns 0 when firmware_data() is available, -EINPROGRESS while another
+ * consumer verifies, or the stored refusal errno. bootstrap()'s -EALREADY
+ * alone cannot distinguish verifying, available and refused.
+ * Busy must not use -EAGAIN: that already denotes terminal uncommitted storage.
+ */
+int ensure_verified();
 
 snapshot current();
 const char *stage_name(stage s);
@@ -52,9 +63,10 @@ using verifier = tof_l7_blob::report (*)(const tof_l7_blob::accept_list &,
                                          tof_l7_blob::blob_view &);
 #ifdef CONFIG_ZTEST
 int bootstrap_for_test(verifier fn, const tof_l7_blob::accept_list &accepted);
+int ensure_verified_for_test(verifier fn, const tof_l7_blob::accept_list &accepted);
 void reset_for_test();
 #endif
 
 }  // namespace lexxhard::tof_l7_runtime
 
-#endif  // ENABLE_TOF_CHAIN && ENABLE_TOF_L7_ULD
+#endif  // ENABLE_TOF_L7_ULD

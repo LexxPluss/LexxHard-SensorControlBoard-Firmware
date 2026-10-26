@@ -29,6 +29,8 @@
 #include "tof_l7_recovery.hpp"
 #include "tof_l7_recovery_ops.hpp"
 #include "tof_l7_sensor.hpp"
+#include "tof_l7_probe_verdict.hpp"
+#include "vl53l7cx_port.h"
 
 namespace
 {
@@ -73,9 +75,29 @@ void reset_spy()
 
 extern "C" {
 
-void vl53l7cx_port_clear_error(void) { sticky_port_error = 0; port_completed_ = 0; }
-int vl53l7cx_port_error(void) { return sticky_port_error; }
-uint32_t vl53l7cx_port_completed_transfers(void) { return port_completed_; }
+/* The stubs record the context they were given, so a build that went back to one process-global
+ * record would fail here rather than quietly passing every behavioural test below. */
+const vl53l7cx_port_context *last_port_ctx_{nullptr};
+
+void vl53l7cx_port_clear_error(vl53l7cx_port_context *port)
+{
+    last_port_ctx_ = port;
+    sticky_port_error = 0;
+    port_completed_ = 0;
+}
+int vl53l7cx_port_error(const vl53l7cx_port_context *port)
+{
+    last_port_ctx_ = port;
+    return sticky_port_error;
+}
+uint32_t vl53l7cx_port_completed_transfers(const vl53l7cx_port_context *port)
+{
+    last_port_ctx_ = port;
+    return port_completed_;
+}
+int sticky_argument_fault_{0};
+int vl53l7cx_port_argument_fault(void) { return sticky_argument_fault_; }
+void vl53l7cx_port_clear_argument_fault(void) { sticky_argument_fault_ = 0; }
 
 uint8_t vl53l7cx_is_alive(VL53L7CX_Configuration *p_dev, uint8_t *p_is_alive)
 {
@@ -106,9 +128,17 @@ namespace
 
 lexxhard::tof_l7::sensor scratch_{};
 
+/* A non-null stand-in. This suite never reaches a driver, but the probe refuses a context that
+ * names no controller, so the pointer has to exist and be distinguishable. */
+const device test_bus_{};
+vl53l7cx_port_context ctx_{};
+
 rec::ops ops_under_test()
 {
-    return rec::uld_ops(&scratch_);
+    /* Set here rather than once at startup: several tests reset `scratch_` wholesale, and binding
+     * is the single place that installs the context on it. */
+    ctx_.bus = &test_bus_;
+    return rec::uld_ops(&scratch_, &ctx_);
 }
 
 }  // namespace
@@ -288,7 +318,7 @@ ZTEST(tof_l7_recovery_ops, test_a_transport_error_during_the_stop_keeps_its_errn
 ZTEST(tof_l7_recovery_ops, test_a_missing_scratch_refuses_both_calls_and_issues_nothing)
 {
     reset_spy();
-    const rec::ops o{rec::uld_ops(nullptr)};
+    const rec::ops o{rec::uld_ops(nullptr, &ctx_)};
     bool alive{true};
 
     zassert_equal(o.is_alive(o.ctx, 0x2AU, &alive), -EINVAL);
@@ -386,4 +416,258 @@ ZTEST(tof_l7_recovery_ops, test_an_empty_scratch_is_accepted)
     zassert_equal(spy_.alive_address, 0x2AU << 1, "and it was addressed for this probe");
 
     scratch_ = lexxhard::tof_l7::sensor{};
+}
+
+/* ---- the probe talks through the context it was bound with -------------------------------- */
+
+/* The recovery pass must use ITS OWN context: a second bus means a second scratch sensor with a
+ * second context, and the two must not share an errno or a completed-transfer count. Nothing else
+ * in this file would notice a return to one process-global record. */
+ZTEST(tof_l7_recovery_ops, test_the_probe_uses_the_context_it_was_bound_with)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    last_port_ctx_ = nullptr;
+
+    bool alive{false};
+    const rec::ops o{ops_under_test()};
+    zassert_ok(o.is_alive(o.ctx, 0x29U, &alive));
+
+    zassert_equal(last_port_ctx_, &ctx_, "the port was asked about the bound context");
+    zassert_equal(scratch_.uld.platform.port, &ctx_,
+                  "and the zeroing inside the probe did not drop it");
+}
+
+/* A scratch sensor whose context names no controller is refused like any other bad argument, and
+ * nothing is driven. Without the check the probe would reach the port, be told -ENODEV, and that
+ * reads exactly like a cold address -- the conclusion this pass exists not to reach by accident. */
+ZTEST(tof_l7_recovery_ops, test_a_context_without_a_bus_refuses_the_probe)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    const rec::ops o{ops_under_test()};
+    ctx_.bus = nullptr;
+
+    bool alive{true};
+    zassert_equal(o.is_alive(o.ctx, 0x29U, &alive), -EINVAL);
+    zassert_equal(spy_.alive_calls, 0, "the ULD was not asked");
+
+    ctx_.bus = &test_bus_;
+}
+
+/* BINDING MUST NOT TOUCH A SENSOR IT IS NOT ALLOWED TO USE. Installing the context first and
+ * leaning on the call-time lifecycle refusal would already have repointed a live session's bus by
+ * the time the probe was turned away: refused call, re-bussed sensor. */
+ZTEST(tof_l7_recovery_ops, test_binding_refuses_a_live_sensor_without_modifying_it)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+
+    vl53l7cx_port_context original{};
+    original.bus = &test_bus_;
+    scratch_.uld.platform.port = &original;
+    scratch_.current = lexxhard::tof_l7::lifecycle::running;
+
+    vl53l7cx_port_context intruder{};
+    intruder.bus = &test_bus_;
+    const rec::ops o{rec::uld_ops(&scratch_, &intruder)};
+
+    zassert_equal(scratch_.uld.platform.port, &original,
+                  "the live session still points at the context it was opened with");
+
+    bool alive{true};
+    zassert_equal(o.is_alive(o.ctx, 0x29U, &alive), -EINVAL, "and the probe is refused");
+    zassert_equal(spy_.alive_calls, 0, "with nothing issued");
+    zassert_equal(scratch_.uld.platform.port, &original, "still unmodified after the refusal");
+
+    scratch_ = lexxhard::tof_l7::sensor{};
+}
+
+/* An argument fault outranks the cold-boot classification: "nobody there" is the worst answer to
+ * give when the reason nothing was heard is that this build called the port wrongly. */
+ZTEST(tof_l7_recovery_ops, test_an_argument_fault_is_not_reported_as_an_empty_address)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    spy_.alive_port_error = -ENXIO;
+    spy_.alive_completed = 0U;
+    sticky_argument_fault_ = -EINVAL;
+
+    bool alive{true};
+    const rec::ops o{ops_under_test()};
+    zassert_equal(o.is_alive(o.ctx, 0x29U, &alive), -EINVAL,
+                  "not 0, which is how this pass reports a cold address");
+
+    sticky_argument_fault_ = 0;
+}
+
+/* THE STOP PATH OBEYS THE SAME ORDER. A stop that returns success is what the enumeration above
+ * acts on, so an image-wide fault must not be reportable as a completed stop -- and this path is
+ * the easiest of the three to leave out, because it already has a transport errno and a status
+ * byte of its own to report. */
+ZTEST(tof_l7_recovery_ops, test_an_argument_fault_is_not_reported_as_a_completed_stop)
+{
+    reset_spy();
+    scratch_ = lexxhard::tof_l7::sensor{};
+    spy_.stop_status = VL53L7CX_STATUS_OK;   /* the device would have said it stopped */
+    sticky_argument_fault_ = -EINVAL;
+
+    const rec::ops o{ops_under_test()};
+    zassert_equal(o.stop_ranging(o.ctx, 0x29U), -EINVAL,
+                  "not 0, which the enumeration would read as a stopped survivor");
+
+    sticky_argument_fault_ = 0;
+}
+
+/* ---- the probe rule, exhaustively and without a bus --------------------------------------- */
+
+/* The adapter above exercises this rule through a ULD spy, which is the right test for the
+ * adapter and a poor one for the rule: each case needs a whole fake probe. Extracting it made the
+ * decision addressable on its own, and every branch has a different failure direction, so each one
+ * is pinned here. */
+
+namespace probe = lexxhard::tof_l7_probe;
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_an_image_fault_outranks_everything)
+{
+    probe::inputs in{};
+    in.argument_fault = -EINVAL;
+    /* Everything else says "a healthy, present L7". */
+    in.port_errno = 0;
+    in.completed = 4;
+    in.uld_ok = true;
+    in.identity_matched = true;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_equal(v.rc, -EINVAL, "the build called the port wrongly; nothing else is interpretable");
+    zassert_false(v.present);
+    zassert_false(v.answered_without_matching_identity,
+                  "a failed probe heard no identity to disagree with");
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_clean_nack_with_nothing_completed_is_the_cold_boot)
+{
+    probe::inputs in{};
+    in.port_errno = -ENXIO;
+    in.completed = 0;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_ok(v.rc, "a completed probe that found nobody, which costs a cold boot nothing");
+    zassert_false(v.present);
+    /* THE ONE PAIR THAT MUST NOT BE CONFUSED. This is a completed probe with nobody there; the case
+     * below it is a completed probe with somebody wrong. Both report present == false, and only
+     * this field separates them -- on the Package sensor they need opposite handling. */
+    zassert_false(v.answered_without_matching_identity, "nothing answered at all");
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_nack_with_transfers_completed_is_a_partial_exchange)
+{
+    probe::inputs in{};
+    in.port_errno = -ENXIO;
+    in.completed = 2;
+    /* The identity flag is zero here, which is exactly why the rule asks the transport instead:
+     * the ULD sets it only when BOTH bytes match, so zero does not mean nothing answered. */
+    in.identity_matched = false;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_equal(v.rc, -EIO, "something answered, so this is not an empty address");
+    zassert_false(v.present);
+    zassert_false(v.answered_without_matching_identity,
+                  "the probe failed, so no identity verdict was reached; rc is what the caller acts on");
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_any_other_errno_never_reached_the_bus)
+{
+    const int errnos[]{-EIO, -ETIMEDOUT, -ENODEV};
+
+    for (const int e : errnos) {
+        probe::inputs in{};
+        in.port_errno = e;
+        in.completed = 1;
+        in.uld_ok = true;
+        in.identity_matched = true;
+
+        const probe::verdict v{probe::classify(in)};
+        zassert_equal(v.rc, e, "errno %d is passed through, not flattened to absent", e);
+        zassert_false(v.present);
+        zassert_false(v.answered_without_matching_identity,
+                      "errno %d never reached the bus, so no identity was heard", e);
+    }
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_non_ok_status_without_a_transport_error_is_an_anomaly)
+{
+    probe::inputs in{};
+    in.port_errno = 0;
+    in.completed = 4;
+    in.uld_ok = false;
+    in.identity_matched = false;
+
+    const probe::verdict v{probe::classify(in)};
+    zassert_equal(v.rc, -EIO,
+                  "every transfer succeeded and the ULD still refused; not 'nobody there'");
+    zassert_false(v.present);
+    zassert_false(v.answered_without_matching_identity,
+                  "reported through rc, not as an identity verdict: the ULD refused before giving one");
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_a_completed_probe_reports_the_identity_it_found)
+{
+    probe::inputs matched{};
+    matched.uld_ok = true;
+    matched.completed = 4;
+    matched.identity_matched = true;
+    const probe::verdict found{probe::classify(matched)};
+    zassert_ok(found.rc);
+    zassert_true(found.present);
+    zassert_false(found.answered_without_matching_identity,
+                  "the identity matched, so there is nothing to disagree about");
+
+    /* An ACK from something that is not an L7: a real anomaly, but one the caller acts on rather
+     * than one hidden behind an errno. */
+    probe::inputs unmatched{matched};
+    unmatched.identity_matched = false;
+    const probe::verdict other{probe::classify(unmatched)};
+    zassert_ok(other.rc, "the probe itself completed");
+    zassert_false(other.present);
+    zassert_true(other.answered_without_matching_identity,
+                 "THE THIRD OUTCOME: something is on the bus and it is not a VL53L7CX");
+}
+
+ZTEST(tof_l7_recovery_ops, test_probe_rule_the_outcomes_never_overlap)
+{
+    /* Pinned as a property rather than per case, because the Package lifecycle branches on these
+     * one at a time and would mishandle any input that set two of them at once.
+     *
+     * NOTE WHAT THE PROPERTY IS NOT. It is not "exactly one flag is set": the ordinary cold boot is
+     * a completed probe with nobody there, which is rc == 0 and NEITHER flag -- a fourth outcome,
+     * and the one an empty address legitimately produces. The invariants that matter are that a
+     * failed probe asserts nothing about identity, and that "an L7 answered" and "something that is
+     * not an L7 answered" can never both be true. */
+    const probe::inputs cases[]{
+        {.argument_fault = -EINVAL},
+        {.argument_fault = -EINVAL, .completed = 4, .uld_ok = true, .identity_matched = true},
+        {.port_errno = -ENXIO, .completed = 0},
+        {.port_errno = -ENXIO, .completed = 3},
+        {.port_errno = -ENXIO, .completed = 3, .uld_ok = true, .identity_matched = true},
+        {.port_errno = -EIO},
+        {.port_errno = -ETIMEDOUT, .completed = 4, .uld_ok = true, .identity_matched = true},
+        {.completed = 4, .uld_ok = false},
+        {.completed = 4, .uld_ok = false, .identity_matched = true},
+        {.completed = 4, .uld_ok = true, .identity_matched = true},
+        {.completed = 4, .uld_ok = true, .identity_matched = false},
+        {.completed = 0, .uld_ok = true, .identity_matched = true},
+    };
+
+    for (const probe::inputs &in : cases) {
+        const probe::verdict v{probe::classify(in)};
+
+        zassert_false(v.present && v.answered_without_matching_identity,
+                      "an L7 answered and something that is not an L7 answered cannot both hold");
+        if (v.rc != 0) {
+            zassert_false(v.present, "a failed probe heard no L7");
+            zassert_false(v.answered_without_matching_identity,
+                          "a failed probe reached no identity verdict either, rc=%d", v.rc);
+        }
+    }
 }

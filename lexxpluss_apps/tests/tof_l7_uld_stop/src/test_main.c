@@ -47,6 +47,41 @@ static int waits_seen;
 
 static int fail_reads;
 static int fail_read_reg;        /* -1 = none */
+/* Status 0 reads succeed this many times and then start failing. -1 = never. Lets a case put a
+ * transport fault PART WAY through the poll, which is the only shape that can tell a recorded
+ * value apart from a stale one. */
+static int fail_status0_after;
+/* THE I2C CALL SEQUENCE, not just its length.
+ *
+ * "The observer changes nothing" is a claim about WHICH transfers happen in WHICH order, and two
+ * runs can agree on the count while disagreeing on the order or the register. Counting was what the
+ * first version of that case compared, so it would have passed a record that read 0x07 instead of
+ * 0x06 somewhere. Every fake appends here, including the waits, because a wait moved or dropped is
+ * as much a behaviour change as a transfer. */
+enum trace_kind { TRACE_RD, TRACE_WR, TRACE_WAIT };
+
+struct trace_entry {
+	uint8_t kind;
+	uint16_t reg;   /* the wait's argument, in ms, for TRACE_WAIT */
+};
+
+enum { TRACE_CAPACITY = 4096 };
+
+static struct trace_entry trace[TRACE_CAPACITY];
+static int trace_len;
+static int trace_overflowed;
+
+static void trace_note(enum trace_kind kind, uint16_t reg)
+{
+	if (trace_len >= (int)TRACE_CAPACITY) {
+		trace_overflowed = 1;
+		return;
+	}
+	trace[trace_len].kind = (uint8_t)kind;
+	trace[trace_len].reg = reg;
+	++trace_len;
+}
+
 static uint8_t identity_device_id;
 static uint8_t identity_revision_id;
 
@@ -60,8 +95,11 @@ static void bus_reset(void)
 	waits_seen = 0;
 	fail_reads = 0;
 	fail_read_reg = -1;
+	fail_status0_after = -1;
 	identity_device_id = 0;
 	identity_revision_id = 0;
+	trace_len = 0;
+	trace_overflowed = 0;
 }
 
 /* MODELS THE REAL PORT'S FAILURE, which the rest of this fake does not: read_chunk() in
@@ -74,6 +112,14 @@ static uint8_t read_register(uint16_t reg, uint8_t *dst, uint32_t len)
 	if (fail_reads || (fail_read_reg >= 0 && reg == (uint16_t)fail_read_reg)) {
 		(void)len;
 		return VL53L7CX_STATUS_ERROR;   /* dst deliberately untouched */
+	}
+
+	if (reg == REG_G02_STATUS_0 && fail_status0_after >= 0 && polls_seen >= fail_status0_after) {
+		/* BEFORE the zeroing below, which is convenience for the success paths and would
+		 * otherwise hand back a written buffer for a transfer that failed -- exactly the
+		 * confusion these cases exist to rule out. */
+		(void)len;
+		return VL53L7CX_STATUS_ERROR;
 	}
 
 	memset(dst, 0, len);
@@ -110,30 +156,35 @@ static uint8_t read_register(uint16_t reg, uint8_t *dst, uint32_t len)
 uint8_t VL53L7CX_RdByte(VL53L7CX_Platform *platform, uint16_t reg, uint8_t *value)
 {
 	(void)platform;
+	trace_note(TRACE_RD, reg);
 	return read_register(reg, value, 1U);
 }
 
 uint8_t VL53L7CX_RdMulti(VL53L7CX_Platform *platform, uint16_t reg, uint8_t *values, uint32_t size)
 {
 	(void)platform;
+	trace_note(TRACE_RD, reg);
 	return read_register(reg, values, size);
 }
 
 uint8_t VL53L7CX_WrByte(VL53L7CX_Platform *platform, uint16_t reg, uint8_t value)
 {
-	(void)platform; (void)reg; (void)value;
+	(void)platform; (void)value;
+	trace_note(TRACE_WR, reg);
 	return VL53L7CX_STATUS_OK;
 }
 
 uint8_t VL53L7CX_WrMulti(VL53L7CX_Platform *platform, uint16_t reg, uint8_t *values, uint32_t size)
 {
-	(void)platform; (void)reg; (void)values; (void)size;
+	(void)platform; (void)values; (void)size;
+	trace_note(TRACE_WR, reg);
 	return VL53L7CX_STATUS_OK;
 }
 
 uint8_t VL53L7CX_WaitMs(VL53L7CX_Platform *platform, uint32_t time_ms)
 {
-	(void)platform; (void)time_ms;
+	(void)platform;
+	trace_note(TRACE_WAIT, (uint16_t)time_ms);
 	++waits_seen;
 	return VL53L7CX_STATUS_OK;
 }
@@ -186,6 +237,55 @@ ZTEST(tof_l7_uld_stop, test_a_stop_that_never_confirms_is_a_failure_not_a_timeou
 		      "and it says exactly that it timed out: the device contributed 0x00, so nothing "
 		      "else is folded in");
 	zassert_true(polls_seen > 500, "the full poll budget was spent: %d", polls_seen);
+}
+
+/* A TRANSPORT FAILURE MUST NOT BE REPORTED AS A HANDSHAKE TIMEOUT, which is the half of the
+ * layer rule that lives in this patch rather than in the adapter.
+ *
+ * The 2026-10-12 bench run returned -5 from the quiesce and nothing else, and the first reading of
+ * it was "the MCU stop was not confirmed". These two cases pin why the status byte cannot be read
+ * that way on its own: a read that fails leaves the polled byte untouched, so the loop runs to its
+ * bound exactly as a silent device would, and the patch's `status == OK` guard is the only thing
+ * keeping the transport error from being overwritten with TIMEOUT_ERROR.
+ *
+ * THEY ALSO PIN WHY THE DURATION IS NOT A DISCRIMINATOR: the poll budget is spent in full here too,
+ * so "it took five seconds" is true of both layers and separates neither. */
+ZTEST(tof_l7_uld_stop, test_a_failed_poll_read_reports_the_transport_error_not_a_timeout)
+{
+	confirm_after_polls = -1;
+	status0_before = 0x00;
+	fail_read_reg = REG_G02_STATUS_0;   /* the polled status read NACKs; everything else answers */
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR,
+		      "a stop whose poll could not be read is a transport failure and keeps that value");
+	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR,
+			  "the patch's `status == OK` guard is what stops the timeout from overwriting "
+			  "an error that had already been recorded");
+	/* COUNTED THROUGH THE WAIT, NOT THROUGH THE POLL. `polls_seen` is incremented on
+	 * read_register()'s SUCCESS path, so the read this case makes fail never reaches it -- the
+	 * first version of this assertion asked the one counter the scenario had just disabled. The
+	 * WaitMs fake is called once per iteration and does not fail, so it counts the iterations
+	 * that actually happened. */
+	zassert_equal(polls_seen, 0, "no poll read succeeded, so that counter cannot measure this");
+	zassert_true(waits_seen > 500,
+		     "and it still spent the whole five seconds, which is why the duration tells the "
+		     "two layers apart no better than the OR did: %d waits",
+		     waits_seen);
+}
+
+ZTEST(tof_l7_uld_stop, test_a_bus_that_answers_nothing_is_also_not_a_timeout)
+{
+	/* The blunter version: every read fails, including the auto-stop flag that decides whether the
+	 * MCU stop is provoked at all. Still an error, still not the timeout code. */
+	confirm_after_polls = -1;
+	fail_reads = 1;
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR);
+	zassert_not_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR);
 }
 
 /* The byte a silent device produces through a zeroing port is 0x00, and that is also the ordinary
@@ -425,3 +525,303 @@ ZTEST(tof_l7_uld_stop, test_is_alive_reports_not_alive_when_only_one_identity_by
 	zassert_equal(answered, 0U,
 		      "a half-read identity must not read as a recognised sensor");
 }
+
+/* ---- patch 0005: what GO2 status said while the stop handshake waited -----------------------
+ *
+ * These drive the SAME patched function over the same register map and assert on the structure it
+ * fills. The reason they belong here rather than beside the pure record is that the properties
+ * being pinned are properties of the patch: which reads it records, that it records none of them
+ * twice, and that attaching the observer changes neither the transfers nor the verdict.
+ */
+
+static struct vl53l7cx_go2_observation obs;
+
+static void observe(void)
+{
+	/* Poisoned, not zeroed. A patch that forgot to clear the structure on entry would pass a
+	 * zero-initialised check by accident; it cannot pass this one. */
+	memset(&obs, 0xA5, sizeof obs);
+	dev.platform.go2 = &obs;
+}
+
+ZTEST(tof_l7_uld_stop, test_a_stop_with_no_observer_behaves_exactly_as_before)
+{
+	/* The production image attaches nothing, so the null path is the one most code runs. It must
+	 * reach the same verdict with the same number of transfers. */
+	confirm_after_polls = -1;
+	status0_before = 0x00;
+	dev.platform.go2 = NULL;
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+	const int polls_without = polls_seen;
+	const int waits_without = waits_seen;
+
+	before(NULL);
+	confirm_after_polls = -1;
+	status0_before = 0x00;
+	observe();
+
+	const uint8_t rc_with = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc_with, rc, "the observer must not change the verdict");
+	zassert_equal(polls_seen, polls_without, "nor add a read: %d vs %d", polls_seen, polls_without);
+	zassert_equal(waits_seen, waits_without, "nor add a wait: %d vs %d", waits_seen, waits_without);
+}
+
+/* THE 2026-10-12 SHAPE. Every poll answered, bit 7 never set, the budget spent -- the run this
+ * patch was written for, and the bytes it could not report. */
+ZTEST(tof_l7_uld_stop, test_a_handshake_timeout_records_what_the_device_kept_answering)
+{
+	confirm_after_polls = -1;
+	status0_before = 0x01;
+	observe();
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR);
+	zassert_equal(obs.exit_reason, VL53L7CX_GO2_EXIT_EXHAUSTED);
+	zassert_equal(obs.first, 0x01, "the first answer, not an average or a last-one-wins");
+	zassert_true(obs.first_valid);
+	zassert_equal(obs.last, 0x01);
+	zassert_true(obs.last_valid);
+	zassert_equal(obs.polls, obs.valid_polls, "every read answered, which is what port_errno 0 said");
+	zassert_true(obs.polls > 500, "the full budget: %u", obs.polls);
+	zassert_false(obs.saw_mcu_stop, "and bit 7 never came up, which is the whole finding");
+	zassert_true(obs.after_loop_valid, "the read after the loop is part of the sequence already");
+	zassert_equal(obs.after_loop, 0x01);
+	zassert_false(obs.status1_valid, "status 1 is reached only when bit 7 is set");
+}
+
+ZTEST(tof_l7_uld_stop, test_a_confirmed_stop_records_the_bit_and_the_exit_that_saw_it)
+{
+	confirm_after_polls = 3;
+	status0_before = 0x01;
+	status0_after = 0x81;
+	status1_value = 0x84;
+	observe();
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_OK);
+	zassert_equal(obs.exit_reason, VL53L7CX_GO2_EXIT_CONFIRMED);
+	zassert_true(obs.saw_mcu_stop);
+	zassert_equal(obs.first, 0x01, "what it answered before it stopped");
+	zassert_equal(obs.last, 0x81, "and the answer that ended the wait");
+	zassert_true(obs.polls < 10U, "it did not spend the budget: %u", obs.polls);
+	zassert_true(obs.status1_valid, "bit 7 was set, so status 1 was read");
+	zassert_equal(obs.status1, 0x84);
+}
+
+ZTEST(tof_l7_uld_stop, test_reads_that_never_answered_leave_no_value_behind)
+{
+	/* The failure mode the validity flags exist for: a read that fails leaves the caller's buffer
+	 * untouched, so without them an unread register is indistinguishable from one reading 0x00. */
+	confirm_after_polls = -1;
+	fail_read_reg = REG_G02_STATUS_0;
+	observe();
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR);
+	zassert_true(obs.polls > 500, "the reads were attempted: %u", obs.polls);
+	zassert_equal(obs.valid_polls, 0U, "and none of them answered");
+	zassert_false(obs.first_valid);
+	zassert_false(obs.last_valid);
+	zassert_equal(obs.first, 0U, "zero because the clear-on-entry put it there, not because the "
+				     "device said zero");
+	zassert_false(obs.saw_mcu_stop, "a bit cannot be seen in a byte that was never read");
+}
+
+ZTEST(tof_l7_uld_stop, test_a_failure_part_way_through_keeps_the_answers_that_arrived)
+{
+	/* Four reads answer and the rest fail. `last` must be the fourth answer -- not the untouched
+	 * buffer the failing reads left behind, which still holds that same byte and would make a
+	 * record-unconditionally version look correct. The counts are what separate them. */
+	confirm_after_polls = -1;
+	status0_before = 0x11;
+	fail_status0_after = 4;
+	observe();
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR, "the transport error is kept, not overwritten");
+	zassert_equal(obs.valid_polls, 4U, "exactly the reads that answered");
+	zassert_true(obs.polls > 500, "while the loop still ran to its bound: %u", obs.polls);
+	zassert_equal(obs.first, 0x11);
+	zassert_true(obs.first_valid);
+	zassert_equal(obs.last, 0x11);
+	zassert_true(obs.last_valid);
+	zassert_false(obs.after_loop_valid, "the read after the loop failed too, so it recorded nothing");
+}
+
+ZTEST(tof_l7_uld_stop, test_each_stop_clears_the_observation_it_is_about_to_fill)
+{
+	/* An observation that survived into the next call would be the stale-evidence failure this
+	 * whole line of work exists to remove. The second stop here confirms quickly, so almost every
+	 * field from the first would be wrong if carried over. */
+	confirm_after_polls = -1;
+	status0_before = 0x01;
+	observe();
+	(void)vl53l7cx_stop_ranging(&dev);
+	zassert_equal(obs.exit_reason, VL53L7CX_GO2_EXIT_EXHAUSTED);
+	const uint16_t first_polls = obs.polls;
+
+	before(NULL);
+	confirm_after_polls = 2;
+	status0_before = 0x01;
+	status0_after = 0x81;
+	dev.platform.go2 = &obs;   /* the SAME structure, deliberately not re-poisoned */
+
+	(void)vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(obs.exit_reason, VL53L7CX_GO2_EXIT_CONFIRMED);
+	zassert_true(obs.polls < first_polls, "%u carried over from %u", obs.polls, first_polls);
+	zassert_true(obs.saw_mcu_stop);
+}
+
+ZTEST(tof_l7_uld_stop, test_a_stop_that_never_polled_is_not_a_poll_that_saw_nothing)
+{
+	/* is_auto_stop_enabled selects a path that skips the poll entirely. Reporting that as zero
+	 * polls is only truthful because the exit reason names it; the two are otherwise identical
+	 * to a reader. */
+	dev.is_auto_stop_enabled = 1U;
+	observe();
+
+	(void)vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(obs.exit_reason, VL53L7CX_GO2_EXIT_NOT_POLLED);
+	zassert_equal(obs.polls, 0U);
+	zassert_equal(obs.valid_polls, 0U);
+	zassert_false(obs.first_valid);
+}
+
+/* ---- what the record must not do to the sequence it records -------------------------------- */
+
+/* THE KNOBS THIS FAKE HAS, as one value, so a scenario can be replayed identically twice. */
+struct scenario {
+	const char *name;
+	uint8_t s0_before;
+	uint8_t s0_after;
+	uint8_t s1;
+	int confirm_after;
+	int fail_all_reads;
+	int fail_reg;
+	int fail_s0_from_poll;
+};
+
+static void apply(const struct scenario *s)
+{
+	status0_before = s->s0_before;
+	status0_after = s->s0_after;
+	status1_value = s->s1;
+	confirm_after_polls = s->confirm_after;
+	fail_reads = s->fail_all_reads;
+	fail_read_reg = s->fail_reg;
+	fail_status0_after = s->fail_s0_from_poll;
+}
+
+ZTEST(tof_l7_uld_stop, test_the_observer_moves_no_transfer_in_any_of_these_runs)
+{
+	/* "The record changes nothing" is a claim about WHICH transfers happen in WHICH order, and the
+	 * first version of this comparison checked only how MANY -- which a record that read 0x07 where
+	 * it used to read 0x06 would have passed. Each scenario is therefore run twice, once with no
+	 * observer and once with one, and the whole trace is compared entry by entry along with the
+	 * wait count and the verdict.
+	 *
+	 * The scenarios are the ones whose paths differ: a stop that never confirms, one that confirms
+	 * at once, one that confirms late, a bus that answers nothing, a status 1 that is rejected, and
+	 * a status 1 read that fails. */
+	static const struct scenario scenarios[] = {
+		{ "never confirms",        0x00, 0x80, 0x84, -1,  0, -1, -1 },
+		{ "confirms at once",      0x00, 0x80, 0x84,  1,  0, -1, -1 },
+		{ "confirms late",         0x00, 0x80, 0x84, 400, 0, -1, -1 },
+		{ "nothing answers",       0x00, 0x80, 0x84, -1,  1, -1, -1 },
+		{ "status 1 rejected",     0x00, 0x80, 0x5A,  1,  0, -1, -1 },
+		{ "status 1 read fails",   0x00, 0x80, 0x84,  1,  0, REG_G02_STATUS_1, -1 },
+		{ "polls stop answering",  0x00, 0x80, 0x84, -1,  0, -1, 10 },
+	};
+
+	static struct trace_entry without[TRACE_CAPACITY];
+
+	for (size_t i = 0; i < ARRAY_SIZE(scenarios); ++i) {
+		const struct scenario *const s = &scenarios[i];
+
+		before(NULL);
+		apply(s);
+		dev.platform.go2 = NULL;
+		const uint8_t rc_without = vl53l7cx_stop_ranging(&dev);
+		const int len_without = trace_len;
+		const int waits_without = waits_seen;
+		zassert_false(trace_overflowed, "%s: the trace did not fit, so it proves nothing", s->name);
+		memcpy(without, trace, sizeof(struct trace_entry) * (size_t)len_without);
+
+		before(NULL);
+		apply(s);
+		observe();
+		const uint8_t rc_with = vl53l7cx_stop_ranging(&dev);
+
+		zassert_false(trace_overflowed, "%s: the trace did not fit", s->name);
+		zassert_equal(rc_with, rc_without, "%s: the verdict moved, 0x%02x against 0x%02x",
+			      s->name, rc_with, rc_without);
+		zassert_equal(waits_seen, waits_without, "%s: %d waits against %d", s->name, waits_seen,
+			      waits_without);
+		zassert_equal(trace_len, len_without, "%s: %d transfers against %d", s->name, trace_len,
+			      len_without);
+		for (int at = 0; at < len_without; ++at) {
+			zassert_equal(trace[at].kind, without[at].kind,
+				      "%s: entry %d changed kind", s->name, at);
+			zassert_equal(trace[at].reg, without[at].reg,
+				      "%s: entry %d is register 0x%04x, was 0x%04x", s->name, at,
+				      trace[at].reg, without[at].reg);
+		}
+		zassert_true(len_without > 0, "%s: nothing happened, so nothing was compared", s->name);
+	}
+}
+
+ZTEST(tof_l7_uld_stop, test_a_status_1_read_that_failed_leaves_no_status_1_behind)
+{
+	/* The read that fails is the LAST one of the sequence, so there is a fully populated record in
+	 * front of it. A patch that stored the byte before checking the read would leave `status1`
+	 * holding whatever 0x06 last put in `tmp` -- a plausible value, attached to a transfer that
+	 * never happened. */
+	confirm_after_polls = 1;
+	status0_before = 0x00;
+	status0_after = 0x80;
+	fail_read_reg = REG_G02_STATUS_1;
+	observe();
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_ERROR, "the transport failure is the verdict");
+	zassert_equal(obs.status1_valid, 0, "no status 1 was read, so none may be reported");
+	zassert_equal(obs.status1, 0, "and the field stays as the entry clear left it, not 0x80");
+	zassert_equal(obs.after_loop_valid, 1, "the read before it did answer");
+	zassert_equal(obs.after_loop, 0x80);
+	zassert_equal(obs.saw_mcu_stop, 1);
+}
+
+ZTEST(tof_l7_uld_stop, test_a_confirmation_on_the_last_allowed_poll_is_recorded_though_it_times_out)
+{
+	/* THE EDGE THE TWO FIELDS EXIST TO SEPARATE. The timeout is checked after the read and before
+	 * the loop condition, so a device that sets bit 7 on poll 501 still leaves through the timeout
+	 * branch -- upstream behaviour, unchanged here. What must not happen is the RECORD agreeing
+	 * that nothing was seen: `exit_reason` says how the loop ended, `saw_mcu_stop` says what the
+	 * device said, and this is the run where they disagree. */
+	confirm_after_polls = 501;
+	status0_before = 0x00;
+	status0_after = 0x80;
+	status1_value = 0x84;
+	observe();
+
+	const uint8_t rc = vl53l7cx_stop_ranging(&dev);
+
+	zassert_equal(rc, VL53L7CX_STATUS_TIMEOUT_ERROR, "the verdict is upstream's and does not move");
+	zassert_equal(obs.exit_reason, VL53L7CX_GO2_EXIT_EXHAUSTED, "the loop did run out");
+	zassert_equal(obs.saw_mcu_stop, 1, "and the bit WAS seen, on the last poll it allowed");
+	zassert_equal(obs.last, 0x80, "which is the last thing the device answered");
+	zassert_equal(obs.last_valid, 1);
+	zassert_equal(obs.first, 0x00, "while the first answer was still the waiting one");
+	zassert_equal(obs.valid_polls, 501);
+	zassert_equal(obs.polls, 501);
+}
+
