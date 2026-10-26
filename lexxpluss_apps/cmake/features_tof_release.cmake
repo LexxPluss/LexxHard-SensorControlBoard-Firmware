@@ -26,6 +26,5 @@ list(APPEND EXTRA_DTC_OVERLAY_FILE
     ${CMAKE_CURRENT_LIST_DIR}/../overlays/tof_release.overlay)
 
 list(APPEND EXTRA_CONF_FILE
-    ${CMAKE_CURRENT_LIST_DIR}/../overlays/tof_integration_slim.conf
     ${CMAKE_CURRENT_LIST_DIR}/../overlays/auto_commission.conf
     ${CMAKE_CURRENT_LIST_DIR}/../overlays/tof_release.conf)
