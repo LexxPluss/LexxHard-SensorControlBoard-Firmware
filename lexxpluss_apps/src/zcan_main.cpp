@@ -30,7 +30,9 @@
 #include "zcan_board.hpp"
 #include "zcan_imu.hpp"
 #include "zcan_led.hpp"
+#ifdef ENABLE_PGV
 #include "zcan_pgv.hpp"
+#endif
 #include "zcan_uss.hpp"
 #include "zcan_dfu.hpp"
 #include "zcan_gpio.hpp"
@@ -64,7 +66,9 @@ public:
         act_srv.init();
         imu.init();
         led.init();
+#ifdef ENABLE_PGV
         pgv.init();
+#endif
         uss.init();
         gpio.init();
         tug_encoder.init();
@@ -79,7 +83,9 @@ public:
             act_srv.poll();
             imu.poll();
             led.poll();
+#ifdef ENABLE_PGV
             pgv.poll();
+#endif
             uss.poll();
             gpio.poll();
             tug_encoder.poll();
@@ -96,7 +102,9 @@ private:
     lexxhard::zcan_actuator_service::zcan_actuator_service act_srv;
     lexxhard::zcan_imu::zcan_imu imu;
     lexxhard::zcan_led::zcan_led led;
+#ifdef ENABLE_PGV
     lexxhard::zcan_pgv::zcan_pgv pgv;
+#endif
     lexxhard::zcan_uss::zcan_uss uss;
     lexxhard::zcan_gpio::zcan_gpio gpio;
     lexxhard::zcan_tug_encoder::zcan_tug_encoder tug_encoder;

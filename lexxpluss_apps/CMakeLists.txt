@@ -30,6 +30,12 @@ if(FEATURES_FILE)
     include(${FEATURES_FILE})
 endif()
 
+# PGV is part of every image unless the features file says the robot has none.
+# This is the one option that defaults to on.
+if(NOT DEFINED ENABLE_PGV)
+    set(ENABLE_PGV 1)
+endif()
+
 # The DTCM reservation that turns the watchdog tombstone into reserved memory rather than memory
 # nobody happens to use yet. Added here because Kconfig and the devicetree are fixed by
 # find_package(Zephyr) below, and applied to EVERY image rather than named per target: a build that
@@ -97,6 +103,10 @@ project(lexxpluss_apps)
 
 FILE(GLOB app_sources src/*.cpp)
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
+# The glob would otherwise compile it and register the pgv shell command.
+if(NOT ENABLE_PGV)
+    list(FILTER app_sources EXCLUDE REGEX "/pgv_controller\\.cpp$")
+endif()
 target_sources(app PRIVATE ${app_sources} ${ros_sources})
 
 # LOAD-BEARING, NOT TIDY, AND -Werror=switch-enum ALONE DID NOT DO IT.
@@ -175,6 +185,10 @@ endif()
 
 if(ENABLE_PUSH_MODE)
     add_definitions(-DENABLE_PUSH_MODE)
+endif()
+
+if(ENABLE_PGV)
+    add_definitions(-DENABLE_PGV)
 endif()
 
 # ToF chain enumeration glue (AMRSW-2322 Phase 2). Owns i2c2: the tug
