@@ -1,0 +1,4 @@
+tests:
+  tof.seq_issuer:
+    platform_allow: native_sim
+    tags: tof

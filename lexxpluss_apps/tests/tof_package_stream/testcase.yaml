@@ -1,0 +1,4 @@
+tests:
+  tof.package_stream:
+    platform_allow: native_sim
+    tags: tof
