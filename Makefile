@@ -603,6 +603,19 @@ firmware_tof_package_bench:
 	cp out/zephyr_tof_package_bench.signed.confirmed.bin out/zephyr_tof_package_bench.test.bin
 	printf '\377' | dd of=out/zephyr_tof_package_bench.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_bench.test.bin) - 24)) conv=notrunc status=none
 
+# Auto Package image. IDs come from tof_can_ids.hpp; 5 Hz still needs rate
+# acceptance. Listen for one second before sending. The default deadman resets
+# the unconfirmed test image; permanent use needs explicit OFF and acceptance.
+.PHONY: firmware_tof_package_auto
+firmware_tof_package_auto:
+	$(ZBASE_VERIFY) ./scripts/manage_zephyr_patches.sh verify
+	$(RUNNER) west zephyr-export
+	$(RUNNER) west build -p always -b lexxpluss_scb lexxpluss_apps -d build-tof-package-auto -- $(ZBASE_BUILD) -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_PACKAGE_AUTO=ON -DTOF_PACKAGE_AUTO_HZ=5 -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	mv build-tof-package-auto/zephyr/zephyr.signed.bin out/zephyr_tof_package_auto.signed.bin
+	mv build-tof-package-auto/zephyr/zephyr.signed.confirmed.bin out/zephyr_tof_package_auto.signed.confirmed.bin
+	cp out/zephyr_tof_package_auto.signed.confirmed.bin out/zephyr_tof_package_auto.test.bin
+	printf '\377' | dd of=out/zephyr_tof_package_auto.test.bin bs=1 seek=$$(($$(stat -c%s out/zephyr_tof_package_auto.test.bin) - 24)) conv=notrunc status=none
+
 #
 # The `tof enum` command is present but is NOT expected to complete on this
 # image: overlays/tof_chain.overlay pins the bus at 400 kHz for the acquisition

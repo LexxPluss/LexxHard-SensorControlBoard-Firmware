@@ -4,50 +4,21 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * THE BENCH IMAGE'S WAY BACK TO PRODUCTION, and the reason it is not optional.
- *
- * A Package bench image is delivered as a padded TEST image over the CAN DFU and is never
- * confirmed. MCUboot reverts an unconfirmed image at the next reset, so the whole guarantee rests on
- * something producing that reset. Two cases produce one by themselves: a crash early in boot, and
- * any fault that stops board_controller feeding the independent watchdog. A third does not -- a
- * build that wedges its own subsystems while board_controller keeps feeding -- and that is exactly
- * what the L7 bring-up hit on dasher2: every CAN stream and the shell stopped, no fatal, no reset,
- * and getting the production image back took someone power-cycling the machine.
- *
- * WHY THIS FILE EXISTS SEPARATELY FROM THE DIAG IMAGE'S VERSION. The diag image carries the same
- * timer, but it is on another branch and its arming sits inside a chain build's confirm block. A
- * bench image cannot inherit that protection by being similar to it; nothing in a
- * ENABLE_TOF_PACKAGE_BENCH build armed anything, which left an unconfirmed image running until a
- * human noticed.
- *
- * TWO DELIBERATE DIFFERENCES FROM THE DIAG IMAGE:
- *
- *   - THERE IS NO CONFIRM COMMAND ANYWHERE IN A BENCH IMAGE. The diag image could be made permanent
- *     from its shell. This one cannot, by construction, so the only two outcomes are a revert on the
- *     deadman and a revert on any other reset. An acceptance run has no reason to make a bench image
- *     permanent, and the command would be the one way the guarantee could be spent by accident.
- *   - AN EXTENSION IS BOUNDED AND MANUAL. `pkg_tof hold` re-arms the window, at most
- *     kMaxExtensions times. Nothing re-arms it automatically: a timer that renews itself on
- *     activity is a timer that never fires during a session that went wrong slowly.
- *
- * THE REBOOT IS A WHOLE-MACHINE POWER CYCLE, not an SCB-only reset: the SCB owns the main power
- * rails, so a cold reboot drops everything and the machine comes back in about 80 s. That is the
- * safe direction -- it costs a re-flash, while not rebooting leaves a machine running an image
- * nobody is watching -- but it is not quiet, and an operator has to be told it is coming.
+ * An unconfirmed test image reverts only after reset. The timer supplies that
+ * reset even if a Package thread hangs while the board watchdog keeps feeding.
+ * Bench builds allow two manual `pkg_tof hold` extensions and no confirm command;
+ * auto builds have no hold command. The SCB reset drops the main power rails.
  */
 
 #pragma once
 
-#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO_DEADMAN)
 
 #include <stdint.h>
 
 namespace lexxhard::tof_package_bench_deadman {
 
-/* The window an acceptance run gets, and the most it can be extended to. 10 minutes covers the
- * scripted sequence (status, bind, up, read, stop, and a second up/read/stop) several times over;
- * two extensions bound the worst case at 30 minutes from arming, after which the only way to keep
- * this image running is to re-flash it, which is a decision someone has to make again. */
+/* Ten-minute test window; two extensions cap the run at 30 minutes from arming. */
 inline constexpr uint32_t kWindowMinutes{10};
 inline constexpr uint32_t kMaxExtensions{2};
 
@@ -72,4 +43,4 @@ uint32_t extensions_used(void);
 
 }  // namespace lexxhard::tof_package_bench_deadman
 
-#endif  // ENABLE_TOF_PACKAGE_BENCH
+#endif  // ENABLE_TOF_PACKAGE_BENCH || ENABLE_TOF_PACKAGE_AUTO_DEADMAN

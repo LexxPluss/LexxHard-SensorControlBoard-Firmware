@@ -35,8 +35,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#if !defined(ADAPTER_SOURCE) || !defined(SOURCE_LIST_FILE)
-#error "CMake must pass ADAPTER_SOURCE and SOURCE_LIST_FILE"
+#if !defined(DEVICE_SOURCE) || !defined(SHELL_SOURCE) || !defined(RUNTIME_SOURCE) || \
+    !defined(SOURCE_LIST_FILE)
+#error "CMake must pass DEVICE_SOURCE, SHELL_SOURCE, RUNTIME_SOURCE and SOURCE_LIST_FILE"
 #endif
 
 namespace {
@@ -172,6 +173,14 @@ constexpr const char *kClearer{"tof_l7_quiesce::forget_all("};
  * demonstrated. Naming what is allowed catches every substitution rather than one. */
 constexpr const char *kApprovedClock{"k_ticks_to_us_floor64(k_uptime_ticks())"};
 
+/* The scoped declaration that keeps a 5.43 s quiesce from being a reset, and the L7 progress
+ * bracket it has to wrap. Spelled as the declarations rather than the type names, so the struct
+ * definition itself is not counted as a use. */
+constexpr const char *kDeclaredLongOperation{"declared_long_operation declared"};
+constexpr const char *kWatchedBracket{"watched_uld_operation watched"};
+constexpr const char *kFeederBegin{"tof_watchdog_feeder::long_operation_begin("};
+constexpr const char *kFeederEnd{"tof_watchdog_feeder::long_operation_end("};
+
 constexpr const char *kStepWriter{"tof_l7_steps::remember("};
 constexpr const char *kStepClearer{"tof_l7_steps::forget_all("};
 /* HOW THE APPLICATION CLEARS, and the whole expression, not just the call. The argument is the
@@ -209,7 +218,7 @@ void copy_quiesce_body()
     zassert_true(body_of("int hook_quiesce(", &from, &to),
                  "hook_quiesce() could not be located in %s, so where the record is written and "
                  "what clock it reads cannot be established",
-                 ADAPTER_SOURCE);
+                 DEVICE_SOURCE);
     const size_t len{to - from};
     zassert_true(len < kBufferSize, "the hook body does not fit");
     memcpy(body_, stripped_ + from, len);
@@ -222,7 +231,7 @@ ZTEST_SUITE(tof_l7_quiesce_call_sites, NULL, NULL, NULL, NULL, NULL);
 
 ZTEST(tof_l7_quiesce_call_sites, test_the_record_is_written_once_inside_the_quiesce_hook)
 {
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(DEVICE_SOURCE);
     copy_quiesce_body();
 
     zassert_equal(count_of(body_, kWriter), 1U,
@@ -251,7 +260,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_application_source_clears_the_record_or
             continue;
         ++seen;
         read_and_strip(line);
-        const bool is_adapter{strstr(line, "tof_package_bench.cpp") != nullptr};
+        const bool is_adapter{strstr(line, "tof_package_device.cpp") != nullptr};
         if (!is_adapter)
             zassert_equal(count_of(stripped_, kWriter), 0U, "%s writes the quiesce record", line);
         zassert_equal(count_of(stripped_, kClearer), 0U,
@@ -264,9 +273,43 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_application_source_clears_the_record_or
                  seen);
 }
 
+/* Watchdog cases set the declaration flag directly, so this gate checks the
+ * production call site. Only quiesce may declare, and it must enclose its L7
+ * progress bracket; probe, open and start retain the 5 s bound. */
+ZTEST(tof_l7_quiesce_call_sites, test_only_the_quiesce_declares_a_long_operation_and_it_wraps_the_bracket)
+{
+    read_and_strip(DEVICE_SOURCE);
+
+    /* The feeder's declaration API is reached from the scoped type and from nowhere else, so a
+     * hand-rolled begin/end that forgets a return path cannot appear. */
+    zassert_equal(count_of(stripped_, kFeederBegin), 1U,
+                  "the adapter must call %s exactly once -- from the scoped type's constructor",
+                  kFeederBegin);
+    zassert_equal(count_of(stripped_, kFeederEnd), 1U,
+                  "the adapter must call %s exactly once -- from the scoped type's destructor",
+                  kFeederEnd);
+
+    copy_quiesce_body();
+    zassert_equal(count_of(body_, kDeclaredLongOperation), 1U,
+                  "hook_quiesce() declares the long operation exactly once; without it a 5.43 s "
+                  "stop handshake trips the 5,000 ms in-flight bound and the board resets");
+
+    const char *const declared{strstr(body_, kDeclaredLongOperation)};
+    const char *const watched{strstr(body_, kWatchedBracket)};
+    zassert_not_null(watched, "hook_quiesce() no longer brackets its ULD call as L7 progress");
+    zassert_true(declared < watched,
+                 "the declaration must be constructed BEFORE the L7 bracket, so that it is "
+                 "destroyed after it");
+
+    /* And no other hook declares one. Each of these is judged at l7_ms on purpose. */
+    zassert_equal(count_of(stripped_, kDeclaredLongOperation), 1U,
+                  "only hook_quiesce() may declare a long operation: the probe, the download and "
+                  "the start are the operations l7_ms exists to bound");
+}
+
 ZTEST(tof_l7_quiesce_call_sites, test_the_quiesce_is_timed_from_the_approved_sixty_four_bit_source)
 {
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(DEVICE_SOURCE);
     copy_quiesce_body();
 
     zassert_equal(count_of(body_, kApprovedClock), 2U,
@@ -291,7 +334,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_quiesce_is_timed_from_the_approved_six
 
 ZTEST(tof_l7_quiesce_call_sites, test_each_bring_up_step_records_itself_once_and_names_its_own_step)
 {
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(DEVICE_SOURCE);
 
     size_t writers_in_hooks{0};
     for (const hook_expectation &expected : kStepHooks) {
@@ -322,7 +365,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_a_step_hook_never_reads_the_port_context)
      * step records come from `operation_status`, the adjudication the sensor layer already made.
      * Reading the port here would look like an improvement and would import the previous
      * operation's counters on every early refusal. */
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(DEVICE_SOURCE);
 
     for (const hook_expectation &expected : kStepHooks) {
         size_t from{0}, to{0};
@@ -346,7 +389,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_only_when_a_r
      * only if the run is one that started. Review reproduced the other case on 2026-10-13: an `up`
      * refused for being in `blocked` cleared first and asked afterwards, so a call that performed
      * no operation erased the failing open that preceded it. */
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(DEVICE_SOURCE);
 
     zassert_equal(count_of(stripped_, kStepBegin), 1U,
                   "exactly one round boundary: none makes `not called` meaningless after the first "
@@ -356,17 +399,18 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_only_when_a_r
                   "defect itself -- whether a round begins is the lifecycle's answer, and "
                   "begin_round() is where it is applied");
 
-    /* THE BOUNDARY MOVED WHEN THE TAKEOVER ENTRY ARRIVED, and the property did not. Both commands
-     * run through run_round(), which is where the clear now lives; checking cmd_up() would now pass
-     * trivially on a one-line delegation and prove nothing about either entry. */
+    /* THE BOUNDARY MOVED TWICE AND THE PROPERTY DID NOT: first out of cmd_up() when the takeover
+     * entry arrived, and then out of the shell altogether when an unattended runtime became a
+     * second caller. It is now the device layer's round entry, which is the only place either
+     * caller can reach a lifecycle round through. */
     size_t from{0}, to{0};
-    zassert_true(body_of("int run_round(", &from, &to), "run_round() not found");
+    zassert_true(body_of("int begin_round(", &from, &to), "begin_round() not found");
     const size_t len{to - from};
     memcpy(body_, stripped_ + from, len);
     body_[len] = '\0';
     zassert_equal(count_of(body_, kStepBeginGuarded), 1U,
-                  "run_round() must clear through `%s`. The argument is the property: anything else "
-                  "clears for rounds the lifecycle refused",
+                  "begin_round() must clear through `%s`. The argument is the property: anything "
+                  "else clears for rounds the lifecycle refused",
                   kStepBeginGuarded);
 
     /* AND IT IS ASKED BEFORE THE ROUND RUNS, which the count alone does not say. Asked afterwards
@@ -374,7 +418,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_only_when_a_r
      * records would never be cleared and every run would show the first one's steps. */
     const char *const boundary{strstr(body_, kStepBeginGuarded)};
     const char *const runs_a_round{strstr(body_, "lifecycle_.")};
-    zassert_not_null(runs_a_round, "run_round() calls no lifecycle entry");
+    zassert_not_null(runs_a_round, "begin_round() calls no lifecycle entry");
     zassert_true(boundary < runs_a_round,
                  "the round boundary is applied after the round has already run, so it reads the "
                  "state the round left rather than the one it started from");
@@ -382,8 +426,8 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_step_records_are_cleared_only_when_a_r
     /* AND THE QUIESCE RECORD IS NOT CLEARED WITH THEM. The quiesce happens inside the round, so a
      * clear that took it too would discard the observation the last window needed. */
     zassert_equal(count_of(body_, "tof_l7_quiesce::forget_all("), 0U,
-                  "run_round() clears the quiesce record, which is taken during the very call it is "
-                  "clearing for");
+                  "begin_round() clears the quiesce record, which is taken during the very call it "
+                  "is clearing for");
 }
 
 ZTEST(tof_l7_quiesce_call_sites, test_every_command_that_starts_a_round_goes_through_the_boundary)
@@ -391,7 +435,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_every_command_that_starts_a_round_goes_thr
     /* The clear lives in one place, so an entry that reached a lifecycle round without passing
      * through it would start a round with the previous one's step records still in place. There are
      * two commands now and there may be more; each must delegate rather than call a round itself. */
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(SHELL_SOURCE);
 
     static const char *const commands[]{"int cmd_up(", "int cmd_takeover("};
     for (const char *const signature : commands) {
@@ -407,9 +451,9 @@ ZTEST(tof_l7_quiesce_call_sites, test_every_command_that_starts_a_round_goes_thr
                       "%s applies a round boundary of its own, so there are now two places that "
                       "decide when the step records are cleared",
                       signature);
-        zassert_equal(count_of(body_, "lifecycle_.bring_up("), 0U,
+        zassert_equal(count_of(body_, "lifecycle().bring_up("), 0U,
                       "%s calls a lifecycle round directly, bypassing the boundary", signature);
-        zassert_equal(count_of(body_, "lifecycle_.take_over_unknown_state("), 0U,
+        zassert_equal(count_of(body_, "lifecycle().take_over_unknown_state("), 0U,
                       "%s calls a lifecycle round directly, bypassing the boundary", signature);
     }
 }
@@ -429,7 +473,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_nothing_in_the_adapter_reassigns_the_seque
      * Matched by scanning for the identifier followed by an assignment rather than by a fixed
      * substring, because "boot_sequence_ =" and "boot_sequence_=" are the same defect and a
      * substring check would catch only whichever one somebody happened to write. */
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(DEVICE_SOURCE);
 
     size_t mentions{0};
     size_t assignments{0};
@@ -447,7 +491,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_nothing_in_the_adapter_reassigns_the_seque
 
     zassert_equal(assignments, 0U,
                   "something in %s assigns the sequence source. One source spans the boot; "
-                  "re-creating it reissues numbers a consumer has already seen", ADAPTER_SOURCE);
+                  "re-creating it reissues numbers a consumer has already seen", DEVICE_SOURCE);
     /* A probe that matched nothing would pass. The declaration, the issue adapter and the run's
      * report are the legitimate mentions, so there are at least three. */
     zassert_true(mentions >= 3U, "only %zu mentions of %s were found, so this gate read nothing",
@@ -467,7 +511,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_shell_command_reaches_a_round_without_t
      * DID start one and was never checked, because nothing fails when the list falls behind the
      * file. The hazard the list guards against is derivable, so it is derived, and the list is left
      * to carry only the claim that is not. */
-    read_and_strip(ADAPTER_SOURCE);
+    read_and_strip(SHELL_SOURCE);
 
     size_t commands{0};
     const char *at{stripped_};
@@ -491,10 +535,10 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_shell_command_reaches_a_round_without_t
         memcpy(body_, stripped_ + from, len);
         body_[len] = '\0';
 
-        zassert_equal(count_of(body_, "lifecycle_.bring_up("), 0U,
+        zassert_equal(count_of(body_, "lifecycle().bring_up("), 0U,
                       "%s calls a lifecycle round directly, bypassing the boundary that clears the "
                       "step records", name);
-        zassert_equal(count_of(body_, "lifecycle_.take_over_unknown_state("), 0U,
+        zassert_equal(count_of(body_, "lifecycle().take_over_unknown_state("), 0U,
                       "%s calls a lifecycle round directly, bypassing the boundary that clears the "
                       "step records", name);
         zassert_equal(count_of(body_, kStepBegin), 0U,
@@ -509,7 +553,53 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_shell_command_reaches_a_round_without_t
      * the time of writing and the count only grows, so a floor is the right assertion -- an exact
      * number would be one more list to maintain. */
     zassert_true(commands >= 3U, "only %zu shell command bodies were found in %s", commands,
-                 ADAPTER_SOURCE);
+                 SHELL_SOURCE);
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_only_the_device_layer_reaches_a_lifecycle_round)
+{
+    /* THE HAZARD A SECOND CALLER CREATED. The round boundary used to be in the shell, where one
+     * command either went through it or did not. It is now the device layer's round entry, and
+     * there are two callers above it -- the shell and an unattended runtime -- so the question is
+     * no longer "does this command delegate" but "can anything in the tree reach a round without
+     * the boundary at all". That is derivable, so it is derived: every application source except
+     * the device layer must name neither lifecycle round entry.
+     *
+     * `bring_up` IS NAMED THROUGH ITS ACCESSOR and take_over_unknown_state() is not, which is not
+     * an inconsistency: the cliff chain has an unrelated bring_up() of its own in
+     * tof_acquisition.cpp, so a bare match there reports a module that has nothing to do with this
+     * lifecycle. Every caller outside the device layer must reach this object through
+     * lifecycle(), so that spelling is the complete set for it. take_over_unknown_state() exists
+     * nowhere else in the tree and needs no qualifier. */
+    FILE *const f{fopen(SOURCE_LIST_FILE, "rb")};
+    zassert_not_null(f, "cannot read the generated source list");
+    const size_t got{fread(list_, 1, sizeof list_ - 1U, f)};
+    const bool whole{feof(f) != 0};
+    fclose(f);
+    zassert_true(whole, "the source list did not fit this gate's buffer");
+    list_[got] = '\0';
+
+    size_t checked{0};
+    char *saved{nullptr};
+    for (char *line = strtok_r(list_, "\n", &saved); line != nullptr;
+         line = strtok_r(nullptr, "\n", &saved)) {
+        if (*line == '\0')
+            continue;
+        if (strstr(line, "tof_package_device.cpp") != nullptr)
+            continue;
+        /* The lifecycle's own translation unit defines them. */
+        if (strstr(line, "tof_package_l7.cpp") != nullptr)
+            continue;
+        read_and_strip(line);
+        ++checked;
+        zassert_equal(count_of(stripped_, "lifecycle().bring_up("), 0U,
+                      "%s reaches a lifecycle round without the boundary that clears the step "
+                      "records", line);
+        zassert_equal(count_of(stripped_, "take_over_unknown_state("), 0U,
+                      "%s reaches a lifecycle round without the boundary that clears the step "
+                      "records", line);
+    }
+    zassert_true(checked > 1U, "only %zu sources were checked, so this gate read nothing", checked);
 }
 
 ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clears_a_step_record)
@@ -530,7 +620,7 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clea
             continue;
         ++seen;
         read_and_strip(line);
-        const bool is_adapter{strstr(line, "tof_package_bench.cpp") != nullptr};
+        const bool is_adapter{strstr(line, "tof_package_device.cpp") != nullptr};
         const bool is_module{strstr(line, "tof_l7_step_record.cpp") != nullptr};
         if (is_adapter || is_module)
             continue;
@@ -541,4 +631,81 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_other_application_source_writes_or_clea
                       "with the lifecycle's own answer", line);
     }
     zassert_true(seen > 1U, "the generated source list had %zu entries", seen);
+}
+
+/* ---- the watchdog's only view of the Package path ---- */
+
+/* WHAT MAKES A HOOK ONE THE WATCHDOG HAS TO SEE: it reaches the sensor layer or calls the ULD
+ * directly, which means it can sit on a stalled I2C transfer. Derived from the source rather than
+ * listed, because a listed gate says nothing about the hook somebody adds next. */
+bool hook_touches_the_bus(const char *body)
+{
+    return strstr(body, "tof_l7::") != nullptr || strstr(body, "vl53l7cx_is_alive(") != nullptr ||
+           strstr(body, "vl53l7cx_stop_ranging(") != nullptr;
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_every_hook_that_touches_the_bus_is_a_watched_operation)
+{
+    read_and_strip(DEVICE_SOURCE);
+
+    size_t watched{0}, found{0};
+    for (const char *at = strstr(stripped_, "\nint hook_"); at != nullptr;
+         at = strstr(at + 1, "\nint hook_")) {
+        size_t from{0}, to{0};
+        if (!body_at(at, &from, &to))
+            continue;
+        const size_t len{to - from};
+        zassert_true(len < kBufferSize, "a hook body does not fit");
+        memcpy(body_, stripped_ + from, len);
+        body_[len] = '\0';
+        ++found;
+        if (!hook_touches_the_bus(body_))
+            continue;
+        ++watched;
+        zassert_true(strstr(body_, "watched_uld_operation") != nullptr,
+                     "a hook in %s reaches the bus without declaring a watched_uld_operation. The "
+                     "feeder's L7 monitor is the only thing judging this thread, and it judges an "
+                     "operation that began and never ended -- an unbracketed call is invisible to "
+                     "it. Body: %.200s",
+                     DEVICE_SOURCE, body_);
+    }
+    zassert_true(found >= 8U, "only %zu hooks were located in %s, so this gate read nothing",
+                 found, DEVICE_SOURCE);
+    zassert_equal(watched, 8U,
+                  "%zu hooks reach the bus; the eight ULD operations are probe, quiesce, close, "
+                  "open, configure, start, read and stop. A ninth needs its own review against "
+                  "bounds::l7_ms, not a quiet pass here",
+                  watched);
+
+    /* AND THE ONE THAT MUST NOT BE BRACKETED. ensure_verified() reads and verifies the stored blob,
+     * which nobody has timed against bounds::l7_ms on this board; bracketing it would risk a false
+     * reset on a cold boot. */
+    size_t from{0}, to{0};
+    zassert_true(body_of("int hook_verified(", &from, &to),
+                 "hook_verified() could not be located in %s", DEVICE_SOURCE);
+    const size_t len{to - from};
+    memcpy(body_, stripped_ + from, len);
+    body_[len] = '\0';
+    zassert_true(strstr(body_, "watched_uld_operation") == nullptr,
+                 "hook_verified() is bracketed as a watched operation. The blob verification is "
+                 "the longest thing on the boot path and is not timed against bounds::l7_ms, so "
+                 "watching it trades a missed hang for a false reset");
+}
+
+ZTEST(tof_l7_quiesce_call_sites, test_the_runtime_announces_the_grid_sensor_before_it_binds)
+{
+    read_and_strip(RUNTIME_SOURCE);
+
+    zassert_equal(count_of(stripped_, "tof_watchdog_feeder::set_l7_expected("), 1U,
+                  "%s must announce the grid sensor exactly once", RUNTIME_SOURCE);
+    zassert_equal(count_of(stripped_, "tof_watchdog_feeder::set_l7_expected(true)"), 1U,
+                  "the announcement must be positive: without it the L7 monitor never arms and the "
+                  "bracketing in the device layer is inert");
+
+    const char *const announced{strstr(stripped_, "tof_watchdog_feeder::set_l7_expected(")};
+    const char *const first_bind{strstr(stripped_, "tof_package_device::bind(")};
+    zassert_not_null(first_bind, "%s never binds", RUNTIME_SOURCE);
+    zassert_true(announced < first_bind,
+                 "the grid sensor is announced after the first bind, so the probe inside that bind "
+                 "-- already a bracketed operation -- runs unjudged");
 }

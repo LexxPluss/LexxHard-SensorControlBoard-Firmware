@@ -46,8 +46,11 @@
 #include <zephyr/dfu/mcuboot.h>
 #include "tof_chain_controller.hpp"
 #endif
-#ifdef ENABLE_TOF_PACKAGE_BENCH
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO_DEADMAN)
 #include "tof_package_bench_deadman.hpp"
+#endif
+#ifdef ENABLE_TOF_PACKAGE_AUTO
+#include "tof_package_runtime.hpp"
 #endif
 
 namespace {
@@ -70,6 +73,16 @@ K_THREAD_STACK_DEFINE(shutter_motor_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(tug_encoder_controller_stack, 2048);
 #endif
 K_THREAD_STACK_DEFINE(zcan_main_stack, 2048);
+#ifdef ENABLE_TOF_PACKAGE_AUTO
+/* Reserve 4,096 B for the auto thread, using its own ELF call graph.
+ * Static frame sums (including manually resolved hook/sink calls): blob
+ * verification 928 B, firmware download 636 B, publishing about 208 B.
+ * Allow up to 104 B for an FPU exception frame (~1,032 B total on the deepest
+ * measured path). Keep margin for missed indirect edges; this is not a
+ * measured runtime stack-watermark bound. Recheck after call-graph changes.
+ */
+K_THREAD_STACK_DEFINE(tof_package_runtime_stack, 4096);
+#endif
 
 #define RUN(name, prio) \
     k_thread_create(&lexxhard::name::thread, name##_stack, K_THREAD_STACK_SIZEOF(name##_stack), \
@@ -348,6 +361,14 @@ int main()
     RUN(tug_encoder_controller, 2);
 #endif
     RUN(runaway_detector, 4);
+#ifdef ENABLE_TOF_PACKAGE_AUTO
+    /* Priority 7, the lowest tier used here and the same one the firmware updater runs at: this
+     * thread spends seconds at a time inside the ULD's blob download and its polling waits, and
+     * nothing it does is time-critical to the machine. Started before zcan_main for the same
+     * reason every other thread is -- zcan_main goes last -- and its own first act is to listen on
+     * the bus for a second before transmitting anything. */
+    RUN(tof_package_runtime, 7);
+#endif
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
 
 #ifdef ENABLE_TOF_CHAIN
@@ -373,10 +394,11 @@ int main()
         printk("tof_chain: image confirm failed (%d), will revert on next boot\n", rc);
 #endif
 
-#ifdef ENABLE_TOF_PACKAGE_BENCH
-    // Package bench stays unconfirmed. Arm the reset that applies rollback even
-    // if a command wedges while the board continues feeding the watchdog.
-    // See tof_package_bench_deadman.hpp; no shell command can confirm this image.
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO_DEADMAN)
+    // Keep Package candidates unconfirmed and arm the reset that applies rollback.
+    // Bench may extend its window via hold; auto has no pkg_tof command group.
+    // Ordinary Zephyr shell remains. A permanently resident auto build explicitly
+    // opts out of the deadman; watchdog coverage does not replace this timer.
     lexxhard::tof_package_bench_deadman::arm();
 #endif
 

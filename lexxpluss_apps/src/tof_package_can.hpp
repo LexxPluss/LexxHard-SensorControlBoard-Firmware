@@ -25,16 +25,12 @@
 
 #pragma once
 
-/* Package CAN transport on can2, enabled only in the bench build at this layer.
- * Supply both IDs explicitly; zero means unset and 0x21A/0x21B remain candidates.
- * The listen window rejects observed traffic, but silence proves no ownership;
- * consult the allocation registry before use. Do not duplicate that registry here.
- * zcan_main owns controller configuration, bitrate, mode and start.
- */
+/* Package CAN transport on can2. Callers supply both IDs; zero is invalid.
+ * The allocation lives in tof_can_ids.hpp. zcan_main configures can2. */
 
 #include <stdint.h>
 
-#if defined(ENABLE_TOF_PACKAGE_BENCH)
+#if defined(ENABLE_TOF_PACKAGE_BENCH) || defined(ENABLE_TOF_PACKAGE_AUTO)
 
 #include "tof_package_stream.hpp"
 
@@ -59,21 +55,13 @@ int configure(const identifiers &ids);
 
 identifiers current();
 
-/* Adds a receive filter on each configured identifier, waits `window_ms`, and reports how many
- * frames arrived on either of them. Removes its filters before returning, including on failure.
- *
- * -EPERM before a successful init() and configure(). A non-zero count is NOT an error here -- it is
- * the finding, and what to do about it is the caller's decision. See the header on what silence
- * does and does not prove. */
+/* Listen on both IDs for window_ms, then remove the filters. A non-zero count
+ * reports traffic; the caller decides whether to transmit. Requires init/configure. */
 int listen_for_traffic(int32_t window_ms, uint32_t *frames_seen);
 
-/* The publisher sink requires successful init() and configure(), else -EPERM.
- * Success means mailbox acceptance, not arbitration, ACK or wire delivery;
- * transmit_errors() counts later completion failures.
- * Abandonment may leave queued fragments on the bus, but the refused frame is
- * not retried and no later frame is built, so that grid cannot arrive complete.
- * Only the consumer can account for complete grids received.
- */
+/* Requires init/configure. Success means mailbox acceptance, not delivery;
+ * transmit_errors() counts later failures. Abandoned grids may leave queued
+ * fragments, but cannot complete because no later frames are built. */
 tof_package_stream::sink sink();
 
 /* Completion failures the driver has reported since init(). Zero does NOT mean every frame
@@ -82,4 +70,4 @@ uint32_t transmit_errors();
 
 }  // namespace lexxhard::tof_package_can
 
-#endif  // ENABLE_TOF_PACKAGE_BENCH
+#endif  // ENABLE_TOF_PACKAGE_BENCH || ENABLE_TOF_PACKAGE_AUTO

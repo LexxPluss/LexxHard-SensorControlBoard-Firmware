@@ -25,16 +25,8 @@
 
 #pragma once
 
-// CAN identifiers for the ToF grid transport (AMRSW-2322).
-//
-// Self-assigned integration allocation, authorized by the team (2026-08-06)
-// and recorded in the wire contract (docs/can/tof_can_wire_contract.md,
-// version 2026-08-02i): the SCB peripheral block 0x200-0x213 is contiguously
-// occupied across both repositories and a live bus capture agrees, 0x214+
-// extends that block, and all three values rank below every existing control
-// and safety identifier in CAN arbitration. The adjacency of the data and
-// health values carries no ordering meaning -- the contract guarantees no
-// ordering between the two frame kinds.
+// ToF CAN allocations. Grid IDs follow the 0x200-0x213 SCB block (AMRSW-2322;
+// wire contract 2026-08-02i). Data/health adjacency gives no ordering guarantee.
 
 #include <stdint.h>
 
@@ -43,18 +35,11 @@ namespace lexxhard::tof_can_ids {
 inline constexpr uint16_t TOF_GRID_DATA_ID{0x214};
 inline constexpr uint16_t TOF_GRID_HEALTH_ID{0x215};
 
-// The cliff/drop-sense frames at 0x216 (measurement) and 0x217 (health) are
-// deliberately NOT declared here. They are owned by the generated cliff wire
-// contract -- docs/can/tof_cliff_contract.h, kMeasId and kHealthId -- and a
-// second literal for a value another header already defines is exactly the
-// kind of duplicate that drifts apart while both sides keep compiling.
-//
-// This header previously carried TOF_DROP_SENSE_RESERVED_ID{0x216} with a
-// comment saying its payload contract did not exist and no handler could
-// claim the value. That contract exists now and the publisher emits both
-// frames, so the placeholder said the opposite of the truth to anyone reading
-// this file for the allocation. It also left 0x217 unmentioned entirely,
-// which is why the collision test below had never checked it. That test now
-// pulls the cliff pair straight from the contract.
+// Package IDs authorized 2026-10-26 (AMRSW-3681). They follow the cliff and
+// commissioning pairs at 0x216-0x219. Keep these values here, not in build flags.
+inline constexpr uint16_t PACKAGE_TOF_DATA_ID{0x21A};
+inline constexpr uint16_t PACKAGE_TOF_HEALTH_ID{0x21B};
+
+// Cliff IDs belong to the generated cliff contract, not this registry.
 
 }  // namespace lexxhard::tof_can_ids

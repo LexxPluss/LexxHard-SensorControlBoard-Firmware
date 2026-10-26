@@ -34,6 +34,21 @@ emits a production header; the grid contract does not.
 **The grid contract has no generated production header.** Its constants live in hand-written source.
 Do not assume a change that works for one contract applies to the other.
 
+### Package ToF (`0x21A` data, `0x21B` health)
+
+| File | Role | Used by production code |
+| --- | --- | --- |
+| `gen_pkg_wire_n_vectors.py` | Executable generator for the eight-byte data and health frames | No |
+| `gen_pkg_grid_payload_vectors.py` | Executable generator for the grid payload | No |
+| `tof_pkg_wire_n_vectors.h`, `tof_pkg_grid_payload_vectors.h` | Generated C++ conformance vectors | Tests only |
+
+**There is no Markdown contract for this stream**, so there is no version line, no contract SHA and
+nothing for a parity check to parse: the wire rules live in `src/tof_package_wire_n.hpp` and in the
+generators, and the two are kept in step by review alone. The identifiers are not in this directory
+either. They were authorized on 2026-10-26 and are declared in `src/tof_can_ids.hpp` beside the
+grid pair, with the driver's matching row in `can_ids.hpp`; this README is an index, not a pin, so
+treat those two headers as the record.
+
 ## Generation model
 
 ```

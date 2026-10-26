@@ -31,7 +31,9 @@ target_sources(app PRIVATE
     ${APP_SRC_DIR}/tof_l7_quiesce.cpp
     ${APP_SRC_DIR}/tof_l7_step_record.cpp)
 target_compile_definitions(app PRIVATE
-    ADAPTER_SOURCE=\"${APP_SRC_DIR}/tof_package_bench.cpp\"
+    DEVICE_SOURCE=\"${APP_SRC_DIR}/tof_package_device.cpp\"
+    SHELL_SOURCE=\"${APP_SRC_DIR}/tof_package_bench.cpp\"
+    RUNTIME_SOURCE=\"${APP_SRC_DIR}/tof_package_runtime.cpp\"
     SOURCE_LIST_FILE=\"${CMAKE_CURRENT_BINARY_DIR}/app_sources.txt\")
 target_compile_definitions(app PRIVATE ENABLE_TOF_L7_ULD)
 target_include_directories(app PRIVATE ${APP_SRC_DIR})

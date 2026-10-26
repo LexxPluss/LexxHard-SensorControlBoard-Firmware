@@ -82,6 +82,16 @@ if(ENABLE_TOF_PACKAGE_BENCH)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_bench.conf)
 endif()
 
+# The unattended runtime keeps the revert armed unless told otherwise, and the deadman needs the
+# image-manager query to ask whether this image is confirmed. Appended here for the same reason as
+# the bench's: Kconfig is fixed by find_package(Zephyr) below.
+if(ENABLE_TOF_PACKAGE_AUTO AND NOT DEFINED TOF_PACKAGE_AUTO_DEADMAN)
+    set(TOF_PACKAGE_AUTO_DEADMAN ON)
+endif()
+if(ENABLE_TOF_PACKAGE_AUTO AND TOF_PACKAGE_AUTO_DEADMAN)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_auto_deadman.conf)
+endif()
+
 find_package(Zephyr)
 project(lexxpluss_apps)
 
@@ -313,7 +323,63 @@ if(ENABLE_TOF_PACKAGE_BENCH)
             "ENABLE_TOF_PACKAGE_BENCH requires ENABLE_TOF_L7_ULD: the bench driver exists to call "
             "the L7 lifecycle, and without the driver there is nothing to call.")
     endif()
+    if(ENABLE_TOF_PACKAGE_AUTO)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_BENCH and ENABLE_TOF_PACKAGE_AUTO claim the same device: the shell "
+            "commands and the runtime thread would drive one sensor through one set of unlocked "
+            "objects. Pick one.")
+    endif()
     add_definitions(-DENABLE_TOF_PACKAGE_BENCH)
+endif()
+
+# Auto runtime uses registered IDs unless bench overrides them. Rate has no
+# accepted default.
+if(ENABLE_TOF_PACKAGE_AUTO)
+    if(NOT ENABLE_TOF_L7_ULD)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_AUTO requires ENABLE_TOF_L7_ULD: the runtime exists to drive the "
+            "L7 lifecycle, and without the driver there is nothing to drive.")
+    endif()
+    if(NOT DEFINED TOF_PACKAGE_AUTO_HZ)
+        message(FATAL_ERROR
+            "ENABLE_TOF_PACKAGE_AUTO needs TOF_PACKAGE_AUTO_HZ: no sustainable rate has been "
+            "accepted for this geometry, so there is no default to fall back to.")
+    endif()
+    # Pass only defined overrides; an empty -D would shadow the registry.
+    foreach(override TOF_PACKAGE_AUTO_DATA_ID TOF_PACKAGE_AUTO_HEALTH_ID)
+        if(DEFINED ${override})
+            add_definitions(-D${override}=${${override}})
+            message(WARNING
+                "package_tof runtime: ${override}=${${override}} overrides the allocation in "
+                "src/tof_can_ids.hpp. Bench use only.")
+        endif()
+    endforeach()
+    # Startup budgets are policy defaults, unlike CAN IDs and rate.
+    if(NOT DEFINED TOF_PACKAGE_AUTO_CLAIMS)
+        set(TOF_PACKAGE_AUTO_CLAIMS 6)
+    endif()
+    if(NOT DEFINED TOF_PACKAGE_AUTO_TAKEOVERS)
+        set(TOF_PACKAGE_AUTO_TAKEOVERS 1)
+    endif()
+    if(NOT DEFINED TOF_PACKAGE_AUTO_QUIESCE_FIRST)
+        set(TOF_PACKAGE_AUTO_QUIESCE_FIRST 1)
+    endif()
+    # Default ON: rollback needs a reset, and a wedged Package thread may leave
+    # the board watchdog fed. Auto has no pkg_tof hold command.
+    if(TOF_PACKAGE_AUTO_DEADMAN)
+        add_definitions(-DENABLE_TOF_PACKAGE_AUTO_DEADMAN)
+        message(STATUS "package_tof runtime: unattended revert ARMED (one window per flash)")
+    else()
+        message(WARNING
+            "package_tof runtime: unattended revert DISABLED. Nothing in this image will reset "
+            "the board if the Package thread wedges, so its unconfirmed trailer protects it only "
+            "against a reset that comes from somewhere else.")
+    endif()
+    add_definitions(-DENABLE_TOF_PACKAGE_AUTO
+                    -DTOF_PACKAGE_AUTO_HZ=${TOF_PACKAGE_AUTO_HZ}
+                    -DTOF_PACKAGE_AUTO_CLAIMS=${TOF_PACKAGE_AUTO_CLAIMS}
+                    -DTOF_PACKAGE_AUTO_TAKEOVERS=${TOF_PACKAGE_AUTO_TAKEOVERS}
+                    -DTOF_PACKAGE_AUTO_QUIESCE_FIRST=${TOF_PACKAGE_AUTO_QUIESCE_FIRST})
 endif()
 
 if(VERSION)
