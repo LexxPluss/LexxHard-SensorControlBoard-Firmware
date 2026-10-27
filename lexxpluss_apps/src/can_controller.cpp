@@ -31,7 +31,9 @@
 #include <zephyr/shell/shell.h>
 #include "can_controller.hpp"
 #include "board_controller.hpp"
+#ifdef ENABLE_LED_STRIP
 #include "led_controller.hpp"
+#endif
 #include "power_state.hpp"
 
 

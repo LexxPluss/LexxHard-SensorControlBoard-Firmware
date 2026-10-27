@@ -33,7 +33,9 @@
 #include "bmu_controller.hpp"
 #include "firmware_updater.hpp"
 #include "imu_controller.hpp"
+#ifdef ENABLE_LED_STRIP
 #include "led_controller.hpp"
+#endif
 #include "pgv_controller.hpp"
 #include "zcan_main.hpp"
 #include "runaway_detector.hpp"
@@ -63,7 +65,9 @@ K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
+#ifdef ENABLE_LED_STRIP
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
+#endif
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
@@ -323,7 +327,9 @@ int main()
     lexxhard::can_controller::init();
     lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
+#ifdef ENABLE_LED_STRIP
     lexxhard::led_controller::init();
+#endif
     lexxhard::pgv_controller::init();
     lexxhard::zcan_main::init();
     lexxhard::runaway_detector::init();
@@ -349,7 +355,9 @@ int main()
     RUN(board_controller, 4); // board_controller must be started after bmu_controller (due to the CAN setting)
     RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
+#ifdef ENABLE_LED_STRIP
     RUN(led_controller, 1);
+#endif
     RUN(pgv_controller, 1);
     RUN(uss_controller, 2);
     RUN(gpio_controller, 2);

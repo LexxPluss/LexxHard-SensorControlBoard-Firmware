@@ -29,7 +29,9 @@
 #include "zcan_bmu.hpp"
 #include "zcan_board.hpp"
 #include "zcan_imu.hpp"
+#ifdef ENABLE_LED_STRIP
 #include "zcan_led.hpp"
+#endif
 #include "zcan_pgv.hpp"
 #include "zcan_uss.hpp"
 #include "zcan_dfu.hpp"
@@ -63,7 +65,9 @@ public:
         act.init();
         act_srv.init();
         imu.init();
+#ifdef ENABLE_LED_STRIP
         led.init();
+#endif
         pgv.init();
         uss.init();
         gpio.init();
@@ -78,7 +82,9 @@ public:
             act.poll();
             act_srv.poll();
             imu.poll();
+#ifdef ENABLE_LED_STRIP
             led.poll();
+#endif
             pgv.poll();
             uss.poll();
             gpio.poll();
@@ -95,7 +101,9 @@ private:
     lexxhard::zcan_actuator::zcan_actuator act;
     lexxhard::zcan_actuator_service::zcan_actuator_service act_srv;
     lexxhard::zcan_imu::zcan_imu imu;
+#ifdef ENABLE_LED_STRIP
     lexxhard::zcan_led::zcan_led led;
+#endif
     lexxhard::zcan_pgv::zcan_pgv pgv;
     lexxhard::zcan_uss::zcan_uss uss;
     lexxhard::zcan_gpio::zcan_gpio gpio;

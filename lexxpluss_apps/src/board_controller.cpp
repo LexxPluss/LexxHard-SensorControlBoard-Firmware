@@ -42,7 +42,9 @@
 #include "bmu_lipy041_decode.hpp"
 #include "can_controller.hpp"
 #include "common.hpp"
+#ifdef ENABLE_LED_STRIP
 #include "led_controller.hpp"
+#endif
 #include "power_state.hpp"
 #include "tof_watchdog_feeder.hpp"
 
@@ -73,6 +75,7 @@ public:
             counter = 0;
             activated = false;
         }
+#ifdef ENABLE_LED_STRIP
         if (activated && (thres == 4)) {
             led_controller::msg msg_led;
             msg_led.pattern = led_controller::msg::CHARGE_LEVEL;
@@ -80,6 +83,7 @@ public:
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
         }
+#endif
     }
     bool is_activated() const {
         return activated;
@@ -1859,10 +1863,12 @@ private:
             bsw.request_reset();
             dcdc.set_enable(false);
 
+#ifdef ENABLE_LED_STRIP
             // Set LED OFF
             led_controller::msg const msg_led{led_controller::msg::NONE, 0, 1};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
+#endif
         } break;
         case POWER_STATE::TIMEROFF: {
             LOG_INF("enter TIMEROFF\n");
@@ -1881,10 +1887,12 @@ private:
             }
             gpio_pin_set_dt(&gpio_dev, 0);
             timer_post = k_uptime_get();    // timer reset
+#ifdef ENABLE_LED_STRIP
             // Set LED
             led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 0};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
+#endif
         } break;
         case POWER_STATE::STANDBY: {
             LOG_INF("enter STANDBY\n");
@@ -1941,10 +1949,12 @@ private:
             use_software_brake = false;
             k_timer_start(&current_check_timeout, K_MSEC(10000), K_NO_WAIT); // current_check_timeout = true after 10sec
 
+#ifdef ENABLE_LED_STRIP
             // Set LED
             led_controller::msg const msg_led{led_controller::msg::CHARGE_LEVEL, 2000};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
+#endif
         } break;
         case POWER_STATE::MANUAL_CHARGE: {
             LOG_INF("enter MANUAL_CHARGE\n");
@@ -1969,10 +1979,12 @@ private:
             gpio_pin_set_dt(&gpio_dev, 0);
             ac.set_enable(false);
 
+#ifdef ENABLE_LED_STRIP
             // Set LED
             led_controller::msg const msg_led{led_controller::msg::LOCKDOWN, 1000000000, 10};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
+#endif
         } break;
         case POWER_STATE::OFF_WAIT: {
             LOG_INF("enter OFF_WAIT\n");
@@ -1994,10 +2006,12 @@ private:
                     ksw.is_transition_to_running(), mbd.power_off_from_ros(), bmu.is_ok(),
                     ksw.is_off(), ksw.is_maintenance(), mc.is_plugged());
 
+#ifdef ENABLE_LED_STRIP
             // Set LED
             led_controller::msg const msg_led{led_controller::msg::SHOWTIME, 60000};
             while (k_msgq_put(&led_controller::msgq, &msg_led, K_NO_WAIT) != 0)
                 k_msgq_purge(&led_controller::msgq);
+#endif
         } break;
         }
         state = newstate;
