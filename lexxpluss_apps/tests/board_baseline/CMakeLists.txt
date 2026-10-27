@@ -58,6 +58,7 @@ function(add_new_variant target build_name)
         "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/stubs" "${NEW_SRC_DIR}")
     target_compile_definitions(${target} PRIVATE
         BC_NEW_BUILD
+        ENABLE_LED_STRIP
         "BC_SOURCE=\"${NEW_SRC_DIR}/board_controller.cpp\""
         "BC_NEW_BUILD_NAME=\"${build_name}\""
         ${ARGN})
