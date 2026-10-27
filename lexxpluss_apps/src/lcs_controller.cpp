@@ -51,7 +51,7 @@ uint8_t rx_buffer[kRxBufferSize] __nocache __aligned(32);
 uint8_t tx_buffer[lcs::kDownlinkSize] __nocache __aligned(32);
 
 char __aligned(4) chunk_storage[kChunkQueueDepth * sizeof(RxChunk)];
-char __aligned(4) forward_storage[kForwardQueueDepth * sizeof(lcs::CanFrame)];
+char __aligned(4) forward_storage[kForwardQueueDepth * sizeof(lcs::msg)];
 k_msgq chunk_queue;
 
 /* Receiver, packer, scheduler and counters in one object so that they can be read as members. */
@@ -164,7 +164,7 @@ void restart_rx()
 
 void forward(const lcs::Uplink &uplink)
 {
-    const std::optional<lcs::CanFrame> frame{host.packer.pack(uplink)};
+    const std::optional<lcs::msg> frame{host.packer.pack(uplink)};
     if (!frame)
         return;
     while (k_msgq_put(&msgq, &*frame, K_NO_WAIT) != 0)
@@ -187,7 +187,7 @@ void handle_chunk(const RxChunk &chunk)
 
 void init()
 {
-    k_msgq_init(&msgq, forward_storage, sizeof(lcs::CanFrame), kForwardQueueDepth);
+    k_msgq_init(&msgq, forward_storage, sizeof(lcs::msg), kForwardQueueDepth);
     k_msgq_init(&chunk_queue, chunk_storage, sizeof(RxChunk), kChunkQueueDepth);
     host.uart = DEVICE_DT_GET(DT_NODELABEL(uart4));
     host.de = GPIO_DT_SPEC_GET(DT_NODELABEL(pgv_en), gpios);

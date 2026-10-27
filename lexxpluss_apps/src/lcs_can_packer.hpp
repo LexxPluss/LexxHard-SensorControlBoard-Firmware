@@ -34,31 +34,22 @@
 
 namespace lexxhard::lcs {
 
-struct CanFrame {
-    uint32_t id;
-    uint8_t dlc;
+/* The CAN ID and the length belong to the CAN adapter (zcan_lcs.hpp); the packer yields the board and the payload. */
+struct msg {
+    uint8_t board;
     std::array<uint8_t, 8> data;
 };
-
-/* S14: the board-to-CAN-ID table; 0x21E and 0x21F stay reserved. */
-inline constexpr std::array<uint32_t, kBoardCount> kCanIds{0x21C, 0x21D};
-
-static_assert(kCanIds.size() == kBoardCount, "one CAN ID per board");
-static_assert(kCanIds[0] != kCanIds[1], "CAN IDs must be distinct");
-static_assert(kCanIds[0] >= 0x21C && kCanIds[0] <= 0x21F && kCanIds[1] >= 0x21C && kCanIds[1] <= 0x21F,
-              "CAN IDs must stay inside the reserved range");
 
 class CanPacker {
 public:
     /* Returns nothing for an unknown sender; no counter moves then. */
-    std::optional<CanFrame> pack(const Uplink &uplink)
+    std::optional<msg> pack(const Uplink &uplink)
     {
         if (uplink.sender_id >= kBoardCount)
             return std::nullopt;
         uint8_t &counter{counters_[uplink.sender_id]};
-        const CanFrame frame{
-            kCanIds[uplink.sender_id],
-            8,
+        const msg frame{
+            uplink.sender_id,
             {uplink.status, uplink.ch1[0], uplink.ch1[1], uplink.ch1[2], uplink.ch2[0], uplink.ch2[1],
              uplink.ch2[2], counter}};
         /* The counter counts receptions: it moves here even if the frame is dropped later. */

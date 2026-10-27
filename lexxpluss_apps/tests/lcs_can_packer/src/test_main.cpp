@@ -33,7 +33,7 @@
 #include "lcs_can_packer.hpp"
 #include "lcs_frame.hpp"
 
-using lexxhard::lcs::CanFrame;
+using lexxhard::lcs::msg;
 using lexxhard::lcs::CanPacker;
 using lexxhard::lcs::Uplink;
 
@@ -55,13 +55,11 @@ Uplink make_uplink(const uint8_t sender, const uint8_t status, const uint32_t ch
     return Uplink{sender, status, be24(ch1), be24(ch2)};
 }
 
-/* Expected frame, byte by byte, with explicit indices and the expected ID literals. */
-void expect_frame(const std::optional<CanFrame> &frame, const Uplink &in, const uint8_t counter)
+/* Expected frame, byte by byte, with explicit indices; the CAN ID is not the packer's concern. */
+void expect_frame(const std::optional<msg> &frame, const Uplink &in, const uint8_t counter)
 {
     zassert_true(frame.has_value(), "no frame");
-    const uint32_t id{in.sender_id == 0 ? 0x21CU : 0x21DU};
-    zassert_equal(frame->id, id);
-    zassert_equal(frame->dlc, 8);
+    zassert_equal(frame->board, in.sender_id);
     zassert_equal(frame->data[0], in.status);
     zassert_equal(frame->data[1], in.ch1[0]);
     zassert_equal(frame->data[2], in.ch1[1]);
@@ -98,7 +96,7 @@ struct Rng {
 
 }
 
-ZTEST(lcs_can_packer, test_lcs_can_packer_pk1_pk2_known_senders_map_to_ids)
+ZTEST(lcs_can_packer, test_lcs_can_packer_pk1_pk2_known_senders_map_to_boards)
 {
     CanPacker packer;
     expect_frame(packer.pack(plain(0)), plain(0), 0);
@@ -112,13 +110,16 @@ ZTEST(lcs_can_packer, test_lcs_can_packer_pk3_unknown_senders_get_no_frame)
         zassert_false(packer.pack(plain(sender)).has_value());
 }
 
-ZTEST(lcs_can_packer, test_lcs_can_packer_pk4_dlc_is_8_in_every_case)
+ZTEST(lcs_can_packer, test_lcs_can_packer_pk4_payload_is_8_bytes_with_counter_at_byte_7)
 {
     CanPacker packer;
+    std::array<uint8_t, 2> counters{};
     for (unsigned i = 0; i < 300; ++i) {
-        const auto frame = packer.pack(plain(static_cast<uint8_t>(i & 1U)));
+        const uint8_t board{static_cast<uint8_t>(i & 1U)};
+        const auto frame = packer.pack(plain(board));
         zassert_true(frame.has_value());
-        zassert_equal(frame->dlc, 8);
+        zassert_equal(frame->data.size(), 8U);
+        zassert_equal(frame->data[7], counters[board]++);
     }
 }
 
