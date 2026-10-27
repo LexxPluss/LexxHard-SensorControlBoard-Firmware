@@ -59,7 +59,7 @@ Uplink make_uplink(const uint8_t sender, const uint8_t status, const uint32_t ch
 void expect_frame(const std::optional<CanFrame> &frame, const Uplink &in, const uint8_t counter)
 {
     zassert_true(frame.has_value(), "no frame");
-    const uint32_t id{in.sender_id == 0 ? 0x220U : 0x221U};
+    const uint32_t id{in.sender_id == 0 ? 0x21CU : 0x21DU};
     zassert_equal(frame->id, id);
     zassert_equal(frame->dlc, 8);
     zassert_equal(frame->data[0], in.status);

@@ -40,12 +40,12 @@ struct CanFrame {
     std::array<uint8_t, 8> data;
 };
 
-/* S14: the board-to-CAN-ID table; 0x222 and 0x223 stay reserved. */
-inline constexpr std::array<uint32_t, kBoardCount> kCanIds{0x220, 0x221};
+/* S14: the board-to-CAN-ID table; 0x21E and 0x21F stay reserved. */
+inline constexpr std::array<uint32_t, kBoardCount> kCanIds{0x21C, 0x21D};
 
 static_assert(kCanIds.size() == kBoardCount, "one CAN ID per board");
 static_assert(kCanIds[0] != kCanIds[1], "CAN IDs must be distinct");
-static_assert(kCanIds[0] >= 0x220 && kCanIds[0] <= 0x223 && kCanIds[1] >= 0x220 && kCanIds[1] <= 0x223,
+static_assert(kCanIds[0] >= 0x21C && kCanIds[0] <= 0x21F && kCanIds[1] >= 0x21C && kCanIds[1] <= 0x21F,
               "CAN IDs must stay inside the reserved range");
 
 class CanPacker {
