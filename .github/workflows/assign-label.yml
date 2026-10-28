@@ -9,12 +9,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/labeler@v5
-        if: ${{ github.event.action == 'opened' }}
         with:
           configuration-path: .github/assign-label-rules.yml
