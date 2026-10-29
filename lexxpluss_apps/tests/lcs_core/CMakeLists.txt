@@ -29,6 +29,7 @@ project(lcs_core_test)
 set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 
 target_sources(app PRIVATE
+    src/test_crc16.cpp
     src/test_frame.cpp
     src/test_rx.cpp
     src/test_rx_model.cpp
