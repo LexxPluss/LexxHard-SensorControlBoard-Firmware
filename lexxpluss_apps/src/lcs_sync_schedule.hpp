@@ -20,8 +20,8 @@
 
 namespace lexxhard::lcs {
 
-/* 1000 SPS timing budget of the load cell boards. */
-inline constexpr uint32_t kSyncPeriodUs{5000};
+/* SYNC period of the host: about 100 uplinks per second per board. */
+inline constexpr uint32_t kSyncPeriodUs{10000};
 
 constexpr uint32_t sync_period_ticks(const uint32_t period_us)
 {
@@ -65,6 +65,16 @@ public:
     bool due(const uint32_t tick) const
     {
         return !started_ || tick - next_due_ < kHalfRange;
+    }
+
+    /* Ticks to wait for the next SYNC, at most cap; 0 when due(tick) is true. */
+    uint32_t ticks_until_due(const uint32_t tick, const uint32_t cap) const
+    {
+        if (due(tick)) {
+            return 0;
+        }
+        const uint32_t remaining{next_due_ - tick};
+        return remaining < cap ? remaining : cap;
     }
 
     uint32_t next_due() const

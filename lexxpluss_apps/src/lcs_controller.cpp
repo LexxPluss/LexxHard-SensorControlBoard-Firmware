@@ -35,6 +35,8 @@ constexpr size_t kChunkSize{32};
 constexpr int kChunkQueueDepth{32};
 constexpr int kForwardQueueDepth{16};
 constexpr uint32_t kTxTimeoutTicks{2000 / lcs::kTickUs};
+/* The loop wakes at least this often, so expiry, TX supervision and RX restart keep a 1 ms cadence. */
+constexpr uint32_t kMaxWaitTicks{1000 / lcs::kTickUs};
 
 /* The transceiver needs this long to settle after DE rises; the UART must not start before. */
 constexpr uint32_t kDeSettleUs{11};
@@ -225,7 +227,12 @@ void run(void *p1, void *p2, void *p3)
 
     while (true) {
         RxChunk chunk;
-        if (k_msgq_get(&chunk_queue, &chunk, K_MSEC(1)) == 0) {
+        /* Wait until the next SYNC is due, at most kMaxWaitTicks, as an absolute time: a relative timeout of the
+         * kernel adds one tick. A received chunk ends the wait early. */
+        const int64_t wait_from{k_uptime_ticks()};
+        const uint32_t wait{host.scheduler.ticks_until_due(static_cast<uint32_t>(wait_from), kMaxWaitTicks)};
+        const k_timeout_t timeout{wait == 0 ? K_NO_WAIT : K_TIMEOUT_ABS_TICKS(wait_from + wait)};
+        if (k_msgq_get(&chunk_queue, &chunk, timeout) == 0) {
             do {
                 handle_chunk(chunk);
             } while (k_msgq_get(&chunk_queue, &chunk, K_NO_WAIT) == 0);
