@@ -156,9 +156,9 @@ struct InnerSof {
 
 ZTEST(lcs_core_rx, test_lcs_core_rx9_corrupted_uplink_with_inner_sof)
 {
-    /* Every window that completes with a CRC mismatch counts once: the outer one and an inner one of LEN >= 4. */
+    /* The outer window counts its fault once; an inner window starts inside the span of the outer candidate. */
     static constexpr std::array<InnerSof, 6> kCases{
-        {{5, 5, 2}, {5, 12, 2}, {4, 8, 2}, {9, 5, 2}, {9, 12, 2}, {5, 3, 1}}};
+        {{5, 5, 1}, {5, 12, 1}, {4, 8, 1}, {9, 5, 1}, {9, 12, 1}, {5, 3, 1}}};
     for (const InnerSof &c : kCases) {
         Bytes corrupted{frame_id0()};
         corrupted.data[c.position] = 0x4B;

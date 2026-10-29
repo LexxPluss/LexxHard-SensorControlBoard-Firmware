@@ -110,57 +110,83 @@ ZTEST(lcs_core_rx_stream, test_lcs_core_rx16_counters_are_monotonic)
                                        .uart_error = 1, .foreign_downlink = 1});
 }
 
-struct Prng {
-    uint32_t state;
-
-    uint32_t next()
-    {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        return state;
-    }
-
-    uint32_t below(const uint32_t limit)
-    {
-        return next() % limit;
-    }
+/* Final counters of the receiver under test and of the reference model with the nested rule on and off. */
+struct StreamResult {
+    RxStats dut;
+    RxStats model_on;
+    RxStats model_off;
 };
 
-/* The expected uplinks are collected while the stream is built; the receiver is not consulted. */
-static void run_random_stream(const uint32_t seed, const bool with_noise)
+static constexpr size_t kStreamCapacity{8192};
+static constexpr size_t kFrameCapacity{512};
+
+/*
+ * No byte of a clean stream may start a CRC-valid window that is not one of the sent frames: a SOF inside a payload
+ * or CRC byte opens a window of the LEN that follows it, and a valid one would swallow the next real frame.
+ * The windows are checked over the whole stream (also across the end of a frame), whatever the timing.
+ */
+static void expect_no_valid_inner_window(const std::array<uint8_t, kStreamCapacity> &stream, const size_t size,
+                                         const std::array<size_t, kFrameCapacity> &starts, const size_t start_count,
+                                         const uint32_t seed)
+{
+    size_t next_start{0};
+    for (size_t p{0}; p + 1 < size; ++p) {
+        if (next_start < start_count && starts[next_start] == p) {
+            ++next_start;
+            continue;
+        }
+        const size_t len{stream[p + 1]};
+        if (stream[p] != 0x4B || len < 4 || len > 12 || p + len > size) {
+            continue;
+        }
+        Bytes window;
+        for (size_t k{0}; k < len; ++k) {
+            window.push(stream[p + k]);
+        }
+        zassert_false(ref_window_valid(window, len), "seed %u: a CRC-valid inner window starts at stream index %u",
+                      static_cast<unsigned>(seed), static_cast<unsigned>(p));
+    }
+}
+
+/*
+ * The expected uplinks are collected while the stream is built; the receiver is not consulted. The receiver under
+ * test and the two reference models see the same bytes.
+ */
+static StreamResult run_random_stream(const uint32_t seed, const bool with_noise)
 {
     static std::array<Uplink, 512> expected{};
+    static std::array<uint8_t, kStreamCapacity> stream{};
+    static std::array<size_t, kFrameCapacity> frame_starts{};
+    static Rig rig;
+    static ModelRig<true> model_on;
+    static ModelRig<false> model_off;
+    rig = Rig{};
+    model_on = ModelRig<true>{};
+    model_off = ModelRig<false>{};
     size_t expected_count{0};
+    size_t stream_size{0};
+    size_t frame_count{0};
     uint32_t injected_downlinks{0};
     uint32_t injected_unknown{0};
 
     Prng prng{seed};
-    Rig rig;
     uint32_t now_us{0};
 
-    const auto send = [&](const Bytes &frame) {
-        for (size_t i{0}; i < frame.size; ++i) {
-            rig.feed_byte(frame.data[i], now_us / 100U);
-            now_us += 20U;
-        }
+    const auto drain = [&](const uint8_t byte) {
+        zassert_true(stream_size < stream.size(), "stream capacity");
+        stream[stream_size++] = byte;
+        rig.feed_byte(byte, now_us / 100U);
+        model_on.feed_byte(byte, now_us / 100U);
+        model_off.feed_byte(byte, now_us / 100U);
+        now_us += 20U;
     };
 
-    /*
-     * Without noise every field byte equal to the SOF is replaced: a SOF followed by a LEN of 4..7 inside a frame
-     * opens a window that completes before the frame does and counts crc_error, which is correct but would hide a
-     * real error in the "no error counter moves" check.
-     */
-    const auto scrub = [&](const uint32_t value) {
-        uint32_t result{0};
-        for (int shift{0}; shift < 32; shift += 8) {
-            uint32_t byte{(value >> shift) & 0xFFU};
-            if (!with_noise && byte == 0x4BU) {
-                byte = 0x4CU;
-            }
-            result |= byte << shift;
+    const auto send = [&](const Bytes &frame) {
+        zassert_true(frame_count < frame_starts.size(), "frame capacity");
+        frame_starts[frame_count++] = stream_size;
+        for (size_t i{0}; i < frame.size; ++i) {
+            drain(frame.data[i]);
         }
-        return result;
     };
 
     for (int event{0}; event < 300; ++event) {
@@ -171,35 +197,38 @@ static void run_random_stream(const uint32_t seed, const bool with_noise)
         if (kind < 4) {
             const uint8_t sender{static_cast<uint8_t>(prng.below(2))};
             const uint8_t status{static_cast<uint8_t>(0x80U | prng.below(0x80))};
-            const uint32_t ch1{scrub(prng.next() & 0xFFFFFFU)};
-            const uint32_t ch2{scrub(prng.next() & 0xFFFFFFU)};
+            const uint32_t ch1{prng.next() & 0xFFFFFFU};
+            const uint32_t ch2{prng.next() & 0xFFFFFFU};
             send(uplink_frame(sender, status, ch1, ch2));
             expected[expected_count++] = uplink_of(sender, status, ch1, ch2);
         } else if (kind < 7) {
-            const uint32_t target{scrub(prng.below(256))};
-            const uint32_t cmd{scrub(prng.below(128))};
-            const uint32_t param{scrub(prng.below(0x10000))};
+            const uint32_t target{prng.below(256)};
+            const uint32_t cmd{prng.below(128)};
+            const uint32_t param{prng.below(0x10000)};
             send(downlink_frame(static_cast<uint8_t>(target), static_cast<uint8_t>(cmd), static_cast<uint16_t>(param)));
             ++injected_downlinks;
         } else if (kind < 9) {
             const uint8_t sender{static_cast<uint8_t>(2U + prng.below(254))};
             const uint8_t status{static_cast<uint8_t>(0x80U | prng.below(0x80))};
-            const uint32_t ch1{scrub(prng.next() & 0xFFFFFFU)};
-            const uint32_t ch2{scrub(prng.next() & 0xFFFFFFU)};
+            const uint32_t ch1{prng.next() & 0xFFFFFFU};
+            const uint32_t ch2{prng.next() & 0xFFFFFFU};
             send(uplink_frame(sender, status, ch1, ch2));
             ++injected_unknown;
         } else {
             const uint32_t count{1U + prng.below(6)};
             for (uint32_t i{0}; i < count; ++i) {
-                const uint8_t byte{prng.below(4) == 0 ? uint8_t{0x4B} : static_cast<uint8_t>(prng.below(256))};
-                rig.feed_byte(byte, now_us / 100U);
-                now_us += 20U;
+                drain(prng.below(4) == 0 ? uint8_t{0x4B} : static_cast<uint8_t>(prng.below(256)));
             }
         }
     }
-    rig.rx.expire(now_us / 100U + 1000U);
+    const uint32_t end_tick{now_us / 100U + 1000U};
+    rig.rx.expire(end_tick);
+    model_on.rx.expire(end_tick);
+    model_off.rx.expire(end_tick);
 
     zassert_equal(rig.out_count, expected_count, "returned uplinks, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(model_on.out_count, expected_count, "model returned uplinks, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(model_off.out_count, expected_count, "model returned uplinks, seed %u", static_cast<unsigned>(seed));
     for (size_t i{0}; i < expected_count; ++i) {
         zassert_true(same_uplink(rig.out[i], expected[i]), "uplink %u, seed %u", static_cast<unsigned>(i),
                      static_cast<unsigned>(seed));
@@ -210,26 +239,60 @@ static void run_random_stream(const uint32_t seed, const bool with_noise)
                   static_cast<unsigned>(seed));
     zassert_equal(stats.unknown_sender, injected_unknown, "unknown senders");
     if (!with_noise) {
-        zassert_equal(stats.crc_error, 0U);
-        zassert_equal(stats.sof_mismatch, 0U);
-        zassert_equal(stats.timeout, 0U);
-        zassert_equal(stats.uart_error, 0U);
+        expect_no_valid_inner_window(stream, stream_size, frame_starts, frame_count, seed);
+    }
+    return StreamResult{rig.rx.stats(), model_on.rx.stats(), model_off.rx.stats()};
+}
+
+static void expect_same_stats(const RxStats &a, const RxStats &b, const uint32_t seed)
+{
+    zassert_equal(a.delivered, b.delivered, "delivered, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(a.crc_error, b.crc_error, "crc_error, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(a.sof_mismatch, b.sof_mismatch, "sof_mismatch, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(a.timeout, b.timeout, "timeout, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(a.uart_error, b.uart_error, "uart_error, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(a.foreign_downlink, b.foreign_downlink, "foreign_downlink, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(a.unknown_sender, b.unknown_sender, "unknown_sender, seed %u", static_cast<unsigned>(seed));
+}
+
+/* The clean channel: no fault counter moves (delivered, foreign_downlink and unknown_sender are checked by the run). */
+static void expect_clean_channel(const RxStats &s, const uint32_t seed)
+{
+    zassert_equal(s.crc_error, 0U, "crc_error, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(s.timeout, 0U, "timeout, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(s.sof_mismatch, 0U, "sof_mismatch, seed %u", static_cast<unsigned>(seed));
+    zassert_equal(s.uart_error, 0U, "uart_error, seed %u", static_cast<unsigned>(seed));
+}
+
+/* ST-1: a SOF in a payload or CRC byte of a valid frame is no fault. */
+ZTEST(lcs_core_rx_stream, test_lcs_core_rx17_random_stream_without_noise)
+{
+    for (const uint32_t seed : {0x12345678U, 0xCAFEBABEU}) {
+        const StreamResult result{run_random_stream(seed, false)};
+        expect_clean_channel(result.dut, seed);
+        /* The model with the nested rule agrees with the clean channel. */
+        expect_clean_channel(result.model_on, seed);
     }
 }
 
-ZTEST(lcs_core_rx_stream, test_lcs_core_rx17_random_stream_without_noise)
-{
-    run_random_stream(0x12345678U, false);
-    run_random_stream(0xCAFEBABEU, false);
-}
-
+/* ST-2: under noise the counters are those of the reference model of the nested rule. */
 ZTEST(lcs_core_rx_stream, test_lcs_core_rx17_random_stream_with_noise)
 {
-    run_random_stream(0x0BADF00DU, true);
-    run_random_stream(0x31415926U, true);
+    for (const uint32_t seed : {0x0BADF00DU, 0x31415926U}) {
+        const StreamResult result{run_random_stream(seed, true)};
+        expect_same_stats(result.dut, result.model_on, seed);
+    }
 }
 
-enum class Previous { ValidUplink, ValidDownlink, UartError, Truncated, StrayInCorruptedWindow };
+enum class Previous {
+    ValidUplink,
+    ValidDownlink,
+    UartError,
+    Truncated,
+    StrayInCorruptedWindow,
+    StraySof,
+    OlderOversize
+};
 enum class Next { Id0, Id1, Downlink };
 
 static Bytes next_frame(const Next next)
@@ -262,7 +325,10 @@ static void run_adjacency(const Previous previous, const Next next, const uint32
     Rig rig;
     Expect expect{};
     size_t out_count{0};
-    bool candidate_left{false};
+    /* What the previous event still owes: crc_error and timeout when the next frame has arrived, timeout at the end. */
+    uint32_t crc_at_next{0};
+    uint32_t timeout_at_next{0};
+    uint32_t timeout_at_end{0};
 
     switch (previous) {
     case Previous::ValidUplink:
@@ -285,7 +351,10 @@ static void run_adjacency(const Previous previous, const Next next, const uint32
         window.append(following, 0, 7);
         zassert_false(ref_window_valid(window, 12), "the window of the truncated frame must be corrupted");
         rig.feed(frame_id0(), tick0, 0, 5);
-        candidate_left = true;
+        /* The old candidate completes inside the next frame (CRC mismatch) or has expired before its first byte. */
+        crc_at_next = gap <= d12() ? 1U : 0U;
+        timeout_at_next = gap <= d12() ? 0U : 1U;
+        timeout_at_end = timeout_at_next;
         break;
     }
     case Previous::StrayInCorruptedWindow: {
@@ -296,21 +365,27 @@ static void run_adjacency(const Previous previous, const Next next, const uint32
         window.append(following, 0, 5);
         zassert_false(ref_window_valid(window, 12), "the inner window must be corrupted");
         rig.feed(corrupted, tick0);
+        /* The outer window counts its fault; the inner candidate is nested in it and counts nothing. */
         ++expect.crc_error;
-        candidate_left = true;
         break;
     }
+    case Previous::StraySof:
+        /* The stray SOF lives for the header deadline until its LEN arrives; a SOF at gap 0 is that LEN. */
+        rig.feed_byte(0x4B, tick0);
+        timeout_at_next = gap > oracle_deadline_ticks(2) ? 1U : 0U;
+        timeout_at_end = 1;
+        break;
+    case Previous::OlderOversize:
+        rig.feed_byte(0x4B, tick0);
+        rig.feed_byte(0x80, tick0);
+        timeout_at_next = gap > d12() ? 1U : 0U;
+        timeout_at_end = 1;
+        break;
     }
     check_stats(rig.rx.stats(), expect);
 
-    /* The old candidate either completes inside the next frame (CRC mismatch) or has expired before its first byte. */
-    if (candidate_left) {
-        if (gap <= d12()) {
-            ++expect.crc_error;
-        } else {
-            ++expect.timeout;
-        }
-    }
+    expect.crc_error += crc_at_next;
+    expect.timeout += timeout_at_next;
     rig.feed(following, tick0 + gap);
     if (next == Next::Downlink) {
         ++expect.foreign_downlink;
@@ -324,7 +399,7 @@ static void run_adjacency(const Previous previous, const Next next, const uint32
         zassert_true(same_uplink(rig.out[out_count - 1], next == Next::Id0 ? uplink_id0() : uplink_id1()));
     }
     rig.rx.expire(tick0 + gap + d12() + 1);
-    zassert_equal(rig.rx.stats().timeout, expect.timeout, "no candidate may be left behind");
+    zassert_equal(rig.rx.stats().timeout, timeout_at_end, "no candidate may be left behind");
 }
 
 /* Previous event leaves no state behind: the gap does not matter, so only gap 0 is run. */
@@ -353,4 +428,40 @@ ZTEST(lcs_core_rx_stream, test_lcs_core_rx18_loop2_residual_state)
         }
     }
     zassert_equal(executed, 18U);
+}
+
+/* The next valid frame at gaps of 0 ticks and just below, at and just above the deadline of a 12 B frame. */
+static void run_aftermath_of(const Previous previous)
+{
+    size_t executed{0};
+    for (const uint32_t gap : {0U, 10U, 11U, 12U}) {
+        run_adjacency(previous, Next::Id1, gap);
+        ++executed;
+    }
+    zassert_equal(executed, 4U);
+}
+
+ZTEST(lcs_core_rx_stream, test_lcs_core_ce6_aftermath_clean)
+{
+    run_aftermath_of(Previous::ValidUplink);
+}
+
+ZTEST(lcs_core_rx_stream, test_lcs_core_ce6_aftermath_stray_sof)
+{
+    run_aftermath_of(Previous::StraySof);
+}
+
+ZTEST(lcs_core_rx_stream, test_lcs_core_ce6_aftermath_truncated)
+{
+    run_aftermath_of(Previous::Truncated);
+}
+
+ZTEST(lcs_core_rx_stream, test_lcs_core_ce6_aftermath_stray_in_corrupted_window)
+{
+    run_aftermath_of(Previous::StrayInCorruptedWindow);
+}
+
+ZTEST(lcs_core_rx_stream, test_lcs_core_ce6_aftermath_older_oversize)
+{
+    run_aftermath_of(Previous::OlderOversize);
 }

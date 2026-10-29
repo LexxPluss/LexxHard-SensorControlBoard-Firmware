@@ -31,6 +31,8 @@ set(APP_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 target_sources(app PRIVATE
     src/test_frame.cpp
     src/test_rx.cpp
+    src/test_rx_model.cpp
+    src/test_rx_nested.cpp
     src/test_rx_stream.cpp
 )
 target_include_directories(app PRIVATE ${APP_SRC_DIR})

@@ -11,7 +11,9 @@
  * Every SOF byte starts a candidate with its own deadline (see lcs_timing.hpp); a candidate is evaluated at the byte
  * that completes its window, the oldest first. A matching frame consumes every younger candidate, because their SOF
  * lies inside its span. A mismatch counts crc_error and drops only that candidate, so a frame hidden behind a
- * corrupted LEN is still found. A CRC-valid frame of a LEN other than 8 or 12 (4..11) is consumed silently (extension
+ * corrupted LEN is still found. A candidate whose SOF lies inside the span of an older candidate in progress is nested:
+ * when dropped (mismatch, deadline, eviction) it counts nothing, because the older candidate already accounts for the
+ * fault. A CRC-valid frame of a LEN other than 8 or 12 (4..11) is consumed silently (extension
  * point); a LEN below 4 is dropped at the LEN byte. A CRC-valid uplink of a sender outside the known boards is
  * dropped and counted.
  *
@@ -21,6 +23,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -57,7 +60,7 @@ public:
         head_ = (head_ + 1U) % kMaxLen;
         advance_candidates(byte);
         if (byte == kSof) {
-            start_candidate(tick);
+            start_candidate(tick, is_covered());
         } else if (idle) {
             ++stats_.sof_mismatch;
         }
@@ -70,7 +73,9 @@ public:
         size_t kept{0};
         for (size_t i{0}; i < count_; ++i) {
             if (tick - candidates_[i].sof_tick > deadline_of(candidates_[i])) {
-                ++stats_.timeout;
+                if (!candidates_[i].nested) {
+                    ++stats_.timeout;
+                }
             } else {
                 candidates_[kept++] = candidates_[i];
             }
@@ -107,6 +112,7 @@ private:
         uint32_t sof_tick;
         size_t len;
         uint8_t seen;
+        bool nested;
     };
 
     static constexpr uint32_t deadline_of(const Candidate &candidate)
@@ -142,14 +148,27 @@ private:
         count_ = kept;
     }
 
-    void start_candidate(const uint32_t tick)
+    /* True when the SOF just received lies inside the span of an older candidate in progress. */
+    bool is_covered() const
+    {
+        for (size_t i{0}; i < count_; ++i) {
+            if (candidates_[i].seen <= std::min(candidates_[i].len, kMaxLen)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void start_candidate(const uint32_t tick, const bool nested)
     {
         if (count_ == candidates_.size()) {
             /* Only candidates with an oversize LEN outlive their ring bytes, so the oldest one is given up. */
-            ++stats_.timeout;
+            if (!candidates_[0].nested) {
+                ++stats_.timeout;
+            }
             erase(0);
         }
-        candidates_[count_++] = Candidate{tick, kLenUnknown, 1};
+        candidates_[count_++] = Candidate{tick, kLenUnknown, 1, nested};
     }
 
     std::optional<Uplink> evaluate_windows()
@@ -167,7 +186,9 @@ private:
             }
             const uint16_t received{static_cast<uint16_t>((frame[len - 2] << 8) | frame[len - 1])};
             if (crc16(frame.data(), len - 2) != received) {
-                ++stats_.crc_error;
+                if (!candidates_[i].nested) {
+                    ++stats_.crc_error;
+                }
                 erase(i);
                 continue;
             }
