@@ -411,6 +411,61 @@ static void run_d2_15()
     t.rig.expect_last(uplink_id1(), 2);
 }
 
+/* A LEN-12 uplink whose CRC low byte is wrong; its SOF is the only 0x4B in it. */
+static Bytes bad_crc_follower()
+{
+    Bytes follower{frame_id1()};
+    follower.data[11] = static_cast<uint8_t>(follower.data[11] ^ 0x01U);
+    return follower;
+}
+
+/*
+ * D2-16: a LEN-12 follower with a wrong CRC right behind V. A match must consume the younger candidates A and N;
+ * a leftover A would nest the follower and swallow its crc_error.
+ */
+template <typename RigT>
+static void run_d2_16()
+{
+    const Bytes frame{search_uplink(0x4B0C4BU, 0x0C, [](const Bytes &f) {
+        return f.data[8] != 0x4B && f.data[9] != 0x4B && f.data[10] != 0x4B && f.data[11] != 0x4B;
+    })};
+    Bytes stream{frame};
+    stream.append(bad_crc_follower(), 0, 12);
+    assert_window(stream, 0, 12, true);
+    assert_window(stream, 4, 12, false);
+    assert_window(stream, 6, 12, false);
+    assert_window(stream, 12, 12, false);
+    Tape<RigT> t{stream};
+    t.feed_all(kT0);
+    t.expect(Expect{.delivered = 1, .crc_error = 1});
+    t.rig.expect_last(uplink_of_frame(frame), 1);
+    t.expire(kT0 + d12() + 1);
+    t.expect(Expect{.delivered = 1, .crc_error = 1});
+}
+
+/*
+ * D2-17: the same follower behind a V whose CRC low byte is the SOF; the candidate started on the match byte must
+ * be consumed too, or it would nest the follower and swallow its crc_error.
+ */
+template <typename RigT>
+static void run_d2_17()
+{
+    const Bytes frame{search_uplink(0x555555U, 0x56, [](const Bytes &f) {
+        return f.data[8] != 0x4B && f.data[9] != 0x4B && f.data[10] != 0x4B && f.data[11] == 0x4B;
+    })};
+    Bytes stream{frame};
+    stream.append(bad_crc_follower(), 0, 12);
+    assert_window(stream, 0, 12, true);
+    /* N starts at index 11 and reads the follower's SOF as its LEN: oversize, no CRC window. */
+    assert_window(stream, 12, 12, false);
+    Tape<RigT> t{stream};
+    t.feed_all(kT0);
+    t.expect(Expect{.delivered = 1, .crc_error = 1});
+    t.rig.expect_last(uplink_of_frame(frame), 1);
+    t.expire(kT0 + d12() + 1);
+    t.expect(Expect{.delivered = 1, .crc_error = 1});
+}
+
 NESTED_CASE(d2_01, run_d2_01<RigT>())
 NESTED_CASE(d2_02, run_d2_02<RigT>())
 NESTED_CASE(d2_03, run_d2_03<RigT>())
@@ -426,6 +481,8 @@ NESTED_CASE(d2_12, run_d2_12<RigT>())
 NESTED_CASE(d2_13, run_d2_13<RigT>())
 NESTED_CASE(d2_14, run_d2_14<RigT>())
 NESTED_CASE(d2_15, run_d2_15<RigT>())
+NESTED_CASE(d2_16, run_d2_16<RigT>())
+NESTED_CASE(d2_17, run_d2_17<RigT>())
 
 /* D3: a valid frame with a SOF in the payload or in the CRC bytes is delivered once and no counter moves. */
 template <typename RigT>
