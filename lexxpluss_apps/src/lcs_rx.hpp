@@ -10,12 +10,12 @@
  * CRC first: LEN is not trusted until a CRC matches, it only selects the length of the window that is checked.
  * Every SOF byte starts a candidate with its own deadline (see lcs_timing.hpp); a candidate is evaluated at the byte
  * that completes its window, the oldest first. A matching frame consumes every younger candidate, because their SOF
- * lies inside its span. A mismatch counts crc_error and drops only that candidate, so a frame hidden behind a
- * corrupted LEN is still found. A candidate whose SOF lies inside the span of an older candidate in progress is nested:
- * when dropped (mismatch, deadline, eviction) it counts nothing, because the older candidate already accounts for the
- * fault. A CRC-valid frame of a LEN other than 8 or 12 (4..11) is consumed silently (extension
- * point); a LEN below 4 is dropped at the LEN byte. A CRC-valid uplink of a sender outside the known boards is
- * dropped and counted.
+ * lies inside its span. A mismatch of a non-nested candidate counts crc_error and drops only that candidate, so a
+ * frame hidden behind a corrupted LEN is still found. A candidate whose SOF lies inside the span of an older
+ * candidate in progress is nested: when dropped (mismatch, deadline, eviction) it counts nothing, because the older
+ * candidate already accounts for the fault. A CRC-valid frame of a LEN other than 8 or 12 (4..11) is consumed
+ * silently (extension point); a LEN below 4 is dropped at the LEN byte. A CRC-valid uplink of a sender
+ * outside the known boards is dropped and counted.
  *
  * The ring of the last kMaxLen bytes is enough: a window never exceeds kMaxLen. A candidate with LEN above kMaxLen
  * is not CRC-checked and needs no bytes.

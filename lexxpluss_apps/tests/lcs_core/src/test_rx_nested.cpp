@@ -270,7 +270,7 @@ static void run_d2_07()
 }
 
 /*
- * D2-08: A (LEN 4) stalls after index 2 and expires; N starts later (tick kT0 + 4), so N is still alive when its
+ * D2-08: A (LEN 4) stalls after index 2 and expires; N starts later (tick kT0 + d(4) - 3), so N is still alive when its
  * LEN byte (index 3, after A has left) and the rest of its wrong-CRC window arrive.
  */
 template <typename RigT>
