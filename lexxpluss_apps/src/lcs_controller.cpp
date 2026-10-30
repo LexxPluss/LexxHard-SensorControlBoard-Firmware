@@ -12,11 +12,15 @@
 #include <zephyr/linker/section_tags.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
+#ifdef CONFIG_SHELL
+#include <zephyr/shell/shell.h>
+#endif
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include "lcs_can_packer.hpp"
 #include "lcs_controller.hpp"
+#include "lcs_diag.hpp"
 #include "lcs_rx.hpp"
 #include "lcs_sync_schedule.hpp"
 #include "lcs_timing.hpp"
@@ -24,6 +28,9 @@
 namespace lexxhard::lcs_controller {
 
 LOG_MODULE_REGISTER(lcs);
+
+/* Diagnostic counters; external linkage so that a debugger or CubeMonitor can read them by symbol. */
+lcs::Diag g_lcs{};
 
 namespace {
 
@@ -61,10 +68,7 @@ struct Host {
     lcs::UplinkReceiver receiver;
     lcs::CanPacker packer;
     lcs::SyncScheduler scheduler;
-    uint32_t rx_queue_overflow;
-    uint32_t tx_timeout;
-    uint32_t tx_rejected_busy;
-    uint32_t rx_restarts;
+    lcs::IntervalTracker sync_interval;
     uint32_t tx_start_tick;
     atomic_t tx_busy;
     atomic_t rx_restart_pending;
@@ -93,7 +97,7 @@ void put_chunk(const uint32_t tick, const uint8_t *const data, const size_t len,
     if (len > 0)
         std::memcpy(chunk.data, data, len);
     if (k_msgq_put(&chunk_queue, &chunk, K_NO_WAIT) != 0)
-        ++host.rx_queue_overflow;
+        __atomic_fetch_add(&g_lcs.isr.rx_queue_overflow, 1U, __ATOMIC_RELAXED);
 }
 
 void uart_callback(const device *, uart_event *event, void *)
@@ -127,7 +131,7 @@ void uart_callback(const device *, uart_event *event, void *)
 bool send_sync(const lcs::DownlinkFrame &frame)
 {
     if (!atomic_cas(&host.tx_busy, 0, 1)) {
-        ++host.tx_rejected_busy;
+        ++g_lcs.tx.rejected_busy;
         return false;
     }
     std::memcpy(tx_buffer, frame.data(), frame.size());
@@ -147,7 +151,7 @@ void guard_tx()
     /* Own time stamp: a transmit started in this pass is later than the pass's first one. */
     if (atomic_get(&host.tx_busy) == 0 || now_ticks() - host.tx_start_tick <= kTxTimeoutTicks)
         return;
-    ++host.tx_timeout;
+    ++g_lcs.tx.timeout;
     if (uart_tx_abort(host.uart) != 0) {
         /* Nothing was in progress, so no event will come to release the line. */
         set_direction(false);
@@ -159,7 +163,7 @@ void restart_rx()
 {
     if (!atomic_cas(&host.rx_restart_pending, 1, 0))
         return;
-    ++host.rx_restarts;
+    ++g_lcs.rx.restarts;
     if (uart_rx_enable(host.uart, rx_buffer, sizeof(rx_buffer), 0) != 0)
         atomic_set(&host.rx_restart_pending, 1);
 }
@@ -184,6 +188,25 @@ void handle_chunk(const RxChunk &chunk)
             forward(*uplink);
     }
 }
+
+#ifdef CONFIG_SHELL
+int cmd_stat(const shell *sh, size_t, char **)
+{
+    const lcs::Diag snapshot{g_lcs};
+    for (size_t group{0}; group < lcs::kDiagGroups.size(); ++group) {
+        char buf[lcs::kDiagLineMax];
+        if (lcs::format_group(snapshot, group, buf, sizeof(buf)) > 0)
+            shell_print(sh, "%s", buf);
+    }
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(lcs_cmds,
+    SHELL_CMD(stat, NULL, "LCS host counters", cmd_stat),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(lcs, &lcs_cmds, "LCS host commands", NULL);
+#endif
 
 }
 
@@ -239,7 +262,18 @@ void run(void *p1, void *p2, void *p3)
         }
         const uint32_t now{now_ticks()};
         host.receiver.expire(now);
-        host.scheduler.poll(now, [](const lcs::DownlinkFrame &frame) { return send_sync(frame); });
+        g_lcs.rx.stats = host.receiver.stats();
+        const lcs::SyncPoll poll{
+            host.scheduler.poll(now, [](const lcs::DownlinkFrame &frame) { return send_sync(frame); })};
+        if (poll.outcome == lcs::SyncOutcome::Sent) {
+            ++g_lcs.tx.sent;
+            host.sync_interval.on_start(host.tx_start_tick);
+            g_lcs.sync.max_interval = host.sync_interval.max();
+        } else if (poll.outcome == lcs::SyncOutcome::Skipped) {
+            ++g_lcs.tx.skipped;
+        }
+        if (poll.late)
+            ++g_lcs.sync.late;
         restart_rx();
         guard_tx();
     }
