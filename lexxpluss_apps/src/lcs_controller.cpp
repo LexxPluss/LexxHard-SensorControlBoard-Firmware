@@ -72,6 +72,7 @@ struct Host {
     uint32_t tx_start_tick;
     atomic_t tx_busy;
     atomic_t rx_restart_pending;
+    atomic_t rx_recover_pending;
     atomic_t ready;
     const device *uart;
     gpio_dt_spec de;
@@ -111,7 +112,7 @@ void uart_callback(const device *, uart_event *event, void *)
         break;
     }
     case UART_RX_STOPPED:
-        put_chunk(now_ticks(), nullptr, 0, true);
+        atomic_set(&host.rx_recover_pending, 1);
         break;
     case UART_RX_DISABLED:
         atomic_set(&host.rx_restart_pending, 1);
@@ -163,9 +164,20 @@ void restart_rx()
 {
     if (!atomic_cas(&host.rx_restart_pending, 1, 0))
         return;
-    ++g_lcs.rx.restarts;
-    if (uart_rx_enable(host.uart, rx_buffer, sizeof(rx_buffer), 0) != 0)
+    if (uart_rx_enable(host.uart, rx_buffer, sizeof(rx_buffer), 0) == 0)
+        ++g_lcs.rx.restarts;
+    else
         atomic_set(&host.rx_restart_pending, 1);
+}
+
+void recover_rx()
+{
+    if (!atomic_cas(&host.rx_recover_pending, 1, 0))
+        return;
+    /* The driver stops RX on a DMA error without UART_RX_DISABLED. The disable makes it deliver the flushed data and
+     * UART_RX_DISABLED, so that restart_rx() enables RX again; the error marker follows the flushed bytes. */
+    uart_rx_disable(host.uart);
+    put_chunk(now_ticks(), nullptr, 0, true);
 }
 
 void forward(const lcs::Uplink &uplink)
@@ -201,8 +213,20 @@ int cmd_stat(const shell *sh, size_t, char **)
     return 0;
 }
 
+int cmd_recover(const shell *sh, size_t, char **)
+{
+    if (atomic_get(&host.ready) == 0) {
+        shell_print(sh, "LCS host is not ready");
+        return -ENODEV;
+    }
+    atomic_set(&host.rx_recover_pending, 1);
+    shell_print(sh, "RX recovery requested");
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(lcs_cmds,
     SHELL_CMD(stat, NULL, "LCS host counters", cmd_stat),
+    SHELL_CMD(recover, NULL, "Trigger the RX recovery (same flag as UART_RX_STOPPED)", cmd_recover),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(lcs, &lcs_cmds, "LCS host commands", NULL);
@@ -274,6 +298,7 @@ void run(void *p1, void *p2, void *p3)
         }
         if (poll.late)
             ++g_lcs.sync.late;
+        recover_rx();
         restart_rx();
         guard_tx();
     }
