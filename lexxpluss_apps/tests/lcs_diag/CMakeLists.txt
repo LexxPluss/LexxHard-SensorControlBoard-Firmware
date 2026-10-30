@@ -32,3 +32,7 @@ target_sources(app PRIVATE
     src/test_main.cpp
 )
 target_include_directories(app PRIVATE ${APP_SRC_DIR})
+
+if(ENABLE_LCS_DIAG_NAMES)
+    target_compile_definitions(app PRIVATE ENABLE_LCS_DIAG_NAMES)
+endif()

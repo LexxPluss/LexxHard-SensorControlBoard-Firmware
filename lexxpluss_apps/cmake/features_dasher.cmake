@@ -15,3 +15,6 @@ set(ENABLE_PGV 0)
 
 # Dasher carries the LCS host: the RS485 port (uart4) and the pgv_en/pgv_en_n pins belong to it.
 set(ENABLE_LCS 1)
+
+# Print the counter names (<name>=<value>) in the shell command `lcs stat`. Costs about 440 B of flash.
+# set(ENABLE_LCS_DIAG_NAMES 1)

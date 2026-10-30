@@ -41,6 +41,9 @@ using lexxhard::lcs::format_group;
 using lexxhard::lcs::IntervalTracker;
 using lexxhard::lcs::kDiagGroups;
 using lexxhard::lcs::kDiagLineMax;
+#ifdef ENABLE_LCS_DIAG_NAMES
+using lexxhard::lcs::kDiagNames;
+#endif
 using lexxhard::lcs::kDiagWords;
 
 namespace {
@@ -49,8 +52,14 @@ static_assert(sizeof(Diag) == kDiagWords * 4);
 static_assert(std::is_trivially_copyable_v<Diag>);
 
 constexpr uint32_t kMax{std::numeric_limits<uint32_t>::max()};
+#ifdef ENABLE_LCS_DIAG_NAMES
+static_assert(kDiagNames.size() == kDiagWords * 4);
+/* "rx" plus 8 values of " xxxx=4294967295". */
+constexpr size_t kLongestLine{130};
+#else
 /* "rx" plus 8 values of " 4294967295". */
 constexpr size_t kLongestLine{90};
+#endif
 
 Diag make_numbered()
 {
@@ -119,6 +128,7 @@ ZTEST(lcs_diag, test_dg3_bit_cast_order_matches_declaration)
     }
 }
 
+#ifndef ENABLE_LCS_DIAG_NAMES
 ZTEST(lcs_diag, test_dg4_golden_lines)
 {
     const Diag d{make_numbered()};
@@ -135,6 +145,37 @@ ZTEST(lcs_diag, test_dg4_golden_lines)
         zassert_equal(strcmp(buf, expected[g]), 0);
     }
 }
+#else
+ZTEST(lcs_diag, test_dg4_named_golden_lines)
+{
+    const Diag d{make_numbered()};
+    const char *const expected[]{
+        "rx dlvr=1 crce=2 sofm=3 tout=4 uerr=5 fdwn=6 unkn=7 rstr=8",
+        "tx sent=9 skip=10 busy=11 tout=12",
+        "sync late=13 maxi=14",
+        "isr ovfl=15",
+    };
+    for (size_t g{0}; g < 4; ++g) {
+        char buf[kDiagLineMax];
+        const size_t len{format_group(d, g, buf, sizeof(buf))};
+        zassert_equal(len, strlen(expected[g]));
+        zassert_equal(strcmp(buf, expected[g]), 0);
+    }
+}
+
+ZTEST(lcs_diag, test_dg2_named_names_four_chars_and_unique_within_group)
+{
+    for (const auto &g : kDiagGroups) {
+        for (size_t i{0}; i < g.count; ++i) {
+            const std::string_view a{kDiagNames.substr((g.first + i) * 4, 4)};
+            zassert_equal(a.size(), 4u);
+            for (size_t j{i + 1}; j < g.count; ++j) {
+                zassert_true(a != kDiagNames.substr((g.first + j) * 4, 4));
+            }
+        }
+    }
+}
+#endif
 
 ZTEST(lcs_diag, test_dg4_line_max_is_longest_line_plus_nul)
 {
@@ -148,8 +189,13 @@ ZTEST(lcs_diag, test_dg4_longest_line_fits_exactly)
     const size_t len{format_group(d, 0, buf, sizeof(buf))};
     zassert_equal(len, kLongestLine);
     zassert_equal(strlen(buf), kLongestLine);
+#ifdef ENABLE_LCS_DIAG_NAMES
+    zassert_equal(strcmp(buf, "rx dlvr=4294967295 crce=4294967295 sofm=4294967295 tout=4294967295 "
+                              "uerr=4294967295 fdwn=4294967295 unkn=4294967295 rstr=4294967295"), 0);
+#else
     zassert_equal(strcmp(buf, "rx 4294967295 4294967295 4294967295 4294967295 "
                               "4294967295 4294967295 4294967295 4294967295"), 0);
+#endif
 }
 
 ZTEST(lcs_diag, test_dg4_one_byte_short_returns_zero_and_leaves_buffer)

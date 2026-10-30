@@ -6,8 +6,8 @@
  *
  * Diagnostic counters of the LCS host and their shell text form. Pure: no Zephyr include.
  * Diag is a flat struct of uint32_t, so its words can be read in declaration order. A line is the group name
- * and the decimal words of the group. Every counter has one writer; the ISR-side counter is incremented
- * atomically by its owner.
+ * and the words of the group in decimal, with their names in the named build. Every counter has one writer;
+ * the ISR-side counter is incremented atomically by its owner.
  */
 
 #pragma once
@@ -53,8 +53,12 @@ struct Diag {
 
 inline constexpr size_t kDiagWords{15};
 
+/* Four characters per field, in struct order. */
+inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsentskipbusytoutlatemaxiovfl"};
+
 static_assert(sizeof(Diag) == kDiagWords * 4);
 static_assert(std::is_trivially_copyable_v<Diag>);
+static_assert(kDiagNames.size() == kDiagWords * 4);
 
 struct DiagGroup {
     std::string_view name;
@@ -69,8 +73,15 @@ inline constexpr std::array<DiagGroup, 4> kDiagGroups{{
     {"isr", 14, 1},
 }};
 
-/* Longest line is "rx" plus 8 values of " 4294967295", 90 characters, plus the NUL. */
-inline constexpr size_t kDiagLineMax{91};
+/* true: "<group> <name>=<value> ..."; false: "<group> <value> ...". The names cost flash, so the build selects. */
+#ifdef ENABLE_LCS_DIAG_NAMES
+inline constexpr bool kDiagNamed{true};
+#else
+inline constexpr bool kDiagNamed{false};
+#endif
+
+/* Longest line is "rx" plus 8 values of " 4294967295" (90 characters) or " xxxx=4294967295" (130), plus the NUL. */
+inline constexpr size_t kDiagLineMax{kDiagNamed ? 131 : 91};
 
 namespace diag_detail {
 
@@ -122,6 +133,10 @@ inline size_t build(const Diag &d, const DiagGroup &group, char *const out)
     sink.put(group.name);
     for (size_t i{group.first}; i < group.first + group.count; ++i) {
         sink.put(' ');
+        if constexpr (kDiagNamed) {
+            sink.put(kDiagNames.substr(i * 4, 4));
+            sink.put('=');
+        }
         sink.put_decimal(words[i]);
     }
     return sink.length();

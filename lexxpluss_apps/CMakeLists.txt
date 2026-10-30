@@ -214,6 +214,11 @@ if(ENABLE_LCS)
     add_definitions(-DENABLE_LCS)
 endif()
 
+# The shell command `lcs stat` prints the counter names too (about 440 B of flash). Off unless the features file asks.
+if(ENABLE_LCS_DIAG_NAMES)
+    add_definitions(-DENABLE_LCS_DIAG_NAMES)
+endif()
+
 # ToF chain enumeration glue (AMRSW-2322 Phase 2). Owns i2c2: the tug
 # encoder polling thread is not started and resolves to "disconnected".
 # Mutually exclusive with the diagnostic build (enforced by #error).
