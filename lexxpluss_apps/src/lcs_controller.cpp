@@ -36,6 +36,8 @@ namespace {
 
 /* One tick of the receive core is kTickUs, so it must be the kernel tick. */
 static_assert(CONFIG_SYS_CLOCK_TICKS_PER_SEC == 1000000 / lcs::kTickUs, "kernel tick must be lcs::kTickUs");
+/* The absolute-tick wait in run() needs 64-bit timeouts. */
+static_assert(IS_ENABLED(CONFIG_TIMEOUT_64BIT), "run() needs CONFIG_TIMEOUT_64BIT");
 
 constexpr size_t kRxBufferSize{256};
 constexpr size_t kChunkSize{32};
