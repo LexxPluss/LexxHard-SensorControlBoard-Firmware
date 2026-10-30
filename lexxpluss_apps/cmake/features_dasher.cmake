@@ -9,3 +9,12 @@ set(ENABLE_PUSH_MODE 1)
 
 # Dasher has no safety LiDAR connected, so OSSD1/OSSD2 stay low and the robot would stay in emergency stop.
 set(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST 1)
+
+# Dasher has no PGV; its RS485 port (uart4) and the pgv_en/pgv_en_n pins are free for other use.
+set(ENABLE_PGV 0)
+
+# Dasher carries the LCS host: the RS485 port (uart4) and the pgv_en/pgv_en_n pins belong to it.
+set(ENABLE_LCS 1)
+
+# Print the counter names (<name>=<value>) in the shell command `lcs stat`. Costs about 440 B of flash.
+# set(ENABLE_LCS_DIAG_NAMES 1)

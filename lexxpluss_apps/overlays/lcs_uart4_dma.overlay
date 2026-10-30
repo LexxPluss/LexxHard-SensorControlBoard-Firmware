@@ -1,0 +1,27 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * uart4 (RS485) DMA for the LCS host (SOW S18, ENABLE_LCS builds).
+ *
+ * RX: DMA1 Stream 2, Channel 4, circular. TX: DMA1 Stream 4, Channel 4 (RM0410 Table 27).
+ * The circular mode is the cyclic bit (STM32_DMA_MODE_CYCLIC) of the channel-config cell, which
+ * only takes effect with patches/zephyr/0006-uart-stm32-circular-rx-dma.patch applied.
+ * The features cell 0x03 is the value Zephyr's own F7 async-UART test overlay uses.
+ */
+
+#include <zephyr/dt-bindings/dma/stm32_dma.h>
+
+&dma1 {
+	status = "okay";
+};
+
+&uart4 {
+	current-speed = <500000>;
+	dmas = <&dma1 2 4
+		(STM32_DMA_PERIPH_TO_MEMORY | STM32_DMA_MEM_INC | STM32_DMA_MODE_CYCLIC |
+		 STM32_DMA_PRIORITY_HIGH) 0x03>,
+	       <&dma1 4 4
+		(STM32_DMA_MEMORY_TO_PERIPH | STM32_DMA_MEM_INC | STM32_DMA_PRIORITY_HIGH) 0x03>;
+	dma-names = "rx", "tx";
+};
