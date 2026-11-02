@@ -238,6 +238,17 @@ SHELL_CMD_REGISTER(lcs, &lcs_cmds, "LCS host commands", NULL);
 
 void init()
 {
+    /* Like the other controllers, set the logic state here instead of relying on static zero-initialization. This runs
+     * before the UART callback is installed so that no flag written by the RX callback is cleared, and the run thread
+     * reads the host state only after ready is set. */
+    host.packer.reset();
+    host.receiver.reset();
+    host.scheduler.reset();
+    host.sync_interval.reset();
+    host.tx_start_tick = 0;
+    atomic_set(&host.tx_busy, 0);
+    atomic_set(&host.rx_restart_pending, 0);
+    atomic_set(&host.rx_recover_pending, 0);
     k_msgq_init(&msgq, forward_storage, sizeof(lcs::msg), kForwardQueueDepth);
     k_msgq_init(&chunk_queue, chunk_storage, sizeof(RxChunk), kChunkQueueDepth);
     host.uart = DEVICE_DT_GET(DT_NODELABEL(uart4));
