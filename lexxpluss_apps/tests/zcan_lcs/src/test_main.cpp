@@ -185,4 +185,23 @@ ZTEST(zcan_lcs, test_empty_queue_sends_nothing)
     zassert_not_equal(k_msgq_get(&rx_msgq, &received, kNothingWait), 0, "a frame appeared from nothing");
 }
 
+// SC06-02: no CAN frame other than 0x21C/0x21D (never the link-state ID 0x21F) is sent for any board
+ZTEST(zcan_lcs, test_only_board_ids_are_ever_sent)
+{
+    lexxhard::zcan_lcs::zcan_lcs adapter;
+    adapter.init();
+    for (const std::uint8_t board : {std::uint8_t{0}, std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{255}}) {
+        queue(make_frame(board, 0x80));
+        adapter.poll();
+    }
+    std::size_t received_count{0};
+    can_frame received{};
+    while (k_msgq_get(&rx_msgq, &received, kNothingWait) == 0) {
+        zassert_not_equal(received.id, 0x21F, "link-state ID sent");
+        zassert_true(received.id == 0x21C || received.id == 0x21D, "unexpected ID 0x%x", received.id);
+        ++received_count;
+    }
+    zassert_equal(received_count, 2U, "frames sent");
+}
+
 // vim: set expandtab shiftwidth=4:

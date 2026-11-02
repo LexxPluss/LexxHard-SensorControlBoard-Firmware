@@ -33,6 +33,7 @@ target_sources(app PRIVATE
     src/test_forward_queue.cpp
     src/test_frame.cpp
     src/test_rx.cpp
+    src/test_rx_action_shaped.cpp
     src/test_rx_model.cpp
     src/test_rx_nested.cpp
     src/test_rx_stream.cpp
