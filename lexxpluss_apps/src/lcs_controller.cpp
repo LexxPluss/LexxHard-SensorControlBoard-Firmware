@@ -21,6 +21,7 @@
 #include "lcs_can_packer.hpp"
 #include "lcs_controller.hpp"
 #include "lcs_diag.hpp"
+#include "lcs_forward_queue.hpp"
 #include "lcs_rx.hpp"
 #include "lcs_sync_schedule.hpp"
 #include "lcs_timing.hpp"
@@ -182,13 +183,19 @@ void recover_rx()
     put_chunk(now_ticks(), nullptr, 0, true);
 }
 
+/* The forward queue of the uplinks as the queue of lcs::put_purging. */
+struct ForwardQueue {
+    bool try_put(const lcs::msg &frame) { return k_msgq_put(&msgq, &frame, K_NO_WAIT) == 0; }
+    void purge() { k_msgq_purge(&msgq); }
+};
+
 void forward(const lcs::Uplink &uplink)
 {
     const std::optional<lcs::msg> frame{host.packer.pack(uplink)};
     if (!frame)
         return;
-    while (k_msgq_put(&msgq, &*frame, K_NO_WAIT) != 0)
-        k_msgq_purge(&msgq);
+    ForwardQueue queue;
+    lcs::put_purging(queue, *frame);
 }
 
 void handle_chunk(const RxChunk &chunk)
