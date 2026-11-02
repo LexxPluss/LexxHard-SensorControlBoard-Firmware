@@ -93,6 +93,14 @@ Diag make_all_max()
     return d;
 }
 
+void expect_line(const Diag &d, size_t group, const char *expected)
+{
+    char buf[kDiagLineMax];
+    const size_t len{format_group(d, group, buf, sizeof(buf))};
+    zassert_equal(len, strlen(expected), "length mismatch, group %zu", group);
+    zassert_equal(strcmp(buf, expected), 0, "text mismatch, group %zu", group);
+}
+
 }  // namespace
 
 ZTEST_SUITE(lcs_diag, NULL, NULL, NULL, NULL, NULL);
@@ -217,6 +225,59 @@ ZTEST(lcs_diag, test_dg4_group_out_of_range_returns_zero)
     memset(buf, 0x5A, sizeof(buf));
     zassert_equal(format_group(d, 4, buf, sizeof(buf)), 0u);
     zassert_equal(buf[0], 0x5A);
+}
+
+/* Value 0 must print one digit; hand-written text so the code is not checked against itself. */
+ZTEST(lcs_diag, test_dg7_zero_values_print_as_0)
+{
+    const Diag d{};
+#ifndef ENABLE_LCS_DIAG_NAMES
+    expect_line(d, 0, "rx 0 0 0 0 0 0 0 0");
+    expect_line(d, 1, "tx 0 0 0 0");
+    expect_line(d, 2, "sync 0 0");
+    expect_line(d, 3, "isr 0");
+#else
+    expect_line(d, 0, "rx dlvr=0 crce=0 sofm=0 tout=0 uerr=0 fdwn=0 unkn=0 rstr=0");
+    expect_line(d, 1, "tx sent=0 skip=0 busy=0 tout=0");
+    expect_line(d, 2, "sync late=0 maxi=0");
+    expect_line(d, 3, "isr ovfl=0");
+#endif
+}
+
+/* One value per digit class: 0, 1 digit, 9/10 and 99/100 boundaries, interior zeros, 10 digits. */
+ZTEST(lcs_diag, test_dg7_decimal_digit_classes)
+{
+    Diag d{};
+    d.rx.stats.delivered = 0;
+    d.rx.stats.crc_error = 1;
+    d.rx.stats.sof_mismatch = 9;
+    d.rx.stats.timeout = 10;
+    d.rx.stats.uart_error = 99;
+    d.rx.stats.foreign_downlink = 100;
+    d.rx.stats.unknown_sender = 1000000000;
+    d.rx.restarts = kMax;
+#ifndef ENABLE_LCS_DIAG_NAMES
+    expect_line(d, 0, "rx 0 1 9 10 99 100 1000000000 4294967295");
+#else
+    expect_line(d, 0, "rx dlvr=0 crce=1 sofm=9 tout=10 uerr=99 fdwn=100 unkn=1000000000 rstr=4294967295");
+#endif
+}
+
+/* A null destination must be rejected before any write. */
+ZTEST(lcs_diag, test_dg8_null_buffer_returns_zero)
+{
+    zassert_equal(format_group(make_numbered(), 0, nullptr, kDiagLineMax), 0u, "null buffer must return 0");
+}
+
+/* Capacity 0 must be rejected without touching the buffer. */
+ZTEST(lcs_diag, test_dg8_zero_cap_returns_zero_and_leaves_buffer)
+{
+    char buf[kDiagLineMax];
+    memset(buf, 0x5A, sizeof(buf));
+    zassert_equal(format_group(make_numbered(), 0, buf, 0), 0u, "zero capacity must return 0");
+    for (size_t i{0}; i < sizeof(buf); ++i) {
+        zassert_equal(buf[i], 0x5A, "byte %zu modified", i);
+    }
 }
 
 ZTEST(lcs_diag, test_it1_first_start_gives_no_interval)
