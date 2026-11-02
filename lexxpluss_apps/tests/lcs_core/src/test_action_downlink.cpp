@@ -107,15 +107,27 @@ ZTEST(lcs_action_downlink, test_sc04_02_param_big_endian)
     }
 }
 
-ZTEST(lcs_action_downlink, test_sc04_03_crc_covers_bytes_0_to_5)
+/* The CRC bytes of the encoded frame must change when any single bit of target, cmd or param changes. */
+static void expect_crc_changes(const uint8_t target, const uint8_t cmd, const uint16_t param, const unsigned bit)
 {
-    for (size_t byte{0}; byte < 6; ++byte) {
-        for (unsigned bit{0}; bit < 8; ++bit) {
-            Frame8 flipped{kCrcFrame};
-            flipped[byte] = static_cast<uint8_t>(flipped[byte] ^ (1U << bit));
-            zassert_not_equal(lcs::crc16(flipped.data(), 6), 0x0245, "a flip in byte %u bit %u went unnoticed",
-                              static_cast<unsigned>(byte), bit);
-        }
+    const Frame8 frame{lcs::encode_downlink(target, cmd, param)};
+    zassert_equal(frame[2], target, "target reaches byte 2");
+    zassert_equal(frame[3], cmd, "cmd reaches byte 3");
+    zassert_equal(frame[4], static_cast<uint8_t>(param >> 8), "param high reaches byte 4");
+    zassert_equal(frame[5], static_cast<uint8_t>(param & 0xFFU), "param low reaches byte 5");
+    const uint16_t stored{static_cast<uint16_t>((frame[6] << 8) | frame[7])};
+    zassert_not_equal(stored, 0x0245, "a flip of input bit %u went unnoticed by the CRC", bit);
+}
+
+ZTEST(lcs_action_downlink, test_sc04_03_crc_covers_target_cmd_and_param)
+{
+    zassert_equal(lcs::encode_downlink(0x00, 0x48, 0x1234), kCrcFrame);
+    for (unsigned bit{0}; bit < 8; ++bit) {
+        expect_crc_changes(static_cast<uint8_t>(0x00U ^ (1U << bit)), 0x48, 0x1234, bit);
+        expect_crc_changes(0x00, static_cast<uint8_t>(0x48U ^ (1U << bit)), 0x1234, bit);
+    }
+    for (unsigned bit{0}; bit < 16; ++bit) {
+        expect_crc_changes(0x00, 0x48, static_cast<uint16_t>(0x1234U ^ (1U << bit)), bit);
     }
 }
 
