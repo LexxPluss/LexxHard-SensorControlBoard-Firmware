@@ -269,7 +269,7 @@ static Bytes frame_with_len(const size_t len)
     }
 }
 
-/* LEN below 4 cannot be a frame: dropped at the LEN byte; the stray bytes behind it count sof_mismatch only. */
+/* LEN below 4 cannot be a frame: dropped at the LEN byte; no counter other than sof_mismatch moves. */
 ZTEST(lcs_core_rx, test_lcs_core_rx11_len_below_minimum)
 {
     for (const size_t len : {size_t{0}, size_t{1}, size_t{2}, size_t{3}}) {

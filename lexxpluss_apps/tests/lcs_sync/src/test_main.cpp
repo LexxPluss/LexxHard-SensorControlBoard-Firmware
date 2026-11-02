@@ -276,7 +276,7 @@ ZTEST(lcs_sync_schedule, test_lcs_sync_wrap_cases_repeat_across_counter_overflow
     zassert_equal(scheduler.next_due(), 389U);
     zassert_equal(sink.frames.size(), 4U);
 
-    /* SY-5 where the late poll itself is the one that passes the wrap. */
+    /* SY-5 across the wrap: the on-time poll passes the wrap, the late poll comes after it. */
     SyncScheduler second;
     (void)second.poll(4294967290U, sink);
     const SyncPoll across{second.poll(94U, sink)};
