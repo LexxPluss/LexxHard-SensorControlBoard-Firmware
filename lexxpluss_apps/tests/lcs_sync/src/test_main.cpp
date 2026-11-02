@@ -363,6 +363,19 @@ SyncScheduler started_at(const uint32_t base)
     return scheduler;
 }
 
+/* Compares the observable state of two schedulers at one tick for several caps. */
+void expect_same_state(const SyncScheduler &actual, const SyncScheduler &expected, const uint32_t tick,
+                       const uint32_t start, const size_t i)
+{
+    const std::array<uint32_t, 4> caps{1U, 10U, kPeriod, 0xFFFFFFFFU};
+    zassert_equal(actual.next_due(), expected.next_due(), "next_due: start %u step %zu", start, i);
+    zassert_equal(actual.due(tick), expected.due(tick), "due: start %u step %zu", start, i);
+    for (const uint32_t cap : caps) {
+        zassert_equal(actual.ticks_until_due(tick, cap), expected.ticks_until_due(tick, cap),
+                      "ticks_until_due: start %u step %zu cap %u", start, i, cap);
+    }
+}
+
 }
 
 /* SY-T1: not started means the first poll is due at once. */
@@ -492,6 +505,54 @@ ZTEST(lcs_sync_schedule, test_lcs_sync_ticks_until_due_after_a_sent_poll)
             zassert_equal(scheduler.ticks_until_due(tick, 0xFFFFFFFFU), kPeriod - late, "late %u", late);
             /* The controller's cap of 10 ticks clamps a remaining time of more than 10. */
             zassert_equal(scheduler.ticks_until_due(tick, kCap), kPeriod - late < kCap ? kPeriod - late : kCap);
+        }
+    }
+}
+
+namespace {
+
+/* Start ticks: 0 < S < period, period <= S < 2^31, S >= 2^31. */
+const std::array<uint32_t, 3> kResetStarts{kPeriod / 2U, 0x7FFFFFFFU - kPeriod, 0xFFFFFFFFU - kPeriod};
+
+}
+
+/*
+ * The oracle is the boot state of a fresh instance. The start ticks are one per class where a stale started_
+ * is visible (S = 0 would hide it); next_due() before the first poll is the only way to see a stale next_due_.
+ */
+ZTEST(lcs_sync_schedule, test_lcs_sync_reset_returns_to_boot_state)
+{
+    const std::array<Step, 4> steps{{{0U, true}, {kPeriod - 1U, true}, {kPeriod, false}, {3U * kPeriod, true}}};
+    for (const uint32_t start : kResetStarts) {
+        SyncScheduler scheduler;
+        const SyncScheduler fresh;
+        Sink warmup;
+        (void)scheduler.poll(start, warmup);
+        (void)scheduler.poll(start + kPeriod, warmup);
+        (void)scheduler.poll(start + 3U * kPeriod, warmup);
+        zassert_not_equal(scheduler.next_due(), fresh.next_due(), "precondition: next_due is stale, start %u",
+                          start);
+
+        scheduler.reset();
+        zassert_equal(scheduler.next_due(), 0U, "next_due after reset, start %u", start);
+        zassert_true(scheduler.due(start), "due after reset, start %u", start);
+        expect_same_state(scheduler, fresh, start, start, 0U);
+
+        SyncScheduler reference;
+        for (size_t i{0}; i < steps.size(); ++i) {
+            const uint32_t tick{start + steps[i].dt};
+            Sink actual_sink;
+            actual_sink.accept = steps[i].accept;
+            Sink reference_sink;
+            reference_sink.accept = steps[i].accept;
+            const SyncPoll got{scheduler.poll(tick, actual_sink)};
+            const SyncPoll want{reference.poll(tick, reference_sink)};
+            zassert_equal(static_cast<int>(got.outcome), static_cast<int>(want.outcome), "outcome: start %u step %zu",
+                          start, i);
+            zassert_equal(got.late, want.late, "late: start %u step %zu", start, i);
+            zassert_equal(actual_sink.frames.size(), reference_sink.frames.size(), "sends: start %u step %zu", start,
+                          i);
+            expect_same_state(scheduler, reference, tick, start, i);
         }
     }
 }

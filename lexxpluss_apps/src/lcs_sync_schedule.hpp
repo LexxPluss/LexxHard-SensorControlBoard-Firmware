@@ -82,6 +82,13 @@ public:
         return next_due_;
     }
 
+    /* Back to the boot state: the next poll() starts a new grid. */
+    void reset()
+    {
+        started_ = false;
+        next_due_ = 0;
+    }
+
 private:
     static constexpr uint32_t kHalfRange{0x80000000U};
 
