@@ -96,11 +96,11 @@ together overflow the 256 KiB slot by about 3.5 KB, so this configuration requir
 shell trim, SPI DMA and SD/filesystem changes to be present. With them the image signs at
 234,368 B, with 27,344 B spare.
 
-**The unattended revert is off, as release policy** -- a resident image carries no unattended reset,
-so nothing here puts the board back if the Package thread wedges.
+**The bench deadman is off, as release policy** -- a resident image carries no unattended timed
+revert. The watchdog is untouched and still judges the L7 path; what it cannot yet do is tell the
+two L7 populations apart, so progress by a healthy one refreshes the judgement for a wedged one.
 [`features_package_tof_release.cmake`](lexxpluss_apps/cmake/features_package_tof_release.cmake)
-carries that and the one open question this image raises: both sensor populations report L7 progress
-into a single watchdog slot, so a healthy one can mask a wedged one until that is addressed.
+carries both, and that second point is a release-candidate gate rather than a note.
 
 **Flashing it does not install the L7 driver blob**, for the reason the ToF section gives: provision
 the blob afterward, or the Package path stays silent whatever else looks healthy.
