@@ -97,8 +97,8 @@ shell trim, SPI DMA and SD/filesystem changes to be present. With them the image
 234,368 B, with 27,344 B spare.
 
 **The bench deadman is off, as release policy** -- a resident image carries no unattended timed
-revert. The watchdog is untouched and still judges the L7 path; what it cannot yet do is tell the
-two L7 populations apart, so progress by a healthy one refreshes the judgement for a wedged one.
+revert. The watchdog itself is untouched and still judges the L7 path; what it cannot yet do is tell
+the two L7 populations apart, so progress by a healthy one refreshes the judgement for a wedged one.
 [`features_package_tof_release.cmake`](lexxpluss_apps/cmake/features_package_tof_release.cmake)
 carries both, and that second point is a release-candidate gate rather than a note.
 

@@ -41,12 +41,18 @@ set(TOF_PACKAGE_AUTO_DEADMAN OFF)
 #
 # WHAT TWO L7 POPULATIONS IN ONE IMAGE DO NOT YET SETTLE, since the absence of a conflicting CMake
 # flag does not cover it: runtime_progress::activity::l7 is a SINGLE slot, written by the chain in
-# tof_acquisition.cpp and by this runtime in tof_package_device.cpp, behind ONE l7_expected boolean
-# that tof_chain_controller.cpp and tof_package_runtime.cpp both set, and tof_task_watchdog.cpp judges
-# L7 liveness from that slot alone. So progress by a healthy population refreshes the judgement for a
-# wedged one -- the in-flight clock included, because note_progress re-stamps it every time `begun`
-# moves rather than holding it from the first begin, which means each new operation on the healthy
-# side pushes the wedged side's deadline out again. Both sides also declare long operations through a
-# flat flag with no depth count (the chain around its blob bootstrap, this runtime around each ULD
-# operation), so overlapping declarations end at the first end(). To be verified before this image is
-# a release candidate.
+# tof_acquisition.cpp and by this runtime in tof_package_device.cpp (watched_uld_operation, around
+# every ULD call), behind ONE l7_expected boolean that tof_chain_controller.cpp and
+# tof_package_runtime.cpp both set, and tof_task_watchdog.cpp judges L7 liveness from that slot
+# alone. So progress by a healthy population refreshes the judgement for a wedged one -- the
+# in-flight clock included, because note_progress re-stamps it every time `begun` moves rather than
+# holding it from the first begin, so each new operation on the healthy side pushes the wedged side's
+# deadline out again. That is the gate to close before this image is a release candidate.
+#
+# The declared-long-operation flag is a SEPARATE mechanism and a weaker claim, stated separately so
+# the two are not confused. It is flat, with no depth count, and both sides declare one -- the chain
+# around its blob bootstrap, this runtime around quiesce ALONE (the 5.43 s stop poll; probe, open and
+# start keep the ordinary bound). Nothing here demonstrates an overlap: main() runs
+# tof_chain_controller::init() to completion before it creates the Package thread, so the chain's
+# declaration is over before this runtime can make one. The hazard is structural, and
+# tof_package_device.cpp already names this configuration as the one that has to revisit it.
