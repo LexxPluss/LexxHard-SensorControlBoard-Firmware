@@ -1,0 +1,4 @@
+tests:
+  zcan_lcs.host:
+    platform_allow: native_sim
+    tags: lcs
