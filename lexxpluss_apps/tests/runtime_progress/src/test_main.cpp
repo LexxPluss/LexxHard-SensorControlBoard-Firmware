@@ -89,12 +89,12 @@ ZTEST(runtime_progress, test_each_activity_has_its_own_counter)
 {
     const prog::snapshot before{prog::read()};
 
-    prog::begin(prog::activity::l7);
-    prog::end(prog::activity::l7);
+    prog::begin(prog::activity::l7_chain);
+    prog::end(prog::activity::l7_chain);
 
     const prog::snapshot after{prog::read()};
-    zassert_equal(after.at[idx(prog::activity::l7)].ended,
-                  before.at[idx(prog::activity::l7)].ended + 1);
+    zassert_equal(after.at[idx(prog::activity::l7_chain)].ended,
+                  before.at[idx(prog::activity::l7_chain)].ended + 1);
     /* Written as an array rather than an initializer list: this image has no libstdc++ headers,
      * which is a property of how the product is configured and not an inconvenience to work round. */
     const prog::activity others[]{prog::activity::acquisition, prog::activity::send_acq,

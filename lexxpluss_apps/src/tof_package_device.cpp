@@ -100,20 +100,44 @@ VL53L7CX_Configuration *addressed(uint8_t addr_7bit)
 /* Scope L7 progress to each ULD call, including the waiting phase. This does not
  * monitor silence between calls or blob verification. */
 struct watched_uld_operation {
-    watched_uld_operation() { runtime_progress::begin(runtime_progress::activity::l7); }
-    ~watched_uld_operation() { runtime_progress::end(runtime_progress::activity::l7); }
+    watched_uld_operation() { runtime_progress::begin(runtime_progress::activity::l7_package); }
+    ~watched_uld_operation() { runtime_progress::end(runtime_progress::activity::l7_package); }
     watched_uld_operation(const watched_uld_operation &) = delete;
     watched_uld_operation &operator=(const watched_uld_operation &) = delete;
 };
 
-/* Stop polling took 5.43 s on this board, beyond the ordinary 5 s L7 bound.
- * Declare only quiesce as long-running; probe, open and start keep the 5 s bound.
- * The declaration has a 30 s cap and also suspends chain-cycle checks, so keep
- * its scope narrow. It is a flag, not a nesting-safe count: custom builds that
- * combine Package with commissioning must revisit this. */
+/* Cover for the two ULD calls whose HEALTHY duration exceeds the ordinary 5 s
+ * bounds::l7_ms. Both numbers are measured or arithmetic, not margin:
+ *
+ *   quiesce -- stop polling took 5.43 s on this board.
+ *
+ *   open    -- the ULD firmware download is 86,016 B, and Package sits on i2c4,
+ *              which runs at the 100 kHz Zephyr default. Only i2c2 is raised to
+ *              400 kHz, by tof_chain.overlay. At nine bus bits per byte that is
+ *              86,016 * 9 / 100,000 = 7.74 s of bus time before any transaction
+ *              overhead, so a download that is going perfectly cannot fit the
+ *              ordinary bound.
+ *
+ * probe, configure and start keep the ordinary bound: none of them moves a blob.
+ *
+ * WHY open NEEDS THIS AND NOT A LARGER l7_ms. Raising the bound would relax every
+ * L7 call on both populations to cover one of them. The declaration is scoped to
+ * the single call that needs it and carries bounds::long_operation_ms as its own
+ * cap, so a download that really does wedge still ends the boot.
+ *
+ * The declaration suspends chain-cycle checks while it is held, which is why it
+ * wraps the ULD call rather than the lifecycle step around it. It is a depth
+ * count rather than a flag -- see tof_watchdog_feeder::long_operation_begin() --
+ * so a declaration made by the chain cannot be ended by this one. */
 struct declared_long_operation {
-    declared_long_operation() { tof_watchdog_feeder::long_operation_begin(); }
-    ~declared_long_operation() { tof_watchdog_feeder::long_operation_end(); }
+    declared_long_operation()
+    {
+        tof_watchdog_feeder::long_operation_begin(tof_watchdog_feeder::l7_population::package);
+    }
+    ~declared_long_operation()
+    {
+        tof_watchdog_feeder::long_operation_end(tof_watchdog_feeder::l7_population::package);
+    }
     declared_long_operation(const declared_long_operation &) = delete;
     declared_long_operation &operator=(const declared_long_operation &) = delete;
 };
@@ -244,7 +268,20 @@ int hook_close(void *)
 int hook_open(void *, uint8_t addr_7bit)
 {
     /* The ULD firmware download lives inside this call and is the longest single operation on the
-     * path -- the two seconds bounds::l7_ms was chosen to cover. */
+     * path. It needs the declaration, not just the watch: declared_long_operation carries the
+     * arithmetic, and the short version is 7.74 s of bus time against a 5 s bound.
+     *
+     * WHAT WAS MEASURED, kept separate from what follows from it. Without this declaration, a
+     * board running this configuration reset repeatedly, and the retained tombstone from one of
+     * those boots recorded reason stuck_l7, an L7 operation in flight (begun 4, ended 3), and
+     * feeding stopped at 11,583 ms -- which is when the feed stopped, not when the board reset. The
+     * budget shortfall above is arithmetic from the blob size and the bus rate, and is certain. That
+     * the download was otherwise healthy, and that every boot in the loop failed the same way, are
+     * inferences: the record is written once per boot and only the last one survived to be read.
+     *
+     * DECLARE BEFORE WATCHING, so the reverse destruction order ends the watched region while the
+     * declaration still covers it. The other order leaves the L7 end() uncovered. */
+    const declared_long_operation declared{};
     const watched_uld_operation watched{};
     /* A refused open leaves port counters from the previous operation; record from st. */
     tof_l7::operation_status st{};

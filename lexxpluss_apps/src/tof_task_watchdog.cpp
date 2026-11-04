@@ -61,8 +61,10 @@ void note_progress(state &st, const input &in)
         st.send_workq_seen_ms = in.now_ms;
     if (moved(in.health.ended, st.last_health.ended))
         st.health_seen_ms = in.now_ms;
-    if (moved(in.l7.ended, st.last_l7.ended))
-        st.l7_seen_ms = in.now_ms;
+    if (moved(in.l7_chain.ended, st.last_l7_chain.ended))
+        st.l7_chain_seen_ms = in.now_ms;
+    if (moved(in.l7_package.ended, st.last_l7_package.ended))
+        st.l7_package_seen_ms = in.now_ms;
     if (moved(in.zcan_loops, st.last_zcan))
         st.zcan_seen_ms = in.now_ms;
 
@@ -77,14 +79,17 @@ void note_progress(state &st, const input &in)
         st.send_workq_begun_ms = in.now_ms;
     if (moved(in.health.begun, st.last_health.begun))
         st.health_begun_ms = in.now_ms;
-    if (moved(in.l7.begun, st.last_l7.begun))
-        st.l7_begun_ms = in.now_ms;
+    if (moved(in.l7_chain.begun, st.last_l7_chain.begun))
+        st.l7_chain_begun_ms = in.now_ms;
+    if (moved(in.l7_package.begun, st.last_l7_package.begun))
+        st.l7_package_begun_ms = in.now_ms;
 
     st.last_acq = in.acquisition;
     st.last_send_acq = in.send_acq;
     st.last_send_workq = in.send_workq;
     st.last_health = in.health;
-    st.last_l7 = in.l7;
+    st.last_l7_chain = in.l7_chain;
+    st.last_l7_package = in.l7_package;
     st.last_zcan = in.zcan_loops;
 }
 
@@ -121,6 +126,33 @@ bool baseline_ready(const input &in)
     return true;
 }
 
+/* ONE L7 POPULATION'S JUDGEMENT, so the chain's and the Package's cannot drift apart as the file is
+ * edited. Everything that differs between them is a parameter: the counters, the two clocks, the
+ * reason bits, and whether that population's own declaration is in force.
+ *
+ * `silence_bound_ms` is the caller's because the two phases ask different questions of it -- before
+ * the baseline nothing periodic is expected, so silence is not askable and the caller passes
+ * UINT32_MAX.
+ *
+ * WHEN A DECLARATION IS IN FORCE, both of this population's clocks are held at `now`. The judgement
+ * above has already been computed and discarded, so holding them cannot hide a fault: the only
+ * clocks that move are the ones whose reasons are not being asked. Without the hold, the first
+ * sample after a declaration ends would measure the declaration instead of the work that followed
+ * it. */
+uint32_t judge_l7(const progress &p, const input &in, uint32_t &begun_ms, uint32_t &seen_ms,
+                  const bounds &b, uint32_t silence_bound_ms, uint32_t in_flight_reason,
+                  uint32_t silent_reason, bool declared, uint32_t suspends)
+{
+    uint32_t why{judge(p, in.now_ms, begun_ms, seen_ms, b.l7_ms, silence_bound_ms, in_flight_reason,
+                       silent_reason)};
+    if (declared) {
+        why &= ~suspends;
+        seen_ms = in.now_ms;
+        begun_ms = in.now_ms;
+    }
+    return why;
+}
+
 }  // namespace
 
 bool feed_allowed(state &st, const bounds &b, const input &in)
@@ -133,12 +165,19 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
 
     note_progress(st, in);
 
-    /* The L7 monitor starts at the first open, wherever in the boot that falls. From this instant an
-     * open that never returns is a fault, which is the case the arming point exists to cover. */
-    if (!st.l7_watching && in.l7_expected && in.l7.begun != 0) {
-        st.l7_watching = true;
-        st.l7_seen_ms = in.now_ms;
-        st.l7_begun_ms = in.now_ms;
+    /* Each L7 monitor starts at its own population's first operation, wherever in the boot that
+     * falls. From that instant an operation that never returns is a fault for THAT population,
+     * which is the case the arming point exists to cover. They arm independently because the two
+     * subsystems start independently -- and because one of them may not be in the image at all. */
+    if (!st.l7_chain_watching && in.l7_chain_expected && in.l7_chain.begun != 0) {
+        st.l7_chain_watching = true;
+        st.l7_chain_seen_ms = in.now_ms;
+        st.l7_chain_begun_ms = in.now_ms;
+    }
+    if (!st.l7_package_watching && in.l7_package_expected && in.l7_package.begun != 0) {
+        st.l7_package_watching = true;
+        st.l7_package_seen_ms = in.now_ms;
+        st.l7_package_begun_ms = in.now_ms;
     }
 
     if (st.current == phase::waiting) {
@@ -148,9 +187,18 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
          * would otherwise be unbounded. An earlier version returned true from this phase before
          * reaching the cap, so a blob verification that wedged was fed forever, which is the exact
          * hang the subsystem exists to catch and the one place it could not. */
-        if (in.long_operation &&
-            longer_than(in.now_ms, in.long_operation_began_ms, b.long_operation_ms)) {
+        if (in.long_operation_chain &&
+            longer_than(in.now_ms, in.long_operation_chain_began_ms, b.long_operation_ms)) {
             st.why = long_operation_over;
+            st.current = phase::stopped;
+            return false;
+        }
+        /* The Package declaration is capped on its own extent. Judged separately so a record says
+         * whose declaration ran away, and so one population's cap cannot be reset by the other's
+         * declaration starting. */
+        if (in.long_operation_package &&
+            longer_than(in.now_ms, in.long_operation_package_began_ms, b.long_operation_ms)) {
+            st.why = long_operation_over_package;
             st.current = phase::stopped;
             return false;
         }
@@ -175,22 +223,24 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
          * invisible to all of this: nothing brackets it, and bring_up() is not inside the
          * acquisition pair either, so no counter moves and there is nothing to time. Bounding a
          * bring-up that reports no progress at all needs its own mechanism and is not this. */
-        if (st.l7_watching) {
-            uint32_t l7_why{judge(in.l7, in.now_ms, st.l7_begun_ms, st.l7_seen_ms, b.l7_ms,
-                                  UINT32_MAX, stuck_l7, silent_l7)};
-            if (in.long_operation) {
-                /* A declaration covers the L7, and it carries its own cap above. Held forward for
-                 * the same reason as in the armed phase: a declaration spanning the open would
-                 * otherwise leave a stale clock for the first sample after it. */
-                l7_why &= ~kLongOperationSuspends;
-                st.l7_seen_ms = in.now_ms;
-                st.l7_begun_ms = in.now_ms;
-            }
-            if (l7_why != 0) {
-                st.why = l7_why;
-                st.current = phase::stopped;
-                return false;
-            }
+        uint32_t l7_why{0};
+        if (st.l7_chain_watching) {
+            l7_why |= judge_l7(in.l7_chain, in, st.l7_chain_begun_ms, st.l7_chain_seen_ms, b,
+                               UINT32_MAX, stuck_l7_chain, silent_l7_chain,
+                               in.long_operation_chain, kChainLongOperationSuspends);
+        }
+        /* EACH POPULATION IS COVERED ONLY BY ITS OWN DECLARATION. This is the shape the Package
+         * blob download needs: it declares, and the ordinary bound stops applying to ITS operation
+         * while the chain's keeps applying to the chain's. */
+        if (st.l7_package_watching) {
+            l7_why |= judge_l7(in.l7_package, in, st.l7_package_begun_ms, st.l7_package_seen_ms, b,
+                               UINT32_MAX, stuck_l7_package, silent_l7_package,
+                               in.long_operation_package, kPackageLongOperationSuspends);
+        }
+        if (l7_why != 0) {
+            st.why = l7_why;
+            st.current = phase::stopped;
+            return false;
         }
         if (in.baseline_point && baseline_ready(in)) {
             st.current = phase::armed;
@@ -224,13 +274,39 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
     why |= judge(in.health, in.now_ms, st.health_begun_ms, st.health_seen_ms, b.health_ms,
                  b.health_silence_ms, stuck_health, silent_health);
 
-    if (st.l7_watching) {
-        /* The silence half applies only once an L7 operation has completed. Before that the only
-         * thing the L7 has done is the open that is still running, and the in-flight bound is what
-         * judges it -- a silence reason there would say "it has completed nothing" about an
-         * operation that has not had a chance to. */
-        why |= judge(in.l7, in.now_ms, st.l7_begun_ms, st.l7_seen_ms, b.l7_ms,
-                     in.l7.ended != 0 ? b.l7_silence_ms : UINT32_MAX, stuck_l7, silent_l7);
+    /* The silence half applies only once that population has COMPLETED an operation. Before that
+     * the only thing it has done is the open that is still running, and the in-flight bound is what
+     * judges it -- a silence reason there would say "it has completed nothing" about an operation
+     * that has not had a chance to. Asked per population, because one of them completing says
+     * nothing about the other.
+     *
+     * The declaration is applied here rather than in the block below, so that each population's
+     * exemption is decided with its own judgement rather than after both have been merged. */
+    if (st.l7_chain_watching) {
+        why |= judge_l7(in.l7_chain, in, st.l7_chain_begun_ms, st.l7_chain_seen_ms, b,
+                        in.l7_chain.ended != 0 ? b.l7_silence_ms : UINT32_MAX, stuck_l7_chain,
+                        silent_l7_chain, in.long_operation_chain, kChainLongOperationSuspends);
+    }
+    if (st.l7_package_watching) {
+        why |= judge_l7(in.l7_package, in, st.l7_package_begun_ms, st.l7_package_seen_ms, b,
+                        in.l7_package.ended != 0 ? b.l7_silence_ms : UINT32_MAX, stuck_l7_package,
+                        silent_l7_package, in.long_operation_package,
+                        kPackageLongOperationSuspends);
+
+        /* A PACKAGE THAT HAS STOPPED ACQUIRING IS NOT A PACKAGE THAT DIED. report_only makes no
+         * further ULD calls by design, so its completions stop while the thread keeps publishing
+         * diagnostics -- and before the two L7 populations were split, the chain's operations on
+         * the shared slot hid that. Now it has to be said rather than inferred.
+         *
+         * The silence clock is held at `now`, every sample, for the same reason the stopped
+         * acquisition holds its clocks: nothing moves while the activity is stopped, so a clock
+         * left standing would make the first sample after a resumption read the whole pause as a
+         * gap. The judgement above has already been computed and discarded, so this cannot hide a
+         * fault -- the only clock that moves is the one whose question is not being asked. */
+        if (!in.l7_package_acquiring) {
+            why &= ~kPackageStoppedSuspends;
+            st.l7_package_seen_ms = in.now_ms;
+        }
     }
 
     /* No inside to be stuck in, so silence is the whole symptom. */
@@ -259,33 +335,49 @@ bool feed_allowed(state &st, const bounds &b, const input &in)
         st.acq_begun_ms = in.now_ms;
         st.send_acq_seen_ms = in.now_ms;
         st.send_acq_begun_ms = in.now_ms;
-        /* The SILENCE clock only. stuck_l7 is deliberately not in the mask -- an operation already
-         * in flight when acquisition stopped is still in flight and is still a hang -- so holding
-         * its in-flight clock would suspend a judgement that is still being asked. */
-        st.l7_seen_ms = in.now_ms;
+        /* THE CHAIN'S SILENCE CLOCK ONLY, on both counts.
+         *
+         * Only the silence half, because stuck_l7_chain is deliberately not in the mask -- an
+         * operation already in flight when acquisition stopped is still in flight and is still a
+         * hang -- so holding its in-flight clock would suspend a judgement still being asked.
+         *
+         * And only the chain's, because acquisition is what stops asking the CHAIN's sensors for
+         * grids. The Package sensor is on another bus, driven by its own thread, and a stopped
+         * acquisition says nothing about whether it is still working. */
+        st.l7_chain_seen_ms = in.now_ms;
     }
 
-    if (in.long_operation) {
-        /* A declared operation holds the chain, so it holds acquisition and the L7 -- and NOTHING
-         * else. It says nothing about whether the heartbeat is still going out or the zcan loop is
-         * still turning, and an earlier version of this file suspended everything, which bought
-         * thirty seconds of silence for tasks the operation never touched. */
-        why &= ~kLongOperationSuspends;
+    /* A CHAIN DECLARATION HOLDS ACQUISITION, because `tof cliff prove` and the chain's blob
+     * bootstrap both quiesce it. Its own L7 exemption was applied with its judgement above; what is
+     * left here is the acquisition half, which no judgement of a single population could clear.
+     *
+     * It says nothing about whether the heartbeat is still going out or the zcan loop is still
+     * turning, and an earlier version of this file suspended everything, which bought thirty
+     * seconds of silence for tasks the operation never touched. */
+    if (in.long_operation_chain) {
+        why &= ~kChainLongOperationSuspends;
 
-        /* Held forward for the same reason as above, and here BOTH halves of both activities are
-         * masked, so both clocks move. The operation's own cap below is what bounds this; the
-         * clocks being held is not a licence for the declaration to run forever. */
+        /* Held forward for the same reason as above: without it the first sample after the
+         * declaration would measure the declaration rather than the work that followed it. The
+         * cap below is what bounds this; holding a clock is not a licence to run forever. */
         st.acq_seen_ms = in.now_ms;
         st.acq_begun_ms = in.now_ms;
-        st.l7_seen_ms = in.now_ms;
-        st.l7_begun_ms = in.now_ms;
 
         /* The declaration does not suspend itself. "The firmware said it was busy" is the shape of
-         * excuse a hang would offer, so it carries a cap, and the first L7 open never returning is
-         * that cap firing. */
-        if (longer_than(in.now_ms, in.long_operation_began_ms, b.long_operation_ms))
+         * excuse a hang would offer, so it carries a cap. */
+        if (longer_than(in.now_ms, in.long_operation_chain_began_ms, b.long_operation_ms))
             why |= long_operation_over;
     }
+
+    /* A PACKAGE DECLARATION SUSPENDS NOTHING BEYOND ITS OWN L7, which judge_l7() has already done.
+     * It owns one sensor on i2c4 and its own thread, so it cannot stop the chain's acquisition and
+     * must not buy that silence -- the single shared mask did, which left a wedged chain exempt for
+     * the whole of an eight-second blob download that was going perfectly.
+     *
+     * So all that is left is its cap, on its own extent. */
+    if (in.long_operation_package &&
+        longer_than(in.now_ms, in.long_operation_package_began_ms, b.long_operation_ms))
+        why |= long_operation_over_package;
 
     if (why == 0)
         return true;
@@ -306,10 +398,13 @@ const char *reason_name(reason r)
     case silent_send_workq:   return "silent_send_workq";
     case stuck_health:        return "stuck_health";
     case silent_health:       return "silent_health";
-    case stuck_l7:            return "stuck_l7";
-    case silent_l7:           return "silent_l7";
+    case stuck_l7_chain:      return "stuck_l7_chain";
+    case silent_l7_chain:     return "silent_l7_chain";
+    case stuck_l7_package:    return "stuck_l7_package";
+    case silent_l7_package:   return "silent_l7_package";
     case silent_zcan:         return "silent_zcan";
     case long_operation_over: return "long_operation_over";
+    case long_operation_over_package: return "long_operation_over_package";
     case feed_api_failed:     return "feed_api_failed";
     }
     return "unknown";

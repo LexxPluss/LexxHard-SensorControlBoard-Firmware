@@ -155,14 +155,24 @@ enum reason : uint32_t {
     silent_send_workq    = 1U << 5,
     stuck_health         = 1U << 6,
     silent_health        = 1U << 7,
-    stuck_l7             = 1U << 8,
-    silent_l7            = 1U << 9,
+    /* ONE PAIR PER L7 POPULATION. A single pair was judged from a single progress slot that the
+     * chain and the Package device both wrote, so progress by a healthy population refreshed the
+     * judgement for a wedged one and the record named "the L7" when only one of two had failed. */
+    stuck_l7_chain       = 1U << 8,
+    silent_l7_chain      = 1U << 9,
     silent_zcan          = 1U << 10,
     long_operation_over  = 1U << 11,
     /* Not produced by feed_allowed(). The feeder raises it when the driver itself refuses the feed,
      * which ends in the same reset and would otherwise leave no record at all. It lives in this
      * enum because the tombstone carries one reason word and a reader should not need two. */
     feed_api_failed      = 1U << 12,
+    /* APPENDED, so the bits the earlier format recorded keep their meaning. A tombstone written by
+     * an image that knew only one L7 population is refused by its version rather than reinterpreted
+     * -- see tof_watchdog_tombstone.hpp. */
+    stuck_l7_package     = 1U << 13,
+    silent_l7_package    = 1U << 14,
+    /* Each declaration carries its own cap, so the reason has to say whose cap fired. */
+    long_operation_over_package = 1U << 15,
 };
 
 enum class phase : uint8_t {
@@ -178,28 +188,58 @@ struct progress {
     uint32_t ended{0};
 };
 
-/* WHAT A DECLARED LONG OPERATION MAY SUSPEND, fixed here rather than supplied by the caller.
+/* WHAT A DECLARED LONG OPERATION MAY SUSPEND, fixed here rather than supplied by the caller, and
+ * SCOPED TO THE POPULATION THAT DECLARED IT.
  *
- * An ULD download and a commissioning pass hold the chain, so they hold acquisition and the L7. They
- * do not hold the CAN heartbeat, the health work item or the zcan loop, and a caller able to say
- * otherwise would be able to buy silence for tasks the operation never touched. Making it a
- * constant means no call site can widen it. */
-inline constexpr uint32_t kLongOperationSuspends{stuck_cycle | silent_cycle | stuck_l7 | silent_l7};
+ * One mask served both, and it suspended the chain's acquisition judgement whoever had declared. So
+ * a Package blob download -- eight seconds of entirely healthy work on a different bus, in a
+ * different thread -- exempted a wedged chain acquisition for its whole duration. Splitting the
+ * progress slots alone would not have fixed that: the exemption is the other half.
+ *
+ * A CHAIN declaration holds the chain: `tof cliff prove` and the chain's blob bootstrap both quiesce
+ * acquisition, so acquisition and the chain's own L7 are covered.
+ *
+ * A PACKAGE declaration holds nothing but its own L7. It owns one sensor on i2c4 and its own thread;
+ * it cannot stop the chain's acquisition, so it may not buy that silence.
+ *
+ * Neither holds the CAN heartbeat, the health work item or the zcan loop. Making these constants
+ * means no call site can widen its own exemption. */
+inline constexpr uint32_t kChainLongOperationSuspends{stuck_cycle | silent_cycle | stuck_l7_chain |
+                                                      silent_l7_chain};
+inline constexpr uint32_t kPackageLongOperationSuspends{stuck_l7_package | silent_l7_package};
+
+/* WHAT A PACKAGE THAT HAS STOPPED ACQUIRING SUSPENDS: its silence, and nothing else.
+ *
+ * The Package runtime has a terminal state. When its probe fails and the retry budget is spent it
+ * enters report_only -- it keeps publishing diagnostics so the consumer can see WHY there is no
+ * data, and it makes no further ULD calls. That is the designed response to a dead sensor, and the
+ * counters stopping is what it looks like from here.
+ *
+ * Judged as silence, it escalates "one sensor is broken and saying so" into a whole-machine reset,
+ * and the reset cascades, so it can loop. This is the same distinction acquisition already draws
+ * with acquisition_expected: not "has it progressed" but "is it supposed to be progressing".
+ *
+ * NOT stuck_l7_package: an operation that was already in flight when the runtime gave up is still
+ * in flight, and that is a hang whoever asked for it. NOT the declaration's cap either. Only the
+ * question that has stopped being askable is suspended. */
+inline constexpr uint32_t kPackageStoppedSuspends{silent_l7_package};
 
 /* What a stopped acquisition suspends.
  *
  * send_acq is in here because it IS the acquisition thread: runtime_progress attributes 0x214-0x216 and
  * the cycle health frame to that slot, so an acquisition that is not running cannot be sending.
  *
- * silent_l7 is in here because a stopped acquisition is also what stops asking the L7 for grids, so
- * "it has completed nothing lately" is the expected state rather than a fault. stuck_l7 is NOT:
+ * silent_l7_chain is in here because a stopped acquisition is also what stops asking the chain's L7
+ * for grids, so
+ * "it has completed nothing lately" is the expected state rather than a fault. stuck_l7_chain is
+ * NOT:
  * an operation that was already in flight when acquisition stopped is still in flight, and that is
  * a hang whoever asked for it. The two halves of the L7 judgement answer different questions and
  * only one of them is suspended.
  *
  * The workqueue heartbeat and the health work are NOT in here: different threads, still judged. */
 inline constexpr uint32_t kAcquisitionStoppedSuspends{stuck_cycle | silent_cycle | stuck_send_acq |
-                                                      silent_send_acq | silent_l7};
+                                                      silent_send_acq | silent_l7_chain};
 
 struct bounds {
     /* After the baseline, before anything is judged. Covers the first cycle of each activity. */
@@ -226,9 +266,23 @@ struct input {
     uint32_t now_ms{0};
     /* Automatic commissioning has finished and no L7 has been opened yet. */
     bool baseline_point{false};
-    /* Does this image expect an L7 at all? False for a build without the ULD or with no grid
-     * position, and then no L7 progress is ever required or judged. */
-    bool l7_expected{false};
+    /* Does this image expect each L7 population at all? False for a build without the ULD, with no
+     * grid position, or without the Package sensor, and then that population's progress is never
+     * required or judged. An image may have either, both or neither, and the two are set by
+     * different subsystems that know nothing about each other. */
+    bool l7_chain_expected{false};
+    bool l7_package_expected{false};
+
+    /* IS THE PACKAGE POPULATION SUPPOSED TO BE COMPLETING OPERATIONS RIGHT NOW?
+     *
+     * Distinct from l7_package_expected, which is about what is in the image. This is about the
+     * present: false once the runtime has entered report_only, where a dead sensor is reported
+     * rather than retried. See kPackageStoppedSuspends.
+     *
+     * DEFAULTS TO TRUE, unlike acquisition_expected beside it, because the two defaults fail in
+     * opposite directions here: a test or a wiring that forgets this gets the JUDGING behaviour,
+     * which is loud and reproducible, rather than a watchdog that has quietly stopped asking. */
+    bool l7_package_acquiring{true};
 
     /* IS ACQUISITION SUPPOSED TO BE RUNNING? Same shape as l7_expected, and for a sharper reason.
      *
@@ -249,11 +303,19 @@ struct input {
     progress send_acq{};
     progress send_workq{};
     progress health{};
-    progress l7{};
+    /* The two L7 populations, watched separately: the chain's sensors on i2c2, and the Package
+     * sensor on i2c4. */
+    progress l7_chain{};
+    progress l7_package{};
     /* Free-running, so it has no inside to be stuck in: silence is its whole symptom. */
     uint32_t zcan_loops{0};
-    bool long_operation{false};
-    uint32_t long_operation_began_ms{0};
+    /* ONE DECLARATION PER POPULATION, because what a declaration may suspend depends on who made
+     * it -- see kChainLongOperationSuspends and kPackageLongOperationSuspends. Each carries its own
+     * start time, so each is capped on its own extent rather than on the other's. */
+    bool long_operation_chain{false};
+    uint32_t long_operation_chain_began_ms{0};
+    bool long_operation_package{false};
+    uint32_t long_operation_package_began_ms{0};
 };
 
 struct state {
@@ -266,7 +328,8 @@ struct state {
     uint32_t send_workq_seen_ms{0};
     uint32_t health_seen_ms{0};
     uint32_t zcan_seen_ms{0};
-    uint32_t l7_seen_ms{0};
+    uint32_t l7_chain_seen_ms{0};
+    uint32_t l7_package_seen_ms{0};
     /* When each activity's `begun` was last seen to move: the IN-FLIGHT clock, and a separate one
      * because the two questions are measured from different instants.
      *
@@ -279,15 +342,20 @@ struct state {
     uint32_t send_acq_begun_ms{0};
     uint32_t send_workq_begun_ms{0};
     uint32_t health_begun_ms{0};
-    uint32_t l7_begun_ms{0};
+    uint32_t l7_chain_begun_ms{0};
+    uint32_t l7_package_begun_ms{0};
     uint32_t armed_ms{0};
-    /* The L7 monitor starts at the first open rather than at the baseline; see the header. */
-    bool l7_watching{false};
+    /* Each L7 monitor starts at that population's first operation rather than at the baseline; see
+     * the header. They arm independently: an image whose chain never opens a sensor still watches
+     * the Package one, and the converse. */
+    bool l7_chain_watching{false};
+    bool l7_package_watching{false};
     progress last_acq{};
     progress last_send_acq{};
     progress last_send_workq{};
     progress last_health{};
-    progress last_l7{};
+    progress last_l7_chain{};
+    progress last_l7_package{};
     uint32_t last_zcan{0};
 };
 

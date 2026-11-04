@@ -265,13 +265,26 @@ void run(void *, void *, void *)
     }
 
     /* Arm L7 monitoring before the first probe, after rejecting an exhausted budget. */
-    tof_watchdog_feeder::set_l7_expected(true);
+    tof_watchdog_feeder::set_l7_expected(tof_watchdog_feeder::l7_population::package, true);
 
     wire_the_transport();
 
     while (true) {
         const auto_policy::observation seen{look()};
         const auto_policy::action what{policy_.next(seen)};
+
+        /* TELL THE WATCHDOG WHETHER THIS POPULATION IS STILL TRYING, before acting on the decision.
+         *
+         * report_only is the one action that makes no ULD call: the retry budget is spent, and the
+         * thread's remaining job is to keep saying why there is no data. Its L7 completions
+         * therefore stop, which from the watchdog's side is indistinguishable from the sensor
+         * having died mid-operation -- and judged as silence it turns one dead sensor into a
+         * whole-machine reset that cascades. Every other action still reaches the bus, so every
+         * other action is still expected to complete operations.
+         *
+         * Derived from `what` in one place rather than set inside the cases, so an action added
+         * later cannot forget to answer the question. */
+        tof_watchdog_feeder::set_l7_package_acquiring(what != auto_policy::action::report_only);
 
         switch (what) {
         case auto_policy::action::bind: {

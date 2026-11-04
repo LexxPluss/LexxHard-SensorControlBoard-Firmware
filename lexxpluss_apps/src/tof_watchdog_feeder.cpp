@@ -23,6 +23,7 @@
 #include <zephyr/sys/atomic.h>
 
 #include "runtime_progress.hpp"
+#include "tof_long_operation.hpp"
 #include "tof_task_watchdog.hpp"
 #include "tof_watchdog_tombstone.hpp"
 
@@ -101,7 +102,9 @@ const struct device *wdt_{nullptr};
 int channel_{0};
 
 atomic_t baseline_point_{};
-atomic_t l7_expected_{};
+/* One per population, indexed by l7_population. Atomics rather than the declaration lock: these
+ * are independent single words, and nothing judges one against the other. */
+atomic_t l7_expected_[static_cast<size_t>(l7_population::count)]{};
 
 /* DEFAULTS TO EXPECTED, and the default is the decision rather than an accident.
  *
@@ -114,8 +117,16 @@ atomic_t l7_expected_{};
  * An earlier version of this file added the input and did not wire it at all, which is exactly the
  * first failure. */
 atomic_t acquisition_expected_{ATOMIC_INIT(1)};
-atomic_t long_operation_{};
-atomic_t long_began_ms_{};
+atomic_t l7_package_acquiring_{ATOMIC_INIT(1)};
+/* THE DECLARED-LONG-OPERATION STATE, and the only lock in this file.
+ *
+ * A spinlock rather than the two atomics this replaces: the depth and the start time are judged
+ * against each other, so they have to be written and read as one value. tof_long_operation.hpp has
+ * the interleaving that the two-atomic version admitted. The critical sections are a compare, an
+ * add and a clock read, and the callers are threads rather than ISRs, so a spinlock costs less than
+ * the bug it removes. */
+k_spinlock long_lock_{};
+tof_long_operation::state long_op_[static_cast<size_t>(l7_population::count)]{};
 atomic_t feeds_{};
 atomic_t last_fed_ms_{};
 
@@ -156,6 +167,16 @@ void publish_state()
 uint32_t now_ms()
 {
     return k_uptime_get_32();
+}
+
+/* The declared-long-operation state, taken as one value. Separate reads of a depth and a timestamp
+ * can land either side of a begin, and the watchdog judges one against the other. */
+tof_long_operation::snapshot read_long_operation(l7_population which)
+{
+    const k_spinlock_key_t key{k_spin_lock(&long_lock_)};
+    const tof_long_operation::snapshot taken{long_op_[static_cast<size_t>(which)].read()};
+    k_spin_unlock(&long_lock_, key);
+    return taken;
 }
 
 /* WHERE THE TOMBSTONE GOES, and why this is not simply the constant.
@@ -212,10 +233,13 @@ void commit_tombstone(const wd::input &in, uint32_t reason, int feed_rc)
     r.send_acq_begun = in.send_acq.begun;    r.send_acq_ended = in.send_acq.ended;
     r.send_workq_begun = in.send_workq.begun;r.send_workq_ended = in.send_workq.ended;
     r.health_begun = in.health.begun;        r.health_ended = in.health.ended;
-    r.l7_begun = in.l7.begun;                r.l7_ended = in.l7.ended;
+    r.l7_chain_begun = in.l7_chain.begun;    r.l7_chain_ended = in.l7_chain.ended;
+    r.l7_package_begun = in.l7_package.begun; r.l7_package_ended = in.l7_package.ended;
     r.zcan_loops = in.zcan_loops;
-    r.long_active = in.long_operation ? 1U : 0U;
-    r.long_began_ms = in.long_operation_began_ms;
+    r.long_chain_active = in.long_operation_chain ? 1U : 0U;
+    r.long_chain_began_ms = in.long_operation_chain_began_ms;
+    r.long_package_active = in.long_operation_package ? 1U : 0U;
+    r.long_package_began_ms = in.long_operation_package_began_ms;
     r.boot_seq = 0;
 
     tomb::write_once(tombstone_region(), r);
@@ -235,7 +259,11 @@ void feeder(void *, void *, void *)
             wd::input in{};
             in.now_ms = now_ms();
             in.baseline_point = atomic_get(&baseline_point_) != 0;
-            in.l7_expected = atomic_get(&l7_expected_) != 0;
+            in.l7_chain_expected =
+                atomic_get(&l7_expected_[static_cast<size_t>(l7_population::chain)]) != 0;
+            in.l7_package_expected =
+                atomic_get(&l7_expected_[static_cast<size_t>(l7_population::package)]) != 0;
+            in.l7_package_acquiring = atomic_get(&l7_package_acquiring_) != 0;
             in.acquisition_expected = atomic_get(&acquisition_expected_) != 0;
             in.acquisition = {p.at[static_cast<size_t>(runtime_progress::activity::acquisition)].begun,
                               p.at[static_cast<size_t>(runtime_progress::activity::acquisition)].ended};
@@ -245,11 +273,22 @@ void feeder(void *, void *, void *)
                              p.at[static_cast<size_t>(runtime_progress::activity::send_workq)].ended};
             in.health = {p.at[static_cast<size_t>(runtime_progress::activity::health)].begun,
                          p.at[static_cast<size_t>(runtime_progress::activity::health)].ended};
-            in.l7 = {p.at[static_cast<size_t>(runtime_progress::activity::l7)].begun,
-                     p.at[static_cast<size_t>(runtime_progress::activity::l7)].ended};
+            in.l7_chain = {p.at[static_cast<size_t>(runtime_progress::activity::l7_chain)].begun,
+                           p.at[static_cast<size_t>(runtime_progress::activity::l7_chain)].ended};
+            in.l7_package = {
+                p.at[static_cast<size_t>(runtime_progress::activity::l7_package)].begun,
+                p.at[static_cast<size_t>(runtime_progress::activity::l7_package)].ended};
             in.zcan_loops = p.zcan_loops;
-            in.long_operation = atomic_get(&long_operation_) != 0;
-            in.long_operation_began_ms = static_cast<uint32_t>(atomic_get(&long_began_ms_));
+            /* Both halves under one lock, per population: a count taken from after a begin and
+             * a timestamp from before it would be judged against each other. */
+            const tof_long_operation::snapshot chain_decl{
+                read_long_operation(l7_population::chain)};
+            in.long_operation_chain = chain_decl.active;
+            in.long_operation_chain_began_ms = chain_decl.began_ms;
+            const tof_long_operation::snapshot package_decl{
+                read_long_operation(l7_population::package)};
+            in.long_operation_package = package_decl.active;
+            in.long_operation_package_began_ms = package_decl.began_ms;
 
             const bool allowed{wd::feed_allowed(state_, bounds_, in)};
             /* Before the feed rather than after it. feed_allowed() has already moved the phase, and
@@ -329,9 +368,14 @@ void set_baseline_point(bool ready)
     atomic_set(&baseline_point_, ready ? 1 : 0);
 }
 
-void set_l7_expected(bool expected)
+void set_l7_package_acquiring(bool acquiring)
 {
-    atomic_set(&l7_expected_, expected ? 1 : 0);
+    atomic_set(&l7_package_acquiring_, acquiring ? 1 : 0);
+}
+
+void set_l7_expected(l7_population which, bool expected)
+{
+    atomic_set(&l7_expected_[static_cast<size_t>(which)], expected ? 1 : 0);
 }
 
 void set_acquisition_expected(bool expected)
@@ -339,15 +383,34 @@ void set_acquisition_expected(bool expected)
     atomic_set(&acquisition_expected_, expected ? 1 : 0);
 }
 
-void long_operation_begin()
+/* A DEPTH COUNT, NOT A FLAG, because more than one declaration can be live: the chain declares one
+ * around its blob bootstrap and the Package device declares one around open and around quiesce. As
+ * a flag, the first end() to run WOULD strip the cover from the other site's operation, which the
+ * watchdog would then judge by the ordinary bound.
+ *
+ * A DEFENSIVE CHANGE, NOT A FIX FOR AN OBSERVED FAULT. No record shows two declarations having
+ * overlapped. Nor does adding the Package open declaration make an overlap reachable: open and
+ * quiesce are called in sequence from the one Package thread, and main() runs the chain's init to
+ * completion before that thread exists. What this removes is a shape whose failure mode is a reset
+ * with a reason that points at the wrong subsystem -- cheap to close, and expensive to diagnose if
+ * a later call path ever does overlap.
+ *
+ * THE CLOCK IS READ INSIDE THE LOCK, so `began_ms` is when the first live declaration was
+ * registered rather than when a caller happened to read a clock -- see tof_long_operation.hpp for
+ * why that distinction is what keeps the cap from being deferred. k_uptime_get_32() does not block,
+ * which is what makes it safe to call here. */
+void long_operation_begin(l7_population which)
 {
-    atomic_set(&long_began_ms_, static_cast<atomic_val_t>(now_ms()));
-    atomic_set(&long_operation_, 1);
+    const k_spinlock_key_t key{k_spin_lock(&long_lock_)};
+    long_op_[static_cast<size_t>(which)].begin(now_ms());
+    k_spin_unlock(&long_lock_, key);
 }
 
-void long_operation_end()
+void long_operation_end(l7_population which)
 {
-    atomic_set(&long_operation_, 0);
+    const k_spinlock_key_t key{k_spin_lock(&long_lock_)};
+    long_op_[static_cast<size_t>(which)].end();
+    k_spin_unlock(&long_lock_, key);
 }
 
 tomb::status read_record(tomb::record &out)
@@ -428,11 +491,18 @@ void report_previous_stop()
     LOG_ERR("  last fed at %u ms, feed rc %d", static_cast<unsigned>(r.last_fed_ms),
             static_cast<int>(r.feed_rc));
     report_reset_cause();
-    LOG_ERR("  health %u/%u  l7 %u/%u  zcan %u  long %u since %u ms",
-            static_cast<unsigned>(r.health_begun), static_cast<unsigned>(r.health_ended),
-            static_cast<unsigned>(r.l7_begun), static_cast<unsigned>(r.l7_ended),
-            static_cast<unsigned>(r.zcan_loops), static_cast<unsigned>(r.long_active),
-            static_cast<unsigned>(r.long_began_ms));
+    LOG_ERR("  health %u/%u  zcan %u", static_cast<unsigned>(r.health_begun),
+            static_cast<unsigned>(r.health_ended), static_cast<unsigned>(r.zcan_loops));
+    /* BOTH POPULATIONS, NAMED. The single "l7 %u/%u" line was the record's half of the defect this
+     * split closes: it told a reader that "the L7" had an operation outstanding without saying
+     * which of two, on different buses and different threads, it belonged to. */
+    LOG_ERR("  l7 chain %u/%u  long %u since %u ms", static_cast<unsigned>(r.l7_chain_begun),
+            static_cast<unsigned>(r.l7_chain_ended), static_cast<unsigned>(r.long_chain_active),
+            static_cast<unsigned>(r.long_chain_began_ms));
+    LOG_ERR("  l7 package %u/%u  long %u since %u ms", static_cast<unsigned>(r.l7_package_begun),
+            static_cast<unsigned>(r.l7_package_ended),
+            static_cast<unsigned>(r.long_package_active),
+            static_cast<unsigned>(r.long_package_began_ms));
 }
 
 status current()

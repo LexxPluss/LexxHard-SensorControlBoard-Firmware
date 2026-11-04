@@ -64,7 +64,11 @@ inline constexpr size_t kSize{256};
  * be mistaken for this one. */
 inline constexpr uint32_t kMagicCommitted{0x31544457};  // "WDT1"
 inline constexpr uint32_t kMagicEnd{0x444E4557};        // "WEND"
-inline constexpr uint32_t kVersion{2};
+/* VERSION 3 ADDED THE SECOND L7 POPULATION. A version-2 record came from an image that judged one
+ * "L7" written by both the chain and the Package device, so its l7 counters and its stuck_l7 bit
+ * cannot be mapped onto either of the two this format keeps separate. It is REFUSED by its version
+ * rather than reinterpreted, which is what the version field is for. */
+inline constexpr uint32_t kVersion{3};
 
 /* Fixed 32-bit word offsets. Part of the reading procedure, so APPEND ONLY: a reader in the field
  * may be older than the image that wrote the record, and the version check is what protects it. */
@@ -86,13 +90,20 @@ enum : size_t {
     kOffSendWorkqEnded = 17,
     kOffHealthBegun    = 18,
     kOffHealthEnded    = 19,
-    kOffL7Begun        = 20,
-    kOffL7Ended        = 21,
+    kOffL7ChainBegun   = 20,
+    kOffL7ChainEnded   = 21,
     kOffZcanLoops      = 22,
-    kOffLongActive     = 23,
-    kOffLongBeganMs    = 24,
+    kOffLongChainActive  = 23,
+    kOffLongChainBeganMs = 24,
     kOffBootSeq        = 25,  // optional; zero when the image does not track one
     kOffFeedRc         = 26,  // the driver's rc when the reason is feed_api_failed, else 0
+    /* Appended in version 3. The chain's counters keep offsets 20-21 and 23-24 so a reader written
+     * against either version reads the same words for them; what changes is that those words now
+     * mean the chain alone, which is why the version moved with them. */
+    kOffL7PackageBegun      = 27,
+    kOffL7PackageEnded      = 28,
+    kOffLongPackageActive   = 29,
+    kOffLongPackageBeganMs  = 30,
     kOffEndMagic       = (kSize / sizeof(uint32_t)) - 1,
 };
 
@@ -106,10 +117,15 @@ struct record {
     uint32_t send_acq_begun{0}, send_acq_ended{0};
     uint32_t send_workq_begun{0}, send_workq_ended{0};
     uint32_t health_begun{0}, health_ended{0};
-    uint32_t l7_begun{0}, l7_ended{0};
+    /* Per population, because the single pair could not say which of the two had failed -- which
+     * is the question anybody reading this record is asking. */
+    uint32_t l7_chain_begun{0}, l7_chain_ended{0};
+    uint32_t l7_package_begun{0}, l7_package_ended{0};
     uint32_t zcan_loops{0};
-    uint32_t long_active{0};
-    uint32_t long_began_ms{0};
+    uint32_t long_chain_active{0};
+    uint32_t long_chain_began_ms{0};
+    uint32_t long_package_active{0};
+    uint32_t long_package_began_ms{0};
     uint32_t boot_seq{0};
     /* What wdt_feed() returned, when that is what ended the boot. Zero otherwise. */
     int32_t feed_rc{0};

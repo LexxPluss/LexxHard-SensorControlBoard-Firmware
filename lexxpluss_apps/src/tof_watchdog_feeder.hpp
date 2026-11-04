@@ -66,10 +66,23 @@ void release(const struct device *wdt, int channel);
  * bound that is a fraction of the watchdog window. */
 int wait_first_feed(void);
 
+/* WHICH L7 POPULATION A CALLER SPEAKS FOR.
+ *
+ * The chain's sensors sit on i2c2 and are driven by the acquisition thread; the Package sensor sits
+ * on i2c4 and is driven by its own. They were one slot and one exemption, which meant progress by
+ * either refreshed the judgement for both, and a declaration by either suspended the chain's
+ * acquisition checks. Everything the feeder is told about an L7 now names which one. */
+enum class l7_population : uint8_t {
+    chain,
+    package,
+    count,
+};
+
 /* From the ToF chain. `baseline_point` goes true once automatic commissioning has finished and
- * before the first L7 open; `l7_expected` says this image has a grid sensor to watch at all. */
+ * before the first L7 open; `set_l7_expected` says this image has that population to watch at all,
+ * and an image may have either, both or neither. */
 void set_baseline_point(bool ready);
-void set_l7_expected(bool expected);
+void set_l7_expected(l7_population which, bool expected);
 
 /* IS ACQUISITION SUPPOSED TO BE RUNNING? False while commissioning holds it stopped, and false
  * after a proof that failed and left it stopped by design.
@@ -79,10 +92,27 @@ void set_l7_expected(bool expected);
  * acquisition sender. The loud failure is the intended one. */
 void set_acquisition_expected(bool expected);
 
-/* A declared long operation -- an ULD download, a commissioning pass. Suspends the bounds of the
- * chain work it holds and nothing else, and is itself bounded. */
-void long_operation_begin();
-void long_operation_end();
+/* IS THE PACKAGE POPULATION SUPPOSED TO BE COMPLETING ULD OPERATIONS RIGHT NOW? The chain's
+ * counterpart is set_acquisition_expected above; this is the Package runtime's, and it goes false
+ * when that runtime enters report_only -- a spent retry budget, where a dead sensor is reported
+ * instead of retried. It suspends that population's SILENCE question only: an operation still in
+ * flight is still judged, and a declaration still carries its cap.
+ *
+ * DEFAULTS TO TRUE for the same reason set_acquisition_expected does: a wiring that never calls it
+ * produces a loud false reset rather than a monitor that has silently stopped asking. */
+void set_l7_package_acquiring(bool acquiring);
+
+/* A declared long operation -- an ULD download, a commissioning pass, a blob verification.
+ *
+ * SCOPED TO THE DECLARING POPULATION, and bounded. A chain declaration suspends the chain work it
+ * really holds (acquisition and the chain's own L7); a Package declaration suspends its own L7 and
+ * nothing else, because it holds nothing else. See kChainLongOperationSuspends and
+ * kPackageLongOperationSuspends in tof_task_watchdog.hpp.
+ *
+ * Nesting-safe per population: each keeps a depth count, and the cap measures from the earliest
+ * live declaration of that population rather than restarting on a nested one. */
+void long_operation_begin(l7_population which);
+void long_operation_end(l7_population which);
 
 /* Reads the tombstone left by a previous boot and logs it. Safe to call before anything else. When
  * the region holds no valid record it logs one INFO line naming why -- an ordinary boot and a boot
