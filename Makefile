@@ -468,17 +468,14 @@ firmware_tof_l7:
 	$(RUNNER) west zephyr-export
 	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-l7 -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
-# THE INTEGRATION IMAGE: the L7 build with everything wired, slimmed so it fits.
+# THE INTEGRATION IMAGE: the L7 build with everything wired.
 #
-# overlays/tof_integration_slim.conf removes the SD/FAT filesystem and its shell -- and only from
-# this image. Every other target above keeps what prj.conf gives it. The fragment says what that
-# costs and why it is acceptable here; the short version is that nothing in the application calls
-# the filesystem API, and firmware update and the L7 blob both go through flash_area_*.
+# The SD card and the file system are off in every image (prj.conf).
 .PHONY: firmware_tof_integration
 firmware_tof_integration:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-integration -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-integration -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
 # A CONFIGURATION CHECK, NOT A SHIPPED IMAGE. CMake permits the grid driver without the cliff one,
 # and that combination is the one the boot recovery most needs -- it was also the one nobody built,
@@ -504,9 +501,7 @@ firmware_tof_cliff:
 # feature fit" -- firmware_tof_integration has the grid and no downlink, firmware_auto_commission has
 # the downlink and no grid, and neither number is the combination's.
 #
-# It carries the slim fragment, so the SD/FAT filesystem and its shell are OUT: no application code
-# calls FAT, and firmware update and the L7 blob both go through flash_area_*. MCUboot, signing, the
-# flash map, the update path and the partition layout are unchanged.
+# The SD card and the file system are off in every image (prj.conf).
 #
 # auto_commission.overlay grants no commissioning permission: requests return `disabled`.
 # Publication still requires a PROVEN authority snapshot.
@@ -514,7 +509,7 @@ firmware_tof_cliff:
 firmware_tof_full:
 	./scripts/manage_zephyr_patches.sh verify
 	$(RUNNER) west zephyr-export
-	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-full -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" "-DEXTRA_CONF_FILE=overlays/tof_integration_slim.conf;overlays/auto_commission.conf" -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
+	$(RUNNER) west build -p auto -b lexxpluss_scb lexxpluss_apps -d build-tof-full -- -DENABLE_TOF_CHAIN=1 -DENABLE_TOF_CLIFF_ULD=ON -DENABLE_TOF_L7_ULD=ON -DENABLE_TOF_AUTO_COMMISSION=1 "-DEXTRA_DTC_OVERLAY_FILE=overlays/tof_chain.overlay;overlays/auto_commission.overlay" -DEXTRA_CONF_FILE=overlays/auto_commission.conf -DCONFIG_STREAM_FLASH=y -DCONFIG_IMG_MANAGER=y -DBOARD_ROOT=/${WORKDIR}/extra -DZEPHYR_EXTRA_MODULES=/${WORKDIR}/extra -DVERSION=${VERSION}
 
 # THE ToF RELEASE IMAGE HAS NO BUILD TARGET OF ITS OWN. It is the ordinary release entry with a
 # feature file:
