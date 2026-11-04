@@ -26,12 +26,32 @@ inline constexpr uint8_t kCmdZeroReset{0x48};
 inline constexpr uint8_t kCmdTempCalib{0x50};
 inline constexpr uint8_t kCmdAbort{0x68};
 
+inline constexpr std::size_t kRequestQueueDepth{8};
+
 struct Request {
     uint8_t cmd;
     uint8_t target;
     uint16_t param;
     uint8_t counter;
 };
+
+/* received = queued + dropped_invalid + dropped_full. */
+struct RequestStats {
+    uint32_t received{0};
+    uint32_t queued{0};
+    uint32_t dropped_invalid{0};
+    uint32_t dropped_full{0};
+};
+
+/* When the queue is full the new request is dropped and the queued ones are kept. */
+template <typename Put>
+void enqueue_request(Put &&put, const Request &request, RequestStats &stats)
+{
+    if (put(request))
+        ++stats.queued;
+    else
+        ++stats.dropped_full;
+}
 
 /*
  * Flags must be 0: an extended-ID, remote or FD frame with the same ID is a different format and must not be relayed.

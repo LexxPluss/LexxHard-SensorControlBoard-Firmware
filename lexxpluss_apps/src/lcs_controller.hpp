@@ -21,6 +21,8 @@ void init();
 void run(void *p1, void *p2, void *p3);
 extern k_thread thread;
 extern k_msgq msgq;
+/* Validated host requests (lcs::Request elements). */
+extern k_msgq request_msgq;
 
 }
 
