@@ -77,6 +77,34 @@ It is a bench tool. **It is not uploaded with a Release**, and **a test boot is 
 application self-confirms before the subsystem threads start, so an image that boots far enough to
 do that will not revert on a later runtime failure.
 
+### Build firmware ( Package ToF release configuration )
+
+The Package configuration is the ToF release plus the Package sensor -- one VL53L7CX on `i2c4` @0x29
+behind J22, publishing a grid and a health frame on CAN at 5 Hz -- built through the same entry with
+a different feature file:
+
+```bash
+$ make clean
+$ make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_package_tof_release.cmake
+```
+
+Asset names, the shared `build/` cache and the `make clean` rule are exactly as in the section
+above, and a tag does not build this image either.
+
+**It does not link on a tree without the flash reductions.** The chain and the Package runtime
+together overflow the 256 KiB slot by about 3.5 KB, so this configuration requires the picolibc,
+shell trim, SPI DMA and SD/filesystem changes to be present. With them the image signs at
+234,368 B, with 27,344 B spare.
+
+**The bench deadman is off, as release policy** -- a resident image carries no unattended timed
+revert. The watchdog itself is untouched and still judges the L7 path; what it cannot yet do is tell
+the two L7 populations apart, so progress by a healthy one refreshes the judgement for a wedged one.
+[`features_package_tof_release.cmake`](lexxpluss_apps/cmake/features_package_tof_release.cmake)
+carries both, and that second point is a release-candidate gate rather than a note.
+
+**Flashing it does not install the L7 driver blob**, for the reason the ToF section gives: provision
+the blob afterward, or the Package path stays silent whatever else looks healthy.
+
 ---
 ## Program of the built firmware
 
