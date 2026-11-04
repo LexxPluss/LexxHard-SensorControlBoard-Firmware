@@ -1,0 +1,21 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Builds without LED strips (ENABLE_LED_STRIP=0).
+ *
+ * The ws2812 children (led_strip0, led_strip2, led_strip3) sit under these three buses and are
+ * disabled with them. spi5 (IMU) is untouched.
+ */
+
+&spi2 {
+	status = "disabled";
+};
+
+&spi4 {
+	status = "disabled";
+};
+
+&spi6 {
+	status = "disabled";
+};

@@ -33,7 +33,9 @@
 #include "bmu_controller.hpp"
 #include "firmware_updater.hpp"
 #include "imu_controller.hpp"
+#ifdef ENABLE_LED_STRIP
 #include "led_controller.hpp"
+#endif
 #ifdef ENABLE_PGV
 #include "pgv_controller.hpp"
 #endif
@@ -68,7 +70,9 @@ K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
+#ifdef ENABLE_LED_STRIP
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
+#endif
 #ifdef ENABLE_PGV
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
 #endif
@@ -333,7 +337,9 @@ int main()
     lexxhard::can_controller::init();
     lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
+#ifdef ENABLE_LED_STRIP
     lexxhard::led_controller::init();
+#endif
 #ifdef ENABLE_PGV
     lexxhard::pgv_controller::init();
 #endif
@@ -364,7 +370,9 @@ int main()
     RUN(board_controller, 4); // board_controller must be started after bmu_controller (due to the CAN setting)
     RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
+#ifdef ENABLE_LED_STRIP
     RUN(led_controller, 1);
+#endif
 #ifdef ENABLE_PGV
     RUN(pgv_controller, 1);
 #endif

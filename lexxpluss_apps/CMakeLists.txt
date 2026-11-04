@@ -30,6 +30,11 @@ if(FEATURES_FILE)
     include(${FEATURES_FILE})
 endif()
 
+# The LED strips are built in unless a features file turns them off.
+if(NOT DEFINED ENABLE_LED_STRIP)
+    set(ENABLE_LED_STRIP 1)
+endif()
+
 # PGV is part of every image unless the features file says the robot has none.
 # This is the one option that defaults to on.
 if(NOT DEFINED ENABLE_PGV)
@@ -104,6 +109,13 @@ if(ENABLE_TOF_PACKAGE_AUTO AND TOF_PACKAGE_AUTO_DEADMAN)
     list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/tof_package_auto_deadman.conf)
 endif()
 
+# Without LED strips the spi2/spi4/spi6 nodes and the strip drivers go too. Kconfig and the
+# devicetree are fixed by find_package(Zephyr) below, so both fragments are added here.
+if(NOT ENABLE_LED_STRIP)
+    list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/no_led_strip.overlay)
+    list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/overlays/no_led_strip.conf)
+endif()
+
 # The LCS host owns uart4 with DMA and the async UART API: see overlays/lcs_uart4_dma.overlay and
 # overlays/lcs.conf. Kconfig and the devicetree are fixed by find_package(Zephyr) below, so both
 # are added here, and only for LCS builds.
@@ -116,6 +128,10 @@ find_package(Zephyr)
 project(lexxpluss_apps)
 
 FILE(GLOB app_sources src/*.cpp)
+# No LED strips: the controller is not built (its call sites are under #ifdef ENABLE_LED_STRIP).
+if(NOT ENABLE_LED_STRIP)
+    list(FILTER app_sources EXCLUDE REGEX "/led_controller\\.cpp$")
+endif()
 FILE(GLOB ros_sources ../ros_msgs/*.cpp)
 # The glob would otherwise compile it and register the pgv shell command.
 if(NOT ENABLE_PGV)
@@ -182,6 +198,10 @@ if(_blocking_can_send)
         "can_send() with a null callback waits for acknowledgement forever, whatever timeout "
         "it is given: a bus with no other node awake stops the caller permanently. Use "
         "zcan_bounded_send::send() instead. Found in: ${_blocking_can_send}")
+endif()
+
+if(ENABLE_LED_STRIP)
+    add_definitions(-DENABLE_LED_STRIP)
 endif()
 
 if(ENABLE_INTERLOCK)
