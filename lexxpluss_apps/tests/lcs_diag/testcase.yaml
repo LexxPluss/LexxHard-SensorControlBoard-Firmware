@@ -1,0 +1,8 @@
+tests:
+  lcs_diag.host:
+    platform_allow: native_sim
+    tags: lcs
+  lcs_diag.host.names:
+    platform_allow: native_sim
+    tags: lcs
+    extra_args: ENABLE_LCS_DIAG_NAMES=1

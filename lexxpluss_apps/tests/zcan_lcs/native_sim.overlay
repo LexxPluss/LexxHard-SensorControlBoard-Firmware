@@ -1,0 +1,16 @@
+/*
+ * Copyright (c) 2026, LexxPluss Inc.
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * A node called can2, because zcan_lcs.hpp names it at compile time. The board has a real bxCAN
+ * there; here it is the loopback controller, which hands every sent frame to the test's RX filter.
+ */
+
+/ {
+	can2: can_loopback0 {
+		compatible = "zephyr,can-loopback";
+		status = "okay";
+	};
+};

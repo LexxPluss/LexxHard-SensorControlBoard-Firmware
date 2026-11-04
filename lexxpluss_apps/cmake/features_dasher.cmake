@@ -12,3 +12,12 @@ set(BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST 1)
 
 # The Dasher family, and the ToF release image that includes this file, have no LED strips.
 set(ENABLE_LED_STRIP 0)
+
+# Dasher has no PGV; its RS485 port (uart4) and the pgv_en/pgv_en_n pins are free for other use.
+set(ENABLE_PGV 0)
+
+# Dasher carries the LCS host: the RS485 port (uart4) and the pgv_en/pgv_en_n pins belong to it.
+set(ENABLE_LCS 1)
+
+# Print the counter names (<name>=<value>) in the shell command `lcs stat`. Costs about 440 B of flash.
+# set(ENABLE_LCS_DIAG_NAMES 1)

@@ -32,7 +32,12 @@
 #ifdef ENABLE_LED_STRIP
 #include "zcan_led.hpp"
 #endif
+#ifdef ENABLE_PGV
 #include "zcan_pgv.hpp"
+#endif
+#ifdef ENABLE_LCS
+#include "zcan_lcs.hpp"
+#endif
 #include "zcan_uss.hpp"
 #include "zcan_dfu.hpp"
 #include "zcan_gpio.hpp"
@@ -68,7 +73,12 @@ public:
 #ifdef ENABLE_LED_STRIP
         led.init();
 #endif
+#ifdef ENABLE_PGV
         pgv.init();
+#endif
+#ifdef ENABLE_LCS
+        lcs.init();
+#endif
         uss.init();
         gpio.init();
         tug_encoder.init();
@@ -85,7 +95,12 @@ public:
 #ifdef ENABLE_LED_STRIP
             led.poll();
 #endif
+#ifdef ENABLE_PGV
             pgv.poll();
+#endif
+#ifdef ENABLE_LCS
+            lcs.poll();
+#endif
             uss.poll();
             gpio.poll();
             tug_encoder.poll();
@@ -104,7 +119,12 @@ private:
 #ifdef ENABLE_LED_STRIP
     lexxhard::zcan_led::zcan_led led;
 #endif
+#ifdef ENABLE_PGV
     lexxhard::zcan_pgv::zcan_pgv pgv;
+#endif
+#ifdef ENABLE_LCS
+    lexxhard::zcan_lcs::zcan_lcs lcs;
+#endif
     lexxhard::zcan_uss::zcan_uss uss;
     lexxhard::zcan_gpio::zcan_gpio gpio;
     lexxhard::zcan_tug_encoder::zcan_tug_encoder tug_encoder;
