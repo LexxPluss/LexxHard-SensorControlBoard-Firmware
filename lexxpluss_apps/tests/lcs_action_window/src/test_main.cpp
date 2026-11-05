@@ -458,3 +458,21 @@ ZTEST(lcs_action_window, test_sc05_14_accepted_request_is_never_sent_again)
     zassert_equal(h.send_calls, 1U);
     zassert_equal(h.pop_calls, 1U);
 }
+
+ZTEST(lcs_action_window, test_sc05_15_arrival_after_empty_poll_is_sent_in_the_same_window)
+{
+    /* Catches: an empty poll that uses up the period's attempt, so a request arriving later in the window
+     * waits a whole period. */
+    Harness h;
+    h.sync_sent(1000);
+    expect_outcome(h.poll(1000 + lexxhard::lcs::kActionWindowStartTicks), ActionOutcome::NotSent, "first empty poll");
+    expect_outcome(h.poll(1000 + 30U), ActionOutcome::NotSent, "second empty poll");
+    zassert_equal(h.send_calls, 0U);
+    zassert_equal(h.pop_calls, 0U);
+    h.push(1, 0x0042);
+    expect_outcome(h.poll(1000 + 50U), ActionOutcome::Sent, "arrival in the same window");
+    zassert_equal(h.frames.size(), 1U);
+    zassert_equal(h.frames[0], lexxhard::lcs::encode_downlink(1, kCmdA, 0x0042));
+    zassert_equal(h.pop_calls, 1U);
+    zassert_true(h.queue.empty());
+}
