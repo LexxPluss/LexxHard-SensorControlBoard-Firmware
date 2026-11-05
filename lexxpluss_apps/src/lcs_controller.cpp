@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include "lcs_action_window.hpp"
 #include "lcs_can_packer.hpp"
 #include "lcs_controller.hpp"
 #include "lcs_diag.hpp"
@@ -76,6 +77,7 @@ struct Host {
     lcs::CanPacker packer;
     lcs::SyncScheduler scheduler;
     lcs::IntervalTracker sync_interval;
+    lcs::ActionWindow action_window;
     uint32_t tx_start_tick;
     atomic_t tx_busy;
     atomic_t rx_restart_pending;
@@ -257,6 +259,7 @@ void init()
     host.receiver.reset();
     host.scheduler.reset();
     host.sync_interval.reset();
+    host.action_window = lcs::ActionWindow{};
     host.tx_start_tick = 0;
     atomic_set(&host.tx_busy, 0);
     atomic_set(&host.rx_restart_pending, 0);
@@ -324,6 +327,25 @@ void run(void *p1, void *p2, void *p3)
         }
         if (poll.late)
             ++g_lcs.sync.late;
+        /* tx_start_tick is the accepted SYNC's start; send_frame overwrites it, so read it before any ACTION. */
+        host.action_window.on_sync(poll, host.tx_start_tick);
+        /* Peek then get is safe: run() is the only consumer of request_msgq. */
+        const lcs::ActionOutcome action{host.action_window.poll(
+            now_ticks(),
+            []() -> std::optional<lcs::Request> {
+                lcs::Request request;
+                if (k_msgq_peek(&request_msgq, &request) == 0)
+                    return request;
+                return std::nullopt;
+            },
+            []() {
+                lcs::Request request;
+                k_msgq_get(&request_msgq, &request, K_NO_WAIT);
+            },
+            [](const lcs::DownlinkFrame &frame) { return send_frame(frame); })};
+        if (action == lcs::ActionOutcome::Sent)
+            ++g_lcs.req.forwarded;
+        lcs::assign_request_stats(g_lcs.req, g_request_stats);
         recover_rx();
         restart_rx();
         guard_tx();
