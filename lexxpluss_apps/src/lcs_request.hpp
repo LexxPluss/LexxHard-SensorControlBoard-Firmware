@@ -32,7 +32,6 @@ struct Request {
     uint8_t cmd;
     uint8_t target;
     uint16_t param;
-    uint8_t counter;
 };
 
 /* received = queued + dropped_invalid + dropped_full. */
@@ -55,7 +54,7 @@ void enqueue_request(Put &&put, const Request &request, RequestStats &stats)
 
 /*
  * Flags must be 0: an extended-ID, remote or FD frame with the same ID is a different format and must not be relayed.
- * Bytes 4-6 must be 0: they are reserved, so a non-zero value means a frame of an unknown format.
+ * Bytes 4-7 must be 0: they are reserved, so a non-zero value means a frame of an unknown format.
  * ID, flags and DLC are decided before any payload byte is read.
  */
 inline std::optional<Request> decode_request(const can_frame &frame)
@@ -67,11 +66,11 @@ inline std::optional<Request> decode_request(const can_frame &frame)
     const uint8_t target{frame.data[1]};
     const bool cmd_ok{cmd == kCmdZeroReset || cmd == kCmdTempCalib || cmd == kCmdAbort};
     const bool target_ok{target < kBoardCount || target == kBroadcastId};
-    const bool reserved_ok{frame.data[4] == 0 && frame.data[5] == 0 && frame.data[6] == 0};
+    const bool reserved_ok{frame.data[4] == 0 && frame.data[5] == 0 && frame.data[6] == 0 && frame.data[7] == 0};
     if (!cmd_ok || !target_ok || !reserved_ok)
         return std::nullopt;
 
-    return Request{cmd, target, static_cast<uint16_t>((frame.data[2] << 8) | frame.data[3]), frame.data[7]};
+    return Request{cmd, target, static_cast<uint16_t>((frame.data[2] << 8) | frame.data[3])};
 }
 
 }
