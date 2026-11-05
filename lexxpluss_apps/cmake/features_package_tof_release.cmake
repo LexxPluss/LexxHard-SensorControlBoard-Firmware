@@ -23,10 +23,12 @@ set(TOF_PACKAGE_AUTO_HZ 5)
 # RELEASE POLICY: A RESIDENT IMAGE CARRIES NO UNATTENDED TIMED REVERT. What is switched off is the
 # bench deadman -- a ten-minute cold reboot of the whole machine, there to put an unsupervised
 # candidate back, which is the opposite of what a release is for. It is a decision rather than an
-# inference about an asset: the default would decline to arm in this configuration anyway, because
-# main.cpp self-confirms before the subsystem threads start whenever ENABLE_TOF_CHAIN is set and
-# arm() asks boot_is_img_confirmed() after that -- and a coincidence of ordering between two features
-# that know nothing about each other is not a policy.
+# inference about an asset, and it is now the only thing deciding. main.cpp used to self-confirm
+# before arm() could run whenever ENABLE_TOF_CHAIN was set, so the revert was absent by an ordering
+# coincidence between two features that knew nothing about each other. That guard is explicit now --
+# an image compiled with a deadman does not self-confirm -- so OFF here is what keeps a resident
+# image confirmed, and ON genuinely arms the revert. features_package_tof_bench.cmake is the
+# candidate configuration that turns it on.
 #
 # THIS IS NOT THE WATCHDOG, AND READING IT AS "NO RESET PROTECTION" WOULD BE WRONG. tof_watchdog_feeder
 # is installed in every image, by board_controller and not by any ToF flag, and it judges the L7 slot
