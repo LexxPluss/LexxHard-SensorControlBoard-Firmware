@@ -72,7 +72,7 @@ Diag make_numbered()
     d.rx.stats.foreign_downlink = 6;
     d.rx.stats.unknown_sender = 7;
     d.rx.restarts = 8;
-    d.tx.sent = 9;
+    d.tx.sync_sent = 9;
     d.tx.skipped = 10;
     d.tx.rejected_busy = 11;
     d.tx.timeout = 12;
@@ -159,7 +159,7 @@ ZTEST(lcs_diag, test_dg4_named_golden_lines)
     const Diag d{make_numbered()};
     const char *const expected[]{
         "rx dlvr=1 crce=2 sofm=3 tout=4 uerr=5 fdwn=6 unkn=7 rstr=8",
-        "tx sent=9 skip=10 busy=11 tout=12",
+        "tx sync=9 skip=10 busy=11 tout=12",
         "sync late=13 maxi=14",
         "isr ovfl=15",
     };
@@ -238,7 +238,7 @@ ZTEST(lcs_diag, test_dg7_zero_values_print_as_0)
     expect_line(d, 3, "isr 0");
 #else
     expect_line(d, 0, "rx dlvr=0 crce=0 sofm=0 tout=0 uerr=0 fdwn=0 unkn=0 rstr=0");
-    expect_line(d, 1, "tx sent=0 skip=0 busy=0 tout=0");
+    expect_line(d, 1, "tx sync=0 skip=0 busy=0 tout=0");
     expect_line(d, 2, "sync late=0 maxi=0");
     expect_line(d, 3, "isr ovfl=0");
 #endif

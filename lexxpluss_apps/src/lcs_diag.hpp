@@ -29,7 +29,7 @@ struct RxGroup {
 };
 
 struct TxGroup {
-    uint32_t sent;
+    uint32_t sync_sent;
     uint32_t skipped;
     uint32_t rejected_busy;
     uint32_t timeout;
@@ -54,7 +54,7 @@ struct Diag {
 inline constexpr size_t kDiagWords{15};
 
 /* Four characters per field, in struct order. */
-inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsentskipbusytoutlatemaxiovfl"};
+inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsyncskipbusytoutlatemaxiovfl"};
 
 static_assert(sizeof(Diag) == kDiagWords * 4);
 static_assert(std::is_trivially_copyable_v<Diag>);

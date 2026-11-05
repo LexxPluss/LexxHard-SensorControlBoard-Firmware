@@ -313,7 +313,7 @@ void run(void *p1, void *p2, void *p3)
         const lcs::SyncPoll poll{
             host.scheduler.poll(now, [](const lcs::DownlinkFrame &frame) { return send_sync(frame); })};
         if (poll.outcome == lcs::SyncOutcome::Sent) {
-            ++g_lcs.tx.sent;
+            ++g_lcs.tx.sync_sent;
             host.sync_interval.on_start(host.tx_start_tick);
             g_lcs.sync.max_interval = host.sync_interval.max();
         } else if (poll.outcome == lcs::SyncOutcome::Skipped) {
