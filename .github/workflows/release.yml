@@ -80,6 +80,10 @@ jobs:
   release:
     needs: [parse, build]
     runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.handle.outputs.action }}
+      release_id: ${{ steps.handle.outputs.release_id }}
+      prerelease: ${{ steps.handle.outputs.prerelease }}
     permissions:
       contents: write
     env:
@@ -93,6 +97,7 @@ jobs:
           name: firmware-bins
           path: .
       - name: Create or publish release
+        id: handle
         uses: ./.github/actions/release-handling
         with:
           mode: release
@@ -133,3 +138,6 @@ jobs:
           mode: reassert
           tag: ${{ github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          release_action: ${{ needs.release.outputs.action }}
+          release_id: ${{ needs.release.outputs.release_id }}
+          release_prerelease: ${{ needs.release.outputs.prerelease }}
