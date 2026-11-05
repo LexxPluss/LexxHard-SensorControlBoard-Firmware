@@ -3,7 +3,7 @@
 // Numbers without leading zeros.
 const NUM = '(0|[1-9]\\d*)';
 const V_RE = new RegExp(`^v${NUM}\\.${NUM}\\.${NUM}$`);
-const V_SUFFIX_RE = new RegExp(`^v${NUM}\\.${NUM}\\.${NUM}-(.+)$`);
+const V_SUFFIX_RE = new RegExp(`^v${NUM}\\.${NUM}\\.${NUM}-([A-Za-z0-9.-]+)$`);
 const PROD_RE = new RegExp(`^prod/([A-Za-z0-9][A-Za-z0-9-]*)/v${NUM}\\.${NUM}\\.${NUM}$`);
 
 function invalid(reason) {

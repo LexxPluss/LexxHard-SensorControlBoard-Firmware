@@ -70,7 +70,7 @@ function assertInvalid(tag) {
 
 const NUM = '(0|[1-9]\\d*)';
 const ORACLE_V = new RegExp(`^v${NUM}\\.${NUM}\\.${NUM}$`);
-const ORACLE_V_SUFFIX = new RegExp(`^v${NUM}\\.${NUM}\\.${NUM}-.+$`);
+const ORACLE_V_SUFFIX = new RegExp(`^v${NUM}\\.${NUM}\\.${NUM}-[A-Za-z0-9.-]+$`);
 const ORACLE_PROD = new RegExp(`^prod/[A-Za-z0-9][A-Za-z0-9-]*/v${NUM}\\.${NUM}\\.${NUM}$`);
 
 function oracleParse(tag) {
@@ -479,6 +479,27 @@ test('T17: large numbers keep exact text and exact ordering', () => {
   assert.equal(latestTarget([small, big]), 'v1.0.99999999999999999999');
 });
 
+test('T18: suffix charset is [A-Za-z0-9.-]+ (hostile characters and empty suffix are invalid)', () => {
+  for (const tag of [
+    'v1.2.3-a$b',
+    'v1.2.3-a;b',
+    'v1.2.3-a(b)',
+    'v1.2.3-a"b',
+    "v1.2.3-a'b",
+    'v1.2.3-a b',
+    'v1.2.3-',
+    'v1.2.3-a/b',
+  ]) {
+    assertInvalid(tag);
+  }
+  const rc = parseTag('v3.4.0-rc1-fat');
+  assert.equal(rc.cls, 'v-suffix');
+  assert.equal(rc.suffix, 'rc1-fat');
+  const dotted = parseTag('v1.2.3-a.b-c');
+  assert.equal(dotted.cls, 'v-suffix');
+  assert.equal(dotted.suffix, 'a.b-c');
+});
+
 // ---------------------------------------------------------------------------
 // Invariants over the reduced matrix
 // ---------------------------------------------------------------------------
@@ -584,6 +605,14 @@ const INVALID_TAGS = [
   'prod/a.b/v1.0.0',
   'prod/a_b/v1.0.0',
   'prod/../v1.0.0',
+  'v1.2.3-a$b',
+  'v1.2.3-a;b',
+  'v1.2.3-a(b)',
+  'v1.2.3-a"b',
+  "v1.2.3-a'b",
+  'v1.2.3-a b',
+  'v1.2.3-',
+  'v1.2.3-a/b',
 ];
 
 function pick(rng, arr) {
