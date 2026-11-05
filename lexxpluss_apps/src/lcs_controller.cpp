@@ -136,7 +136,8 @@ void uart_callback(const device *, uart_event *event, void *)
     }
 }
 
-bool send_sync(const lcs::DownlinkFrame &frame)
+/* The transmit gate is shared by every downlink frame (SYNC and ACTION). */
+bool send_frame(const lcs::DownlinkFrame &frame)
 {
     if (!atomic_cas(&host.tx_busy, 0, 1)) {
         ++g_lcs.tx.rejected_busy;
@@ -313,7 +314,7 @@ void run(void *p1, void *p2, void *p3)
         host.receiver.expire(now);
         g_lcs.rx.stats = host.receiver.stats();
         const lcs::SyncPoll poll{
-            host.scheduler.poll(now, [](const lcs::DownlinkFrame &frame) { return send_sync(frame); })};
+            host.scheduler.poll(now, [](const lcs::DownlinkFrame &frame) { return send_frame(frame); })};
         if (poll.outcome == lcs::SyncOutcome::Sent) {
             ++g_lcs.tx.sync_sent;
             host.sync_interval.on_start(host.tx_start_tick);
