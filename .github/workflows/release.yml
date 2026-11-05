@@ -23,19 +23,31 @@
 
 name: release
 on:
-  release:
-    types: [published]
   push:
     tags:
       - 'v*'
+permissions:
+  contents: read
 jobs:
+  parse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Parse tag
+        uses: ./.github/actions/release-handling
+        with:
+          mode: parse
+          tag: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
   build:
+    needs: parse
     runs-on: lp-4core-runner
     container:
       image: zephyrprojectrtos/zephyr-build:v0.26.9
       options: --user root
-    env:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -55,6 +67,42 @@ jobs:
           mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
           mv ./out/firmware_two_state_ksw.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
           mv ./out/zephyr_two_state_ksw.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-bins
+          path: |
+            LexxHard-SensorControlBoard-Firmware-Initial-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-Update-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Initial-${{ github.ref_name }}.bin
+            LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
+          if-no-files-found: error
+  release:
+    needs: [parse, build]
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.handle.outputs.action }}
+      release_id: ${{ steps.handle.outputs.release_id }}
+      prerelease: ${{ steps.handle.outputs.prerelease }}
+    permissions:
+      contents: write
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-bins
+          path: .
+      - name: Create or publish release
+        id: handle
+        uses: ./.github/actions/release-handling
+        with:
+          mode: release
+          tag: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload release binaries
         uses: alexellis/upload-assets@0.4.0
         env:
@@ -72,3 +120,24 @@ jobs:
           steps: ${{ toJson(steps) }}
           channel: '#div-02-robotics-ci'
         if: always()
+  reassert:
+    needs: [parse, build, release]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-latest-reassert
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Re-assert Latest
+        uses: ./.github/actions/release-handling
+        with:
+          mode: reassert
+          tag: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release_action: ${{ needs.release.outputs.action }}
+          release_id: ${{ needs.release.outputs.release_id }}
+          release_prerelease: ${{ needs.release.outputs.prerelease }}
