@@ -23,7 +23,7 @@ namespace lexxhard::lcs {
 inline constexpr uint16_t kRequestId{0x21E};
 
 inline constexpr uint8_t kCmdZeroReset{0x48};
-inline constexpr uint8_t kCmdTempCalib{0x50};
+inline constexpr uint8_t kCmdTempDriftCalib{0x50};
 inline constexpr uint8_t kCmdAbort{0x68};
 
 inline constexpr std::size_t kRequestQueueDepth{8};
@@ -64,7 +64,7 @@ inline std::optional<Request> decode_request(const can_frame &frame)
 
     const uint8_t cmd{frame.data[0]};
     const uint8_t target{frame.data[1]};
-    const bool cmd_ok{cmd == kCmdZeroReset || cmd == kCmdTempCalib || cmd == kCmdAbort};
+    const bool cmd_ok{cmd == kCmdZeroReset || cmd == kCmdTempDriftCalib || cmd == kCmdAbort};
     const bool target_ok{target < kBoardCount || target == kBroadcastId};
     const bool reserved_ok{frame.data[4] == 0 && frame.data[5] == 0 && frame.data[6] == 0 && frame.data[7] == 0};
     if (!cmd_ok || !target_ok || !reserved_ok)
