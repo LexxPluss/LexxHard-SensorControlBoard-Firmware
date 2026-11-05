@@ -38,6 +38,7 @@
 namespace lexxhard::lcs_controller {
 k_msgq msgq;
 k_msgq request_msgq;
+lexxhard::lcs::RequestStats g_request_stats;
 }
 
 namespace {
@@ -402,6 +403,21 @@ ZTEST(zcan_lcs, test_nonzero_byte7_is_dropped_and_counted)
     send_and_poll(with_byte(7, 0x01));
     zassert_equal(queued_count(), 0U, "frame with byte 7 set queued");
     expect_stats_delta(before, 1, 0, 1, 0);
+}
+
+// Catches: the mirror not written, written before the counters change, or written from the wrong object
+ZTEST(zcan_lcs, test_request_stats_mirror_follows_the_adapter)
+{
+    lexxhard::lcs_controller::g_request_stats = lcs::RequestStats{};
+    send_and_poll(valid_frame(1));
+    send_and_poll(with_byte(7, 0x01));
+    const lcs::RequestStats mirror{lexxhard::lcs_controller::g_request_stats};
+    const lcs::RequestStats own{stats()};
+    zassert_true(mirror.received >= 2U, "mirror not updated: received %u", mirror.received);
+    zassert_equal(mirror.received, own.received, "mirror received differs");
+    zassert_equal(mirror.queued, own.queued, "mirror queued differs");
+    zassert_equal(mirror.dropped_invalid, own.dropped_invalid, "mirror dropped_invalid differs");
+    zassert_equal(mirror.dropped_full, own.dropped_full, "mirror dropped_full differs");
 }
 
 // SC02-04: a rejected frame that leaves state behind and blocks the next valid request

@@ -88,6 +88,7 @@ public:
                 }, *request, stats_);
             else
                 ++stats_.dropped_invalid;
+            lcs_controller::g_request_stats = stats_;
         }
     }
 

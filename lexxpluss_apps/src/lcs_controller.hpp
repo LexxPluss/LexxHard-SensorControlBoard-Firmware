@@ -13,6 +13,8 @@
 #include <zephyr/kernel.h>
 #include "lcs_can_packer.hpp"
 
+namespace lexxhard::lcs { struct RequestStats; }
+
 namespace lexxhard::lcs_controller {
 
 using msg = lcs::msg;
@@ -23,6 +25,8 @@ extern k_thread thread;
 extern k_msgq msgq;
 /* Validated host requests (lcs::Request elements). */
 extern k_msgq request_msgq;
+/* Written only by the CAN request adapter, read by the LCS thread. */
+extern lcs::RequestStats g_request_stats;
 
 }
 

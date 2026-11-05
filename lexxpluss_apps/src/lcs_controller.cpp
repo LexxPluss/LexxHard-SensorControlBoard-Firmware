@@ -33,6 +33,8 @@ LOG_MODULE_REGISTER(lcs);
 
 /* Diagnostic counters; external linkage so that a debugger or CubeMonitor can read them by symbol. */
 lcs::Diag g_lcs{};
+/* Mirror of the request statistics; external linkage, the CAN request adapter is the only writer. */
+lcs::RequestStats g_request_stats{};
 
 namespace {
 
