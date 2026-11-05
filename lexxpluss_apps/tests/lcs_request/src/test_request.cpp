@@ -40,7 +40,7 @@ namespace {
 constexpr std::array<uint8_t, 3> kValidCmds{0x48, 0x50, 0x68};
 constexpr std::array<uint8_t, 3> kValidTargets{0x00, 0x01, 0xFF};
 
-can_frame make_frame(uint8_t cmd, uint8_t target, uint16_t param, uint8_t counter)
+can_frame make_frame(uint8_t cmd, uint8_t target, uint16_t param)
 {
     can_frame frame{};
     frame.id = lcs::kRequestId;
@@ -53,7 +53,7 @@ can_frame make_frame(uint8_t cmd, uint8_t target, uint16_t param, uint8_t counte
     frame.data[4] = 0;
     frame.data[5] = 0;
     frame.data[6] = 0;
-    frame.data[7] = counter;
+    frame.data[7] = 0;
     return frame;
 }
 
@@ -89,13 +89,12 @@ ZTEST(lcs_request, test_sc01_01_nine_valid_pairs)
 {
     for (const uint8_t cmd : kValidCmds) {
         for (const uint8_t target : kValidTargets) {
-            const can_frame frame = make_frame(cmd, target, 0, 5);
+            const can_frame frame = make_frame(cmd, target, 0);
             const std::optional<lcs::Request> req = lcs::decode_request(frame);
             zassert_true(req.has_value(), "cmd 0x%02x target 0x%02x rejected", cmd, target);
             zassert_equal(req->cmd, cmd);
             zassert_equal(req->target, target);
             zassert_equal(req->param, 0);
-            zassert_equal(req->counter, 5);
         }
     }
 }
@@ -106,7 +105,7 @@ ZTEST(lcs_request, test_sc01_02_invalid_cmd_dropped)
     constexpr std::array<uint8_t, 9> invalid_cmds{0x08, 0x00, 0x47, 0x49, 0x4F, 0x51, 0x67, 0x69, 0xFF};
     for (const uint8_t cmd : invalid_cmds) {
         for (const uint8_t target : kValidTargets) {
-            const can_frame frame = make_frame(cmd, target, 0, 5);
+            const can_frame frame = make_frame(cmd, target, 0);
             zassert_false(lcs::decode_request(frame).has_value(), "cmd 0x%02x accepted", cmd);
         }
     }
@@ -118,11 +117,11 @@ ZTEST(lcs_request, test_sc01_03_invalid_target_dropped)
     constexpr std::array<uint8_t, 4> invalid_targets{2, 3, 0x7F, 0xFE};
     for (const uint8_t cmd : kValidCmds) {
         for (const uint8_t target : invalid_targets) {
-            const can_frame frame = make_frame(cmd, target, 0, 5);
+            const can_frame frame = make_frame(cmd, target, 0);
             zassert_false(lcs::decode_request(frame).has_value(), "target 0x%02x accepted", target);
         }
     }
-    const can_frame both_bad = make_frame(0x00, 2, 0, 5);
+    const can_frame both_bad = make_frame(0x00, 2, 0);
     zassert_false(lcs::decode_request(both_bad).has_value());
 }
 
@@ -131,15 +130,15 @@ ZTEST(lcs_request, test_sc01_04_dlc)
 {
     constexpr std::array<uint8_t, 9> bad_dlcs{0, 1, 2, 3, 4, 5, 6, 7, 9};
     for (const uint8_t dlc : bad_dlcs) {
-        can_frame frame = make_frame(0x48, 0, 0, 5);
+        can_frame frame = make_frame(0x48, 0, 0);
         frame.dlc = dlc;
         zassert_false(lcs::decode_request(frame).has_value(), "dlc %u accepted", dlc);
     }
-    can_frame frame15 = make_frame(0x48, 0, 0, 5);
+    can_frame frame15 = make_frame(0x48, 0, 0);
     frame15.dlc = 15;
     zassert_false(lcs::decode_request(frame15).has_value());
 
-    can_frame frame8 = make_frame(0x48, 0, 0, 5);
+    can_frame frame8 = make_frame(0x48, 0, 0);
     frame8.dlc = 8;
     zassert_true(lcs::decode_request(frame8).has_value());
 }
@@ -149,11 +148,11 @@ ZTEST(lcs_request, test_sc01_05_flags_dropped)
 {
     constexpr std::array<uint8_t, 3> bad_flags{CAN_FRAME_IDE, CAN_FRAME_RTR, CAN_FRAME_FDF};
     for (const uint8_t flags : bad_flags) {
-        can_frame frame = make_frame(0x48, 0, 0, 5);
+        can_frame frame = make_frame(0x48, 0, 0);
         frame.flags = flags;
         zassert_false(lcs::decode_request(frame).has_value(), "flags 0x%02x accepted", flags);
     }
-    can_frame ok = make_frame(0x48, 0, 0, 5);
+    can_frame ok = make_frame(0x48, 0, 0);
     ok.flags = 0;
     zassert_true(lcs::decode_request(ok).has_value());
 }
@@ -163,21 +162,20 @@ ZTEST(lcs_request, test_sc01_06_other_ids_dropped)
 {
     constexpr std::array<uint16_t, 4> other_ids{0x21C, 0x21D, 0x21F, 0x21B};
     for (const uint16_t id : other_ids) {
-        can_frame frame = make_frame(0x48, 0, 0, 5);
+        can_frame frame = make_frame(0x48, 0, 0);
         frame.id = id;
         zassert_false(lcs::decode_request(frame).has_value(), "id 0x%03x accepted", id);
     }
 }
 
-// Catches the counter byte being dropped, shifted or sign-extended.
-ZTEST(lcs_request, test_sc01_07_counter_carried)
+// Catches reserved byte 7 being ignored or carried, which would relay frames of an unknown format.
+ZTEST(lcs_request, test_sc01_07_byte7_reserved)
 {
-    constexpr std::array<uint8_t, 5> counters{0, 1, 127, 128, 255};
-    for (const uint8_t counter : counters) {
-        const can_frame frame = make_frame(0x50, 1, 0, counter);
-        const std::optional<lcs::Request> req = lcs::decode_request(frame);
-        zassert_true(req.has_value(), "counter %u rejected", counter);
-        zassert_equal(req->counter, counter);
+    constexpr std::array<uint8_t, 4> values{0x01, 0x7F, 0x80, 0xFF};
+    for (const uint8_t value : values) {
+        can_frame frame = make_frame(0x50, 1, 0);
+        frame.data[7] = value;
+        zassert_false(lcs::decode_request(frame).has_value(), "byte 7 = 0x%02x accepted", value);
     }
 }
 
@@ -186,7 +184,7 @@ ZTEST(lcs_request, test_sc01_08_param_carried)
 {
     constexpr std::array<uint16_t, 4> params{0x0000, 0x0001, 0x1234, 0xFFFF};
     for (const uint16_t param : params) {
-        const can_frame frame = make_frame(0x68, 0xFF, param, 5);
+        const can_frame frame = make_frame(0x68, 0xFF, param);
         const std::optional<lcs::Request> req = lcs::decode_request(frame);
         zassert_true(req.has_value(), "param 0x%04x rejected", param);
         zassert_equal(req->param, param);
@@ -199,19 +197,19 @@ ZTEST(lcs_request, test_sc01_08b_reserved_must_be_zero)
     constexpr std::array<uint8_t, 2> values{0x01, 0xFF};
     for (const uint8_t value : values) {
         for (std::size_t index = 4; index <= 6; ++index) {
-            can_frame frame = make_frame(0x48, 0, 0, 5);
+            can_frame frame = make_frame(0x48, 0, 0);
             frame.data[index] = value;
             zassert_false(lcs::decode_request(frame).has_value(), "byte %u = 0x%02x accepted",
                           static_cast<unsigned>(index), value);
         }
     }
-    can_frame all_set = make_frame(0x48, 0, 0, 5);
+    can_frame all_set = make_frame(0x48, 0, 0);
     all_set.data[4] = 0x01;
     all_set.data[5] = 0x01;
     all_set.data[6] = 0x01;
     zassert_false(lcs::decode_request(all_set).has_value());
 
-    const can_frame all_zero = make_frame(0x48, 0, 0, 5);
+    const can_frame all_zero = make_frame(0x48, 0, 0);
     zassert_true(lcs::decode_request(all_zero).has_value());
 }
 
@@ -243,7 +241,7 @@ ZTEST(lcs_request, test_sc01_09_seeded_random_against_oracle)
         frame.data[4] = 0;
         frame.data[5] = 0;
         frame.data[6] = 0;
-        frame.data[7] = static_cast<uint8_t>(xorshift32(state));
+        frame.data[7] = 0;
 
         const bool expected = oracle_accepts(frame);
         const std::optional<lcs::Request> req = lcs::decode_request(frame);
@@ -253,7 +251,6 @@ ZTEST(lcs_request, test_sc01_09_seeded_random_against_oracle)
             zassert_equal(req->cmd, frame.data[0]);
             zassert_equal(req->target, frame.data[1]);
             zassert_equal(req->param, 0);
-            zassert_equal(req->counter, frame.data[7]);
         }
     }
     /* Each of the five fields is valid with probability 3/4 (a little more by chance): about 2540 of 10000. */

@@ -118,8 +118,7 @@ namespace lcs = lexxhard::lcs;
 
 constexpr std::uint32_t kRequestId{0x21E};
 
-can_frame make_request_frame(const std::uint8_t cmd, const std::uint8_t target, const std::uint16_t param,
-                             const std::uint8_t counter)
+can_frame make_request_frame(const std::uint8_t cmd, const std::uint8_t target, const std::uint16_t param)
 {
     can_frame frame{};
     frame.id = kRequestId;
@@ -128,13 +127,12 @@ can_frame make_request_frame(const std::uint8_t cmd, const std::uint8_t target, 
     frame.data[1] = target;
     frame.data[2] = static_cast<std::uint8_t>(param >> 8);
     frame.data[3] = static_cast<std::uint8_t>(param & 0xFF);
-    frame.data[7] = counter;
     return frame;
 }
 
 can_frame valid_frame(const std::uint8_t seed)
 {
-    return make_request_frame(0x48, 0, static_cast<std::uint16_t>(0x1200 + seed), seed);
+    return make_request_frame(0x48, 0, static_cast<std::uint16_t>(0x1200 + seed));
 }
 
 /* Independent reference of the request rule; deliberately not the production decoder. */
@@ -146,9 +144,9 @@ std::optional<lcs::Request> oracle(const can_frame &frame)
     const std::uint8_t target{frame.data[1]};
     if (!(cmd == 0x48 || cmd == 0x50 || cmd == 0x68) || !(target == 0 || target == 1 || target == 0xFF))
         return std::nullopt;
-    if (frame.data[4] != 0 || frame.data[5] != 0 || frame.data[6] != 0)
+    if (frame.data[4] != 0 || frame.data[5] != 0 || frame.data[6] != 0 || frame.data[7] != 0)
         return std::nullopt;
-    return lcs::Request{cmd, target, static_cast<std::uint16_t>((frame.data[2] << 8) | frame.data[3]), frame.data[7]};
+    return lcs::Request{cmd, target, static_cast<std::uint16_t>((frame.data[2] << 8) | frame.data[3])};
 }
 
 /* The accept-all filter on rx_msgq is the barrier: once the frame is there, delivery to every filter is done. */
@@ -184,7 +182,6 @@ void expect_request(const std::optional<lcs::Request> &actual, const lcs::Reques
     zassert_equal(actual->cmd, expected.cmd);
     zassert_equal(actual->target, expected.target);
     zassert_equal(actual->param, expected.param);
-    zassert_equal(actual->counter, expected.counter);
 }
 
 void expect_stats_delta(const lcs::RequestStats &before, const std::uint32_t received, const std::uint32_t queued,
@@ -374,9 +371,9 @@ ZTEST(zcan_lcs, test_request_filter_passes_only_standard_0x21E_once)
 // SC02-02: requests lost, reordered or altered between the filter and the queue
 ZTEST(zcan_lcs, test_valid_requests_are_queued_in_arrival_order)
 {
-    const std::array<can_frame, 3> frames{make_request_frame(0x48, 0, 0x0102, 0x11),
-                                          make_request_frame(0x50, 1, 0xA55A, 0x22),
-                                          make_request_frame(0x68, 0xFF, 0xFFFF, 0x33)};
+    const std::array<can_frame, 3> frames{make_request_frame(0x48, 0, 0x0102),
+                                          make_request_frame(0x50, 1, 0xA55A),
+                                          make_request_frame(0x68, 0xFF, 0xFFFF)};
     const lcs::RequestStats before{stats()};
     for (const can_frame &frame : frames)
         send_and_poll(frame);
@@ -396,6 +393,15 @@ ZTEST(zcan_lcs, test_invalid_frames_are_dropped_and_counted)
         zassert_equal(queued_count(), 0U, "invalid frame queued");
         expect_stats_delta(before, 1, 0, 1, 0);
     }
+}
+
+// SC02-03b: a request frame with a nonzero reserved byte 7 is dropped and counted
+ZTEST(zcan_lcs, test_nonzero_byte7_is_dropped_and_counted)
+{
+    const lcs::RequestStats before{stats()};
+    send_and_poll(with_byte(7, 0x01));
+    zassert_equal(queued_count(), 0U, "frame with byte 7 set queued");
+    expect_stats_delta(before, 1, 0, 1, 0);
 }
 
 // SC02-04: a rejected frame that leaves state behind and blocks the next valid request
@@ -464,8 +470,7 @@ ZTEST(zcan_lcs, test_random_stream_yields_exactly_the_oracle_requests)
                 static constexpr std::array<std::uint8_t, 3> cmds{0x48, 0x50, 0x68};
                 static constexpr std::array<std::uint8_t, 3> targets{0, 1, 0xFF};
                 const std::uint32_t r{lcg_next(state)};
-                frame = make_request_frame(cmds[r % 3], targets[(r >> 4) % 3], static_cast<std::uint16_t>(r >> 8),
-                                           static_cast<std::uint8_t>(r >> 3));
+                frame = make_request_frame(cmds[r % 3], targets[(r >> 4) % 3], static_cast<std::uint16_t>(r >> 8));
                 break;
             }
             case 1:
@@ -495,7 +500,6 @@ ZTEST(zcan_lcs, test_random_stream_yields_exactly_the_oracle_requests)
             zassert_equal(drained[i].cmd, expected[i].cmd, "cmd %zu seed %u", i, seed);
             zassert_equal(drained[i].target, expected[i].target, "target %zu seed %u", i, seed);
             zassert_equal(drained[i].param, expected[i].param, "param %zu seed %u", i, seed);
-            zassert_equal(drained[i].counter, expected[i].counter, "counter %zu seed %u", i, seed);
         }
 
         const lcs::RequestStats now{stats()};
