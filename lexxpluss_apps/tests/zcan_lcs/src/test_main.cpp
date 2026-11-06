@@ -28,6 +28,7 @@
 #include <zephyr/ztest.h>
 
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -527,6 +528,29 @@ ZTEST(zcan_lcs, test_random_stream_yields_exactly_the_oracle_requests)
         zassert_equal(queued, expected.size(), "queued, seed %u", seed);
         zassert_equal(full, 0U, "dropped_full, seed %u", seed);
     }
+}
+
+// SC02-08: a failed 0x21E filter registration that is marked done, so the request path stays off without a retry
+ZTEST(zcan_lcs, test_failed_filter_registration_is_retried_and_a_successful_one_is_made_once)
+{
+    bool done{false};
+    int calls{0};
+    const auto fail{[&] { ++calls; return -ENOSPC; }};
+    const auto succeed{[&] { ++calls; return 0; }};
+
+    done = lexxhard::zcan_lcs::register_once(done, fail);
+    zassert_false(done, "a failed registration marked done");
+    done = lexxhard::zcan_lcs::register_once(done, fail);
+    zassert_false(done);
+    zassert_equal(calls, 2, "a failed registration was not retried");
+
+    done = lexxhard::zcan_lcs::register_once(done, succeed);
+    zassert_true(done);
+    zassert_equal(calls, 3);
+
+    done = lexxhard::zcan_lcs::register_once(done, fail);
+    zassert_true(done);
+    zassert_equal(calls, 3, "a done registration was made again");
 }
 
 // vim: set expandtab shiftwidth=4:

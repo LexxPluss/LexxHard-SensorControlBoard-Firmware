@@ -192,8 +192,8 @@ void recover_rx()
 
 /* The forward queue of the uplinks as the queue of lcs::put_purging. */
 struct ForwardQueue {
-    bool try_put(const lcs::msg &frame) { return k_msgq_put(&msgq, &frame, K_NO_WAIT) == 0; }
-    void purge() { k_msgq_purge(&msgq); }
+    bool try_put(const lcs::msg &frame) const { return k_msgq_put(&msgq, &frame, K_NO_WAIT) == 0; }
+    void purge() const { k_msgq_purge(&msgq); }
 };
 
 void forward(const lcs::Uplink &uplink)

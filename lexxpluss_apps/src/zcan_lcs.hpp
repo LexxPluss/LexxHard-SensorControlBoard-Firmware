@@ -42,6 +42,13 @@ static_assert(LCS_DATA_LENGTH == std::tuple_size_v<decltype(lcs_controller::msg:
 
 CAN_MSGQ_DEFINE(msgq_can_lcs_request, lcs::kRequestQueueDepth);
 
+/* The registration state after this call: add() runs only while not done and returns a negative errno on failure. */
+template <typename Add>
+bool register_once(const bool done, Add &&add)
+{
+    return done || add() >= 0;
+}
+
 class zcan_lcs {
 public:
     void init()
@@ -54,11 +61,11 @@ public:
 
         /* One registration per process: a second filter would deliver every frame twice. */
         static bool filter_added{false};
-        if (!filter_added) {
-            static const can_filter filter_request{.id = LCS_REQUEST_ID, .mask = CAN_STD_ID_MASK, .flags = 0};
-            can_add_rx_filter_msgq(dev, &msgq_can_lcs_request, &filter_request);
-            filter_added = true;
-        }
+        static const can_filter filter_request{.id = LCS_REQUEST_ID, .mask = CAN_STD_ID_MASK, .flags = 0};
+        const auto add{[&] { return can_add_rx_filter_msgq(dev, &msgq_can_lcs_request, &filter_request); }};
+        filter_added = register_once(filter_added, add);
+        if (!filter_added)
+            LOG_ERR("CAN_2 0x21E filter registration failed");
     }
 
     void poll()
