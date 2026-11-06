@@ -1,6 +1,6 @@
 'use strict';
 
-const { parseTag, decideAction, latestTarget, mergeRelease } = require('./release-handling.js');
+const { parseTag, decideAction, latestTarget, mergeRelease, publishPayload } = require('./release-handling.js');
 
 async function listReleases(github, owner, repo) {
   return github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
@@ -58,13 +58,12 @@ async function release({ github, context, core, tag }) {
     });
     setReleaseOutputs(core, res.action, data);
   } else {
-    // Publishing a draft sets the draft flag and make_latest only; the draft body is kept.
+    // Publishing a draft sets the draft flag and make_latest (plus prerelease for suffix tags); the draft body is kept.
     const { data } = await github.rest.repos.updateRelease({
       owner,
       repo,
       release_id: res.releaseId,
-      draft: false,
-      make_latest: String(res.makeLatest),
+      ...publishPayload(tag, res.makeLatest),
     });
     setReleaseOutputs(core, res.action, data);
   }

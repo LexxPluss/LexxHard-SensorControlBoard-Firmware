@@ -277,3 +277,24 @@ test('W5: release mode fails and creates nothing when the tag lookup errors with
   assert.equal(fake.calls.createRelease.length, 0);
   assert.notEqual(fake.outputs.action, 'create');
 });
+
+test('W6: publishing a draft sends prerelease true for a suffix tag and no prerelease otherwise', async () => {
+  const suffix = await runRelease('v3.9.0-rc1', [
+    rel('v3.8.0'),
+    rel('v3.9.0-rc1', { draft: true, id: 901 }),
+  ]);
+  assert.equal(suffix.calls.updateRelease.length, 1);
+  const suffixPayload = suffix.calls.updateRelease[0];
+  assert.equal(suffixPayload.release_id, 901);
+  assert.equal(suffixPayload.prerelease, true);
+  assert.equal(suffixPayload.draft, false);
+  assert.equal(suffixPayload.make_latest, 'false');
+
+  const plain = await runRelease('v3.9.0', [rel('v3.8.0'), rel('v3.9.0', { draft: true, id: 902 })]);
+  assert.equal(plain.calls.updateRelease.length, 1);
+  assert.equal('prerelease' in plain.calls.updateRelease[0], false);
+
+  const prod = await runRelease('prod/acme/v0.1.0', [rel('prod/acme/v0.1.0', { draft: true, id: 903 })]);
+  assert.equal(prod.calls.updateRelease.length, 1);
+  assert.equal('prerelease' in prod.calls.updateRelease[0], false);
+});

@@ -728,3 +728,20 @@ test('M3: the input list is not mutated and a second merge gives the same result
   const appended = mergeRelease([], made);
   assert.deepEqual(mergeRelease(appended, made), appended);
 });
+
+// ---------------------------------------------------------------------------
+// Group M: publish payload
+// ---------------------------------------------------------------------------
+
+const { publishPayload } = require('./release-handling.js');
+
+test('M4: the publish payload carries prerelease true for a suffix tag only', () => {
+  assert.deepEqual(publishPayload('v3.9.0-rc1', true), { draft: false, make_latest: 'true', prerelease: true });
+  assert.deepEqual(publishPayload('v3.9.0-rc1', false), { draft: false, make_latest: 'false', prerelease: true });
+  const plain = publishPayload('v3.9.0', true);
+  assert.deepEqual(plain, { draft: false, make_latest: 'true' });
+  assert.equal('prerelease' in plain, false);
+  const prod = publishPayload('prod/acme/v0.1.0', false);
+  assert.deepEqual(prod, { draft: false, make_latest: 'false' });
+  assert.equal('prerelease' in prod, false);
+});

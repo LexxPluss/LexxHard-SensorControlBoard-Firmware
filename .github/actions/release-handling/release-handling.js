@@ -117,3 +117,7 @@ module.exports.mergeRelease = function mergeRelease(list, made) {
     ? list.map((r) => (r.id === made.id ? made : r))
     : [...list, made];
 };
+module.exports.publishPayload = function publishPayload(tag, makeLatest) {
+  const payload = { draft: false, make_latest: String(makeLatest) };
+  return parseTag(tag).cls === 'v-suffix' ? { ...payload, prerelease: true } : payload;
+};
