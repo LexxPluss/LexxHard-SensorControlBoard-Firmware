@@ -112,3 +112,8 @@ function decideAction(tag, listBefore) {
 }
 
 module.exports = { parseTag, decideAction, latestTarget };
+module.exports.mergeRelease = function mergeRelease(list, made) {
+  return list.some((r) => r.id === made.id)
+    ? list.map((r) => (r.id === made.id ? made : r))
+    : [...list, made];
+};

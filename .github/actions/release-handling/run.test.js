@@ -223,3 +223,30 @@ test('C10: release step outputs for create, publish and skip (create: R-A2 (j))'
   const skipped = await runRelease('v3.2.0', [rel('v3.2.0')]);
   assert.equal(skipped.outputs.action, 'skip');
 });
+
+// ---------------------------------------------------------------------------
+// Group W: defects of run.js (U6a)
+// ---------------------------------------------------------------------------
+
+test('W1: reassert after create/publish gives Latest to this Release ' +
+  'when the list holds it as a stale draft', async () => {
+  const list = [rel('v3.9.0', { draft: true, id: 900 }), rel('v3.8.0', { id: 380 })];
+  const fake = await runReassert('v3.9.0', list, {
+    releaseAction: 'publish',
+    releaseId: '900',
+    releasePrerelease: 'false',
+  });
+  assert.equal(fake.calls.updateRelease.length, 1);
+  assert.equal(fake.calls.updateRelease[0].release_id, 900);
+  assert.equal(fake.calls.updateRelease[0].make_latest, 'true');
+});
+
+test('W2: reassert with the get-by-tag fallback gives Latest to this Release ' +
+  'when the list holds it as a stale draft', async () => {
+  const list = [rel('v3.9.0', { draft: true, id: 900 }), rel('v3.8.0', { id: 380 })];
+  const published = rel('v3.9.0', { id: 900 });
+  const fake = await runReassert('v3.9.0', list, { releaseAction: 'skip' }, { tagLookup: published });
+  assert.equal(fake.calls.updateRelease.length, 1);
+  assert.equal(fake.calls.updateRelease[0].release_id, 900);
+  assert.equal(fake.calls.updateRelease[0].make_latest, 'true');
+});

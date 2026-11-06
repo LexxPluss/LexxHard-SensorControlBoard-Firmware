@@ -685,3 +685,46 @@ test('Z1: seeded random Release lists agree with the oracle and keep I1-I5', () 
 test('Z2: second seed with a larger share of prod Releases and drafts agrees with the oracle', () => {
   runStream(3911, 0.6, 300);
 });
+
+// ---------------------------------------------------------------------------
+// Group M: list merge
+// ---------------------------------------------------------------------------
+
+const { mergeRelease } = require('./release-handling.js');
+
+test('M1: an entry with the same id as the made Release is replaced by it', () => {
+  const list = [
+    { id: 900, tag_name: 'v3.9.0', draft: true, prerelease: false },
+    { id: 380, tag_name: 'v3.8.0', draft: false, prerelease: false },
+  ];
+  const made = { id: 900, tag_name: 'v3.9.0', draft: false, prerelease: false };
+  const merged = mergeRelease(list, made);
+  assert.equal(merged.filter((r) => r.id === 900).length, 1);
+  assert.deepEqual(merged.find((r) => r.id === 900), made);
+  assert.equal(merged.length, 2);
+});
+
+test('M2: the made Release is appended when no entry has its id', () => {
+  const list = [{ id: 380, tag_name: 'v3.8.0', draft: false, prerelease: false }];
+  const made = { id: 900, tag_name: 'v3.9.0', draft: false, prerelease: false };
+  const merged = mergeRelease(list, made);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged[merged.length - 1], made);
+  assert.deepEqual(merged[0], list[0]);
+});
+
+test('M3: the input list is not mutated and a second merge gives the same result', () => {
+  const list = [
+    { id: 900, tag_name: 'v3.9.0', draft: true, prerelease: false },
+    { id: 380, tag_name: 'v3.8.0', draft: false, prerelease: false },
+  ];
+  const snapshot = JSON.parse(JSON.stringify(list));
+  const made = { id: 900, tag_name: 'v3.9.0', draft: false, prerelease: false };
+  const first = mergeRelease(list, made);
+  assert.deepEqual(list, snapshot);
+  assert.notEqual(first, list);
+  const second = mergeRelease(first, made);
+  assert.deepEqual(second, first);
+  const appended = mergeRelease([], made);
+  assert.deepEqual(mergeRelease(appended, made), appended);
+});

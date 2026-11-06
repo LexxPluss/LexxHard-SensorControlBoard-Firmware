@@ -1,6 +1,6 @@
 'use strict';
 
-const { parseTag, decideAction, latestTarget } = require('./release-handling.js');
+const { parseTag, decideAction, latestTarget, mergeRelease } = require('./release-handling.js');
 
 async function listReleases(github, owner, repo) {
   return github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
@@ -59,22 +59,20 @@ async function release({ github, context, core, tag }) {
 // The list lags a few seconds after a create, so this run's Release is added to it explicitly.
 async function reassert({ github, context, core, tag, releaseAction, releaseId, releasePrerelease }) {
   const { owner, repo } = context.repo;
-  const list = await listReleases(github, owner, repo);
+  let list = await listReleases(github, owner, repo);
   if (releaseAction === 'create' || releaseAction === 'publish') {
     if (releaseId === '') {
       core.setFailed(`the release job reported ${releaseAction} without a Release id`);
       return;
     }
     const made = { id: Number(releaseId), tag_name: tag, draft: false, prerelease: releasePrerelease === 'true' };
-    if (!list.some((r) => r.id === made.id)) {
-      list.push(made);
-    }
+    list = mergeRelease(list, made);
   } else {
     // Skip, fail or no release job: fall back to fetching the tag's Release directly.
     try {
       const { data } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-      if (data && !data.draft && !list.some((r) => r.id === data.id)) {
-        list.push(data);
+      if (data && !data.draft) {
+        list = mergeRelease(list, data);
       }
     } catch (error) {
       core.info(`No published Release for ${tag}: ${error.message}`);
