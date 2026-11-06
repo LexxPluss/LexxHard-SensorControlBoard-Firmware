@@ -18,9 +18,12 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include "lcs_action_window.hpp"
 #include "lcs_can_packer.hpp"
 #include "lcs_controller.hpp"
 #include "lcs_diag.hpp"
+#include "lcs_forward_queue.hpp"
+#include "lcs_request.hpp"
 #include "lcs_rx.hpp"
 #include "lcs_sync_schedule.hpp"
 #include "lcs_timing.hpp"
@@ -31,6 +34,8 @@ LOG_MODULE_REGISTER(lcs);
 
 /* Diagnostic counters; external linkage so that a debugger or CubeMonitor can read them by symbol. */
 lcs::Diag g_lcs{};
+/* Mirror of the request statistics; external linkage, the CAN request adapter is the only writer. */
+lcs::RequestStats g_request_stats{};
 
 namespace {
 
@@ -64,6 +69,7 @@ uint8_t tx_buffer[lcs::kDownlinkSize] __nocache __aligned(32);
 char __aligned(4) chunk_storage[kChunkQueueDepth * sizeof(RxChunk)];
 char __aligned(4) forward_storage[kForwardQueueDepth * sizeof(lcs::msg)];
 k_msgq chunk_queue;
+char __aligned(4) request_storage[lcs::kRequestQueueDepth * sizeof(lcs::Request)];
 
 /* Receiver, packer, scheduler and counters in one object so that they can be read as members. */
 struct Host {
@@ -71,6 +77,7 @@ struct Host {
     lcs::CanPacker packer;
     lcs::SyncScheduler scheduler;
     lcs::IntervalTracker sync_interval;
+    lcs::ActionWindow action_window;
     uint32_t tx_start_tick;
     atomic_t tx_busy;
     atomic_t rx_restart_pending;
@@ -131,7 +138,8 @@ void uart_callback(const device *, uart_event *event, void *)
     }
 }
 
-bool send_sync(const lcs::DownlinkFrame &frame)
+/* The transmit gate is shared by every downlink frame (SYNC and ACTION). */
+bool send_frame(const lcs::DownlinkFrame &frame)
 {
     if (!atomic_cas(&host.tx_busy, 0, 1)) {
         ++g_lcs.tx.rejected_busy;
@@ -182,13 +190,19 @@ void recover_rx()
     put_chunk(now_ticks(), nullptr, 0, true);
 }
 
+/* The forward queue of the uplinks as the queue of lcs::put_purging. */
+struct ForwardQueue {
+    bool try_put(const lcs::msg &frame) const { return k_msgq_put(&msgq, &frame, K_NO_WAIT) == 0; }
+    void purge() const { k_msgq_purge(&msgq); }
+};
+
 void forward(const lcs::Uplink &uplink)
 {
     const std::optional<lcs::msg> frame{host.packer.pack(uplink)};
     if (!frame)
         return;
-    while (k_msgq_put(&msgq, &*frame, K_NO_WAIT) != 0)
-        k_msgq_purge(&msgq);
+    ForwardQueue queue;
+    lcs::put_purging(queue, *frame);
 }
 
 void handle_chunk(const RxChunk &chunk)
@@ -245,11 +259,13 @@ void init()
     host.receiver.reset();
     host.scheduler.reset();
     host.sync_interval.reset();
+    host.action_window = lcs::ActionWindow{};
     host.tx_start_tick = 0;
     atomic_set(&host.tx_busy, 0);
     atomic_set(&host.rx_restart_pending, 0);
     atomic_set(&host.rx_recover_pending, 0);
     k_msgq_init(&msgq, forward_storage, sizeof(lcs::msg), kForwardQueueDepth);
+    k_msgq_init(&request_msgq, request_storage, sizeof(lcs::Request), lcs::kRequestQueueDepth);
     k_msgq_init(&chunk_queue, chunk_storage, sizeof(RxChunk), kChunkQueueDepth);
     host.uart = DEVICE_DT_GET(DT_NODELABEL(uart4));
     host.de = GPIO_DT_SPEC_GET(DT_NODELABEL(pgv_en), gpios);
@@ -301,9 +317,9 @@ void run(void *p1, void *p2, void *p3)
         host.receiver.expire(now);
         g_lcs.rx.stats = host.receiver.stats();
         const lcs::SyncPoll poll{
-            host.scheduler.poll(now, [](const lcs::DownlinkFrame &frame) { return send_sync(frame); })};
+            host.scheduler.poll(now, [](const lcs::DownlinkFrame &frame) { return send_frame(frame); })};
         if (poll.outcome == lcs::SyncOutcome::Sent) {
-            ++g_lcs.tx.sent;
+            ++g_lcs.tx.sync_sent;
             host.sync_interval.on_start(host.tx_start_tick);
             g_lcs.sync.max_interval = host.sync_interval.max();
         } else if (poll.outcome == lcs::SyncOutcome::Skipped) {
@@ -311,6 +327,25 @@ void run(void *p1, void *p2, void *p3)
         }
         if (poll.late)
             ++g_lcs.sync.late;
+        /* tx_start_tick is the accepted SYNC's start; send_frame overwrites it, so read it before any ACTION. */
+        host.action_window.on_sync(poll, host.tx_start_tick);
+        /* Peek then get is safe: run() is the only consumer of request_msgq. */
+        const lcs::ActionOutcome action{host.action_window.poll(
+            now_ticks(),
+            []() -> std::optional<lcs::Request> {
+                lcs::Request request;
+                if (k_msgq_peek(&request_msgq, &request) == 0)
+                    return request;
+                return std::nullopt;
+            },
+            []() {
+                lcs::Request request;
+                k_msgq_get(&request_msgq, &request, K_NO_WAIT);
+            },
+            [](const lcs::DownlinkFrame &frame) { return send_frame(frame); })};
+        if (action == lcs::ActionOutcome::Sent)
+            ++g_lcs.req.forwarded;
+        lcs::assign_request_stats(g_lcs.req, g_request_stats);
         recover_rx();
         restart_rx();
         guard_tx();
@@ -319,6 +354,7 @@ void run(void *p1, void *p2, void *p3)
 
 k_thread thread;
 k_msgq msgq;
+k_msgq request_msgq;
 
 }
 

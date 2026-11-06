@@ -35,7 +35,9 @@
 #include <zephyr/ztest.h>
 
 #include "lcs_diag.hpp"
+#include "lcs_request.hpp"
 
+using lexxhard::lcs::assign_request_stats;
 using lexxhard::lcs::Diag;
 using lexxhard::lcs::format_group;
 using lexxhard::lcs::IntervalTracker;
@@ -45,6 +47,8 @@ using lexxhard::lcs::kDiagLineMax;
 using lexxhard::lcs::kDiagNames;
 #endif
 using lexxhard::lcs::kDiagWords;
+using lexxhard::lcs::ReqGroup;
+using lexxhard::lcs::RequestStats;
 
 namespace {
 
@@ -72,13 +76,18 @@ Diag make_numbered()
     d.rx.stats.foreign_downlink = 6;
     d.rx.stats.unknown_sender = 7;
     d.rx.restarts = 8;
-    d.tx.sent = 9;
+    d.tx.sync_sent = 9;
     d.tx.skipped = 10;
     d.tx.rejected_busy = 11;
     d.tx.timeout = 12;
     d.sync.late = 13;
     d.sync.max_interval = 14;
     d.isr.rx_queue_overflow = 15;
+    d.req.received = 16;
+    d.req.queued = 17;
+    d.req.dropped_invalid = 18;
+    d.req.dropped_full = 19;
+    d.req.forwarded = 20;
     return d;
 }
 
@@ -90,6 +99,7 @@ Diag make_all_max()
     d.tx = {kMax, kMax, kMax, kMax};
     d.sync = {kMax, kMax};
     d.isr = {kMax};
+    d.req = {kMax, kMax, kMax, kMax, kMax};
     return d;
 }
 
@@ -115,13 +125,13 @@ ZTEST(lcs_diag, test_dg1_group_counts_sum_to_words)
         total += g.count;
     }
     zassert_equal(total, kDiagWords);
-    zassert_equal(kDiagGroups.size(), 4u);
+    zassert_equal(kDiagGroups.size(), 5u);
 }
 
 ZTEST(lcs_diag, test_dg2_group_order_and_names)
 {
-    const std::string_view expected[]{"rx", "tx", "sync", "isr"};
-    zassert_equal(kDiagGroups.size(), 4u);
+    const std::string_view expected[]{"rx", "tx", "sync", "isr", "req"};
+    zassert_equal(kDiagGroups.size(), 5u);
     for (size_t i{0}; i < kDiagGroups.size(); ++i) {
         zassert_true(kDiagGroups[i].name == expected[i]);
     }
@@ -145,8 +155,9 @@ ZTEST(lcs_diag, test_dg4_golden_lines)
         "tx 9 10 11 12",
         "sync 13 14",
         "isr 15",
+        "req 16 17 18 19 20",
     };
-    for (size_t g{0}; g < 4; ++g) {
+    for (size_t g{0}; g < 5; ++g) {
         char buf[kDiagLineMax];
         const size_t len{format_group(d, g, buf, sizeof(buf))};
         zassert_equal(len, strlen(expected[g]));
@@ -159,11 +170,12 @@ ZTEST(lcs_diag, test_dg4_named_golden_lines)
     const Diag d{make_numbered()};
     const char *const expected[]{
         "rx dlvr=1 crce=2 sofm=3 tout=4 uerr=5 fdwn=6 unkn=7 rstr=8",
-        "tx sent=9 skip=10 busy=11 tout=12",
+        "tx sync=9 skip=10 busy=11 tout=12",
         "sync late=13 maxi=14",
         "isr ovfl=15",
+        "req recv=16 qued=17 invl=18 full=19 fwrd=20",
     };
-    for (size_t g{0}; g < 4; ++g) {
+    for (size_t g{0}; g < 5; ++g) {
         char buf[kDiagLineMax];
         const size_t len{format_group(d, g, buf, sizeof(buf))};
         zassert_equal(len, strlen(expected[g]));
@@ -223,7 +235,7 @@ ZTEST(lcs_diag, test_dg4_group_out_of_range_returns_zero)
     const Diag d{make_numbered()};
     char buf[kDiagLineMax];
     memset(buf, 0x5A, sizeof(buf));
-    zassert_equal(format_group(d, 4, buf, sizeof(buf)), 0u);
+    zassert_equal(format_group(d, 5, buf, sizeof(buf)), 0u);
     zassert_equal(buf[0], 0x5A);
 }
 
@@ -236,11 +248,13 @@ ZTEST(lcs_diag, test_dg7_zero_values_print_as_0)
     expect_line(d, 1, "tx 0 0 0 0");
     expect_line(d, 2, "sync 0 0");
     expect_line(d, 3, "isr 0");
+    expect_line(d, 4, "req 0 0 0 0 0");
 #else
     expect_line(d, 0, "rx dlvr=0 crce=0 sofm=0 tout=0 uerr=0 fdwn=0 unkn=0 rstr=0");
-    expect_line(d, 1, "tx sent=0 skip=0 busy=0 tout=0");
+    expect_line(d, 1, "tx sync=0 skip=0 busy=0 tout=0");
     expect_line(d, 2, "sync late=0 maxi=0");
     expect_line(d, 3, "isr ovfl=0");
+    expect_line(d, 4, "req recv=0 qued=0 invl=0 full=0 fwrd=0");
 #endif
 }
 
@@ -278,6 +292,24 @@ ZTEST(lcs_diag, test_dg8_zero_cap_returns_zero_and_leaves_buffer)
     for (size_t i{0}; i < sizeof(buf); ++i) {
         zassert_equal(buf[i], 0x5A, "byte %zu modified", i);
     }
+}
+
+/* Catches: a swapped or skipped field, and forwarded being overwritten by the copy. */
+ZTEST(lcs_diag, test_sc07_07_assign_request_stats_copies_four_words)
+{
+    RequestStats stats{};
+    stats.received = 1;
+    stats.queued = 2;
+    stats.dropped_invalid = 3;
+    stats.dropped_full = 4;
+    ReqGroup group{};
+    group.forwarded = 5;
+    assign_request_stats(group, stats);
+    zassert_equal(group.received, 1u);
+    zassert_equal(group.queued, 2u);
+    zassert_equal(group.dropped_invalid, 3u);
+    zassert_equal(group.dropped_full, 4u);
+    zassert_equal(group.forwarded, 5u);
 }
 
 ZTEST(lcs_diag, test_it1_first_start_gives_no_interval)
