@@ -30,6 +30,21 @@ async function release({ github, context, core, tag }) {
     setReleaseOutputs(core, res.action, null);
     core.info(`A published Release of ${tag} exists; nothing to create`);
   } else if (res.action === 'create') {
+    // The list lags a few seconds after a create; look the tag up directly before creating a second Release.
+    try {
+      const { data: existing } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+      if (existing && !existing.draft) {
+        setReleaseOutputs(core, 'skip', null);
+        core.info(`A published Release of ${tag} exists although the list lacks it; nothing to create`);
+        return;
+      }
+    } catch (error) {
+      if (error.status !== 404) {
+        setReleaseOutputs(core, 'fail', null);
+        core.setFailed(`could not look up the Release of ${tag}: ${error.message}`);
+        return;
+      }
+    }
     const p = parseTag(tag);
     const { data } = await github.rest.repos.createRelease({
       owner,

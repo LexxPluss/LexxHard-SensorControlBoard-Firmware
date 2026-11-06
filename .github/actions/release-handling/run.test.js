@@ -250,3 +250,30 @@ test('W2: reassert with the get-by-tag fallback gives Latest to this Release ' +
   assert.equal(fake.calls.updateRelease[0].release_id, 900);
   assert.equal(fake.calls.updateRelease[0].make_latest, 'true');
 });
+
+test('W3: release mode skips when the list lacks the Release but the tag lookup finds it published', async () => {
+  const published = rel('v3.9.0', { id: 900 });
+  const fake = await runRelease('v3.9.0', [rel('v3.8.0')], { tagLookup: published });
+  assert.equal(fake.calls.createRelease.length, 0);
+  assert.equal(fake.outputs.action, 'skip');
+});
+
+test('W4: release mode creates once with the usual payload when the tag lookup finds nothing', async () => {
+  const fake = await runRelease('v3.9.0', [rel('v3.8.0')]);
+  assert.equal(fake.calls.createRelease.length, 1);
+  const payload = fake.calls.createRelease[0];
+  assert.equal(payload.tag_name, 'v3.9.0');
+  assert.equal(payload.name, 'v3.9.0');
+  assert.equal(payload.draft, false);
+  assert.equal(payload.prerelease, false);
+  assert.equal(payload.generate_release_notes, true);
+  assert.equal(payload.make_latest, 'true');
+  assert.equal(fake.failures.length, 0);
+});
+
+test('W5: release mode fails and creates nothing when the tag lookup errors with 500', async () => {
+  const fake = await runRelease('v3.9.0', [rel('v3.8.0')], { tagLookupError: 500 });
+  assert.equal(fake.failures.length, 1);
+  assert.equal(fake.calls.createRelease.length, 0);
+  assert.notEqual(fake.outputs.action, 'create');
+});
