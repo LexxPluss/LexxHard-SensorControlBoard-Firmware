@@ -45,6 +45,7 @@ using lexxhard::lcs::Request;
 using lexxhard::lcs::SyncOutcome;
 using lexxhard::lcs::SyncPoll;
 using lexxhard::lcs::SyncScheduler;
+using lexxhard::lcs::kActionWindowStartTicks;
 
 ZTEST_SUITE(lcs_action_window, NULL, NULL, NULL, NULL, NULL);
 
@@ -133,20 +134,20 @@ ZTEST(lcs_action_window, test_sc05_02_window_start_boundary_and_wrap)
 {
     /* Catches: a start one tick early or late, and a non-wrap-safe elapsed comparison. */
     for (const uint32_t origin : {1000U, kNearWrap}) {
-        for (const uint32_t dt : {17U, 18U, 19U}) {
+        for (const uint32_t dt : {kActionWindowStartTicks - 1, kActionWindowStartTicks, kActionWindowStartTicks + 1}) {
             Harness h;
             h.sync_sent(origin);
             h.push(0, 1);
             const ActionOutcome got = h.poll(origin + dt);
-            expect_outcome(got, dt >= 18U ? ActionOutcome::Sent : ActionOutcome::NotSent, "start boundary");
-            zassert_equal(h.frames.size(), dt >= 18U ? 1U : 0U);
-            zassert_equal(h.send_calls, dt >= 18U ? 1U : 0U);
+            expect_outcome(got, dt >= kActionWindowStartTicks ? ActionOutcome::Sent : ActionOutcome::NotSent, "start boundary");
+            zassert_equal(h.frames.size(), dt >= kActionWindowStartTicks ? 1U : 0U);
+            zassert_equal(h.send_calls, dt >= kActionWindowStartTicks ? 1U : 0U);
         }
         Harness h;
         h.sync_sent(origin);
         h.push(0, 1);
-        expect_outcome(h.poll(origin + 17U), ActionOutcome::NotSent, "before start");
-        expect_outcome(h.poll(origin + 18U), ActionOutcome::Sent, "at start");
+        expect_outcome(h.poll(origin + kActionWindowStartTicks - 1), ActionOutcome::NotSent, "before start");
+        expect_outcome(h.poll(origin + kActionWindowStartTicks), ActionOutcome::Sent, "at start");
     }
 }
 
@@ -168,7 +169,7 @@ ZTEST(lcs_action_window, test_sc05_03_latest_start_boundary_and_wrap)
         h.push(0, 1);
         expect_outcome(h.poll(origin + 96U), ActionOutcome::NotSent, "after the window");
         h.sync_sent(origin + kPeriod);
-        expect_outcome(h.poll(origin + kPeriod + 18U), ActionOutcome::Sent, "next window");
+        expect_outcome(h.poll(origin + kPeriod + kActionWindowStartTicks), ActionOutcome::Sent, "next window");
     }
 }
 
@@ -179,13 +180,13 @@ ZTEST(lcs_action_window, test_sc05_04_two_requests_one_per_period)
     h.sync_sent(0);
     h.push(0, 1);
     h.push(0, 2);
-    expect_outcome(h.poll(18), ActionOutcome::Sent, "first");
-    for (uint32_t dt{19}; dt < kPeriod; ++dt) {
+    expect_outcome(h.poll(kActionWindowStartTicks), ActionOutcome::Sent, "first");
+    for (uint32_t dt{kActionWindowStartTicks + 1}; dt < kPeriod; ++dt) {
         expect_outcome(h.poll(dt), ActionOutcome::NotSent, "second waits");
     }
     zassert_equal(h.queue.size(), 1U);
     h.sync_sent(kPeriod);
-    expect_outcome(h.poll(kPeriod + 18U), ActionOutcome::Sent, "second in the next period");
+    expect_outcome(h.poll(kPeriod + kActionWindowStartTicks), ActionOutcome::Sent, "second in the next period");
     zassert_equal(h.frames.size(), 2U);
     zassert_equal(h.frames[0], lexxhard::lcs::encode_downlink(0, kCmdA, 1));
     zassert_equal(h.frames[1], lexxhard::lcs::encode_downlink(0, kCmdA, 2));
@@ -198,8 +199,8 @@ ZTEST(lcs_action_window, test_sc05_05_broadcast_target_gives_one_frame)
     Harness h;
     h.sync_sent(0);
     h.push(lexxhard::lcs::kBroadcastId, 7);
-    expect_outcome(h.poll(18), ActionOutcome::Sent, "broadcast");
-    for (uint32_t dt{19}; dt < kPeriod; ++dt) {
+    expect_outcome(h.poll(kActionWindowStartTicks), ActionOutcome::Sent, "broadcast");
+    for (uint32_t dt{kActionWindowStartTicks + 1}; dt < kPeriod; ++dt) {
         expect_outcome(h.poll(dt), ActionOutcome::NotSent, "no more frames");
     }
     zassert_equal(h.frames.size(), 1U);
@@ -216,8 +217,8 @@ ZTEST(lcs_action_window, test_sc05_06_no_action_before_first_sync)
     }
     zassert_equal(h.send_calls, 0U);
     h.sync_sent(500);
-    expect_outcome(h.poll(500 + 17U), ActionOutcome::NotSent, "before the window");
-    expect_outcome(h.poll(500 + 18U), ActionOutcome::Sent, "first window");
+    expect_outcome(h.poll(500 + kActionWindowStartTicks - 1), ActionOutcome::NotSent, "before the window");
+    expect_outcome(h.poll(500 + kActionWindowStartTicks), ActionOutcome::Sent, "first window");
     zassert_equal(h.frames.size(), 1U);
 }
 
@@ -242,7 +243,7 @@ ZTEST(lcs_action_window, test_sc05_08_sync_has_priority_over_pending_action)
     };
     std::vector<Sent> log;
     uint32_t now{0};
-    for (uint32_t tick{0}; tick <= 130; ++tick) {
+    for (uint32_t tick{0}; tick <= kPeriod + kActionWindowStartTicks + 12; ++tick) {
         now = tick;
         if (tick == 96) {
             h.push(1, 5); /* phase 96: beyond the latest start */
@@ -271,9 +272,9 @@ ZTEST(lcs_action_window, test_sc05_08_sync_has_priority_over_pending_action)
     zassert_equal(log.size(), 3U);
     zassert_equal(log[0].tick, 0U);
     zassert_equal(log[0].cmd, lexxhard::lcs::kCmdLinkSync);
-    zassert_equal(log[1].tick, 100U);
+    zassert_equal(log[1].tick, kPeriod);
     zassert_equal(log[1].cmd, lexxhard::lcs::kCmdLinkSync);
-    zassert_equal(log[2].tick, 118U);
+    zassert_equal(log[2].tick, kPeriod + kActionWindowStartTicks);
     zassert_equal(log[2].cmd, kCmdA);
 }
 
@@ -284,16 +285,16 @@ ZTEST(lcs_action_window, test_sc05_09_refused_keeps_request_and_does_not_retry)
     h.accept = false;
     h.sync_sent(0);
     h.push(0, 1);
-    expect_outcome(h.poll(18), ActionOutcome::Refused, "refused");
+    expect_outcome(h.poll(kActionWindowStartTicks), ActionOutcome::Refused, "refused");
     zassert_equal(h.queue.size(), 1U);
     zassert_equal(h.pop_calls, 0U);
-    for (uint32_t dt{19}; dt < kPeriod; ++dt) {
+    for (uint32_t dt{kActionWindowStartTicks + 1}; dt < kPeriod; ++dt) {
         expect_outcome(h.poll(dt), ActionOutcome::NotSent, "no second attempt");
     }
     zassert_equal(h.send_calls, 1U);
     h.accept = true;
     h.sync_sent(kPeriod);
-    expect_outcome(h.poll(kPeriod + 18U), ActionOutcome::Sent, "next window");
+    expect_outcome(h.poll(kPeriod + kActionWindowStartTicks), ActionOutcome::Sent, "next window");
     zassert_equal(h.send_calls, 2U);
     zassert_equal(h.frames.size(), 1U);
     zassert_true(h.queue.empty());
@@ -306,14 +307,15 @@ ZTEST(lcs_action_window, test_sc05_10_skipped_sync_makes_phase_undefined)
     h.sync_sent(0);
     h.push(0, 1);
     /* The skip is reported inside the old window, where only an undefined phase stops the send. */
-    h.sync_skipped(30);
-    for (uint32_t tick{30}; tick < 2 * kPeriod; ++tick) {
+    const uint32_t skip_tick{kActionWindowStartTicks + 12};
+    h.sync_skipped(skip_tick);
+    for (uint32_t tick{skip_tick}; tick < 2 * kPeriod; ++tick) {
         expect_outcome(h.poll(tick), ActionOutcome::NotSent, "skipped period");
     }
     zassert_equal(h.send_calls, 0U);
     zassert_equal(h.queue.size(), 1U);
     h.sync_sent(2 * kPeriod);
-    expect_outcome(h.poll(2 * kPeriod + 18U), ActionOutcome::Sent, "after the next Sent");
+    expect_outcome(h.poll(2 * kPeriod + kActionWindowStartTicks), ActionOutcome::Sent, "after the next Sent");
     zassert_equal(h.frames.size(), 1U);
 }
 
@@ -324,8 +326,8 @@ ZTEST(lcs_action_window, test_sc05_10b_late_sync_resets_phase)
     h.sync_sent(4900);
     h.sync_sent(5000, true);
     h.push(0, 1);
-    expect_outcome(h.poll(5000 + 17U), ActionOutcome::NotSent, "before the window");
-    expect_outcome(h.poll(5000 + 18U), ActionOutcome::Sent, "relative to the late SYNC");
+    expect_outcome(h.poll(5000 + kActionWindowStartTicks - 1), ActionOutcome::NotSent, "before the window");
+    expect_outcome(h.poll(5000 + kActionWindowStartTicks), ActionOutcome::Sent, "relative to the late SYNC");
     zassert_equal(h.frames.size(), 1U);
 }
 
@@ -333,15 +335,21 @@ ZTEST(lcs_action_window, test_sc05_11_pin_window_constants)
 {
     /* Catches: a changed timing constant that silently breaks the window premise. */
     using namespace lexxhard::lcs;
-    static_assert(kActionWindowStartUs == 1671);
+    static_assert(kScbSyncLeadUs == 60);
+    static_assert(kScbSyncArrivalUs == 220);
+    static_assert(kScbSyncArrivalUs == kScbSyncLeadUs + 160);
+    static_assert(kLcsId1EndFromArrivalUs == 2546);
+    static_assert(kActionPostId1MarginUs == 200);
+    static_assert(kActionWindowStartUs == 2966);
+    static_assert(kActionWindowStartUs == kScbSyncArrivalUs + kLcsId1EndFromArrivalUs + kActionPostId1MarginUs);
     static_assert(kActionLengthUs == 171);
     static_assert(kActionGuardUs == 200);
     static_assert(kSyncPeriodUs - kActionLengthUs - kActionGuardUs == 9629);
-    static_assert(kActionWindowStartTicks == 18);
+    static_assert(kActionWindowStartTicks == 31);
     static_assert(kActionWindowLatestTicks == 95);
     static_assert((kActionWindowLatestTicks + 1) * kTickUs + kActionLengthUs + kActionGuardUs <= kSyncPeriodUs);
     static_assert((kActionWindowStartTicks - 1) * kTickUs >= kActionWindowStartUs);
-    zassert_equal(kActionWindowStartTicks, 18U);
+    zassert_equal(kActionWindowStartTicks, 31U);
     zassert_equal(kActionWindowLatestTicks, 95U);
     zassert_true(kActionWindowStartTicks < kActionWindowLatestTicks);
 }
@@ -418,7 +426,7 @@ ZTEST(lcs_action_window, test_sc05_13_seeded_schedule)
                 h.poll(origin + current_dt);
                 if (h.send_calls != before) {
                     zassert_true(phase_defined, "attempt with an undefined phase");
-                    zassert_true(current_dt >= 18U && current_dt <= 95U, "attempt at dt %u", current_dt);
+                    zassert_true(current_dt >= kActionWindowStartTicks && current_dt <= 95U, "attempt at dt %u", current_dt);
                 }
             }
             period_attempt_calls = h.send_calls - calls_before;
@@ -445,12 +453,12 @@ ZTEST(lcs_action_window, test_sc05_14_accepted_request_is_never_sent_again)
     Harness h;
     h.sync_sent(0);
     h.push(0, 1);
-    expect_outcome(h.poll(18), ActionOutcome::Sent, "send");
+    expect_outcome(h.poll(kActionWindowStartTicks), ActionOutcome::Sent, "send");
     for (uint32_t period{0}; period < 4; ++period) {
         if (period > 0) {
             h.sync_sent(period * kPeriod);
         }
-        for (uint32_t dt{period == 0 ? 19U : 0U}; dt < kPeriod; ++dt) {
+        for (uint32_t dt{period == 0 ? kActionWindowStartTicks + 1 : 0U}; dt < kPeriod; ++dt) {
             expect_outcome(h.poll(period * kPeriod + dt), ActionOutcome::NotSent, "consumed");
         }
     }
@@ -466,7 +474,8 @@ ZTEST(lcs_action_window, test_sc05_15_arrival_after_empty_poll_is_sent_in_the_sa
     Harness h;
     h.sync_sent(1000);
     expect_outcome(h.poll(1000 + lexxhard::lcs::kActionWindowStartTicks), ActionOutcome::NotSent, "first empty poll");
-    expect_outcome(h.poll(1000 + 30U), ActionOutcome::NotSent, "second empty poll");
+    expect_outcome(h.poll(1000 + lexxhard::lcs::kActionWindowStartTicks + 12U), ActionOutcome::NotSent,
+                   "second empty poll");
     zassert_equal(h.send_calls, 0U);
     zassert_equal(h.pop_calls, 0U);
     h.push(1, 0x0042);

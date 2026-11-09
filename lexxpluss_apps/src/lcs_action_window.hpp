@@ -22,8 +22,16 @@
 
 namespace lexxhard::lcs {
 
-/* INTERIM: ID1 slot end 1300 us + SYNC 171 us + guard 200 us, measured from the SYNC start. */
-inline constexpr uint32_t kActionWindowStartUs{1671};
+/* Upper bound of DE rise to first start bit of the SCB SYNC (11 us settle + start path, estimate). */
+inline constexpr uint32_t kScbSyncLeadUs{60};
+/* Lead + 8 B frame time at 500 kbaud. */
+inline constexpr uint32_t kScbSyncArrivalUs{kScbSyncLeadUs + 160};
+/* LCS worst case: ID1 offset 1224 + slot 1037 + sampling latency 285, from the SYNC arrival. */
+inline constexpr uint32_t kLcsId1EndFromArrivalUs{2546};
+/* Absorbs the preemption before the SYNC DE rise, the child DE release and the clock difference. */
+inline constexpr uint32_t kActionPostId1MarginUs{200};
+/* From the SYNC start tick; assumes the auto-charger link is disconnected. */
+inline constexpr uint32_t kActionWindowStartUs{kScbSyncArrivalUs + kLcsId1EndFromArrivalUs + kActionPostId1MarginUs};
 inline constexpr uint32_t kActionLengthUs{171};
 inline constexpr uint32_t kActionGuardUs{200};
 
