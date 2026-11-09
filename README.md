@@ -35,11 +35,19 @@ Package sensor -- because
 [`features_dasher.cmake`](lexxpluss_apps/cmake/features_dasher.cmake), the Makefile's default
 `FEATURES_FILE`, is one include of the Package configuration. So `make firmware`,
 `make firmware_two_state_ksw` and `make firmware_interlock` all produce ToF-enabled images, and a
-release tag publishes one. A path whose sensor is not fitted reports a standing fault that nothing
-consumes, which is what lets one image serve every fitment.
+release tag publishes one.
 
-It costs nearly all of the slot: the default signs at about 258,440 B against the 261,712 B ceiling.
-Any variant that adds code has to be measured rather than assumed. For a Dasher with none of it --
+A machine with no Package sensor fitted publishes a standing fault on its diagnostic frame that
+nothing consumes, because that ROS node is opt-in -- measured on dasher2. **That argument does not
+extend to the cliff and L7 paths**, whose consumers are not opt-in in the same way; what a machine
+without those sensors does on the consumer side is not established here, so which machine this image
+goes to is still a fitment question.
+
+It costs nearly all of the slot. Against the 261,712 B ceiling, measured on this tree: the default
+and `firmware_interlock` both sign at 258,440 B with 3,272 B spare, `firmware_two_state_ksw` at
+258,296 B with 3,416 B. Interlock is equal rather than close because `ENABLE_INTERLOCK` is not
+referenced by the current source, so that target carries the same application payload. The next
+variant that does add code has to be measured rather than assumed. For a Dasher with none of it --
 the configuration to fall back to when an overflow has to be bisected -- name the machine flags
 alone:
 
