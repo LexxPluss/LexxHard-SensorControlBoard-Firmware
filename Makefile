@@ -526,11 +526,10 @@ firmware_tof_full:
 # only one that grants commissioning permission. The outputs are therefore the ordinary
 # out/zephyr.signed.bin, out/zephyr.signed.confirmed.bin and out/firmware.bin.
 #
-# A TAG DOES NOT BUILD THIS SELECTION, but it does build a superset of it. On this branch
-# cmake/features_dasher.cmake -- the default FEATURES_FILE, and so what a tag builds -- includes the
-# Package configuration, which includes this file. A release therefore publishes the chain plus the
-# Package sensor. This file remains the chain-only selection: it is what to name explicitly when the
-# Package runtime has to be out of the image.
+# A TAG DOES NOT BUILD IT. .github/workflows/release.yml is untouched here, so a release publishes
+# the standard assets only and this image is built by hand when it is needed. Wiring it into the
+# tag build would mean deciding whether the existing Initial/Update assets should be built from
+# this feature file, which is a release-policy question, not a build one.
 #
 # BECAUSE build/ IS SHARED, run `make clean` before building this and before building anything
 # after it: a stale CMake cache would otherwise carry this feature selection into the next image,

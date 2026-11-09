@@ -7,10 +7,11 @@
 # (ENABLE_PUSH_MODE). That file is also where BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST comes from,
 # which is what confines this image to a machine with no safety lidar fitted (DS20002).
 #
-# IT IS THE BASE FILE AND NOT features_dasher.cmake ON PURPOSE. The latter is the branch default and
-# includes the Package configuration, which includes this file -- taking it here would be a cycle,
-# and making this file an alias of the default would silently turn the chain-only command above into
-# chain plus Package. This selection stays chain-only.
+# IT IS THE BASE FILE AND NOT features_dasher.cmake ON PURPOSE. The default file describes what
+# plain `make firmware` builds, and the change that makes it include the Package configuration --
+# which includes this file -- is staged separately on this branch; taking the default file here
+# becomes a cycle the moment that lands, and aliasing this file to the default would silently turn
+# the chain-only command above into chain plus Package. This selection stays chain-only.
 include(${CMAKE_CURRENT_LIST_DIR}/features_dasher_base.cmake)
 
 # The whole ToF feature in one image: chain, L4 cliff, L7 grid and commissioning downlink.

@@ -1,15 +1,12 @@
 # Feature selection for the Package ToF image: the ToF chain plus the Package sensor.
-#
-# THIS IS WHAT THE BRANCH DEFAULT BUILDS. features_dasher.cmake is a single include of this file, so
-# `make firmware` with no FEATURES_FILE produces this configuration and a release tag publishes it.
-# Naming it explicitly still works and builds the same image:
+# Built with the ordinary release entry, which is the one that also produces out/firmware.bin:
 #   make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_package_tof_release.cmake
 #
 # It includes features_tof_release.cmake so the chain's flags, overlays and Kconfig fragments are
 # inherited rather than restated, and the Dasher machine flags arrive with them -- including
 # BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST, which is what confines this image to a machine with no
-# safety lidar fitted. Taking features_dasher.cmake here instead would be a cycle: that file is the
-# default and includes this one.
+# safety lidar fitted. Taking features_dasher.cmake here instead becomes a cycle the moment the
+# staged default-variant change lands, because that change makes the default file include this one.
 include(${CMAKE_CURRENT_LIST_DIR}/features_tof_release.cmake)
 
 # THIS CONFIGURATION CARRIES ITS OWN FLASH FIT, so it does not wait on the AMRSW-2887 tree changes.
@@ -17,10 +14,10 @@ include(${CMAKE_CURRENT_LIST_DIR}/features_tof_release.cmake)
 # overlays/tof_package_flashfit.conf is what makes it link, and that file states what it sets, what it
 # measured and when it should be deleted. Appended after the inherited fragments so these values win.
 #
-# IT REACHES EVERY DEFAULT BUILD ON THIS BRANCH, not just this image, now that features_dasher.cmake
-# includes this file -- the two-state key switch and interlock variants are built from the same
-# selection and inherit the same trim and the same margin. That is the same reach the AMRSW-2887 tree
-# changes have, which is why they replace this fragment rather than stacking with it.
+# IT REACHES EVERY CONFIGURATION THAT INCLUDES THIS FILE. Making this selection the default -- a
+# separate change on this branch -- extends the same trim and the same margin to the two-state key
+# switch and interlock targets. That is the same reach the AMRSW-2887 tree changes have, which is
+# why they replace this fragment rather than stacking with it.
 list(APPEND EXTRA_CONF_FILE
     ${CMAKE_CURRENT_LIST_DIR}/../overlays/tof_package_flashfit.conf)
 

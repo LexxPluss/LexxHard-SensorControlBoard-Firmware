@@ -29,32 +29,6 @@ $ make bootloader
 ```bash
 $ make firmware
 ```
-
-**On this branch the default build includes ToF** -- L4 cliff, the L7 hanging-object grid and the
-Package sensor -- because
-[`features_dasher.cmake`](lexxpluss_apps/cmake/features_dasher.cmake), the Makefile's default
-`FEATURES_FILE`, is one include of the Package configuration. So `make firmware`,
-`make firmware_two_state_ksw` and `make firmware_interlock` all produce ToF-enabled images, and a
-release tag publishes one.
-
-A machine with no Package sensor fitted publishes a standing fault on its diagnostic frame that
-nothing consumes, because that ROS node is opt-in -- measured on dasher2. **That argument does not
-extend to the cliff and L7 paths**, whose consumers are not opt-in in the same way; what a machine
-without those sensors does on the consumer side is not established here, so which machine this image
-goes to is still a fitment question.
-
-It costs nearly all of the slot. Against the 261,712 B ceiling, measured on this tree: the default
-signs at 258,408 B with 3,304 B spare, `firmware_two_state_ksw` at 258,272 B with 3,440 B. That is
-after the flash-fit fragment grew for the LCS host -- the earlier fragment left the link 308 B over
-FLASH -- so the margin is 1.26% and the next variant that adds code has to be measured rather than
-assumed. `firmware_interlock` carries the same payload as the default while `ENABLE_INTERLOCK` is
-unreferenced in the source, so building it proves the target, not interlock. For a Dasher with none of it --
-the configuration to fall back to when an overflow has to be bisected -- name the machine flags
-alone:
-
-```bash
-$ make firmware VERSION=<version> FEATURES_FILE=cmake/features_dasher_base.cmake
-```
 ```bash
 $ cp ./build/zephyr/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-Update-?.?.?.bin
 
@@ -72,9 +46,9 @@ $ make firmware_interlock
 ### Build firmware ( ToF release configuration )
 
 The ToF configuration (L4 cliff, L7 hanging-object grid and host commissioning) is the ordinary
-firmware built with a feature file, not a target of its own. **This selection is chain-only**, so it
-is narrower than the default build above, which adds the Package sensor; name it when the Package
-runtime has to be out of the image:
+firmware built with a feature file, not a target of its own. **This selection is chain-only**; the
+Package configuration below adds the Package sensor, so name this one when the Package runtime has
+to be out of the image:
 
 ```bash
 $ make clean
@@ -108,8 +82,8 @@ do that will not revert on a later runtime failure.
 ### Build firmware ( Package ToF release configuration )
 
 The Package configuration is the ToF release plus the Package sensor -- one VL53L7CX on `i2c4` @0x29
-behind J22, publishing a grid and a health frame on CAN at 5 Hz. **This is what the default build and
-a release tag produce**, so it needs no feature file; naming it explicitly builds the same image:
+behind J22, publishing a grid and a health frame on CAN at 5 Hz. It is built by naming its feature
+file:
 
 ```bash
 $ make clean
@@ -122,12 +96,11 @@ Asset names, the shared `build/` cache and the `make clean` rule are exactly as 
 overflow the 256 KiB slot at link time on the production base, so
 [`tof_package_flashfit.conf`](lexxpluss_apps/overlays/tof_package_flashfit.conf) turns the shell
 conveniences and SPI DMA off -- the shell commands themselves stay -- for every configuration that
-takes it, which since the default build includes this one means every image but
-`features_dasher_base.cmake` and the chain-only selection. With it the
-image signs at 258,408 B, leaving 3,304 B of the 261,712 B ceiling, which is 1.26%: one new log
-string or one re-enabled shell convenience breaks the link again. The fragment grew past the
-tree-wide flash reductions when the LCS host arrived, so landing those no longer retires it; the
-next real headroom is picolibc.
+takes it. With it the image signs at 258,408 B, leaving 3,304 B of the 261,712 B ceiling, which is
+1.26%: one new log string or one re-enabled shell convenience breaks the link again. Those figures
+were measured at f967fb0b; the selection has not changed since, but re-measure on the commit a
+release is actually cut from. The fragment grew past the tree-wide flash reductions when the LCS
+host arrived, so landing those no longer retires it; the next real headroom is picolibc.
 
 **The bench deadman is off, as release policy** -- a resident image carries no unattended timed
 revert, which is what keeps it confirmed. The watchdog is untouched and still judges the L7 path,
