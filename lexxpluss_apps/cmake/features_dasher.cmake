@@ -21,3 +21,10 @@ set(ENABLE_LCS 1)
 
 # Print the counter names (<name>=<value>) in the shell command `lcs stat`. Costs about 440 B of flash.
 # set(ENABLE_LCS_DIAG_NAMES 1)
+
+# ToF is part of the Dasher build on this branch: this one include brings the whole feature -- L4
+# cliff, the L7 hanging-object grid, the Package sensor and its flash fit -- into the default image,
+# so `make firmware`, `make firmware_two_state_ksw` and `make firmware_interlock` all carry it and a
+# release tag publishes it. The values set above win over the included files' copies, which are
+# guarded; the chain-only selection stays a named variant (cmake/features_tof_release.cmake).
+include(${CMAKE_CURRENT_LIST_DIR}/features_package_tof_release.cmake)

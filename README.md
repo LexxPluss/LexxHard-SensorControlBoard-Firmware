@@ -37,6 +37,15 @@ $ dd if=build-mcuboot/zephyr/zephyr.bin of=bl_with_ff.bin conv=notrunc
 $ cat bl_with_ff.bin build/zephyr/zephyr.signed.bin >  LexxHard-SensorControlBoard-Firmware-Initial-?.?.?.bin
 ```
 
+The default build includes the ToF feature -- L4 cliff, the L7 hanging-object grid and the Package
+sensor -- because [`features_dasher.cmake`](lexxpluss_apps/cmake/features_dasher.cmake), the
+Makefile's default `FEATURES_FILE`, includes the Package configuration described below. So
+`make firmware`, `make firmware_two_state_ksw` and `make firmware_interlock` produce ToF-enabled
+images, and a release tag publishes one. Which machine an image goes to is still a fitment
+question: a missing Package sensor only raises a diagnostic fault that nothing consumes (measured
+on dasher2), and what a machine without the cliff or L7 sensors does on the consumer side is not
+established here.
+
 ### Build firmware ( enable interlock )
 
 ```bash
@@ -82,15 +91,9 @@ do that will not revert on a later runtime failure.
 ### Build firmware ( Package ToF release configuration )
 
 The Package configuration is the ToF release plus the Package sensor -- one VL53L7CX on `i2c4` @0x29
-behind J22, publishing a grid and a health frame on CAN at 5 Hz. It is built by naming its feature
-file:
-
-```bash
-$ make clean
-$ make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_package_tof_release.cmake
-```
-
-Asset names, the shared `build/` cache and the `make clean` rule are exactly as in the section above.
+behind J22, publishing a grid and a health frame on CAN at 5 Hz. **This is what plain
+`make firmware` builds**: the default feature file includes this selection, so no `FEATURES_FILE`
+is needed and the assets are the standard ones from the section above.
 
 **It carries its own flash fit, and the margin is thin.** The chain and the Package runtime together
 overflow the 256 KiB slot at link time on the production base, so
