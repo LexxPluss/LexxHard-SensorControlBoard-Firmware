@@ -64,10 +64,22 @@ void arm(void)
         return;
     }
     k_timer_start(&revert_timer, K_MINUTES(kWindowMinutes), K_NO_WAIT);
+    /* THE HOLD COMMAND ONLY EXISTS IN A BENCH BUILD. `pkg_tof` is registered by tof_package_bench.cpp
+     * under ENABLE_TOF_PACKAGE_BENCH, which CMakeLists.txt refuses to combine with
+     * ENABLE_TOF_PACKAGE_AUTO -- so the auto build that features_package_tof_bench.cmake produces
+     * arms this timer with no way to extend it. Offering the command there would send an operator
+     * looking for it with minutes left on a whole-machine cold reboot. */
+#if defined(ENABLE_TOF_PACKAGE_BENCH)
     LOG_WRN("unattended revert armed: WHOLE-MACHINE cold reboot in %u min, which reverts this "
             "unconfirmed bench image to production. `pkg_tof hold` extends it up to %u times. There "
             "is no confirm command in this image.",
             kWindowMinutes, kMaxExtensions);
+#else
+    LOG_WRN("unattended revert armed: WHOLE-MACHINE cold reboot in %u min, which reverts this "
+            "unconfirmed image to production. This build has no `pkg_tof` command group, so the "
+            "window cannot be extended and there is no confirm command: %u min is the whole test.",
+            kWindowMinutes, kWindowMinutes);
+#endif
 }
 
 int extend(uint32_t minutes)
