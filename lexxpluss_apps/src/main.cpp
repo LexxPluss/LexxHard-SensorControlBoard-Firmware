@@ -33,8 +33,15 @@
 #include "bmu_controller.hpp"
 #include "firmware_updater.hpp"
 #include "imu_controller.hpp"
+#ifdef ENABLE_LED_STRIP
 #include "led_controller.hpp"
+#endif
+#ifdef ENABLE_PGV
 #include "pgv_controller.hpp"
+#endif
+#ifdef ENABLE_LCS
+#include "lcs_controller.hpp"
+#endif
 #include "zcan_main.hpp"
 #include "runaway_detector.hpp"
 #include "uss_controller.hpp"
@@ -63,8 +70,15 @@ K_THREAD_STACK_DEFINE(board_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(can_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(firmware_updater_stack, 2048);
 K_THREAD_STACK_DEFINE(imu_controller_stack, 2048);
+#ifdef ENABLE_LED_STRIP
 K_THREAD_STACK_DEFINE(led_controller_stack, 2048);
+#endif
+#ifdef ENABLE_PGV
 K_THREAD_STACK_DEFINE(pgv_controller_stack, 2048);
+#endif
+#ifdef ENABLE_LCS
+K_THREAD_STACK_DEFINE(lcs_controller_stack, 2048);
+#endif
 K_THREAD_STACK_DEFINE(runaway_detector_stack, 2048);
 K_THREAD_STACK_DEFINE(uss_controller_stack, 2048);
 K_THREAD_STACK_DEFINE(gpio_controller_stack, 2048);
@@ -323,8 +337,15 @@ int main()
     lexxhard::can_controller::init();
     lexxhard::firmware_updater::init();
     lexxhard::imu_controller::init();
+#ifdef ENABLE_LED_STRIP
     lexxhard::led_controller::init();
+#endif
+#ifdef ENABLE_PGV
     lexxhard::pgv_controller::init();
+#endif
+#ifdef ENABLE_LCS
+    lexxhard::lcs_controller::init();
+#endif
     lexxhard::zcan_main::init();
     lexxhard::runaway_detector::init();
     lexxhard::uss_controller::init();
@@ -349,8 +370,15 @@ int main()
     RUN(board_controller, 4); // board_controller must be started after bmu_controller (due to the CAN setting)
     RUN(firmware_updater, 7);
     RUN(imu_controller, 2);
+#ifdef ENABLE_LED_STRIP
     RUN(led_controller, 1);
+#endif
+#ifdef ENABLE_PGV
     RUN(pgv_controller, 1);
+#endif
+#ifdef ENABLE_LCS
+    RUN(lcs_controller, 1);
+#endif
     RUN(uss_controller, 2);
     RUN(gpio_controller, 2);
     // Priority 1 (same tier as led/pgv): the ~1ms Limit-Switch-to-stop cadence

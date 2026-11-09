@@ -6,7 +6,9 @@
 # ToF IS PART OF THE DASHER BUILD HERE, NOT A VARIANT OF IT. Cliff, the hanging-object grid and the
 # Package sensor all ship by default, so the sensing does not sit behind a separately named image
 # somebody has to remember to build, and the release entry needs no feature file of its own -- which
-# is what `make firmware` producing the shipped image means.
+# is what `make firmware` producing the shipped image means. The rest of the Dasher default -- push
+# mode, the lidar bypass, no LED strips, no PGV, the LCS host -- lives in
+# features_dasher_base.cmake, which the ToF selection includes.
 #
 # THAT IS A DECISION FOR THIS BRANCH, NOT AN INFERENCE FROM A MEASUREMENT, and the absent-sensor
 # argument covers one path only. A machine with no Package sensor fitted publishes a standing fault
@@ -16,13 +18,10 @@
 # in the same way, and what a machine without those sensors fitted does on the consumer side is not
 # established in this repository. Flashing this image to a machine is still a fitment question.
 #
-# WHAT IT COSTS IS FLASH, and the margin is the thing to watch. Against the 261,712 B signed ceiling,
-# measured on this tree: the default and the interlock target both sign at 258,440 B with 3,272 B
-# spare, and the two-state key switch target at 258,296 B with 3,416 B. It only links at all because
-# of the fragment features_package_tof_release.cmake brings in. The interlock figure is equal rather
-# than close: ENABLE_INTERLOCK is not referenced by the current source, so that target is the same
-# application payload, which says the target still builds and nothing about interlock itself.
-#
-# Every variant built from this file inherits that 1.25%, so the next one that does add code has to
-# be measured rather than assumed. features_dasher_base.cmake is the Dasher without any of it.
+# WHAT IT COSTS IS FLASH, and the margin is the thing to watch. Before this file absorbed the
+# AMRSW-2887 Dasher defaults (LCS on, LED strips and PGV off), the ToF-plus-Package selection signed
+# at 258,440 B of the 261,712 B ceiling, 3,272 B spare, and only linked because of the fragment
+# features_package_tof_release.cmake brings in. LCS adds code and the LED and PGV removals give some
+# back, so the merged default's size is NOT that number: measure it, and the two-state and interlock
+# targets with it, before relying on any margin.
 include(${CMAKE_CURRENT_LIST_DIR}/features_package_tof_release.cmake)

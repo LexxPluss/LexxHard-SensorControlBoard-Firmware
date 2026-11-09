@@ -1,0 +1,4 @@
+tests:
+  lcs_core.host:
+    platform_allow: native_sim
+    tags: lcs
