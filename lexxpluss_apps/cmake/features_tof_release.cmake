@@ -2,11 +2,16 @@
 # Built with the ordinary release entry, which is the one that also produces out/firmware.bin:
 #   make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_tof_release.cmake
 #
-# This is the Dasher variant PLUS the ToF chain, so it includes features_dasher.cmake rather than
-# restating its flags: a Dasher that gains ToF must not silently lose ROS-controlled braking
-# (ENABLE_PUSH_MODE). features_dasher.cmake is also where BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST
-# comes from, which is what confines this image to a machine with no safety lidar fitted (DS20002).
-include(${CMAKE_CURRENT_LIST_DIR}/features_dasher.cmake)
+# This is the Dasher machine PLUS the ToF chain, so it includes features_dasher_base.cmake rather
+# than restating its flags: a Dasher that gains ToF must not silently lose ROS-controlled braking
+# (ENABLE_PUSH_MODE). That file is also where BYPASS_SAFETY_LIDAR_FOR_AUTOCHARGE_TEST comes from,
+# which is what confines this image to a machine with no safety lidar fitted (DS20002).
+#
+# IT IS THE BASE FILE AND NOT features_dasher.cmake ON PURPOSE. The latter is the branch default and
+# includes the Package configuration, which includes this file -- taking it here would be a cycle,
+# and making this file an alias of the default would silently turn the chain-only command above into
+# chain plus Package. This selection stays chain-only.
+include(${CMAKE_CURRENT_LIST_DIR}/features_dasher_base.cmake)
 
 # The whole ToF feature in one image: chain, L4 cliff, L7 grid and commissioning downlink.
 # firmware_tof_full shares these four ToF flags, but lacks the release permissions and the
