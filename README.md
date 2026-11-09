@@ -91,16 +91,21 @@ $ make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_package_t
 Asset names, the shared `build/` cache and the `make clean` rule are exactly as in the section
 above, and a tag does not build this image either.
 
-**It does not link on a tree without the flash reductions.** The chain and the Package runtime
-together overflow the 256 KiB slot by about 3.5 KB, so this configuration requires the picolibc,
-shell trim, SPI DMA and SD/filesystem changes to be present. With them the image signs at
-234,368 B, with 27,344 B spare.
+**It carries its own flash fit, and the margin is thin.** The chain and the Package runtime together
+overflow the 256 KiB slot at link time on the production base, so
+[`tof_package_flashfit.conf`](lexxpluss_apps/overlays/tof_package_flashfit.conf) turns the shell
+conveniences and SPI DMA off for this image alone -- the shell commands themselves stay. With it the
+image signs at 258,440 B, leaving 3,272 B of the 261,712 B ceiling, which is 1.25%: one new log
+string or one re-enabled shell convenience breaks the link again. The fragment sets the same symbols
+as the tree-wide flash reductions and should be deleted, not kept alongside them, once those land.
 
 **The bench deadman is off, as release policy** -- a resident image carries no unattended timed
-revert. The watchdog itself is untouched and still judges the L7 path; what it cannot yet do is tell
-the two L7 populations apart, so progress by a healthy one refreshes the judgement for a wedged one.
+revert, which is what keeps it confirmed. The watchdog is untouched and still judges the L7 path,
+and it now judges the chain and Package populations from separate clocks, so progress by a healthy
+one no longer refreshes the judgement for a wedged one. What no run has shown is the two populations
+declaring a long operation at the same time:
 [`features_package_tof_release.cmake`](lexxpluss_apps/cmake/features_package_tof_release.cmake)
-carries both, and that second point is a release-candidate gate rather than a note.
+states why the ordering keeps them apart, and why that is an argument rather than a measurement.
 
 **Flashing it does not install the L7 driver blob**, for the reason the ToF section gives: provision
 the blob afterward, or the Package path stays silent whatever else looks healthy.
