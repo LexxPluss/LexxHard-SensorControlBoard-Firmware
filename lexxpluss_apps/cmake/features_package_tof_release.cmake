@@ -9,10 +9,13 @@
 # safety lidar fitted.
 include(${CMAKE_CURRENT_LIST_DIR}/features_tof_release.cmake)
 
-# NOT BUILDABLE ON A TREE WITHOUT THE FLASH REDUCTIONS. The chain and this runtime together overflow
-# the 256 KiB slot at LINK time, so picolibc, the shell trim, the SPI DMA removal and the
-# SD/filesystem removal have to be present. That is a build-order dependency rather than a margin to
-# keep an eye on; the measurements are in the pull request, not here.
+# THIS CONFIGURATION CARRIES ITS OWN FLASH FIT, so it does not wait on the AMRSW-2887 tree changes.
+# The chain and this runtime together overflow the 256 KiB slot at LINK time on the production base;
+# overlays/tof_package_flashfit.conf is what makes it link, and that file states what it sets, what it
+# measured and when it should be deleted. Appended after the inherited fragments so these values win.
+list(APPEND EXTRA_CONF_FILE
+    ${CMAKE_CURRENT_LIST_DIR}/../overlays/tof_package_flashfit.conf)
+
 set(ENABLE_TOF_PACKAGE_AUTO ON)
 
 # The rate the whole path was measured at, and the only one it has run at. CMakeLists.txt refuses to
@@ -31,30 +34,34 @@ set(TOF_PACKAGE_AUTO_HZ 5)
 # candidate configuration that turns it on.
 #
 # THIS IS NOT THE WATCHDOG, AND READING IT AS "NO RESET PROTECTION" WOULD BE WRONG. tof_watchdog_feeder
-# is installed in every image, by board_controller and not by any ToF flag, and it judges the L7 slot
+# is installed in every image, by board_controller and not by any ToF flag, and it judges the L7 slots
 # and declared long operations, so a wedged ULD operation can still stop the feed and reset the board.
-# What that coverage cannot yet do is tell the two L7 populations apart -- see below.
+# It now tells the two L7 populations apart as well -- see below.
 set(TOF_PACKAGE_AUTO_DEADMAN OFF)
 
-# No Kconfig fragment and no overlay of its own: CONFIG_IMG_MANAGER and CONFIG_STREAM_FLASH arrive
-# with overlays/tof_release.conf, and the stored blob is read through flash_area_*, which prj.conf
-# configures with CONFIG_FLASH_MAP. The CAN identifiers stay in src/tof_can_ids.hpp; the
+# The only fragment of its own is the flash fit above: CONFIG_IMG_MANAGER and CONFIG_STREAM_FLASH
+# arrive with overlays/tof_release.conf, and the stored blob is read through flash_area_*, which
+# prj.conf configures with CONFIG_FLASH_MAP. The CAN identifiers stay in src/tof_can_ids.hpp; the
 # TOF_PACKAGE_AUTO_DATA_ID / _HEALTH_ID overrides are bench-only and a release image carries neither.
 #
-# WHAT TWO L7 POPULATIONS IN ONE IMAGE DO NOT YET SETTLE, since the absence of a conflicting CMake
-# flag does not cover it: runtime_progress::activity::l7 is a SINGLE slot, written by the chain in
-# tof_acquisition.cpp and by this runtime in tof_package_device.cpp (watched_uld_operation, around
-# every ULD call), behind ONE l7_expected boolean that tof_chain_controller.cpp and
-# tof_package_runtime.cpp both set, and tof_task_watchdog.cpp judges L7 liveness from that slot
-# alone. So progress by a healthy population refreshes the judgement for a wedged one -- the
-# in-flight clock included, because note_progress re-stamps it every time `begun` moves rather than
-# holding it from the first begin, so each new operation on the healthy side pushes the wedged side's
-# deadline out again. That is the gate to close before this image is a release candidate.
+# TWO L7 POPULATIONS IN ONE IMAGE WAS THE 2026-11-04 FAILURE, and f3fc71e8 is what answers it. This
+# configuration was the first to put the chain and the Package device in one image, and it reset
+# itself every 11.6 s: runtime_progress carried a SINGLE activity::l7 written by tof_acquisition and
+# by tof_package_device both, so progress by a healthy population refreshed the judgement for a
+# wedged one and the tombstone named "the L7" when only one of two had failed. There are now
+# l7_chain and l7_package, judged from separate clocks, armed and reported separately.
 #
-# The declared-long-operation flag is a SEPARATE mechanism and a weaker claim, stated separately so
-# the two are not confused. It is flat, with no depth count, and both sides declare one -- the chain
-# around its blob bootstrap, this runtime around quiesce ALONE (the 5.43 s stop poll; probe, open and
-# start keep the ordinary bound). Nothing here demonstrates an overlap: main() runs
-# tof_chain_controller::init() to completion before it creates the Package thread, so the chain's
-# declaration is over before this runtime can make one. The hazard is structural, and
-# tof_package_device.cpp already names this configuration as the one that has to revisit it.
+# The exemption was the other half, and separate slots alone would not have reached it: one mask
+# suspended the chain's acquisition judgement whoever had declared, so healthy Package work on
+# another bus exempted a wedged chain acquisition for its whole duration. kChainLongOperationSuspends
+# and kPackageLongOperationSuspends now scope each declaration to what its owner actually holds, and
+# the bookkeeping is a depth count per population in tof_long_operation.hpp rather than a flat flag,
+# so one site's end() can no longer strip the cover from another's operation.
+#
+# WHAT IS STILL ONLY ARGUED. hook_open declares a long operation now, as quiesce already did -- it
+# moves the 86,016 B ULD blob over i2c4 at the 100 kHz Zephyr default, 7.74 s of bus time against a
+# 5,000 ms bound -- and tof_l7_quiesce's call-site gate asserts that both declare and that no third
+# hook does so without its own measurement. The host suite tests/tof_long_operation covers the
+# bookkeeping. What no run has yet shown is the two populations declaring at once on hardware:
+# main() still runs tof_chain_controller::init() to completion before it creates the Package thread,
+# so the ordering that keeps them apart is structural rather than observed.
