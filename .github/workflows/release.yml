@@ -30,11 +30,6 @@ on:
       - 'v*'
 jobs:
   build:
-    # A TAG PREFIX ALONE DOES NOT ISOLATE THIS JOB. `on.push.tags` filters the push event only; the
-    # `release: published` event above carries no tag filter, so publishing a pkgtof-v* release fires
-    # this job too. It would then build with VERSION=pkgtof-v<x> -- ${GITHUB_REF_NAME#v} strips
-    # nothing from that prefix -- and attach ordinary firmware to a Package ToF release.
-    if: ${{ !startsWith(github.ref_name, 'pkgtof-v') }}
     runs-on: lp-4core-runner
     container:
       image: zephyrprojectrtos/zephyr-build:v0.26.9
@@ -70,76 +65,6 @@ jobs:
           UPDATE_FIRMWARE_TWO_STATE_SKW_PATH: LexxHard-SensorControlBoard-Firmware-Two-State-KeySwitch-Update-${{ github.ref_name }}.bin
         with:
           asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}", "${{ env.INITIAL_FIRMWARE_TWO_STATE_KSW_PATH }}", "${{ env.UPDATE_FIRMWARE_TWO_STATE_SKW_PATH }}"]'
-      - name: Notification
-        uses: act10ns/slack@v1
-        with:
-          status: ${{ job.status }}
-          steps: ${{ toJson(steps) }}
-          channel: '#div-02-robotics-ci'
-        if: always()
-
-  # THE PACKAGE ToF RELEASE IS A SEPARATE ASSET, NOT A SECOND BUILD OF THE ORDINARY ONE. The build
-  # entry above passes no FEATURES_FILE, so a v* tag produces standard firmware and nothing else;
-  # without this job "the pull request merged" would never become "Package ToF was released".
-  #
-  # Its own tag prefix keeps the two apart in both directions: the ordinary job is excluded above,
-  # and the margin here is 3,272 B against the signed ceiling, so a Package ToF build that overflows
-  # must not be able to red an ordinary release.
-  build-package-tof:
-    # ONE EVENT ON PURPOSE. A bare tag push has no release for upload-assets to attach to, so the
-    # upload needs `release: published`; accepting the push event as well would build and upload the
-    # same tag twice.
-    if: ${{ github.event_name == 'release' && startsWith(github.ref_name, 'pkgtof-v') }}
-    runs-on: lp-4core-runner
-    container:
-      image: zephyrprojectrtos/zephyr-build:v0.26.9
-      options: --user root
-    env:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-      - name: Extract version from tag
-        # The prefix is stripped, not the leading `v` alone: VERSION ends up in the image's version
-        # string, and `pkgtof-v1.2.3` there would be read back as a build identifier nobody can match
-        # to a tag.
-        run: echo "version=${GITHUB_REF_NAME#pkgtof-v}" >> $GITHUB_ENV
-      - name: build
-        id: build
-        run: |
-          set -e
-          cp -a /home/user/.cmake $HOME
-          make IN_HOST=1 WORKDIR=$(pwd) setup
-          make IN_HOST=1 WORKDIR=$(pwd) bootloader
-          make IN_HOST=1 WORKDIR=$(pwd) VERSION=${{ env.version }} \
-            FEATURES_FILE=cmake/features_package_tof_release.cmake firmware_initial
-          mv ./out/firmware.bin LexxHard-SensorControlBoard-Firmware-PackageToF-Initial-${{ github.ref_name }}.bin
-          mv ./out/zephyr.signed.confirmed.bin LexxHard-SensorControlBoard-Firmware-PackageToF-Update-${{ github.ref_name }}.bin
-      - name: Record candidate identity
-        # The candidate record is part of the release, not a note somebody keeps separately: the
-        # signed size, the spare against the 261,712 B ceiling and the hashes are what a later
-        # on-hardware result gets attributed to.
-        run: |
-          set -e
-          signed=LexxHard-SensorControlBoard-Firmware-PackageToF-Update-${{ github.ref_name }}.bin
-          initial=LexxHard-SensorControlBoard-Firmware-PackageToF-Initial-${{ github.ref_name }}.bin
-          {
-            echo "### Package ToF candidate"
-            echo ""
-            echo "- tag \`${{ github.ref_name }}\`, VERSION \`${{ env.version }}\`, commit \`${{ github.sha }}\`"
-            echo "- FEATURES_FILE \`cmake/features_package_tof_release.cmake\`"
-            echo "- signed $(stat -c%s ./out/zephyr.signed.bin) B, spare $((261712 - $(stat -c%s ./out/zephyr.signed.bin))) B of 261,712 B"
-            echo "- \`$(sha256sum $signed)\`"
-            echo "- \`$(sha256sum $initial)\`"
-          } >> $GITHUB_STEP_SUMMARY
-      - name: Upload release binaries
-        uses: alexellis/upload-assets@0.4.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INITIAL_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-PackageToF-Initial-${{ github.ref_name }}.bin
-          UPDATE_FIRMWARE_PATH: LexxHard-SensorControlBoard-Firmware-PackageToF-Update-${{ github.ref_name }}.bin
-        with:
-          asset_paths: '["${{ env.INITIAL_FIRMWARE_PATH }}", "${{ env.UPDATE_FIRMWARE_PATH }}"]'
       - name: Notification
         uses: act10ns/slack@v1
         with:
