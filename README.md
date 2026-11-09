@@ -44,10 +44,11 @@ without those sensors does on the consumer side is not established here, so whic
 goes to is still a fitment question.
 
 It costs nearly all of the slot. Against the 261,712 B ceiling, measured on this tree: the default
-and `firmware_interlock` both sign at 258,440 B with 3,272 B spare, `firmware_two_state_ksw` at
-258,296 B with 3,416 B. Interlock is equal rather than close because `ENABLE_INTERLOCK` is not
-referenced by the current source, so that target carries the same application payload. The next
-variant that does add code has to be measured rather than assumed. For a Dasher with none of it --
+signs at 258,408 B with 3,304 B spare, `firmware_two_state_ksw` at 258,272 B with 3,440 B. That is
+after the flash-fit fragment grew for the LCS host -- the earlier fragment left the link 308 B over
+FLASH -- so the margin is 1.26% and the next variant that adds code has to be measured rather than
+assumed. `firmware_interlock` carries the same payload as the default while `ENABLE_INTERLOCK` is
+unreferenced in the source, so building it proves the target, not interlock. For a Dasher with none of it --
 the configuration to fall back to when an overflow has to be bisected -- name the machine flags
 alone:
 
@@ -123,9 +124,10 @@ overflow the 256 KiB slot at link time on the production base, so
 conveniences and SPI DMA off -- the shell commands themselves stay -- for every configuration that
 takes it, which since the default build includes this one means every image but
 `features_dasher_base.cmake` and the chain-only selection. With it the
-image signs at 258,440 B, leaving 3,272 B of the 261,712 B ceiling, which is 1.25%: one new log
-string or one re-enabled shell convenience breaks the link again. The fragment sets the same symbols
-as the tree-wide flash reductions and should be deleted, not kept alongside them, once those land.
+image signs at 258,408 B, leaving 3,304 B of the 261,712 B ceiling, which is 1.26%: one new log
+string or one re-enabled shell convenience breaks the link again. The fragment grew past the
+tree-wide flash reductions when the LCS host arrived, so landing those no longer retires it; the
+next real headroom is picolibc.
 
 **The bench deadman is off, as release policy** -- a resident image carries no unattended timed
 revert, which is what keeps it confirmed. The watchdog is untouched and still judges the L7 path,

@@ -18,10 +18,11 @@
 # in the same way, and what a machine without those sensors fitted does on the consumer side is not
 # established in this repository. Flashing this image to a machine is still a fitment question.
 #
-# WHAT IT COSTS IS FLASH, and the margin is the thing to watch. Before this file absorbed the
-# AMRSW-2887 Dasher defaults (LCS on, LED strips and PGV off), the ToF-plus-Package selection signed
-# at 258,440 B of the 261,712 B ceiling, 3,272 B spare, and only linked because of the fragment
-# features_package_tof_release.cmake brings in. LCS adds code and the LED and PGV removals give some
-# back, so the merged default's size is NOT that number: measure it, and the two-state and interlock
-# targets with it, before relying on any margin.
+# WHAT IT COSTS IS FLASH, and the margin is the thing to watch. The LCS host costs more than the
+# LED and PGV removals return, so this selection only fits after the flash-fit fragment grew (see
+# overlays/tof_package_flashfit.conf for the measured trail). On this tree the default signs at
+# 258,408 B of the 261,712 B ceiling, 3,304 B spare, and the two-state key switch target at
+# 258,272 B with 3,440 B -- a 1.26% margin. The next feature in does not fit without picolibc
+# (AMRSW-2887 PR #132) or a feature coming out; measure any variant that adds code before relying
+# on any of this.
 include(${CMAKE_CURRENT_LIST_DIR}/features_package_tof_release.cmake)
