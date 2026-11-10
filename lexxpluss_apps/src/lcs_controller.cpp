@@ -149,7 +149,9 @@ bool send_frame(const lcs::DownlinkFrame &frame)
     host.tx_start_tick = now_ticks();
     set_direction(true);
     k_busy_wait(kDeSettleUs);
-    if (uart_tx(host.uart, tx_buffer, frame.size(), SYS_FOREVER_US) != 0) {
+    const int rc{uart_tx(host.uart, tx_buffer, frame.size(), SYS_FOREVER_US)};
+    lcs::count_uart_tx(g_lcs.tx, rc);
+    if (rc != 0) {
         set_direction(false);
         atomic_set(&host.tx_busy, 0);
         return false;

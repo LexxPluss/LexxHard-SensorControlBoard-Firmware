@@ -80,14 +80,15 @@ Diag make_numbered()
     d.tx.skipped = 10;
     d.tx.rejected_busy = 11;
     d.tx.timeout = 12;
-    d.sync.late = 13;
-    d.sync.max_interval = 14;
-    d.isr.rx_queue_overflow = 15;
-    d.req.received = 16;
-    d.req.queued = 17;
-    d.req.dropped_invalid = 18;
-    d.req.dropped_full = 19;
-    d.req.forwarded = 20;
+    d.tx.uart_err = 13;
+    d.sync.late = 14;
+    d.sync.max_interval = 15;
+    d.isr.rx_queue_overflow = 16;
+    d.req.received = 17;
+    d.req.queued = 18;
+    d.req.dropped_invalid = 19;
+    d.req.dropped_full = 20;
+    d.req.forwarded = 21;
     return d;
 }
 
@@ -96,7 +97,7 @@ Diag make_all_max()
     Diag d{};
     d.rx.stats = {kMax, kMax, kMax, kMax, kMax, kMax, kMax};
     d.rx.restarts = kMax;
-    d.tx = {kMax, kMax, kMax, kMax};
+    d.tx = {kMax, kMax, kMax, kMax, kMax};
     d.sync = {kMax, kMax};
     d.isr = {kMax};
     d.req = {kMax, kMax, kMax, kMax, kMax};
@@ -152,10 +153,10 @@ ZTEST(lcs_diag, test_dg4_golden_lines)
     const Diag d{make_numbered()};
     const char *const expected[]{
         "rx 1 2 3 4 5 6 7 8",
-        "tx 9 10 11 12",
-        "sync 13 14",
-        "isr 15",
-        "req 16 17 18 19 20",
+        "tx 9 10 11 12 13",
+        "sync 14 15",
+        "isr 16",
+        "req 17 18 19 20 21",
     };
     for (size_t g{0}; g < 5; ++g) {
         char buf[kDiagLineMax];
@@ -170,10 +171,10 @@ ZTEST(lcs_diag, test_dg4_named_golden_lines)
     const Diag d{make_numbered()};
     const char *const expected[]{
         "rx dlvr=1 crce=2 sofm=3 tout=4 uerr=5 fdwn=6 unkn=7 rstr=8",
-        "tx sync=9 skip=10 busy=11 tout=12",
-        "sync late=13 maxi=14",
-        "isr ovfl=15",
-        "req recv=16 qued=17 invl=18 full=19 fwrd=20",
+        "tx sync=9 skip=10 busy=11 tout=12 txer=13",
+        "sync late=14 maxi=15",
+        "isr ovfl=16",
+        "req recv=17 qued=18 invl=19 full=20 fwrd=21",
     };
     for (size_t g{0}; g < 5; ++g) {
         char buf[kDiagLineMax];
@@ -245,13 +246,13 @@ ZTEST(lcs_diag, test_dg7_zero_values_print_as_0)
     const Diag d{};
 #ifndef ENABLE_LCS_DIAG_NAMES
     expect_line(d, 0, "rx 0 0 0 0 0 0 0 0");
-    expect_line(d, 1, "tx 0 0 0 0");
+    expect_line(d, 1, "tx 0 0 0 0 0");
     expect_line(d, 2, "sync 0 0");
     expect_line(d, 3, "isr 0");
     expect_line(d, 4, "req 0 0 0 0 0");
 #else
     expect_line(d, 0, "rx dlvr=0 crce=0 sofm=0 tout=0 uerr=0 fdwn=0 unkn=0 rstr=0");
-    expect_line(d, 1, "tx sync=0 skip=0 busy=0 tout=0");
+    expect_line(d, 1, "tx sync=0 skip=0 busy=0 tout=0 txer=0");
     expect_line(d, 2, "sync late=0 maxi=0");
     expect_line(d, 3, "isr ovfl=0");
     expect_line(d, 4, "req recv=0 qued=0 invl=0 full=0 fwrd=0");
@@ -310,6 +311,49 @@ ZTEST(lcs_diag, test_sc07_07_assign_request_stats_copies_four_words)
     zassert_equal(group.dropped_invalid, 3u);
     zassert_equal(group.dropped_full, 4u);
     zassert_equal(group.forwarded, 5u);
+}
+
+/* Catches: counting a success, counting nothing, counting twice, or writing another field. */
+ZTEST(lcs_diag, test_sc07_08_count_uart_tx_counts_only_nonzero_rc)
+{
+    lexxhard::lcs::TxGroup tx{};
+    tx.sync_sent = 9;
+    tx.skipped = 10;
+    tx.rejected_busy = 11;
+    tx.timeout = 12;
+    tx.uart_err = 13;
+
+    lexxhard::lcs::count_uart_tx(tx, 0);
+    zassert_equal(tx.uart_err, 13u);
+
+    lexxhard::lcs::count_uart_tx(tx, -5);
+    zassert_equal(tx.uart_err, 14u);
+
+    lexxhard::lcs::count_uart_tx(tx, -16);
+    zassert_equal(tx.uart_err, 15u);
+
+    zassert_equal(tx.sync_sent, 9u);
+    zassert_equal(tx.skipped, 10u);
+    zassert_equal(tx.rejected_busy, 11u);
+    zassert_equal(tx.timeout, 12u);
+}
+
+/* Catches: overflow handling of the new counter. */
+ZTEST(lcs_diag, test_sc07_09_count_uart_tx_wraps_at_max)
+{
+    lexxhard::lcs::TxGroup tx{};
+    tx.sync_sent = 9;
+    tx.skipped = 10;
+    tx.rejected_busy = 11;
+    tx.timeout = 12;
+    tx.uart_err = kMax;
+
+    lexxhard::lcs::count_uart_tx(tx, -5);
+    zassert_equal(tx.uart_err, 0u);
+    zassert_equal(tx.sync_sent, 9u);
+    zassert_equal(tx.skipped, 10u);
+    zassert_equal(tx.rejected_busy, 11u);
+    zassert_equal(tx.timeout, 12u);
 }
 
 ZTEST(lcs_diag, test_it1_first_start_gives_no_interval)

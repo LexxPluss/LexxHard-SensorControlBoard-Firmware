@@ -33,6 +33,7 @@ struct TxGroup {
     uint32_t skipped;
     uint32_t rejected_busy;
     uint32_t timeout;
+    uint32_t uart_err;
 };
 
 struct SyncGroup {
@@ -60,10 +61,10 @@ struct Diag {
     ReqGroup req;
 };
 
-inline constexpr size_t kDiagWords{20};
+inline constexpr size_t kDiagWords{21};
 
 /* Four characters per field, in struct order. */
-inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsyncskipbusytoutlatemaxiovfl"
+inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsyncskipbusytouttxerlatemaxiovfl"
                                              "recvquedinvlfullfwrd"};
 
 static_assert(sizeof(Diag) == kDiagWords * 4);
@@ -78,11 +79,18 @@ struct DiagGroup {
 
 inline constexpr std::array<DiagGroup, 5> kDiagGroups{{
     {"rx", 0, 8},
-    {"tx", 8, 4},
-    {"sync", 12, 2},
-    {"isr", 14, 1},
-    {"req", 15, 5},
+    {"tx", 8, 5},
+    {"sync", 13, 2},
+    {"isr", 15, 1},
+    {"req", 16, 5},
 }};
+
+/* Counts a failed uart_tx (any non-zero return code) of a downlink frame. */
+inline void count_uart_tx(TxGroup &tx, const int rc)
+{
+    if (rc != 0)
+        ++tx.uart_err;
+}
 
 /* A template because the stats type lives in a header that includes Zephyr; leaves forwarded untouched. */
 template <typename Stats>
