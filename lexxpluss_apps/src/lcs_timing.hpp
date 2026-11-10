@@ -11,6 +11,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -54,16 +55,28 @@ constexpr uint32_t deadline_ticks(const size_t len)
     return static_cast<uint32_t>((numerator + denominator - 1U) / denominator);
 }
 
+/* Precomputed at compile time so that no 64-bit division runs at run time. */
+constexpr std::array<uint32_t, kMaxLen + 1> make_deadline_table()
+{
+    std::array<uint32_t, kMaxLen + 1> table{};
+    for (size_t len = 0; len <= kMaxLen; ++len) {
+        table[len] = deadline_ticks(len);
+    }
+    return table;
+}
+
+inline constexpr std::array<uint32_t, kMaxLen + 1> kDeadlineTicks{make_deadline_table()};
+
 /* Deadline of a candidate whose LEN byte has not arrived yet. */
 constexpr uint32_t header_deadline_ticks()
 {
-    return deadline_ticks(kHeaderBytes);
+    return kDeadlineTicks[kHeaderBytes];
 }
 
 /* LEN is not trusted before the CRC matches, so a LEN above kMaxLen gets the deadline of kMaxLen. */
 constexpr uint32_t len_deadline_ticks(const size_t len)
 {
-    return deadline_ticks(std::min(len, kMaxLen));
+    return kDeadlineTicks[std::min(len, kMaxLen)];
 }
 
 static_assert(kMaxLen >= kDownlinkSize && kMaxLen >= kUplinkSize);
@@ -72,5 +85,6 @@ static_assert(deadline_ticks(kDownlinkSize) <= deadline_ticks(kUplinkSize));
 static_assert(deadline_ticks(kMaxLen) * kTickUs >= frame_tx_us(kMaxLen) + kIdleDetectUs,
               "the deadline covers the frame time and the idle detection");
 static_assert(deadline_ticks(kMaxLen) < 0x80000000U, "elapsed ticks are compared wrap-safe");
+static_assert(kDeadlineTicks[kMaxLen] == deadline_ticks(kMaxLen));
 
 }

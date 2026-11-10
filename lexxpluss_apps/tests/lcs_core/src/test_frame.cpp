@@ -157,3 +157,11 @@ ZTEST(lcs_core_frame, test_lcs_core_deadline_matches_oracle)
     zassert_equal(lcs::len_deadline_ticks(13), oracle_deadline_ticks(12), "a LEN above kMaxLen is capped");
     zassert_equal(lcs::len_deadline_ticks(255), oracle_deadline_ticks(12), "a LEN above kMaxLen is capped");
 }
+
+ZTEST(lcs_core_frame, test_lcs_core_deadline_table_matches_oracle)
+{
+    zassert_equal(lcs::kDeadlineTicks.size(), lcs::kMaxLen + 1);
+    for (uint32_t len{2}; len <= lcs::kMaxLen; ++len) {
+        zassert_equal(lcs::kDeadlineTicks[len], oracle_deadline_ticks(len), "len %u", static_cast<unsigned>(len));
+    }
+}
