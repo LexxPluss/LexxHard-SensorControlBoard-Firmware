@@ -55,6 +55,7 @@ void enqueue_request(Put &&put, const Request &request, RequestStats &stats)
 /*
  * Flags must be 0: an extended-ID, remote or FD frame with the same ID is a different format and must not be relayed.
  * Bytes 4-7 must be 0: they are reserved, so a non-zero value means a frame of an unknown format.
+ * Param must be 0 for CMD 0x48 and 0x50; CMD 0x68 carries any Param.
  * ID, flags and DLC are decided before any payload byte is read.
  */
 inline std::optional<Request> decode_request(const can_frame &frame)
@@ -67,10 +68,13 @@ inline std::optional<Request> decode_request(const can_frame &frame)
     const bool cmd_ok{cmd == kCmdZeroReset || cmd == kCmdTempDriftCalib || cmd == kCmdAbort};
     const bool target_ok{target < kBoardCount || target == kBroadcastId};
     const bool reserved_ok{frame.data[4] == 0 && frame.data[5] == 0 && frame.data[6] == 0 && frame.data[7] == 0};
-    if (!cmd_ok || !target_ok || !reserved_ok)
+    const uint16_t param{static_cast<uint16_t>((frame.data[2] << 8) | frame.data[3])};
+    // The LCS ignores an ACTION with a nonzero Param for 0x48 and 0x50, so it is dropped here.
+    const bool param_ok{cmd == kCmdAbort || param == 0};
+    if (!cmd_ok || !target_ok || !reserved_ok || !param_ok)
         return std::nullopt;
 
-    return Request{cmd, target, static_cast<uint16_t>((frame.data[2] << 8) | frame.data[3])};
+    return Request{cmd, target, param};
 }
 
 }

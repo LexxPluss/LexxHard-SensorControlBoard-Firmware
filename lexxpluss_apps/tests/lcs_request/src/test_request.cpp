@@ -256,3 +256,58 @@ ZTEST(lcs_request, test_sc01_09_seeded_random_against_oracle)
     /* Each of the five fields is valid with probability 3/4 (a little more by chance): about 2540 of 10000. */
     zassert_true(accepted >= 1500 && accepted <= 4000, "accepted %d outside sanity range", accepted);
 }
+
+// 0x0001 sets only data[3] and 0x0100 only data[2], so a check of one byte is caught.
+// The LCS ignores such an ACTION.
+ZTEST(lcs_request, test_sc01_10_param_must_be_zero_for_zero_reset_and_temp_drift)
+{
+    constexpr std::array<uint8_t, 2> cmds{0x48, 0x50};
+    constexpr std::array<uint16_t, 3> params{0x0001, 0x0100, 0xFFFF};
+    for (const uint8_t cmd : cmds) {
+        for (const uint8_t target : kValidTargets) {
+            for (const uint16_t param : params) {
+                const can_frame frame = make_frame(cmd, target, param);
+                zassert_false(lcs::decode_request(frame).has_value(),
+                              "cmd 0x%02x target 0x%02x param 0x%04x must be dropped", cmd, target, param);
+            }
+        }
+    }
+}
+
+// Catches a decoder that applies the Param rule to the wrong cmd or only to some param bits.
+ZTEST(lcs_request, test_sc01_10b_seeded_random_param_rule)
+{
+    uint32_t state = 0x2F6E2B1D;
+    int accepted = 0;
+    for (int i = 0; i < 10000; ++i) {
+        const uint8_t cmd = kValidCmds[xorshift32(state) % kValidCmds.size()];
+        const uint8_t target = kValidTargets[xorshift32(state) % kValidTargets.size()];
+        const uint16_t param =
+            (xorshift32(state) % 2 == 0) ? 0 : static_cast<uint16_t>(1 + xorshift32(state) % 0xFFFF);
+        can_frame frame{};
+        frame.id = 0x21E;
+        frame.flags = 0;
+        frame.dlc = 8;
+        frame.data[0] = cmd;
+        frame.data[1] = target;
+        frame.data[2] = static_cast<uint8_t>(param >> 8);
+        frame.data[3] = static_cast<uint8_t>(param & 0xFF);
+        frame.data[4] = 0;
+        frame.data[5] = 0;
+        frame.data[6] = 0;
+        frame.data[7] = 0;
+
+        const bool expected = (cmd == 0x68) || (param == 0);
+        const std::optional<lcs::Request> req = lcs::decode_request(frame);
+        zassert_equal(req.has_value(), expected, "frame %d: cmd 0x%02x param 0x%04x", i, cmd, param);
+        if (expected) {
+            ++accepted;
+            zassert_equal(req->cmd, cmd);
+            zassert_equal(req->target, target);
+            zassert_equal(req->param, param);
+        }
+    }
+    /* Accepted with probability 1/3 + 2/3 * 1/2 = 2/3 (about 6667, sigma 47); a plain uniform 16-bit param would
+     * give only ~1/3. */
+    zassert_true(accepted >= 6000 && accepted <= 7300, "accepted %d outside expected range", accepted);
+}

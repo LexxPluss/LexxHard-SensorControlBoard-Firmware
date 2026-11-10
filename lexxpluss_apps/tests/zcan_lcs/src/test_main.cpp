@@ -134,7 +134,7 @@ can_frame make_request_frame(const std::uint8_t cmd, const std::uint8_t target, 
 
 can_frame valid_frame(const std::uint8_t seed)
 {
-    return make_request_frame(0x48, 0, static_cast<std::uint16_t>(0x1200 + seed));
+    return make_request_frame(0x68, 0, static_cast<std::uint16_t>(0x1200 + seed));
 }
 
 /* Independent reference of the request rule; deliberately not the production decoder. */
@@ -147,6 +147,8 @@ std::optional<lcs::Request> oracle(const can_frame &frame)
     if (!(cmd == 0x48 || cmd == 0x50 || cmd == 0x68) || !(target == 0 || target == 1 || target == 0xFF))
         return std::nullopt;
     if (frame.data[4] != 0 || frame.data[5] != 0 || frame.data[6] != 0 || frame.data[7] != 0)
+        return std::nullopt;
+    if ((cmd == 0x48 || cmd == 0x50) && (frame.data[2] != 0 || frame.data[3] != 0))
         return std::nullopt;
     return lcs::Request{cmd, target, static_cast<std::uint16_t>((frame.data[2] << 8) | frame.data[3])};
 }
@@ -373,8 +375,8 @@ ZTEST(zcan_lcs, test_request_filter_passes_only_standard_0x21E_once)
 // SC02-02: requests lost, reordered or altered between the filter and the queue
 ZTEST(zcan_lcs, test_valid_requests_are_queued_in_arrival_order)
 {
-    const std::array<can_frame, 3> frames{make_request_frame(0x48, 0, 0x0102),
-                                          make_request_frame(0x50, 1, 0xA55A),
+    const std::array<can_frame, 3> frames{make_request_frame(0x48, 0, 0),
+                                          make_request_frame(0x50, 1, 0),
                                           make_request_frame(0x68, 0xFF, 0xFFFF)};
     const lcs::RequestStats before{stats()};
     for (const can_frame &frame : frames)
