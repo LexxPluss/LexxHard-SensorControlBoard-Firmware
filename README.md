@@ -79,18 +79,14 @@ It is a bench tool. **It is not uploaded with a Release**, and **a test boot is 
 application self-confirms before the subsystem threads start, so an image that boots far enough to
 do that will not revert on a later runtime failure.
 
-### Build firmware ( Package ToF release configuration )
+### Package ToF release configuration
 
 The Package configuration is the ToF release plus the Package sensor -- one VL53L7CX on `i2c4` @0x29
-behind J22, publishing a grid and a health frame on CAN at 5 Hz. It is built by naming its feature
-file:
-
-```bash
-$ make clean
-$ make firmware_initial VERSION=<version> FEATURES_FILE=cmake/features_package_tof_release.cmake
-```
-
-Asset names, the shared `build/` cache and the `make clean` rule are exactly as in the section above.
+behind J22, publishing a grid and a health frame on CAN at 5 Hz. Its feature file is
+[`features_package_tof_release.cmake`](lexxpluss_apps/cmake/features_package_tof_release.cmake),
+and the stacked default-variant change (#141) makes it the default build: from the command line and
+CI the commands stay `make clean` and `make firmware VERSION=<version>`, with no `FEATURES_FILE`
+named, and the assets are the standard ones from the section above.
 
 **It carries its own flash fit, and the margin is thin.** The chain and the Package runtime together
 overflow the 256 KiB slot at link time on the production base, so
