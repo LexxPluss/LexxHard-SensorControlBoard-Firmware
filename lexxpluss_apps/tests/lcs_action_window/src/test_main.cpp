@@ -54,7 +54,7 @@ namespace {
 constexpr uint32_t kPeriod{100};
 constexpr uint32_t kNearWrap{0xFFFFFFF0U};
 
-constexpr uint8_t kCmdA{lexxhard::lcs::kCmdZeroReset};
+constexpr uint8_t kCmdA{lexxhard::lcs::kCmdAbort};
 
 /* A fake request queue and a fake transmitter around one ActionWindow. */
 struct Harness {
