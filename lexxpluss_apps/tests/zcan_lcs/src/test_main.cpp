@@ -408,6 +408,24 @@ ZTEST(zcan_lcs, test_nonzero_byte7_is_dropped_and_counted)
     expect_stats_delta(before, 1, 0, 1, 0);
 }
 
+// SC02-09: a nonzero Param for CMD 0x48 and 0x50 is dropped and counted on the adapter path
+ZTEST(zcan_lcs, test_nonzero_param_for_zero_reset_and_temp_drift_is_dropped_and_counted)
+{
+    for (const std::uint8_t cmd : {0x48, 0x50}) {
+        for (const std::uint16_t param : {0x0001, 0x0100}) {
+            const lcs::RequestStats before{stats()};
+            send_and_poll(make_request_frame(cmd, 0, param));
+            zassert_equal(queued_count(), 0U, "request with a nonzero param queued");
+            zassert_false(take_request().has_value(), "request with a nonzero param in the queue");
+            expect_stats_delta(before, 1, 0, 1, 0);
+        }
+    }
+    const lcs::RequestStats before{stats()};
+    send_and_poll(valid_frame(5));
+    expect_request(take_request(), *oracle(valid_frame(5)));
+    expect_stats_delta(before, 1, 1, 0, 0);
+}
+
 // Catches: the mirror not written, written before the counters change, or written from the wrong object
 ZTEST(zcan_lcs, test_request_stats_mirror_follows_the_adapter)
 {
