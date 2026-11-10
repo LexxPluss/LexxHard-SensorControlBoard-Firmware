@@ -32,6 +32,7 @@
 #include "lcs_core_test_support.hpp"
 #include "lcs_crc16.hpp"
 #include "lcs_frame.hpp"
+#include "lcs_safe_state.hpp"
 #include "lcs_timing.hpp"
 
 using namespace lcs_test;
@@ -164,4 +165,13 @@ ZTEST(lcs_core_frame, test_lcs_core_deadline_table_matches_oracle)
     for (uint32_t len{2}; len <= lcs::kMaxLen; ++len) {
         zassert_equal(lcs::kDeadlineTicks[len], oracle_deadline_ticks(len), "len %u", static_cast<unsigned>(len));
     }
+}
+
+ZTEST(lcs_core_frame, test_lcs_core_bsrr_reset_word)
+{
+    for (uint32_t pin{0}; pin <= 15; ++pin) {
+        zassert_equal(lcs::bsrr_reset_word(pin), (1U << (16U + pin)), "pin %u", static_cast<unsigned>(pin));
+    }
+    zassert_equal(lcs::bsrr_reset_word(2), 0x00040000U);
+    zassert_equal(lcs::kGpioBsrrOffset, 0x18U);
 }
