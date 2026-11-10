@@ -26,6 +26,8 @@ namespace lexxhard::lcs {
 inline constexpr uint32_t kScbSyncLeadUs{60};
 /* Lead + 8 B frame time at 500 kbaud. */
 inline constexpr uint32_t kScbSyncArrivalUs{kScbSyncLeadUs + 160};
+static_assert(kScbSyncArrivalUs - kScbSyncLeadUs == frame_tx_us(kDownlinkSize),
+              "the SYNC frame time must follow the frame size and the baud rate");
 /* LCS worst case: ID1 offset 1224 + slot 1037 + sampling latency 285, from the SYNC arrival. */
 inline constexpr uint32_t kLcsId1EndFromArrivalUs{2546};
 /* Absorbs the preemption before the SYNC DE rise, the child DE release and the clock difference. */

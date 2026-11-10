@@ -550,7 +550,7 @@ ZTEST(zcan_lcs, test_random_stream_yields_exactly_the_oracle_requests)
     }
 }
 
-// SC02-08: a failed 0x21E filter registration that is marked done, so the request path stays off without a retry
+// SC02-08: a failed 0x21E filter registration is retried by a later init(), and a successful one is made once
 ZTEST(zcan_lcs, test_failed_filter_registration_is_retried_and_a_successful_one_is_made_once)
 {
     bool done{false};

@@ -27,6 +27,7 @@ LOG_MODULE_REGISTER(zcan_lcs);
 inline constexpr uint16_t LCS_ID0_DATA_ID{0x21C};
 inline constexpr uint16_t LCS_ID1_DATA_ID{0x21D};
 inline constexpr uint16_t LCS_REQUEST_ID{0x21E};
+static_assert(LCS_REQUEST_ID == lcs::kRequestId, "the filter ID and the decoder ID must be the same");
 inline constexpr uint16_t LCS_LINK_STATE_ID{0x21F};
 inline constexpr uint8_t LCS_DATA_LENGTH{8};
 
