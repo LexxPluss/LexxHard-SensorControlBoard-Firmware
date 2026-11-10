@@ -38,10 +38,14 @@ inline constexpr uint32_t kActionGuardUs{200};
 /* Rounded up plus one tick: the SYNC send and the decision are sampled on the tick. */
 inline constexpr uint32_t kActionWindowStartTicks{(kActionWindowStartUs + kTickUs - 1) / kTickUs + 1};
 inline constexpr uint32_t kActionWindowLatestTicks{(kSyncPeriodUs - kActionLengthUs - kActionGuardUs) / kTickUs - 1};
+/* ACTION length plus guard in ticks, rounded up, plus one tick for the sampling. */
+inline constexpr uint32_t kActionReserveTicks{(kActionLengthUs + kActionGuardUs + kTickUs - 1) / kTickUs + 1};
+inline constexpr uint32_t kActionHalfRange{0x80000000U};
 
 static_assert(kActionWindowStartTicks < kActionWindowLatestTicks);
 static_assert((kActionWindowStartTicks - 1) * kTickUs >= kActionWindowStartUs);
 static_assert((kActionWindowLatestTicks + 1) * kTickUs + kActionLengthUs + kActionGuardUs <= kSyncPeriodUs);
+static_assert(SyncScheduler::kPeriodTicks - kActionReserveTicks == kActionWindowLatestTicks);
 
 enum class ActionOutcome : uint8_t { NotSent, Sent, Refused };
 
@@ -52,6 +56,7 @@ public:
         switch (poll.outcome) {
         case SyncOutcome::Sent:
             origin_ = tick;
+            next_due_ = poll.next_due;
             defined_ = true;
             attempted_ = false;
             break;
@@ -74,6 +79,12 @@ public:
         if (!(elapsed >= kActionWindowStartTicks && elapsed <= kActionWindowLatestTicks)) {
             return ActionOutcome::NotSent;
         }
+        /* A SYNC sent late keeps the grid, so the next SYNC is due earlier than origin + 100 ticks; an ACTION must
+         * end before it. A tick past the due value (huge unsigned difference) is refused. */
+        const uint32_t until_due{next_due_ - tick};
+        if (until_due >= kActionHalfRange || until_due < kActionReserveTicks) {
+            return ActionOutcome::NotSent;
+        }
         const std::optional<Request> request{peek()};
         if (!request) {
             return ActionOutcome::NotSent;
@@ -89,6 +100,7 @@ public:
 private:
     bool defined_{false};
     uint32_t origin_{0};
+    uint32_t next_due_{0};
     bool attempted_{false};
 };
 

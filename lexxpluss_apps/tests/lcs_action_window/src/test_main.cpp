@@ -90,12 +90,12 @@ struct Harness {
 
     void sync_sent(const uint32_t tick, const bool late = false)
     {
-        window.on_sync(SyncPoll{SyncOutcome::Sent, late}, tick);
+        window.on_sync(SyncPoll{SyncOutcome::Sent, late, tick + SyncScheduler::kPeriodTicks}, tick);
     }
 
     void sync_skipped(const uint32_t tick)
     {
-        window.on_sync(SyncPoll{SyncOutcome::Skipped, false}, tick);
+        window.on_sync(SyncPoll{SyncOutcome::Skipped, false, tick + SyncScheduler::kPeriodTicks}, tick);
     }
 
     void push(const uint8_t target, const uint16_t param)
@@ -484,4 +484,104 @@ ZTEST(lcs_action_window, test_sc05_15_arrival_after_empty_poll_is_sent_in_the_sa
     zassert_equal(h.frames[0], lexxhard::lcs::encode_downlink(1, kCmdA, 0x0042));
     zassert_equal(h.pop_calls, 1U);
     zassert_true(h.queue.empty());
+}
+
+namespace {
+
+/* Two SYNCs from a real scheduler: the second one is sent delta ticks late and the grid is kept. */
+struct LateSync {
+    SyncPoll poll;
+    uint32_t origin;
+};
+
+LateSync make_late_sync(const uint32_t t0, const uint32_t delta)
+{
+    SyncScheduler scheduler;
+    const auto accept = [](const DownlinkFrame &) { return true; };
+    (void)scheduler.poll(t0, accept);
+    const uint32_t origin{t0 + kPeriod + delta};
+    return LateSync{scheduler.poll(origin, accept), origin};
+}
+
+void check_late_start_bounds(const uint32_t t0)
+{
+    for (const uint32_t delta : {4U, 30U}) {
+        const LateSync sync{make_late_sync(t0, delta)};
+        zassert_equal(sync.poll.next_due, t0 + 2U * kPeriod, "delta %u: next_due", delta);
+        const uint32_t bound{sync.poll.next_due - lexxhard::lcs::kActionReserveTicks};
+        zassert_equal(bound, sync.origin + lexxhard::lcs::kActionWindowLatestTicks - delta, "delta %u: bound", delta);
+        {
+            Harness h;
+            h.window.on_sync(sync.poll, sync.origin);
+            h.push(1, 7);
+            zassert_equal(outcome_int(h.poll(bound)), outcome_int(ActionOutcome::Sent), "delta %u tick %u", delta,
+                          bound);
+        }
+        {
+            Harness h;
+            h.window.on_sync(sync.poll, sync.origin);
+            h.push(1, 7);
+            zassert_equal(outcome_int(h.poll(bound + 1U)), outcome_int(ActionOutcome::NotSent), "delta %u tick %u",
+                          delta, bound + 1U);
+        }
+        {
+            Harness h;
+            h.window.on_sync(sync.poll, sync.origin);
+            h.push(1, 7);
+            const uint32_t old_bound{sync.origin + lexxhard::lcs::kActionWindowLatestTicks};
+            zassert_equal(outcome_int(h.poll(old_bound)), outcome_int(ActionOutcome::NotSent), "delta %u tick %u",
+                          delta, old_bound);
+        }
+    }
+}
+
+}
+
+ZTEST(lcs_action_window, test_sc05_16_late_sync_bounds_the_latest_start)
+{
+    /* Catches: the latest start measured from the SYNC origin only, past the next grid SYNC. */
+    check_late_start_bounds(1000U);
+}
+
+static_assert(lexxhard::lcs::SyncScheduler::kPeriodTicks - lexxhard::lcs::kActionReserveTicks ==
+              lexxhard::lcs::kActionWindowLatestTicks);
+
+ZTEST(lcs_action_window, test_sc05_17_on_grid_latest_start_is_unchanged)
+{
+    /* Catches: the reserve tightening the bound of an on-grid SYNC. */
+    const LateSync sync{make_late_sync(1000U, 0U)};
+    {
+        Harness h;
+        h.window.on_sync(sync.poll, sync.origin);
+        h.push(1, 7);
+        const uint32_t tick{sync.origin + lexxhard::lcs::kActionWindowLatestTicks};
+        zassert_equal(outcome_int(h.poll(tick)), outcome_int(ActionOutcome::Sent), "tick %u", tick);
+    }
+    {
+        Harness h;
+        h.window.on_sync(sync.poll, sync.origin);
+        h.push(1, 7);
+        const uint32_t tick{sync.origin + lexxhard::lcs::kActionWindowLatestTicks + 1U};
+        zassert_equal(outcome_int(h.poll(tick)), outcome_int(ActionOutcome::NotSent), "tick %u", tick);
+    }
+}
+
+ZTEST(lcs_action_window, test_sc05_18_request_after_the_next_due_is_not_sent)
+{
+    /* Catches: a request sent at or past the next grid SYNC while the elapsed tick is still within 95. */
+    const uint32_t delta{30U};
+    const LateSync sync{make_late_sync(1000U, delta)};
+    zassert_equal(sync.poll.next_due, sync.origin + kPeriod - delta);
+    for (const uint32_t tick : {sync.poll.next_due, sync.poll.next_due + 10U}) {
+        Harness h;
+        h.window.on_sync(sync.poll, sync.origin);
+        h.push(1, 7);
+        zassert_equal(outcome_int(h.poll(tick)), outcome_int(ActionOutcome::NotSent), "delta %u tick %u", delta, tick);
+    }
+}
+
+ZTEST(lcs_action_window, test_sc05_19_late_sync_bound_near_the_wrap)
+{
+    /* Catches: a non-wrap-safe next_due comparison when origin and next_due cross the 32-bit wrap. */
+    check_late_start_bounds(kNearWrap - kPeriod);
 }
