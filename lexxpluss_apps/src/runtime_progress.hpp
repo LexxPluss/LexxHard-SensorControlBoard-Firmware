@@ -48,7 +48,17 @@ enum class activity : uint8_t {
     send_acq,      // a CAN send issued from the acquisition slot
     send_workq,    // a CAN send issued from the system work queue
     health,        // one health work item
-    l7,            // one ULD operation: open, configure, start, read or stop
+    /* ONE SLOT PER L7 POPULATION, not one slot for "the L7".
+     *
+     * A single slot was written by the chain's acquisition and by the Package device both, and
+     * tof_task_watchdog judged L7 liveness from it alone -- so progress on a healthy population
+     * refreshed the judgement for a wedged one, and the tombstone named "the L7" when only one of
+     * two was at fault. Two slots make both the judgement and the record population-specific.
+     *
+     * An image may contain either, both or neither; the watchdog arms each one separately, at that
+     * population's first operation. */
+    l7_chain,      // one ULD operation issued by the ToF chain: open, configure, start, read, stop
+    l7_package,    // the same five, issued by the Package device on its own bus
     count,
 };
 

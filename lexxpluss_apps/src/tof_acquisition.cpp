@@ -229,9 +229,9 @@ const source_ops kCliffOps{
 int l7_real_open(void *dev, vl53l7cx_port_context *port, uint8_t addr_7bit,
                  tof_l7::operation_status *st)
 {
-    runtime_progress::begin(runtime_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7_chain);
     const int rc{tof_l7::open(static_cast<tof_l7::sensor *>(dev), port, addr_7bit, st)};
-    runtime_progress::end(runtime_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7_chain);
     return rc;
 }
 
@@ -240,17 +240,17 @@ int l7_real_configure(void *dev, uint8_t frequency_hz, tof_l7::operation_status 
     /* The frequency arrives from the descriptor, which took it from the deployment's devicetree.
      * Nothing in this file has a default for it, and the adapter refuses anything outside 1..15 on
      * its own account. */
-    runtime_progress::begin(runtime_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7_chain);
     const int rc{tof_l7::configure(static_cast<tof_l7::sensor *>(dev), frequency_hz, st)};
-    runtime_progress::end(runtime_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7_chain);
     return rc;
 }
 
 int l7_real_start(void *dev, tof_l7::operation_status *st)
 {
-    runtime_progress::begin(runtime_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7_chain);
     const int rc{tof_l7::start(static_cast<tof_l7::sensor *>(dev), st)};
-    runtime_progress::end(runtime_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7_chain);
     return rc;
 }
 
@@ -262,18 +262,18 @@ int l7_real_read_grid_sample(void *dev, void *scratch, tof_l7::sample *out,
      * against a 50 ms cycle, nine out of ten. That is the ordinary case and the adapter reports it
      * as rc 0 with a non-fresh sample, which records no outcome at all: counting it as an I/O
      * failure would make a working sensor look broken nine times out of ten. */
-    runtime_progress::begin(runtime_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7_chain);
     const int rc{tof_l7::read_once(static_cast<tof_l7::sensor *>(dev),
                                    static_cast<tof_l7::scratch *>(scratch), out, st)};
-    runtime_progress::end(runtime_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7_chain);
     return rc;
 }
 
 int l7_real_stop(void *dev, tof_l7::operation_status *st)
 {
-    runtime_progress::begin(runtime_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7_chain);
     const int rc{tof_l7::stop(static_cast<tof_l7::sensor *>(dev), st)};
-    runtime_progress::end(runtime_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7_chain);
     return rc;
 }
 
@@ -289,9 +289,9 @@ int l7_real_stop(void *dev, tof_l7::operation_status *st)
  * thread that does not return is worth seeing whatever the reason. */
 int l7_real_close(void *dev, tof_l7::operation_status *st)
 {
-    runtime_progress::begin(runtime_progress::activity::l7);
+    runtime_progress::begin(runtime_progress::activity::l7_chain);
     const int rc{tof_l7::close(static_cast<tof_l7::sensor *>(dev), st)};
-    runtime_progress::end(runtime_progress::activity::l7);
+    runtime_progress::end(runtime_progress::activity::l7_chain);
     return rc;
 }
 

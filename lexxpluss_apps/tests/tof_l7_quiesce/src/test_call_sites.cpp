@@ -273,10 +273,31 @@ ZTEST(tof_l7_quiesce_call_sites, test_no_application_source_clears_the_record_or
                  seen);
 }
 
-/* Watchdog cases set the declaration flag directly, so this gate checks the
- * production call site. Only quiesce may declare, and it must enclose its L7
- * progress bracket; probe, open and start retain the 5 s bound. */
-ZTEST(tof_l7_quiesce_call_sites, test_only_the_quiesce_declares_a_long_operation_and_it_wraps_the_bracket)
+/* Watchdog cases set the declaration flag directly, so this gate checks the production call sites.
+ *
+ * TWO HOOKS MAY DECLARE, AND ONLY TWO. Each is a call whose HEALTHY duration exceeds the ordinary
+ * 5 s bounds::l7_ms, which is a measured property of one call on one bus rather than a judgement:
+ *
+ *   quiesce -- stop polling took 5.43 s on this board.
+ *
+ *   open    -- the ULD firmware download is 86,016 B, and Package sits on i2c4, which runs at the
+ *              100 kHz Zephyr default; only i2c2 is raised to 400 kHz, by tof_chain.overlay. At
+ *              nine bus bits per byte that is 86,016 * 9 / 100,000 = 7.74 s of bus time before any
+ *              transaction overhead.
+ *
+ * open WAS MISSING ITS DECLARATION, and this gate used to assert that it should be. The comment in
+ * the hook said bounds::l7_ms "was chosen to cover" two seconds; the constant was five and the
+ * download needs eight. A board running that configuration reset repeatedly, and the tombstone from
+ * one of those boots recorded stuck_l7 with an L7 operation in flight. The reset cascades a
+ * whole-machine power cycle, so the host never stayed up long enough to reflash over CAN and the
+ * board had to be recovered over SWD. The budget shortfall is arithmetic and certain; that the
+ * download was otherwise healthy is an inference, and no fixed image has been on hardware yet.
+ *
+ * probe, configure, start, read, stop and close keep the ordinary bound on purpose: none of them
+ * moves a blob, and a declaration suspends the chain's acquisition checks as well as the L7 ones,
+ * so it buys silence for activities the call never touches. Widening this set is a decision about
+ * what stops being monitored, and it needs a measurement rather than a diff. */
+ZTEST(tof_l7_quiesce_call_sites, test_only_the_hooks_that_outlast_the_bound_declare_and_they_wrap_the_bracket)
 {
     read_and_strip(DEVICE_SOURCE);
 
@@ -289,22 +310,43 @@ ZTEST(tof_l7_quiesce_call_sites, test_only_the_quiesce_declares_a_long_operation
                   "the adapter must call %s exactly once -- from the scoped type's destructor",
                   kFeederEnd);
 
-    copy_quiesce_body();
-    zassert_equal(count_of(body_, kDeclaredLongOperation), 1U,
-                  "hook_quiesce() declares the long operation exactly once; without it a 5.43 s "
-                  "stop handshake trips the 5,000 ms in-flight bound and the board resets");
+    /* Each of the two, by signature rather than by scanning for the type: a gate that only counted
+     * declarations would pass a declaration that had moved into the wrong hook.
+     *
+     * A plain array, not a braced list: this suite compiles without libstdc++, so there is no
+     * <initializer_list> to deduce one from. */
+    static constexpr const char *kDeclaringHooks[]{"int hook_quiesce(", "int hook_open("};
+    for (const char *sig : kDeclaringHooks) {
+        size_t from{0}, to{0};
+        zassert_true(body_of(sig, &from, &to), "%s could not be located in %s", sig, DEVICE_SOURCE);
+        const size_t len{to - from};
+        zassert_true(len < kBufferSize, "a hook body does not fit");
+        memcpy(body_, stripped_ + from, len);
+        body_[len] = '\0';
 
-    const char *const declared{strstr(body_, kDeclaredLongOperation)};
-    const char *const watched{strstr(body_, kWatchedBracket)};
-    zassert_not_null(watched, "hook_quiesce() no longer brackets its ULD call as L7 progress");
-    zassert_true(declared < watched,
-                 "the declaration must be constructed BEFORE the L7 bracket, so that it is "
-                 "destroyed after it");
+        zassert_equal(count_of(body_, kDeclaredLongOperation), 1U,
+                      "%s declares the long operation exactly once. Without it the call is judged "
+                      "at the 5,000 ms in-flight bound, which neither a 5.43 s stop handshake nor a "
+                      "7.74 s blob download can meet, and the board resets while working",
+                      sig);
 
-    /* And no other hook declares one. Each of these is judged at l7_ms on purpose. */
-    zassert_equal(count_of(stripped_, kDeclaredLongOperation), 1U,
-                  "only hook_quiesce() may declare a long operation: the probe, the download and "
-                  "the start are the operations l7_ms exists to bound");
+        /* ORDER IS PART OF THE PROPERTY. Both objects are scoped, so destruction runs in reverse;
+         * declaring first is what leaves the declaration covering the end of the watched region.
+         * The other order uncovers that end, and the next sample judges it at the ordinary bound. */
+        const char *const declared{strstr(body_, kDeclaredLongOperation)};
+        const char *const watched{strstr(body_, kWatchedBracket)};
+        zassert_not_null(watched, "%s no longer brackets its ULD call as L7 progress", sig);
+        zassert_true(declared < watched,
+                     "%s constructs the L7 bracket before the declaration, so reverse destruction "
+                     "ends the bracket while it is already uncovered",
+                     sig);
+    }
+
+    /* And no third hook declares one. */
+    zassert_equal(count_of(stripped_, kDeclaredLongOperation), 2U,
+                  "exactly two hooks may declare a long operation -- hook_quiesce() and "
+                  "hook_open(). A third needs its own measurement against bounds::l7_ms, because "
+                  "the declaration also stops the chain's acquisition from being judged");
 }
 
 ZTEST(tof_l7_quiesce_call_sites, test_the_quiesce_is_timed_from_the_approved_sixty_four_bit_source)
@@ -698,9 +740,19 @@ ZTEST(tof_l7_quiesce_call_sites, test_the_runtime_announces_the_grid_sensor_befo
 
     zassert_equal(count_of(stripped_, "tof_watchdog_feeder::set_l7_expected("), 1U,
                   "%s must announce the grid sensor exactly once", RUNTIME_SOURCE);
-    zassert_equal(count_of(stripped_, "tof_watchdog_feeder::set_l7_expected(true)"), 1U,
-                  "the announcement must be positive: without it the L7 monitor never arms and the "
-                  "bracketing in the device layer is inert");
+    /* NAMING THE POPULATION IS PART OF THE ANNOUNCEMENT. Announcing "an L7" armed one monitor for
+     * two populations, so the Package sensor's arrival armed the chain's judgement and the reverse.
+     * The call has to say which one it is speaking for, and for this source it is the Package. */
+    zassert_equal(count_of(stripped_,
+                           "set_l7_expected(tof_watchdog_feeder::l7_population::package, true)"),
+                  1U,
+                  "%s must announce the PACKAGE population, positively: without it that monitor "
+                  "never arms and the bracketing in the device layer is inert",
+                  RUNTIME_SOURCE);
+    zassert_equal(count_of(stripped_, "l7_population::chain"), 0U,
+                  "%s speaks for the Package sensor; announcing the chain from here would arm a "
+                  "monitor for sensors this file knows nothing about",
+                  RUNTIME_SOURCE);
 
     const char *const announced{strstr(stripped_, "tof_watchdog_feeder::set_l7_expected(")};
     const char *const first_bind{strstr(stripped_, "tof_package_device::bind(")};

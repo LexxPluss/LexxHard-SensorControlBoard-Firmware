@@ -1,0 +1,4 @@
+tests:
+  tof.long.operation:
+    platform_allow: native_sim
+    tags: tof watchdog long_operation

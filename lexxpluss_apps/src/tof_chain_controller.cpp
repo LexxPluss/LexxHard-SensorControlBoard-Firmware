@@ -1035,10 +1035,10 @@ void init()
      * dwarfs every per-cycle bound the watchdog feeder judges by. Declared rather than inferred,
      * and bounded -- see tof_task_watchdog.hpp for what a declaration does and does not excuse.
      * set_l7_expected tells the feeder this image has an L7 to watch at all. */
-    tof_watchdog_feeder::set_l7_expected(true);
-    tof_watchdog_feeder::long_operation_begin();
+    tof_watchdog_feeder::set_l7_expected(tof_watchdog_feeder::l7_population::chain, true);
+    tof_watchdog_feeder::long_operation_begin(tof_watchdog_feeder::l7_population::chain);
     const int blob_rc{tof_l7_runtime::bootstrap()};
-    tof_watchdog_feeder::long_operation_end();
+    tof_watchdog_feeder::long_operation_end(tof_watchdog_feeder::l7_population::chain);
     if (const int rc{blob_rc}; rc != 0) {
         const tof_l7_runtime::snapshot state{tof_l7_runtime::current()};
 

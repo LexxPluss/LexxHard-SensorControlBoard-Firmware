@@ -46,7 +46,9 @@ $ make firmware_interlock
 ### Build firmware ( ToF release configuration )
 
 The ToF configuration (L4 cliff, L7 hanging-object grid and host commissioning) is the ordinary
-firmware built with a feature file, not a target of its own:
+firmware built with a feature file, not a target of its own. **This selection is chain-only**; the
+Package configuration below adds the Package sensor, so name this one when the Package runtime has
+to be out of the image:
 
 ```bash
 $ make clean
@@ -76,6 +78,36 @@ that one byte, `01` against `ff`.
 It is a bench tool. **It is not uploaded with a Release**, and **a test boot is not rollback**: the
 application self-confirms before the subsystem threads start, so an image that boots far enough to
 do that will not revert on a later runtime failure.
+
+### Package ToF release configuration
+
+The Package configuration is the ToF release plus the Package sensor -- one VL53L7CX on `i2c4` @0x29
+behind J22, publishing a grid and a health frame on CAN at 5 Hz. Its feature file is
+[`features_package_tof_release.cmake`](lexxpluss_apps/cmake/features_package_tof_release.cmake),
+and the stacked default-variant change (#141) makes it the default build: from the command line and
+CI the commands stay `make clean` and `make firmware VERSION=<version>`, with no `FEATURES_FILE`
+named, and the assets are the standard ones from the section above.
+
+**It carries its own flash fit, and the margin is thin.** The chain and the Package runtime together
+overflow the 256 KiB slot at link time on the production base, so
+[`tof_package_flashfit.conf`](lexxpluss_apps/overlays/tof_package_flashfit.conf) turns the shell
+conveniences and SPI DMA off -- the shell commands themselves stay -- for every configuration that
+takes it. With it the image signs at 258,408 B, leaving 3,304 B of the 261,712 B ceiling, which is
+1.26%: one new log string or one re-enabled shell convenience breaks the link again. Those figures
+were measured at f967fb0b; the selection has not changed since, but re-measure on the commit a
+release is actually cut from. The fragment grew past the tree-wide flash reductions when the LCS
+host arrived, so landing those no longer retires it; the next real headroom is picolibc.
+
+**The bench deadman is off, as release policy** -- a resident image carries no unattended timed
+revert, which is what keeps it confirmed. The watchdog is untouched and still judges the L7 path,
+and it now judges the chain and Package populations from separate clocks, so progress by a healthy
+one no longer refreshes the judgement for a wedged one. What no run has shown is the two populations
+declaring a long operation at the same time:
+[`features_package_tof_release.cmake`](lexxpluss_apps/cmake/features_package_tof_release.cmake)
+states why the ordering keeps them apart, and why that is an argument rather than a measurement.
+
+**Flashing it does not install the L7 driver blob**, for the reason the ToF section gives: provision
+the blob afterward, or the Package path stays silent whatever else looks healthy.
 
 ---
 ## Program of the built firmware

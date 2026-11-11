@@ -64,10 +64,13 @@ tomb::record sample()
     r.send_acq_begun = 7;        r.send_acq_ended = 6;
     r.send_workq_begun = 400;    r.send_workq_ended = 400;
     r.health_begun = 51;         r.health_ended = 50;
-    r.l7_begun = 3;              r.l7_ended = 2;
+    r.l7_chain_begun = 3;        r.l7_chain_ended = 2;
+    r.l7_package_begun = 9;      r.l7_package_ended = 8;
     r.zcan_loops = 88888;
-    r.long_active = 1;
-    r.long_began_ms = 120000;
+    r.long_chain_active = 1;
+    r.long_chain_began_ms = 120000;
+    r.long_package_active = 1;
+    r.long_package_began_ms = 121000;
     r.boot_seq = 4;
     r.feed_rc = -5;
     return r;
@@ -129,11 +132,15 @@ ZTEST(tof_watchdog_tombstone, test_a_written_record_reads_back_field_for_field)
     zassert_equal(out.send_workq_ended, in.send_workq_ended);
     zassert_equal(out.health_begun, in.health_begun);
     zassert_equal(out.health_ended, in.health_ended);
-    zassert_equal(out.l7_begun, in.l7_begun);
-    zassert_equal(out.l7_ended, in.l7_ended);
+    zassert_equal(out.l7_chain_begun, in.l7_chain_begun);
+    zassert_equal(out.l7_chain_ended, in.l7_chain_ended);
+    zassert_equal(out.l7_package_begun, in.l7_package_begun);
+    zassert_equal(out.l7_package_ended, in.l7_package_ended);
     zassert_equal(out.zcan_loops, in.zcan_loops);
-    zassert_equal(out.long_active, in.long_active);
-    zassert_equal(out.long_began_ms, in.long_began_ms);
+    zassert_equal(out.long_chain_active, in.long_chain_active);
+    zassert_equal(out.long_chain_began_ms, in.long_chain_began_ms);
+    zassert_equal(out.long_package_active, in.long_package_active);
+    zassert_equal(out.long_package_began_ms, in.long_package_began_ms);
     zassert_equal(out.boot_seq, in.boot_seq);
     zassert_equal(out.feed_rc, in.feed_rc, "the driver's rc is why a refused feed is not a withheld one");
     zassert_equal(out.build_id[0], in.build_id[0]);
@@ -191,6 +198,39 @@ ZTEST(tof_watchdog_tombstone, test_an_unknown_version_is_refused_before_anything
     tomb::record out{};
     zassert_equal(tomb::read(region_, out), tomb::status::wrong_version,
                   "a newer format is a newer format, not a corrupt record");
+}
+
+/* VERSION 2 IS THE ONE THAT EXISTS IN THE FIELD, so it gets its own case rather than being covered
+ * by "some other number".
+ *
+ * It was written by an image that watched ONE L7, whose counters and whose stuck_l7 bit were
+ * produced by the chain and the Package device both. Those words cannot be mapped onto either of
+ * the two populations this format keeps apart -- a reader that tried would attribute a stall to
+ * whichever one it guessed. Refusing it is the only honest answer, and the version field is what
+ * makes the refusal possible.
+ *
+ * A board recovered over SWD on 2026-11-04 was read with exactly such a record still in DTCM, which
+ * is why this is a real case and not a hypothetical one. */
+ZTEST(tof_watchdog_tombstone, test_a_version_two_record_is_refused_rather_than_reinterpreted)
+{
+    clear_region();
+    tomb::write_once(region_, sample(), observe, nullptr);
+    region_[tomb::kOffVersion] = 2U;
+
+    tomb::record out{};
+    zassert_equal(tomb::read(region_, out), tomb::status::wrong_version,
+                  "a single-population record must be refused, not attributed to a population");
+}
+
+/* And one older still, so the refusal is about the version check rather than about the number 2. */
+ZTEST(tof_watchdog_tombstone, test_a_version_one_record_is_refused)
+{
+    clear_region();
+    tomb::write_once(region_, sample(), observe, nullptr);
+    region_[tomb::kOffVersion] = 1U;
+
+    tomb::record out{};
+    zassert_equal(tomb::read(region_, out), tomb::status::wrong_version);
 }
 
 ZTEST(tof_watchdog_tombstone, test_a_disagreeing_size_is_refused)
@@ -287,7 +327,11 @@ ZTEST(tof_watchdog_tombstone, test_this_build_has_a_real_barrier)
  * this is not hypothetical: a v1 reader and a v2 record disagree about what offset 26 means. */
 ZTEST(tof_watchdog_tombstone, test_the_layout_version_is_current_and_older_records_are_refused)
 {
-    zassert_equal(tomb::kVersion, 2U);
+    /* PINNED, so a format change has to come with a decision about readers in the field. It moved
+     * from 2 to 3 when the single "L7" was split into the chain's and the Package's: a version-2
+     * record's l7 counters and stuck_l7 bit cannot be mapped onto either population, so such a
+     * record is refused rather than reinterpreted. */
+    zassert_equal(tomb::kVersion, 3U);
     clear_region();
     tomb::write_once(region_, sample());
     region_[tomb::kOffVersion] = 1;

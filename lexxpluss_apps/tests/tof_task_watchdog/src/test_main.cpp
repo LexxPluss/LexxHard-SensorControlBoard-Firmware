@@ -38,7 +38,10 @@ struct advance {
     bool send_workq{true};
     bool health{true};
     bool zcan{true};
-    bool l7{true};
+    /* ONE KNOB PER L7 POPULATION. Defaulting the Package one to false keeps every case written
+     * before the split meaning exactly what it meant: a statement about the chain. */
+    bool l7_chain{true};
+    bool l7_package{false};
 };
 
 struct harness {
@@ -59,7 +62,7 @@ struct harness {
         in.send_acq = {20, 20};
         in.send_workq = {7, 7};
         in.health = {5, 5};
-        in.l7 = {0, 0};
+        in.l7_chain = {0, 0};
         in.zcan_loops = 1000;
     }
 
@@ -71,7 +74,8 @@ struct harness {
         if (a.send_workq) { ++in.send_workq.begun; ++in.send_workq.ended; }
         if (a.health)     { ++in.health.begun; ++in.health.ended; }
         if (a.zcan)       { ++in.zcan_loops; }
-        if (a.l7)         { ++in.l7.begun; ++in.l7.ended; }
+        if (a.l7_chain)   { ++in.l7_chain.begun; ++in.l7_chain.ended; }
+        if (a.l7_package) { ++in.l7_package.begun; ++in.l7_package.ended; }
         return wd::feed_allowed(st, b, in);
     }
 
@@ -79,12 +83,12 @@ struct harness {
     void arm(bool l7_expected = true)
     {
         healthy_pre_l7();
-        in.l7_expected = l7_expected;
+        in.l7_chain_expected = l7_expected;
         in.baseline_point = true;
-        (void)tick(1, advance{.l7 = false});
+        (void)tick(1, advance{.l7_chain = false});
         zassert_equal(st.current, wd::phase::armed, "the documented arming point must be reachable");
         for (int i{0}; i < 4; ++i)
-            zassert_true(tick(b.grace_ms / 2, advance{.l7 = false}));
+            zassert_true(tick(b.grace_ms / 2, advance{.l7_chain = false}));
     }
 
     /* Runs until the feed stops or the budget runs out. */
@@ -110,13 +114,13 @@ ZTEST(tof_task_watchdog, test_the_baseline_is_reached_before_any_l7_has_ever_com
 {
     harness h{};
     h.healthy_pre_l7();
-    h.in.l7_expected = true;
+    h.in.l7_chain_expected = true;
     h.in.baseline_point = true;
 
-    (void)h.tick(1, advance{.l7 = false});
+    (void)h.tick(1, advance{.l7_chain = false});
 
     zassert_equal(h.st.current, wd::phase::armed);
-    zassert_false(h.st.l7_watching, "nothing has opened an L7 yet, so nothing is being watched yet");
+    zassert_false(h.st.l7_chain_watching, "nothing has opened an L7 yet, so nothing is being watched yet");
 }
 
 /* THE FIRST L7 OPEN NEVER RETURNS. The monitor starts when the open begins, so this is a fault even
@@ -127,13 +131,13 @@ ZTEST(tof_task_watchdog, test_a_first_l7_open_that_never_returns_stops_the_feed)
     harness h{};
     h.arm();
 
-    h.in.l7.begun = 1;          /* the open starts, and that is the last anybody hears of it */
-    (void)h.tick(1, advance{.l7 = false});
-    zassert_true(h.st.l7_watching, "the monitor starts at the first open, not at the baseline");
+    h.in.l7_chain.begun = 1;          /* the open starts, and that is the last anybody hears of it */
+    (void)h.tick(1, advance{.l7_chain = false});
+    zassert_true(h.st.l7_chain_watching, "the monitor starts at the first open, not at the baseline");
 
-    zassert_true(h.run_until_stopped(30, 1000, advance{.l7 = false}));
-    zassert_true((h.st.why & wd::stuck_l7) != 0U);
-    zassert_equal(h.st.why & wd::silent_l7, 0U,
+    zassert_true(h.run_until_stopped(30, 1000, advance{.l7_chain = false}));
+    zassert_true((h.st.why & wd::stuck_l7_chain) != 0U);
+    zassert_equal(h.st.why & wd::silent_l7_chain, 0U,
                   "an operation that never had a chance to complete is stuck, not silent");
 }
 
@@ -146,15 +150,15 @@ ZTEST(tof_task_watchdog, test_a_declared_quiesce_outlasts_the_l7_bound_without_r
     h.arm();
 
     /* The quiesce goes in and stays in, declared for as long as it runs. */
-    h.in.l7.begun = h.in.l7.ended + 1;
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
 
     /* 5.43 s, the measured figure, in samples the feeder would really take. */
     for (int i{0}; i < 11; ++i)
-        zassert_true(h.tick(500, advance{.l7 = false}),
+        zassert_true(h.tick(500, advance{.l7_chain = false}),
                      "a declared quiesce must survive its own measured duration");
-    zassert_true(h.tick(430, advance{.l7 = false}));
+    zassert_true(h.tick(430, advance{.l7_chain = false}));
     zassert_equal(h.st.current, wd::phase::armed);
     zassert_equal(h.st.why, 0U, "nothing was wrong: the operation was declared and still running");
 }
@@ -164,12 +168,12 @@ ZTEST(tof_task_watchdog, test_a_declared_quiesce_that_wedges_is_still_bounded)
     harness h{};
     h.arm();
 
-    h.in.l7.begun = h.in.l7.ended + 1;
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
 
     /* The declaration buys 30 s, not forever. A quiesce that never returns is still a reset. */
-    zassert_true(h.run_until_stopped(80, 1000, advance{.l7 = false}),
+    zassert_true(h.run_until_stopped(80, 1000, advance{.l7_chain = false}),
                  "a declaration is a window, not an exemption");
     zassert_true((h.st.why & wd::long_operation_over) != 0U,
                  "the cap on the declaration is what must fire, not the l7 bound it suspends");
@@ -181,20 +185,20 @@ ZTEST(tof_task_watchdog, test_the_l7_bound_returns_as_soon_as_the_quiesce_is_don
     h.arm();
 
     /* A long quiesce, declared, completes. */
-    h.in.l7.begun = h.in.l7.ended + 1;
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
     for (int i{0}; i < 11; ++i)
-        zassert_true(h.tick(500, advance{.l7 = false}));
-    ++h.in.l7.ended;
-    h.in.long_operation = false;   /* what the scoped declaration does on the way out */
-    zassert_true(h.tick(1, advance{.l7 = false}));
+        zassert_true(h.tick(500, advance{.l7_chain = false}));
+    ++h.in.l7_chain.ended;
+    h.in.long_operation_chain = false;   /* what the scoped declaration does on the way out */
+    zassert_true(h.tick(1, advance{.l7_chain = false}));
 
     /* The NEXT open is ordinary work again and gets the ordinary five seconds, not thirty. */
-    h.in.l7.begun = h.in.l7.ended + 1;
-    zassert_true(h.run_until_stopped(20, 1000, advance{.l7 = false}),
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    zassert_true(h.run_until_stopped(20, 1000, advance{.l7_chain = false}),
                  "an undeclared open must be judged at l7_ms once the declaration has ended");
-    zassert_true((h.st.why & wd::stuck_l7) != 0U);
+    zassert_true((h.st.why & wd::stuck_l7_chain) != 0U);
     zassert_equal(h.st.why & wd::long_operation_over, 0U,
                   "no declaration was in force, so its cap cannot be the reason");
 }
@@ -206,25 +210,25 @@ ZTEST(tof_task_watchdog, test_a_takeover_after_a_failed_quiesce_inherits_no_decl
 
     /* The quiesce fails and returns -- the hook's scope ends the declaration on that path too --
      * and the policy moves on to a takeover, whose ULD calls are ordinary operations. */
-    h.in.l7.begun = h.in.l7.ended + 1;
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
     for (int i{0}; i < 11; ++i)
-        zassert_true(h.tick(500, advance{.l7 = false}));
-    ++h.in.l7.ended;
-    h.in.long_operation = false;
-    zassert_true(h.tick(1, advance{.l7 = false}));
+        zassert_true(h.tick(500, advance{.l7_chain = false}));
+    ++h.in.l7_chain.ended;
+    h.in.long_operation_chain = false;
+    zassert_true(h.tick(1, advance{.l7_chain = false}));
 
     /* The takeover's first operation hangs. Five seconds, because nothing declared it. */
-    h.in.l7.begun = h.in.l7.ended + 1;
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
     uint32_t elapsed{0};
     bool stopped{false};
     for (int i{0}; i < 20 && !stopped; ++i) {
-        stopped = !h.tick(1000, advance{.l7 = false});
+        stopped = !h.tick(1000, advance{.l7_chain = false});
         elapsed += 1000;
     }
     zassert_true(stopped);
-    zassert_true((h.st.why & wd::stuck_l7) != 0U);
+    zassert_true((h.st.why & wd::stuck_l7_chain) != 0U);
     zassert_true(elapsed < 10000U,
                  "a takeover that inherited the 30 s window would have run far longer than this");
 }
@@ -235,22 +239,22 @@ ZTEST(tof_task_watchdog, test_a_takeover_after_a_failed_quiesce_inherits_no_decl
  * quiesce starts. The quiesce must be judged against that earlier progress. */
 void waiting_with_the_quiesce_in_flight(harness &h)
 {
-    h.in.l7_expected = true;
+    h.in.l7_chain_expected = true;
     h.in.baseline_point = false;
 
     /* The probe: one bracketed operation that begins and ends. It is what opens the monitor. */
-    h.in.l7 = {1, 1};
-    zassert_true(h.tick(1, advance{.l7 = false}));
+    h.in.l7_chain = {1, 1};
+    zassert_true(h.tick(1, advance{.l7_chain = false}));
     zassert_equal(h.st.current, wd::phase::waiting,
                   "a package-only image never reaches the baseline; the waiting path is the one "
                   "that has to get this right");
-    zassert_true(h.st.l7_watching, "the monitor opens at the first operation, which is the probe");
+    zassert_true(h.st.l7_chain_watching, "the monitor opens at the first operation, which is the probe");
 
     /* Only then the quiesce, declared, on a device that answered. */
-    h.in.l7.begun = h.in.l7.ended + 1;
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
-    zassert_true(h.tick(1, advance{.l7 = false}));
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
+    zassert_true(h.tick(1, advance{.l7_chain = false}));
 }
 
 ZTEST(tof_task_watchdog, test_a_declared_quiesce_before_any_baseline_outlasts_the_l7_bound)
@@ -259,8 +263,8 @@ ZTEST(tof_task_watchdog, test_a_declared_quiesce_before_any_baseline_outlasts_th
     waiting_with_the_quiesce_in_flight(h);
 
     for (int i{0}; i < 11; ++i)
-        zassert_true(h.tick(500, advance{.l7 = false}));
-    zassert_true(h.tick(430, advance{.l7 = false}));
+        zassert_true(h.tick(500, advance{.l7_chain = false}));
+    zassert_true(h.tick(430, advance{.l7_chain = false}));
     zassert_equal(h.st.current, wd::phase::waiting);
     zassert_equal(h.st.why, 0U);
 }
@@ -270,7 +274,7 @@ ZTEST(tof_task_watchdog, test_a_declared_quiesce_that_wedges_before_any_baseline
     harness h{};
     waiting_with_the_quiesce_in_flight(h);
 
-    zassert_true(h.run_until_stopped(80, 1000, advance{.l7 = false}));
+    zassert_true(h.run_until_stopped(80, 1000, advance{.l7_chain = false}));
     zassert_true((h.st.why & wd::long_operation_over) != 0U,
                  "the waiting path judges a declaration that never ends; that is its one cap");
 }
@@ -281,16 +285,16 @@ ZTEST(tof_task_watchdog, test_the_l7_bound_returns_before_any_baseline_too)
     waiting_with_the_quiesce_in_flight(h);
 
     for (int i{0}; i < 11; ++i)
-        zassert_true(h.tick(500, advance{.l7 = false}));
-    h.in.l7.ended = h.in.l7.begun;
-    h.in.long_operation = false;
-    zassert_true(h.tick(1, advance{.l7 = false}));
+        zassert_true(h.tick(500, advance{.l7_chain = false}));
+    h.in.l7_chain.ended = h.in.l7_chain.begun;
+    h.in.long_operation_chain = false;
+    zassert_true(h.tick(1, advance{.l7_chain = false}));
 
     /* Still no baseline. The next operation is judged at l7_ms all the same: the waiting path's
      * whole purpose is that an L7 operation is bounded before anything periodic exists. */
-    h.in.l7.begun = h.in.l7.ended + 1;
-    zassert_true(h.run_until_stopped(20, 1000, advance{.l7 = false}));
-    zassert_true((h.st.why & wd::stuck_l7) != 0U);
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    zassert_true(h.run_until_stopped(20, 1000, advance{.l7_chain = false}));
+    zassert_true((h.st.why & wd::stuck_l7_chain) != 0U);
     zassert_equal(h.st.why & wd::long_operation_over, 0U);
 }
 
@@ -305,7 +309,7 @@ ZTEST(tof_task_watchdog, test_a_wedged_send_slot_is_not_hidden_by_the_other_one_
     /* The acquisition sender goes in and does not come out; the workqueue heartbeat keeps going. */
     h.in.send_acq.begun = h.in.send_acq.ended + 1;
 
-    zassert_true(h.run_until_stopped(30, 1000, advance{.send_acq = false, .l7 = false}));
+    zassert_true(h.run_until_stopped(30, 1000, advance{.send_acq = false, .l7_chain = false}));
     zassert_true((h.st.why & (wd::stuck_send_acq | wd::silent_send_acq)) != 0U);
     zassert_equal(h.st.why & (wd::stuck_send_workq | wd::silent_send_workq), 0U,
                   "the healthy slot must not be blamed");
@@ -318,7 +322,7 @@ ZTEST(tof_task_watchdog, test_a_periodic_task_that_stops_being_scheduled_is_caug
     harness h{};
     h.arm();
     /* Nothing in flight anywhere. Acquisition simply never runs again. */
-    zassert_true(h.run_until_stopped(30, 1000, advance{.acq = false, .l7 = false}));
+    zassert_true(h.run_until_stopped(30, 1000, advance{.acq = false, .l7_chain = false}));
     zassert_true((h.st.why & wd::silent_cycle) != 0U);
     zassert_equal(h.st.why & wd::stuck_cycle, 0U, "nothing was inside it; it stopped running");
 }
@@ -327,7 +331,7 @@ ZTEST(tof_task_watchdog, test_a_health_work_item_that_stops_being_scheduled_is_c
 {
     harness h{};
     h.arm();
-    zassert_true(h.run_until_stopped(30, 1000, advance{.health = false, .l7 = false}));
+    zassert_true(h.run_until_stopped(30, 1000, advance{.health = false, .l7_chain = false}));
     zassert_true((h.st.why & wd::silent_health) != 0U);
 }
 
@@ -339,10 +343,10 @@ ZTEST(tof_task_watchdog, test_a_long_operation_does_not_excuse_the_tasks_it_neve
     harness h{};
     h.arm();
 
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
 
-    zassert_true(h.run_until_stopped(20, 1000, advance{.zcan = false, .l7 = false}),
+    zassert_true(h.run_until_stopped(20, 1000, advance{.zcan = false, .l7_chain = false}),
                  "zcan silence is not covered by a chain operation");
     zassert_true((h.st.why & wd::silent_zcan) != 0U);
     zassert_equal(h.st.why & wd::long_operation_over, 0U, "the cap had not been reached");
@@ -352,10 +356,10 @@ ZTEST(tof_task_watchdog, test_a_long_operation_does_not_excuse_a_dead_heartbeat)
 {
     harness h{};
     h.arm();
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
 
-    zassert_true(h.run_until_stopped(20, 1000, advance{.send_workq = false, .l7 = false}));
+    zassert_true(h.run_until_stopped(20, 1000, advance{.send_workq = false, .l7_chain = false}));
     zassert_true((h.st.why & wd::silent_send_workq) != 0U);
 }
 
@@ -365,13 +369,13 @@ ZTEST(tof_task_watchdog, test_a_long_operation_excuses_the_chain_work_it_holds)
     harness h{};
     h.arm();
 
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
-    h.in.l7.begun = 1;                                   /* the ULD download, legitimately slow */
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
+    h.in.l7_chain.begun = 1;                                   /* the ULD download, legitimately slow */
     h.in.acquisition.begun = h.in.acquisition.ended + 1;  /* the cycle waiting on the chain */
 
     for (int i{0}; i < 8; ++i)
-        zassert_true(h.tick(1000, advance{.acq = false, .l7 = false}),
+        zassert_true(h.tick(1000, advance{.acq = false, .l7_chain = false}),
                      "acquisition and the L7 are exactly what a chain operation holds");
     zassert_equal(h.st.current, wd::phase::armed);
 }
@@ -382,11 +386,11 @@ ZTEST(tof_task_watchdog, test_a_long_operation_that_never_ends_is_its_own_reason
     harness h{};
     h.arm();
 
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
-    h.in.l7.begun = 1;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
+    h.in.l7_chain.begun = 1;
 
-    zassert_true(h.run_until_stopped(60, 1000, advance{.acq = false, .l7 = false}));
+    zassert_true(h.run_until_stopped(60, 1000, advance{.acq = false, .l7_chain = false}));
     zassert_true((h.st.why & wd::long_operation_over) != 0U,
                  "an unbounded declaration is not a bound");
 }
@@ -400,10 +404,10 @@ ZTEST(tof_task_watchdog, test_a_long_operation_that_wedges_before_the_baseline_s
     harness h{};
     h.healthy_pre_l7();
     h.in.baseline_point = false;          /* commissioning has not finished; nothing periodic yet */
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
 
-    zassert_true(h.run_until_stopped(60, 1000, advance{.l7 = false}));
+    zassert_true(h.run_until_stopped(60, 1000, advance{.l7_chain = false}));
     zassert_equal(h.st.current, wd::phase::stopped);
     zassert_true((h.st.why & wd::long_operation_over) != 0U);
 }
@@ -418,7 +422,7 @@ ZTEST(tof_task_watchdog, test_ordinary_activity_is_still_unjudged_before_the_bas
     h.in.acquisition.begun = h.in.acquisition.ended + 1;   /* inside a cycle, and staying there */
 
     for (int i{0}; i < 60; ++i)
-        zassert_true(h.tick(1000, advance{.acq = false, .l7 = false}),
+        zassert_true(h.tick(1000, advance{.acq = false, .l7_chain = false}),
                      "a chain that has not been commissioned is not a chain that is stuck");
     zassert_equal(h.st.current, wd::phase::waiting);
 }
@@ -436,7 +440,7 @@ ZTEST(tof_task_watchdog, test_a_board_whose_host_never_arrives_is_never_judged)
     h.in.baseline_point = true;
 
     for (int i{0}; i < 200; ++i)
-        zassert_true(h.tick(1000, advance{.send_acq = false, .send_workq = false, .l7 = false}),
+        zassert_true(h.tick(1000, advance{.send_acq = false, .send_workq = false, .l7_chain = false}),
                      "a missing host is not a hang");
 
     zassert_equal(h.st.current, wd::phase::waiting);
@@ -452,11 +456,11 @@ ZTEST(tof_task_watchdog, test_both_senders_must_have_finished_before_the_baselin
     h.in.send_acq = {0, 0};
     h.in.baseline_point = true;
 
-    (void)h.tick(1, advance{.send_acq = false, .l7 = false});
+    (void)h.tick(1, advance{.send_acq = false, .l7_chain = false});
     zassert_equal(h.st.current, wd::phase::waiting);
 
     h.in.send_acq = {1, 1};
-    (void)h.tick(1, advance{.send_acq = false, .l7 = false});
+    (void)h.tick(1, advance{.send_acq = false, .l7_chain = false});
     zassert_equal(h.st.current, wd::phase::armed);
 }
 
@@ -469,11 +473,11 @@ ZTEST(tof_task_watchdog, test_the_baseline_is_not_taken_while_something_is_in_fl
     h.in.acquisition = {11, 10};
     h.in.baseline_point = true;
 
-    (void)h.tick(1, advance{.acq = false, .l7 = false});
+    (void)h.tick(1, advance{.acq = false, .l7_chain = false});
     zassert_equal(h.st.current, wd::phase::waiting);
 
     h.in.acquisition = {11, 11};
-    (void)h.tick(1, advance{.acq = false, .l7 = false});
+    (void)h.tick(1, advance{.acq = false, .l7_chain = false});
     zassert_equal(h.st.current, wd::phase::armed);
 }
 
@@ -484,12 +488,12 @@ ZTEST(tof_task_watchdog, test_an_image_without_the_l7_is_never_asked_for_l7_prog
     harness h{};
     h.arm(false);
 
-    h.in.l7.begun = 1;
+    h.in.l7_chain.begun = 1;
     for (int i{0}; i < 30; ++i)
-        zassert_true(h.tick(1000, advance{.l7 = false}));
+        zassert_true(h.tick(1000, advance{.l7_chain = false}));
 
-    zassert_false(h.st.l7_watching);
-    zassert_equal(h.st.why & (wd::stuck_l7 | wd::silent_l7), 0U);
+    zassert_false(h.st.l7_chain_watching);
+    zassert_equal(h.st.why & (wd::stuck_l7_chain | wd::silent_l7_chain), 0U);
 }
 
 /* A healthy board, indefinitely. The suite is worth little if the ordinary case trips anything. */
@@ -497,8 +501,8 @@ ZTEST(tof_task_watchdog, test_a_working_board_is_fed_indefinitely)
 {
     harness h{};
     h.arm();
-    h.in.l7.begun = 1;
-    h.in.l7.ended = 1;
+    h.in.l7_chain.begun = 1;
+    h.in.l7_chain.ended = 1;
 
     for (int i{0}; i < 500; ++i)
         zassert_true(h.tick(100), "nothing here is wrong");
@@ -513,10 +517,10 @@ ZTEST(tof_task_watchdog, test_a_counter_wrap_is_progress_and_not_an_event)
     h.in.acquisition = {0xFFFFFFFEU, 0xFFFFFFFEU};
     h.in.send_acq = {0xFFFFFFFFU, 0xFFFFFFFFU};
     h.in.zcan_loops = 0xFFFFFFFFU;
-    (void)h.tick(100, advance{.l7 = false});
+    (void)h.tick(100, advance{.l7_chain = false});
 
     for (int i{0}; i < 20; ++i)
-        zassert_true(h.tick(100, advance{.l7 = false}));
+        zassert_true(h.tick(100, advance{.l7_chain = false}));
     zassert_equal(h.st.current, wd::phase::armed);
 }
 
@@ -526,10 +530,10 @@ ZTEST(tof_task_watchdog, test_the_millisecond_clock_may_wrap_without_firing)
     harness h{};
     h.arm();
     h.in.now_ms = 0xFFFFF000U;
-    (void)h.tick(100, advance{.l7 = false});
+    (void)h.tick(100, advance{.l7_chain = false});
 
     for (int i{0}; i < 100; ++i)
-        zassert_true(h.tick(500, advance{.l7 = false}));
+        zassert_true(h.tick(500, advance{.l7_chain = false}));
 }
 
 /* THE LATCH. A board that hangs intermittently would otherwise get an unlimited number of chances
@@ -538,7 +542,7 @@ ZTEST(tof_task_watchdog, test_a_stopped_feed_never_resumes_however_healthy_thing
 {
     harness h{};
     h.arm();
-    zassert_true(h.run_until_stopped(30, 1000, advance{.health = false, .l7 = false}));
+    zassert_true(h.run_until_stopped(30, 1000, advance{.health = false, .l7_chain = false}));
 
     h.healthy_pre_l7();
     for (int i{0}; i < 50; ++i)
@@ -552,24 +556,24 @@ ZTEST(tof_task_watchdog, test_the_grace_period_judges_nothing)
     harness h{};
     h.healthy_pre_l7();
     h.in.baseline_point = true;
-    (void)h.tick(1, advance{.l7 = false});
+    (void)h.tick(1, advance{.l7_chain = false});
     zassert_equal(h.st.current, wd::phase::armed);
 
     h.in.acquisition.begun = h.in.acquisition.ended + 1;
     zassert_true(h.tick(h.b.grace_ms - 10,
                         advance{.acq = false, .send_acq = false, .send_workq = false,
-                                .health = false, .zcan = false, .l7 = false}));
+                                .health = false, .zcan = false, .l7_chain = false}));
 }
 
 /* The suspend set is a constant so that no call site can widen it. */
 ZTEST(tof_task_watchdog, test_the_long_operation_suspend_set_covers_the_chain_and_nothing_else)
 {
-    constexpr uint32_t expected{wd::stuck_cycle | wd::silent_cycle | wd::stuck_l7 | wd::silent_l7};
-    zassert_equal(wd::kLongOperationSuspends, expected);
-    zassert_equal(wd::kLongOperationSuspends & wd::silent_zcan, 0U);
-    zassert_equal(wd::kLongOperationSuspends & (wd::stuck_send_acq | wd::silent_send_acq), 0U);
-    zassert_equal(wd::kLongOperationSuspends & (wd::stuck_send_workq | wd::silent_send_workq), 0U);
-    zassert_equal(wd::kLongOperationSuspends & (wd::stuck_health | wd::silent_health), 0U);
+    constexpr uint32_t expected{wd::stuck_cycle | wd::silent_cycle | wd::stuck_l7_chain | wd::silent_l7_chain};
+    zassert_equal(wd::kChainLongOperationSuspends, expected);
+    zassert_equal(wd::kChainLongOperationSuspends & wd::silent_zcan, 0U);
+    zassert_equal(wd::kChainLongOperationSuspends & (wd::stuck_send_acq | wd::silent_send_acq), 0U);
+    zassert_equal(wd::kChainLongOperationSuspends & (wd::stuck_send_workq | wd::silent_send_workq), 0U);
+    zassert_equal(wd::kChainLongOperationSuspends & (wd::stuck_health | wd::silent_health), 0U);
 }
 
 ZTEST(tof_task_watchdog, test_every_reason_has_its_own_name)
@@ -582,11 +586,38 @@ ZTEST(tof_task_watchdog, test_every_reason_has_its_own_name)
     zassert_true(strcmp(wd::reason_name(wd::silent_send_workq), "silent_send_workq") == 0);
     zassert_true(strcmp(wd::reason_name(wd::stuck_health), "stuck_health") == 0);
     zassert_true(strcmp(wd::reason_name(wd::silent_health), "silent_health") == 0);
-    zassert_true(strcmp(wd::reason_name(wd::stuck_l7), "stuck_l7") == 0);
-    zassert_true(strcmp(wd::reason_name(wd::silent_l7), "silent_l7") == 0);
+    /* NAMED PER POPULATION, because the name is what a field reader sees. "stuck_l7" was the whole
+     * of the record's ambiguity: it said an operation was outstanding without saying which of two
+     * populations, on different buses and different threads, owned it. */
+    zassert_true(strcmp(wd::reason_name(wd::stuck_l7_chain), "stuck_l7_chain") == 0);
+    zassert_true(strcmp(wd::reason_name(wd::silent_l7_chain), "silent_l7_chain") == 0);
+    zassert_true(strcmp(wd::reason_name(wd::stuck_l7_package), "stuck_l7_package") == 0);
+    zassert_true(strcmp(wd::reason_name(wd::silent_l7_package), "silent_l7_package") == 0);
     zassert_true(strcmp(wd::reason_name(wd::silent_zcan), "silent_zcan") == 0);
     zassert_true(strcmp(wd::reason_name(wd::long_operation_over), "long_operation_over") == 0);
+    zassert_true(strcmp(wd::reason_name(wd::long_operation_over_package),
+                        "long_operation_over_package") == 0);
     zassert_true(strcmp(wd::reason_name(wd::feed_api_failed), "feed_api_failed") == 0);
+
+    /* EVERY REASON IN THIS LIST HAS A NAME, and the list is hand-written, so that is the whole of
+     * what this proves. reason_name() answers "unknown" for a bit it does not know, and a record
+     * carrying an unknown reason is one nobody can interpret -- but a reason added to the enum and
+     * NOT added below is invisible to this case, exactly as it is to the named assertions above.
+     * Catching that would take the enum enumerating itself, which C++ does not offer here; what
+     * closes it is review of the enum, not this loop. */
+    constexpr uint32_t kAllReasons{wd::stuck_cycle | wd::silent_cycle | wd::stuck_send_acq |
+                                   wd::silent_send_acq | wd::stuck_send_workq |
+                                   wd::silent_send_workq | wd::stuck_health | wd::silent_health |
+                                   wd::stuck_l7_chain | wd::silent_l7_chain |
+                                   wd::stuck_l7_package | wd::silent_l7_package | wd::silent_zcan |
+                                   wd::long_operation_over | wd::long_operation_over_package |
+                                   wd::feed_api_failed};
+    for (uint32_t bit{1}; bit != 0; bit <<= 1) {
+        if ((kAllReasons & bit) == 0)
+            continue;
+        zassert_true(strcmp(wd::reason_name(static_cast<wd::reason>(bit)), "unknown") != 0,
+                     "reason bit 0x%08x has no name", bit);
+    }
 }
 
 /* ---- commissioning stops acquisition ---- */
@@ -645,11 +676,11 @@ ZTEST(tof_task_watchdog, test_a_stopped_acquisition_does_not_reset_on_l7_silence
     h.arm();
     /* The L7 has run, so it is being watched: this is the case the suspension is for. */
     (void)h.tick(10);
-    zassert_true(h.st.l7_watching, "the L7 monitor must be running for this case to mean anything");
+    zassert_true(h.st.l7_chain_watching, "the L7 monitor must be running for this case to mean anything");
 
     h.in.acquisition_expected = false;
     for (int i = 0; i < 60; ++i) {
-        zassert_true(h.tick(500, advance{.acq = false, .send_acq = false, .l7 = false}),
+        zassert_true(h.tick(500, advance{.acq = false, .send_acq = false, .l7_chain = false}),
                      "reset at %u ms on L7 silence during a commissioning pass", h.in.now_ms);
     }
 }
@@ -664,19 +695,19 @@ ZTEST(tof_task_watchdog, test_a_stopped_acquisition_does_not_excuse_an_l7_operat
     (void)h.tick(10);
 
     h.in.acquisition_expected = false;
-    ++h.in.l7.begun;  // went in, never came out
+    ++h.in.l7_chain.begun;  // went in, never came out
 
     /* ONE SAMPLE FIRST, so the operation is in flight and young. The in-flight bound is measured
      * from when THIS operation began, so a case that begins one and reads the verdict in the same
      * sample proves nothing about the bound -- it used to pass only because the clock was the last
      * completion, which is the defect this timing replaced. */
     const bool fed_young =
-        h.tick(1, advance{.acq = false, .send_acq = false, .l7 = false});
+        h.tick(1, advance{.acq = false, .send_acq = false, .l7_chain = false});
     zassert_true(fed_young, "an L7 operation one millisecond old was already called stuck");
 
-    const bool fed = h.tick(h.b.l7_ms + 1, advance{.acq = false, .send_acq = false, .l7 = false});
+    const bool fed = h.tick(h.b.l7_ms + 1, advance{.acq = false, .send_acq = false, .l7_chain = false});
     zassert_false(fed, "a stopped acquisition excused an L7 operation stuck in flight");
-    zassert_true((h.st.why & wd::stuck_l7) != 0, "why 0x%08x", h.st.why);
+    zassert_true((h.st.why & wd::stuck_l7_chain) != 0, "why 0x%08x", h.st.why);
 }
 
 /* ---- the sender is nested inside the things that would have excused it ---- */
@@ -706,7 +737,7 @@ ZTEST(tof_task_watchdog, test_a_wedged_sender_latches_the_cycle_and_health_that_
     ++h.in.health.begun;
 
     const bool stopped = h.run_until_stopped(
-        40, 250, advance{.acq = false, .send_acq = false, .health = false, .l7 = false});
+        40, 250, advance{.acq = false, .send_acq = false, .health = false, .l7_chain = false});
     zassert_true(stopped, "a sender wedged forever never stopped the feed");
 
     /* BOTH of the enclosing counters, from one blocked call. The sender is the proximate cause and
@@ -741,7 +772,7 @@ ZTEST(tof_task_watchdog, test_suspending_acquisition_does_not_hide_a_wedged_send
     ++h.in.health.begun;
 
     const bool stopped = h.run_until_stopped(
-        40, 250, advance{.acq = false, .send_acq = false, .health = false, .l7 = false});
+        40, 250, advance{.acq = false, .send_acq = false, .health = false, .l7_chain = false});
     zassert_true(stopped, "a wedged health send was excused by an unrelated suspension");
     zassert_true((h.st.why & wd::stuck_health) != 0, "why 0x%08x", h.st.why);
     zassert_equal(h.st.why & (wd::stuck_cycle | wd::stuck_send_acq), 0U,
@@ -767,18 +798,18 @@ ZTEST(tof_task_watchdog, test_a_resumed_acquisition_is_not_judged_on_the_pause_i
      * try_stop() leaves behind. */
     h.in.acquisition_expected = false;
     for (int i{0}; i < 8; ++i)
-        zassert_true(h.tick(1000, advance{.acq = false, .send_acq = false, .l7 = false}),
+        zassert_true(h.tick(1000, advance{.acq = false, .send_acq = false, .l7_chain = false}),
                      "the suspension itself must feed");
 
     /* Back, and nothing has completed yet because the thread has only just been started. This is
      * the sample that used to latch. */
     h.in.acquisition_expected = true;
-    zassert_true(h.tick(1, advance{.acq = false, .send_acq = false, .l7 = false}),
+    zassert_true(h.tick(1, advance{.acq = false, .send_acq = false, .l7_chain = false}),
                  "the first sample after the pause judged the pause: why 0x%08x", h.st.why);
 
     /* And it stays fed while the resumed activity gets going. */
     for (int i{0}; i < 5; ++i)
-        zassert_true(h.tick(100, advance{.l7 = false}), "why 0x%08x", h.st.why);
+        zassert_true(h.tick(100, advance{.l7_chain = false}), "why 0x%08x", h.st.why);
     zassert_equal(h.st.current, wd::phase::armed);
 }
 
@@ -792,11 +823,11 @@ ZTEST(tof_task_watchdog, test_an_acquisition_that_resumes_and_then_dies_is_still
 
     h.in.acquisition_expected = false;
     for (int i{0}; i < 8; ++i)
-        (void)h.tick(1000, advance{.acq = false, .send_acq = false, .l7 = false});
+        (void)h.tick(1000, advance{.acq = false, .send_acq = false, .l7_chain = false});
 
     h.in.acquisition_expected = true;
     const bool stopped = h.run_until_stopped(
-        40, 500, advance{.acq = false, .send_acq = false, .l7 = false});
+        40, 500, advance{.acq = false, .send_acq = false, .l7_chain = false});
     zassert_true(stopped, "a resumed acquisition that completed nothing was fed forever");
     zassert_true((h.st.why & wd::silent_cycle) != 0, "why 0x%08x", h.st.why);
 }
@@ -808,14 +839,14 @@ ZTEST(tof_task_watchdog, test_a_declared_operation_does_not_leave_a_gap_behind_i
     harness h;
     h.arm();
 
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
     for (int i{0}; i < 8; ++i)
-        zassert_true(h.tick(1000, advance{.acq = false, .l7 = false}),
+        zassert_true(h.tick(1000, advance{.acq = false, .l7_chain = false}),
                      "the declaration itself must feed: why 0x%08x", h.st.why);
 
-    h.in.long_operation = false;
-    zassert_true(h.tick(1, advance{.acq = false, .l7 = false}),
+    h.in.long_operation_chain = false;
+    zassert_true(h.tick(1, advance{.acq = false, .l7_chain = false}),
                  "the first sample after the operation judged the operation: why 0x%08x", h.st.why);
 }
 
@@ -832,18 +863,18 @@ ZTEST(tof_task_watchdog, test_the_in_flight_bound_measures_this_operation_not_th
 
     /* A quiet sender: nothing completes for longer than send_ms, but still inside send_silence_ms
      * so the silence half has nothing to say yet. */
-    zassert_true(h.tick(h.b.send_ms + 500, advance{.send_acq = false, .l7 = false}),
+    zassert_true(h.tick(h.b.send_ms + 500, advance{.send_acq = false, .l7_chain = false}),
                  "why 0x%08x", h.st.why);
 
     /* Now one send goes in. It is one millisecond old. */
     ++h.in.send_acq.begun;
-    zassert_true(h.tick(1, advance{.send_acq = false, .l7 = false}),
+    zassert_true(h.tick(1, advance{.send_acq = false, .l7_chain = false}),
                  "a send one millisecond old was judged on the gap before it: why 0x%08x",
                  h.st.why);
 
     /* It completes, the way an ordinary send does. */
     ++h.in.send_acq.ended;
-    zassert_true(h.tick(1, advance{.send_acq = false, .l7 = false}), "why 0x%08x", h.st.why);
+    zassert_true(h.tick(1, advance{.send_acq = false, .l7_chain = false}), "why 0x%08x", h.st.why);
     zassert_equal(h.st.current, wd::phase::armed);
 }
 
@@ -856,7 +887,7 @@ ZTEST(tof_task_watchdog, test_a_send_that_never_returns_is_still_caught_on_its_o
 
     ++h.in.send_acq.begun;  // in, and never out
     const bool stopped =
-        h.run_until_stopped(40, 500, advance{.send_acq = false, .l7 = false});
+        h.run_until_stopped(40, 500, advance{.send_acq = false, .l7_chain = false});
     zassert_true(stopped, "a send that never returned was fed forever");
     zassert_true((h.st.why & wd::stuck_send_acq) != 0, "why 0x%08x", h.st.why);
 }
@@ -875,22 +906,22 @@ ZTEST(tof_task_watchdog, test_a_first_l7_open_cannot_wait_for_the_cycle_it_preve
 
     h.healthy_pre_l7();
     h.in.baseline_point = true;
-    h.in.l7_expected = true;
+    h.in.l7_chain_expected = true;
     /* Nothing has cycled yet, which is the whole point: this is before the first cycle, not after
      * a board that stopped cycling. */
     h.in.acquisition = {0, 0};
     h.in.send_acq = {0, 0};
-    h.in.l7 = {1, 0};  // one open, in flight
+    h.in.l7_chain = {1, 0};  // one open, in flight
 
-    (void)h.tick(1, advance{.acq = false, .send_acq = false, .l7 = false});
+    (void)h.tick(1, advance{.acq = false, .send_acq = false, .l7_chain = false});
     zassert_equal(h.st.current, wd::phase::waiting, "the baseline cannot be ready yet");
-    zassert_true(h.st.l7_watching, "the L7 monitor arms at the first open, wherever it falls");
+    zassert_true(h.st.l7_chain_watching, "the L7 monitor arms at the first open, wherever it falls");
 
     const bool stopped = h.run_until_stopped(
-        20, 1000, advance{.acq = false, .send_acq = false, .l7 = false});
+        20, 1000, advance{.acq = false, .send_acq = false, .l7_chain = false});
     zassert_true(stopped, "a first open that never returned held off the baseline and was fed "
                           "forever");
-    zassert_true((h.st.why & wd::stuck_l7) != 0, "why 0x%08x", h.st.why);
+    zassert_true((h.st.why & wd::stuck_l7_chain) != 0, "why 0x%08x", h.st.why);
 }
 
 /* THE CONTROL, and it is the case the whole phase exists for: a post-DFU boot with no host. Every
@@ -903,14 +934,14 @@ ZTEST(tof_task_watchdog, test_a_board_waiting_for_its_host_is_still_fed_indefini
 
     h.healthy_pre_l7();
     h.in.baseline_point = true;
-    h.in.l7_expected = true;
+    h.in.l7_chain_expected = true;
     h.in.acquisition = {0, 0};
     h.in.send_acq = {0, 0};
     h.in.send_workq = {0, 0};
-    h.in.l7 = {0, 0};  // nothing opened: no L7 operation to judge
+    h.in.l7_chain = {0, 0};  // nothing opened: no L7 operation to judge
 
     zassert_false(h.run_until_stopped(60, 1000, advance{.acq = false, .send_acq = false,
-                                                        .send_workq = false, .l7 = false}),
+                                                        .send_workq = false, .l7_chain = false}),
                   "a board waiting for its host was reset: why 0x%08x", h.st.why);
     zassert_equal(h.st.current, wd::phase::waiting);
 }
@@ -924,20 +955,320 @@ ZTEST(tof_task_watchdog, test_a_declaration_still_covers_the_l7_before_the_basel
 
     h.healthy_pre_l7();
     h.in.baseline_point = true;
-    h.in.l7_expected = true;
+    h.in.l7_chain_expected = true;
     h.in.acquisition = {0, 0};
     h.in.send_acq = {0, 0};
-    h.in.l7 = {1, 0};
-    h.in.long_operation = true;
-    h.in.long_operation_began_ms = h.in.now_ms;
+    h.in.l7_chain = {1, 0};
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
 
     /* Past the L7 bound and inside the declaration's cap. */
     for (int i{0}; i < 20; ++i)
-        zassert_true(h.tick(1000, advance{.acq = false, .send_acq = false, .l7 = false}),
+        zassert_true(h.tick(1000, advance{.acq = false, .send_acq = false, .l7_chain = false}),
                      "a declared operation was judged on the L7 bound: why 0x%08x", h.st.why);
 
     /* And the declaration's own cap is what ends it. */
     zassert_true(h.run_until_stopped(30, 1000, advance{.acq = false, .send_acq = false,
-                                                       .l7 = false}));
+                                                       .l7_chain = false}));
     zassert_true((h.st.why & wd::long_operation_over) != 0, "why 0x%08x", h.st.why);
+}
+
+/* ---------------------------------------- the two L7 populations are judged apart ------ */
+
+/* WHY THIS GROUP EXISTS. The chain and the Package device wrote one progress slot and shared one
+ * exemption mask, so two things could not be told apart from each other: whose operation was in
+ * flight, and whose work a declaration was entitled to excuse. Each case below fails on the
+ * pre-split code, and the pair of directions is the point -- a split that only worked one way round
+ * would pass a single case and still hide half the class. */
+
+/* A HEALTHY POPULATION MUST NOT REFRESH A WEDGED ONE'S JUDGEMENT. On the shared slot, the chain's
+ * `ended` moving every tick kept the silence clock fresh and its `begun` moving kept the in-flight
+ * clock fresh, so a Package operation that went in and never came out was never timed. */
+ZTEST(tof_task_watchdog, test_a_busy_chain_does_not_cover_a_wedged_package_l7)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    /* The Package opens something and it never returns. The chain keeps working perfectly. */
+    h.in.l7_package.begun = h.in.l7_package.ended + 1;
+    zassert_true(h.run_until_stopped(20, 1000, advance{.l7_chain = true, .l7_package = false}),
+                 "a Package operation in flight past l7_ms must stop the feed however busy the "
+                 "chain is");
+    zassert_true((h.st.why & wd::stuck_l7_package) != 0U,
+                 "the reason must name the Package population, not 'the L7'");
+    zassert_equal(h.st.why & wd::stuck_l7_chain, 0U,
+                  "the chain was cycling throughout, so nothing about it is at fault");
+}
+
+/* The mirror direction, so the split is not one-sided. */
+ZTEST(tof_task_watchdog, test_a_busy_package_does_not_cover_a_wedged_chain_l7)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+    /* Arm the Package monitor with one completed operation, then keep it cycling. */
+    ++h.in.l7_package.begun;
+    ++h.in.l7_package.ended;
+
+    h.in.l7_chain.begun = h.in.l7_chain.ended + 1;
+    zassert_true(h.run_until_stopped(20, 1000, advance{.l7_chain = false, .l7_package = true}),
+                 "a chain operation in flight past l7_ms must stop the feed however busy the "
+                 "Package sensor is");
+    zassert_true((h.st.why & wd::stuck_l7_chain) != 0U);
+    zassert_equal(h.st.why & wd::stuck_l7_package, 0U);
+}
+
+/* A PACKAGE DECLARATION MUST NOT EXEMPT THE CHAIN'S ACQUISITION. This is the half that splitting
+ * the progress slots does not reach: one mask suspended stuck_cycle and silent_cycle whoever had
+ * declared, so an eight-second Package blob download -- entirely healthy work, on another bus, in
+ * another thread -- bought the chain's acquisition eight seconds of silence it had not earned. */
+ZTEST(tof_task_watchdog, test_a_package_declaration_does_not_suspend_the_chain_acquisition)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    /* The Package declares its download and sits inside it, which is correct and expected. */
+    h.in.l7_package.begun = h.in.l7_package.ended + 1;
+    h.in.long_operation_package = true;
+    h.in.long_operation_package_began_ms = h.in.now_ms;
+
+    /* Meanwhile the chain's acquisition goes into a cycle and never comes out. */
+    h.in.acquisition.begun = h.in.acquisition.ended + 1;
+
+    zassert_true(h.run_until_stopped(30, 500,
+                                     advance{.acq = false, .l7_chain = false, .l7_package = false}),
+                 "a wedged acquisition must still be judged while the Package device is declaring");
+    zassert_true((h.st.why & wd::stuck_cycle) != 0U,
+                 "the chain's acquisition is what wedged, and a Package declaration says nothing "
+                 "about it");
+    zassert_equal(h.st.why & wd::stuck_l7_package, 0U,
+                  "the Package operation was declared, so it must not be the reason");
+}
+
+/* And the converse: the Package's own L7 is still judged while the CHAIN is declaring. A chain blob
+ * bootstrap quiesces acquisition and its own sensors; it does not touch i2c4. */
+ZTEST(tof_task_watchdog, test_a_chain_declaration_does_not_suspend_the_package_l7)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    h.in.long_operation_chain = true;
+    h.in.long_operation_chain_began_ms = h.in.now_ms;
+
+    /* The Package opens something, undeclared, and it never returns. */
+    h.in.l7_package.begun = h.in.l7_package.ended + 1;
+
+    zassert_true(h.run_until_stopped(20, 500,
+                                     advance{.l7_chain = false, .l7_package = false}),
+                 "the Package L7 must still be judged while the chain is declaring");
+    zassert_true((h.st.why & wd::stuck_l7_package) != 0U);
+    zassert_equal(h.st.why & wd::long_operation_over, 0U,
+                  "the chain's declaration had not reached its cap, so it cannot be the reason");
+}
+
+/* THE CASE THE INCIDENT WAS: a Package download that is over the ordinary bound but DECLARED must
+ * not stop the feed, while everything else keeps being watched. */
+ZTEST(tof_task_watchdog, test_a_declared_package_download_outlasts_the_bound_without_resetting)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    h.in.l7_package.begun = h.in.l7_package.ended + 1;
+    h.in.long_operation_package = true;
+    h.in.long_operation_package_began_ms = h.in.now_ms;
+
+    /* 7.74 s is the arithmetic for 86,016 B at 100 kHz; run past it in feeder-sized samples. */
+    for (int i{0}; i < 20; ++i)
+        zassert_true(h.tick(500, advance{.l7_chain = false, .l7_package = false}),
+                     "a declared download must survive its own duration (sample %d)", i);
+    zassert_equal(h.st.current, wd::phase::armed);
+    zassert_equal(h.st.why, 0U);
+
+    /* And it is still a window rather than an exemption. */
+    zassert_true(h.run_until_stopped(80, 1000, advance{.l7_chain = false, .l7_package = false}),
+                 "a declared download that never returns must still end the boot");
+    zassert_true((h.st.why & wd::long_operation_over_package) != 0U,
+                 "the cap that fires must be the Package declaration's, named as such");
+}
+
+/* ------------------------------- the phase the incident was actually in ---------------- */
+
+/* WHY THESE EXIST SEPARATELY FROM THE GROUP ABOVE. Every case above starts at h.arm(), and the
+ * retained record from the incident had acquisition at 0/0 -- baseline_ready() was false, so the
+ * board was in `waiting` the whole time. A judgement can be right in one phase and absent in the
+ * other: that is exactly what the original defect was, an L7 bound the waiting phase never reached.
+ *
+ * `waiting_with_package` sets up that phase deliberately: nothing periodic has completed, no
+ * baseline has been asked for, and the Package population has opened something. */
+static void waiting_with_package(harness &h)
+{
+    h.in.acquisition_expected = true;
+    h.in.acquisition = {0, 0};
+    h.in.send_acq = {0, 0};
+    h.in.send_workq = {0, 0};
+    h.in.health = {0, 0};
+    h.in.zcan_loops = 0;
+    h.in.l7_chain_expected = true;
+    h.in.l7_package_expected = true;
+    h.in.baseline_point = false;
+    /* The Package opens its sensor: this is what arms its monitor. */
+    h.in.l7_package.begun = 1;
+    zassert_true(h.tick(1, advance{.acq = false, .send_acq = false, .send_workq = false,
+                                   .health = false, .zcan = false, .l7_chain = false,
+                                   .l7_package = false}));
+    zassert_equal(h.st.current, wd::phase::waiting, "these cases are about the waiting phase");
+    zassert_true(h.st.l7_package_watching, "the Package monitor arms at its first operation");
+}
+
+/* THE CASE THE INCIDENT WAS, in the phase the incident was in. 86,016 B at 100 kHz is 7.74 s of bus
+ * time, against a 5 s bound; declared, it must not stop the feed. */
+ZTEST(tof_task_watchdog, test_waiting_a_declared_package_download_outlasts_the_bound)
+{
+    harness h{};
+    waiting_with_package(h);
+
+    h.in.long_operation_package = true;
+    h.in.long_operation_package_began_ms = h.in.now_ms;
+
+    for (int i{0}; i < 24; ++i)
+        zassert_true(h.tick(500, advance{.acq = false, .send_acq = false, .send_workq = false,
+                                         .health = false, .zcan = false, .l7_chain = false,
+                                         .l7_package = false}),
+                     "a declared download must survive 12 s before the baseline (sample %d)", i);
+    zassert_equal(h.st.current, wd::phase::waiting);
+    zassert_equal(h.st.why, 0U);
+}
+
+/* And the declaration is still a window rather than an exemption, in this phase too. */
+ZTEST(tof_task_watchdog, test_waiting_a_declared_package_download_still_hits_its_cap)
+{
+    harness h{};
+    waiting_with_package(h);
+
+    h.in.long_operation_package = true;
+    h.in.long_operation_package_began_ms = h.in.now_ms;
+
+    zassert_true(h.run_until_stopped(80, 1000,
+                                     advance{.acq = false, .send_acq = false, .send_workq = false,
+                                             .health = false, .zcan = false, .l7_chain = false,
+                                             .l7_package = false}),
+                 "a declared download that never returns must still end the boot before the "
+                 "baseline");
+    zassert_true((h.st.why & wd::long_operation_over_package) != 0U,
+                 "the Package declaration's own cap is what must fire");
+}
+
+/* An UNDECLARED Package operation that never returns is still a hang, before the baseline. */
+ZTEST(tof_task_watchdog, test_waiting_an_undeclared_package_operation_still_times_out)
+{
+    harness h{};
+    waiting_with_package(h);
+
+    zassert_true(h.run_until_stopped(20, 1000,
+                                     advance{.acq = false, .send_acq = false, .send_workq = false,
+                                             .health = false, .zcan = false, .l7_chain = false,
+                                             .l7_package = false}),
+                 "an undeclared operation in flight past l7_ms must stop the feed");
+    zassert_true((h.st.why & wd::stuck_l7_package) != 0U);
+    zassert_equal(h.st.why & wd::long_operation_over_package, 0U,
+                  "nothing was declared, so no cap can be the reason");
+}
+
+/* ------------------------- a Package that has stopped acquiring, on purpose ------------- */
+
+/* report_only IS THE DESIGNED RESPONSE TO A DEAD SENSOR: the retry budget is spent, the thread
+ * keeps publishing diagnostics so the consumer can see why there is no data, and it makes no
+ * further ULD calls. Judged as silence that becomes a whole-machine reset, and the reset cascades
+ * -- so one broken sensor would loop the robot.
+ *
+ * Before the two populations were split this could not happen, because the chain's operations kept
+ * the shared slot moving. Splitting the slots is what made the case reachable, which is why it is
+ * tested here rather than assumed. */
+ZTEST(tof_task_watchdog, test_a_package_that_stopped_acquiring_is_not_judged_silent)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    /* Six completed operations, then the runtime gives up: counters freeze with nothing in flight,
+     * which is what report_only looks like from here. */
+    h.in.l7_package = {6, 6};
+    zassert_true(h.tick(1, advance{.l7_chain = false, .l7_package = false}));
+    h.in.l7_package_acquiring = false;
+
+    /* Well past l7_silence_ms, with the chain working normally throughout. */
+    for (int i{0}; i < 60; ++i)
+        zassert_true(h.tick(500, advance{.l7_chain = true, .l7_package = false}),
+                     "a Package that has stopped acquiring must not be judged silent (sample %d)",
+                     i);
+    zassert_equal(h.st.current, wd::phase::armed);
+    zassert_equal(h.st.why & wd::silent_l7_package, 0U,
+                  "report_only is a reported fault, not a reason to reset the machine");
+}
+
+/* AND IT SUSPENDS NOTHING ELSE. An operation already in flight when the runtime gave up is still in
+ * flight, and that is a hang whoever asked for it. */
+ZTEST(tof_task_watchdog, test_a_package_that_stopped_acquiring_is_still_judged_in_flight)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    h.in.l7_package = {6, 6};
+    zassert_true(h.tick(1, advance{.l7_chain = false, .l7_package = false}));
+
+    /* Something goes in and does not come out, and only then does the runtime stop acquiring. */
+    h.in.l7_package.begun = h.in.l7_package.ended + 1;
+    h.in.l7_package_acquiring = false;
+
+    zassert_true(h.run_until_stopped(20, 1000, advance{.l7_chain = true, .l7_package = false}),
+                 "an in-flight operation is still judged after the runtime stops acquiring");
+    zassert_true((h.st.why & wd::stuck_l7_package) != 0U,
+                 "the in-flight half must survive the suspension; only silence is suspended");
+}
+
+/* Nor does it suspend a declaration's cap. */
+ZTEST(tof_task_watchdog, test_a_package_that_stopped_acquiring_still_caps_its_declaration)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    h.in.l7_package = {6, 6};
+    zassert_true(h.tick(1, advance{.l7_chain = false, .l7_package = false}));
+    h.in.l7_package_acquiring = false;
+    h.in.long_operation_package = true;
+    h.in.long_operation_package_began_ms = h.in.now_ms;
+
+    zassert_true(h.run_until_stopped(80, 1000, advance{.l7_chain = true, .l7_package = false}),
+                 "a declaration left open must still reach its cap");
+    zassert_true((h.st.why & wd::long_operation_over_package) != 0U);
+}
+
+/* The suspension lifts. A sensor that comes back is judged again, and from the resumption rather
+ * than from the pause -- the clock being held at `now` is what makes that true. */
+ZTEST(tof_task_watchdog, test_a_package_that_resumes_is_judged_from_the_resumption)
+{
+    harness h{};
+    h.arm();
+    h.in.l7_package_expected = true;
+
+    h.in.l7_package = {6, 6};
+    zassert_true(h.tick(1, advance{.l7_chain = false, .l7_package = false}));
+    h.in.l7_package_acquiring = false;
+    for (int i{0}; i < 60; ++i)
+        zassert_true(h.tick(500, advance{.l7_chain = true, .l7_package = false}));
+
+    /* Acquiring again, and completing nothing. The silence bound must measure from here. */
+    h.in.l7_package_acquiring = true;
+    for (int i{0}; i < 19; ++i)
+        zassert_true(h.tick(500, advance{.l7_chain = true, .l7_package = false}),
+                     "the resumed bound must not count the pause (sample %d)", i);
+    zassert_true(h.run_until_stopped(10, 1000, advance{.l7_chain = true, .l7_package = false}),
+                 "and once the resumed bound is exceeded it is a fault again");
+    zassert_true((h.st.why & wd::silent_l7_package) != 0U);
 }

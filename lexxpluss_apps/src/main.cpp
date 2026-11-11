@@ -399,7 +399,17 @@ int main()
 #endif
     RUN(zcan_main, 5); // zcan_main thread must be started at last.
 
-#ifdef ENABLE_TOF_CHAIN
+#if defined(ENABLE_TOF_CHAIN) && !defined(ENABLE_TOF_PACKAGE_BENCH) && \
+    !defined(ENABLE_TOF_PACKAGE_AUTO_DEADMAN)
+    // THE TEST-BOOT DECISION BELONGS TO ONE MECHANISM PER IMAGE, AND THIS GUARD IS
+    // WHICH ONE. Confirming here and arming an unattended revert below are two
+    // answers to the same question, and until this guard existed both were compiled
+    // into the same image whenever the chain was enabled: the confirm ran first, so
+    // arm() found a confirmed image and declined, and the revert was absent for a
+    // reason no file stated. Ordering is not a policy. An image that carries a
+    // deadman now keeps its unconfirmed trailer, which is what gives that timer
+    // something to revert to.
+    //
     // Commissioning builds are delivered as padded *test* images over the
     // CAN DFU (which writes raw bytes into slot1, so only the embedded
     // trailer can request a swap), and the SCB reset that applies the swap
@@ -414,8 +424,8 @@ int main()
     // stays. Deliberately kept immediate because of the verified CAN-DFU
     // reboot cascade; do not delay the confirm past the thread start
     // without first proving the cascade leaves it time to execute. A
-    // future dedicated ToF PRODUCTION target must decide its test-boot
-    // behaviour explicitly instead of inheriting this.
+    // resident image without a deadman still relies on this confirm, and that
+    // is the configuration this branch now serves.
     if (int rc = boot_write_img_confirmed(); rc == 0)
         printk("tof_chain: image confirmed\n");
     else
