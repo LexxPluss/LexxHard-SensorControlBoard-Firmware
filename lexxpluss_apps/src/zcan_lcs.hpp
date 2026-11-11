@@ -16,6 +16,7 @@
 #include <tuple>
 #include "lcs_can_packer.hpp"
 #include "lcs_controller.hpp"
+#include "lcs_request.hpp"
 #include "zcan_bounded_send.hpp"
 #include "zcan_poll_budget.hpp"
 
@@ -26,6 +27,7 @@ LOG_MODULE_REGISTER(zcan_lcs);
 inline constexpr uint16_t LCS_ID0_DATA_ID{0x21C};
 inline constexpr uint16_t LCS_ID1_DATA_ID{0x21D};
 inline constexpr uint16_t LCS_REQUEST_ID{0x21E};
+static_assert(LCS_REQUEST_ID == lcs::kRequestId, "the filter ID and the decoder ID must be the same");
 inline constexpr uint16_t LCS_LINK_STATE_ID{0x21F};
 inline constexpr uint8_t LCS_DATA_LENGTH{8};
 
@@ -39,6 +41,15 @@ static_assert(LCS_ID0_DATA_ID >= 0x21C && LCS_LINK_STATE_ID <= 0x21F && LCS_ID1_
 static_assert(LCS_DATA_LENGTH == std::tuple_size_v<decltype(lcs_controller::msg::data)>,
               "the data length must equal the payload size");
 
+CAN_MSGQ_DEFINE(msgq_can_lcs_request, lcs::kRequestQueueDepth);
+
+/* The registration state after this call: add() runs only while not done and returns a negative errno on failure. */
+template <typename Add>
+bool register_once(const bool done, Add &&add)
+{
+    return done || add() >= 0;
+}
+
 class zcan_lcs {
 public:
     void init()
@@ -48,6 +59,14 @@ public:
             LOG_ERR("CAN_2 is not ready");
             return;
         }
+
+        /* One registration per process: a second filter would deliver every frame twice. */
+        static bool filter_added{false};
+        static const can_filter filter_request{.id = LCS_REQUEST_ID, .mask = CAN_STD_ID_MASK, .flags = 0};
+        const auto add{[&] { return can_add_rx_filter_msgq(dev, &msgq_can_lcs_request, &filter_request); }};
+        filter_added = register_once(filter_added, add);
+        if (!filter_added)
+            LOG_ERR("CAN_2 0x21E filter registration failed");
     }
 
     void poll()
@@ -65,9 +84,26 @@ public:
             std::memcpy(frame.data, message.data.data(), message.data.size());
             zcan_bounded_send::send(dev, &frame, zcan_poll_budget::kMailboxWait);
         }
+
+        can_frame rx_frame;
+        for (int n{0}; n < zcan_poll_budget::kRxPerPass &&
+                      k_msgq_get(&msgq_can_lcs_request, &rx_frame, K_NO_WAIT) == 0; ++n)
+        {
+            ++stats_.received;
+            if (const auto request{lcs::decode_request(rx_frame)})
+                lcs::enqueue_request([](const lcs::Request &r) {
+                    return k_msgq_put(&lcs_controller::request_msgq, &r, K_NO_WAIT) == 0;
+                }, *request, stats_);
+            else
+                ++stats_.dropped_invalid;
+            lcs_controller::g_request_stats = stats_;
+        }
     }
 
+    const lcs::RequestStats &request_stats() const { return stats_; }
+
 private:
+    lcs::RequestStats stats_{};
     const device *dev{nullptr};
 };
 

@@ -37,6 +37,7 @@ enum class SyncOutcome : uint8_t { NotDue, Sent, Skipped };
 struct SyncPoll {
     SyncOutcome outcome;
     bool late; /* the grid was realigned */
+    uint32_t next_due; /* the grid value after the poll */
 };
 
 class SyncScheduler {
@@ -53,12 +54,12 @@ public:
         }
         const uint32_t overdue{tick - next_due_};
         if (overdue >= kHalfRange) {
-            return {SyncOutcome::NotDue, false};
+            return {SyncOutcome::NotDue, false, next_due_};
         }
         const bool late{overdue >= kPeriodTicks};
         next_due_ = late ? tick + kPeriodTicks : next_due_ + kPeriodTicks;
         const bool accepted{send(encode_downlink(kBroadcastId, kCmdLinkSync, 0))};
-        return {accepted ? SyncOutcome::Sent : SyncOutcome::Skipped, late};
+        return {accepted ? SyncOutcome::Sent : SyncOutcome::Skipped, late, next_due_};
     }
 
     /* The next poll() at this tick would send a SYNC. */

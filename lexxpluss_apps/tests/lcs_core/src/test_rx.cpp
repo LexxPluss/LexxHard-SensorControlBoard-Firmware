@@ -32,6 +32,7 @@
 #include "lcs_core_test_support.hpp"
 
 using namespace lcs_test;
+namespace lcs = lexxhard::lcs;
 
 ZTEST_SUITE(lcs_core_rx, NULL, NULL, NULL, NULL, NULL);
 
@@ -544,4 +545,18 @@ ZTEST(lcs_core_rx, test_lcs_core_extra_sof_flood_then_uplink)
     rig.rx.expire(1000 + d12() + 1);
     rig.feed(frame_id1(), 1000 + d12() + 2);
     rig.expect_last(uplink_id1(), 2);
+}
+
+/* The ring helpers must agree with the modulo arithmetic they replace. */
+ZTEST(lcs_core_rx, test_lcs_core_ring_index_matches_modulo)
+{
+    for (std::size_t i{0}; i < lcs::kMaxLen; ++i) {
+        zassert_equal(lcs::next_ring_index(i), (i + 1) % lcs::kMaxLen, "next_ring_index i=%zu", i);
+    }
+    for (std::size_t head{0}; head < lcs::kMaxLen; ++head) {
+        for (std::size_t len{1}; len <= lcs::kMaxLen; ++len) {
+            zassert_equal(lcs::ring_window_start(head, len), (head + lcs::kMaxLen - len) % lcs::kMaxLen,
+                          "ring_window_start head=%zu len=%zu", head, len);
+        }
+    }
 }

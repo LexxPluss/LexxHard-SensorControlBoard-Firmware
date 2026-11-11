@@ -29,10 +29,11 @@ struct RxGroup {
 };
 
 struct TxGroup {
-    uint32_t sent;
+    uint32_t sync_sent;
     uint32_t skipped;
     uint32_t rejected_busy;
     uint32_t timeout;
+    uint32_t uart_err;
 };
 
 struct SyncGroup {
@@ -44,17 +45,27 @@ struct IsrGroup {
     uint32_t rx_queue_overflow;
 };
 
+struct ReqGroup {
+    uint32_t received;
+    uint32_t queued;
+    uint32_t dropped_invalid;
+    uint32_t dropped_full;
+    uint32_t forwarded;
+};
+
 struct Diag {
     RxGroup rx;
     TxGroup tx;
     SyncGroup sync;
     IsrGroup isr;
+    ReqGroup req;
 };
 
-inline constexpr size_t kDiagWords{15};
+inline constexpr size_t kDiagWords{21};
 
 /* Four characters per field, in struct order. */
-inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsentskipbusytoutlatemaxiovfl"};
+inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsyncskipbusytouttxerlatemaxiovfl"
+                                             "recvquedinvlfullfwrd"};
 
 static_assert(sizeof(Diag) == kDiagWords * 4);
 static_assert(std::is_trivially_copyable_v<Diag>);
@@ -66,12 +77,30 @@ struct DiagGroup {
     size_t count;
 };
 
-inline constexpr std::array<DiagGroup, 4> kDiagGroups{{
+inline constexpr std::array<DiagGroup, 5> kDiagGroups{{
     {"rx", 0, 8},
-    {"tx", 8, 4},
-    {"sync", 12, 2},
-    {"isr", 14, 1},
+    {"tx", 8, 5},
+    {"sync", 13, 2},
+    {"isr", 15, 1},
+    {"req", 16, 5},
 }};
+
+/* Counts a failed uart_tx (any non-zero return code) of a downlink frame. */
+inline void count_uart_tx(TxGroup &tx, const int rc)
+{
+    if (rc != 0)
+        ++tx.uart_err;
+}
+
+/* A template because the stats type lives in a header that includes Zephyr; leaves forwarded untouched. */
+template <typename Stats>
+void assign_request_stats(ReqGroup &group, const Stats &stats)
+{
+    group.received = stats.received;
+    group.queued = stats.queued;
+    group.dropped_invalid = stats.dropped_invalid;
+    group.dropped_full = stats.dropped_full;
+}
 
 /* true: "<group> <name>=<value> ..."; false: "<group> <value> ...". The names cost flash, so the build selects. */
 #ifdef ENABLE_LCS_DIAG_NAMES
