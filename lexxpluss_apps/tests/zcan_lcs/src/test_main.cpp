@@ -198,6 +198,15 @@ void expect_stats_delta(const lcs::RequestStats &before, const std::uint32_t rec
     zassert_equal(now.dropped_full - before.dropped_full, dropped_full, "dropped_full delta");
 }
 
+void expect_cmd_delta(const lcs::RequestStats &before, const std::uint32_t zero_reset,
+                      const std::uint32_t temp_drift_calib, const std::uint32_t abort_cmd)
+{
+    const lcs::RequestStats now{stats()};
+    zassert_equal(now.zero_reset - before.zero_reset, zero_reset, "zero_reset delta");
+    zassert_equal(now.temp_drift_calib - before.temp_drift_calib, temp_drift_calib, "temp_drift_calib delta");
+    zassert_equal(now.abort_cmd - before.abort_cmd, abort_cmd, "abort_cmd delta");
+}
+
 can_frame with_id(const std::uint32_t id)
 {
     can_frame frame{valid_frame(1)};
@@ -396,6 +405,7 @@ ZTEST(zcan_lcs, test_invalid_frames_are_dropped_and_counted)
         send_and_poll(frame);
         zassert_equal(queued_count(), 0U, "invalid frame queued");
         expect_stats_delta(before, 1, 0, 1, 0);
+        expect_cmd_delta(before, 0, 0, 0);
     }
 }
 
@@ -406,6 +416,7 @@ ZTEST(zcan_lcs, test_nonzero_byte7_is_dropped_and_counted)
     send_and_poll(with_byte(7, 0x01));
     zassert_equal(queued_count(), 0U, "frame with byte 7 set queued");
     expect_stats_delta(before, 1, 0, 1, 0);
+    expect_cmd_delta(before, 0, 0, 0);
 }
 
 // SC02-09: a nonzero Param for CMD 0x48 and 0x50 is dropped and counted on the adapter path
@@ -439,6 +450,57 @@ ZTEST(zcan_lcs, test_request_stats_mirror_follows_the_adapter)
     zassert_equal(mirror.queued, own.queued, "mirror queued differs");
     zassert_equal(mirror.dropped_invalid, own.dropped_invalid, "mirror dropped_invalid differs");
     zassert_equal(mirror.dropped_full, own.dropped_full, "mirror dropped_full differs");
+    zassert_equal(mirror.zero_reset, own.zero_reset, "mirror zero_reset differs");
+    zassert_equal(mirror.temp_drift_calib, own.temp_drift_calib, "mirror temp_drift_calib differs");
+    zassert_equal(mirror.abort_cmd, own.abort_cmd, "mirror abort_cmd differs");
+}
+
+// SC12-06: counting before or without the verification of the frame
+ZTEST(zcan_lcs, test_sc12_06_rejected_frames_leave_cmd_counters_unchanged)
+{
+    const std::array<can_frame, 7> rejected{with_dlc(7),
+                                            with_dlc(0),
+                                            with_byte(0, 0x49),
+                                            with_byte(1, 2),
+                                            with_byte(7, 7),
+                                            make_request_frame(0x48, 0, 0x0001),
+                                            make_request_frame(0x50, 0, 0x0001)};
+    for (const can_frame &frame : rejected) {
+        const lcs::RequestStats before{stats()};
+        send_and_poll(frame);
+        zassert_equal(queued_count(), 0U, "rejected frame queued");
+        expect_stats_delta(before, 1, 0, 1, 0);
+        expect_cmd_delta(before, 0, 0, 0);
+    }
+}
+
+// SC12-06b: the cmd count follows the cmd of the frame, and a full queue does not stop it
+ZTEST(zcan_lcs, test_sc12_06b_valid_frames_count_per_cmd)
+{
+    const std::array<can_frame, 3> frames{make_request_frame(0x48, 0, 0),
+                                          make_request_frame(0x50, 1, 0),
+                                          make_request_frame(0x68, 0xFF, 0x0102)};
+    for (std::size_t i{0}; i < frames.size(); ++i) {
+        const lcs::RequestStats before{stats()};
+        send_and_poll(frames[i]);
+        expect_stats_delta(before, 1, 1, 0, 0);
+        expect_cmd_delta(before, i == 0 ? 1U : 0U, i == 1 ? 1U : 0U, i == 2 ? 1U : 0U);
+    }
+    while (take_request().has_value()) {
+    }
+
+    for (std::size_t i{0}; i < lcs::kRequestQueueDepth; ++i)
+        send_and_poll(valid_frame(static_cast<std::uint8_t>(i)));
+    zassert_equal(queued_count(), lcs::kRequestQueueDepth);
+    for (std::size_t i{0}; i < frames.size(); ++i) {
+        const lcs::RequestStats before{stats()};
+        send_and_poll(frames[i]);
+        expect_stats_delta(before, 1, 0, 0, 1);
+        expect_cmd_delta(before, i == 0 ? 1U : 0U, i == 1 ? 1U : 0U, i == 2 ? 1U : 0U);
+    }
+    zassert_equal(queued_count(), lcs::kRequestQueueDepth);
+    while (take_request().has_value()) {
+    }
 }
 
 // SC02-04: a rejected frame that leaves state behind and blocks the next valid request

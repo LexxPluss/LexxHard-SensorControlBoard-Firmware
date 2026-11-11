@@ -80,6 +80,30 @@ uint32_t xorshift32(uint32_t &state)
     return x;
 }
 
+lcs::RequestStats numbered_stats()
+{
+    lcs::RequestStats stats{};
+    stats.received = 1;
+    stats.queued = 2;
+    stats.dropped_invalid = 3;
+    stats.dropped_full = 4;
+    stats.zero_reset = 10;
+    stats.temp_drift_calib = 20;
+    stats.abort_cmd = 30;
+    return stats;
+}
+
+void expect_stats(const lcs::RequestStats &actual, const lcs::RequestStats &expected)
+{
+    zassert_equal(actual.received, expected.received, "received");
+    zassert_equal(actual.queued, expected.queued, "queued");
+    zassert_equal(actual.dropped_invalid, expected.dropped_invalid, "dropped_invalid");
+    zassert_equal(actual.dropped_full, expected.dropped_full, "dropped_full");
+    zassert_equal(actual.zero_reset, expected.zero_reset, "zero_reset");
+    zassert_equal(actual.temp_drift_calib, expected.temp_drift_calib, "temp_drift_calib");
+    zassert_equal(actual.abort_cmd, expected.abort_cmd, "abort_cmd");
+}
+
 } // namespace
 
 ZTEST_SUITE(lcs_request, NULL, NULL, NULL, NULL, NULL);
@@ -310,4 +334,163 @@ ZTEST(lcs_request, test_sc01_10b_seeded_random_param_rule)
     /* Accepted with probability 1/3 + 2/3 * 1/2 = 2/3 (about 6667, sigma 47); a plain uniform 16-bit param would
      * give only ~1/3. */
     zassert_true(accepted >= 6000 && accepted <= 7300, "accepted %d outside expected range", accepted);
+}
+
+// Catches swapped fields, a field never incremented, or several fields incremented for one cmd.
+ZTEST(lcs_request, test_sc12_01_count_each_valid_cmd)
+{
+    {
+        lcs::RequestStats stats = numbered_stats();
+        lcs::count_request_cmd(stats, 0x48);
+        lcs::RequestStats expected = numbered_stats();
+        expected.zero_reset = 11;
+        expect_stats(stats, expected);
+    }
+    {
+        lcs::RequestStats stats = numbered_stats();
+        lcs::count_request_cmd(stats, 0x50);
+        lcs::RequestStats expected = numbered_stats();
+        expected.temp_drift_calib = 21;
+        expect_stats(stats, expected);
+    }
+    {
+        lcs::RequestStats stats = numbered_stats();
+        lcs::count_request_cmd(stats, 0x68);
+        lcs::RequestStats expected = numbered_stats();
+        expected.abort_cmd = 31;
+        expect_stats(stats, expected);
+    }
+}
+
+// Catches a default branch that counts an unknown cmd, notably SYNC 0x08, as one of the three.
+ZTEST(lcs_request, test_sc12_02_other_cmd_values_count_nothing)
+{
+    constexpr std::array<uint8_t, 5> other_cmds{0x00, 0x08, 0x49, 0x67, 0xFF};
+    for (const uint8_t cmd : other_cmds) {
+        lcs::RequestStats stats = numbered_stats();
+        lcs::count_request_cmd(stats, cmd);
+        expect_stats(stats, numbered_stats());
+    }
+}
+
+// Catches the cmd count being lost on the success path of the queue.
+ZTEST(lcs_request, test_sc12_03_put_true_counts_cmd_and_queued)
+{
+    for (const uint8_t cmd : kValidCmds) {
+        lcs::RequestStats stats{};
+        lcs::enqueue_request([](const lcs::Request &) { return true; }, lcs::Request{cmd, 0, 0}, stats);
+        zassert_equal(stats.zero_reset, cmd == 0x48 ? 1U : 0U, "cmd 0x%02x zero_reset", cmd);
+        zassert_equal(stats.temp_drift_calib, cmd == 0x50 ? 1U : 0U, "cmd 0x%02x temp_drift_calib", cmd);
+        zassert_equal(stats.abort_cmd, cmd == 0x68 ? 1U : 0U, "cmd 0x%02x abort_cmd", cmd);
+        zassert_equal(stats.queued, 1U, "cmd 0x%02x queued", cmd);
+        zassert_equal(stats.dropped_full, 0U, "cmd 0x%02x dropped_full", cmd);
+    }
+}
+
+// Catches the cmd being counted only when the put succeeds.
+ZTEST(lcs_request, test_sc12_04_put_false_counts_cmd_and_full)
+{
+    for (const uint8_t cmd : kValidCmds) {
+        lcs::RequestStats stats{};
+        lcs::enqueue_request([](const lcs::Request &) { return false; }, lcs::Request{cmd, 0, 0}, stats);
+        zassert_equal(stats.zero_reset, cmd == 0x48 ? 1U : 0U, "cmd 0x%02x zero_reset", cmd);
+        zassert_equal(stats.temp_drift_calib, cmd == 0x50 ? 1U : 0U, "cmd 0x%02x temp_drift_calib", cmd);
+        zassert_equal(stats.abort_cmd, cmd == 0x68 ? 1U : 0U, "cmd 0x%02x abort_cmd", cmd);
+        zassert_equal(stats.queued, 0U, "cmd 0x%02x queued", cmd);
+        zassert_equal(stats.dropped_full, 1U, "cmd 0x%02x dropped_full", cmd);
+    }
+}
+
+// Catches an increment of the wrong size or a counter interaction over a stream of mixed put results.
+ZTEST(lcs_request, test_sc12_05_seeded_stream_matches_oracle)
+{
+    uint32_t state = 0x2F6E2B1u;
+    lcs::RequestStats stats{};
+    uint32_t oracle_zero_reset = 0;
+    uint32_t oracle_temp_drift_calib = 0;
+    uint32_t oracle_abort_cmd = 0;
+    uint32_t oracle_queued = 0;
+    uint32_t oracle_full = 0;
+    for (int i = 0; i < 3000; ++i) {
+        const uint8_t cmd = kValidCmds[xorshift32(state) % kValidCmds.size()];
+        const bool accepted = (xorshift32(state) % 2) == 0;
+        lcs::enqueue_request([accepted](const lcs::Request &) { return accepted; }, lcs::Request{cmd, 0, 0}, stats);
+
+        if (cmd == 0x48) {
+            ++oracle_zero_reset;
+        } else if (cmd == 0x50) {
+            ++oracle_temp_drift_calib;
+        } else {
+            ++oracle_abort_cmd;
+        }
+        if (accepted) {
+            ++oracle_queued;
+        } else {
+            ++oracle_full;
+        }
+
+        zassert_equal(stats.zero_reset, oracle_zero_reset, "step %d zero_reset", i);
+        zassert_equal(stats.temp_drift_calib, oracle_temp_drift_calib, "step %d temp_drift_calib", i);
+        zassert_equal(stats.abort_cmd, oracle_abort_cmd, "step %d abort_cmd", i);
+        zassert_equal(stats.queued, oracle_queued, "step %d queued", i);
+        zassert_equal(stats.dropped_full, oracle_full, "step %d dropped_full", i);
+        zassert_equal(stats.zero_reset + stats.temp_drift_calib + stats.abort_cmd, stats.queued + stats.dropped_full,
+                      "step %d cmd sum differs from queued + dropped_full", i);
+    }
+}
+
+// Catches a count that depends on target or param.
+ZTEST(lcs_request, test_sc12_05b_nine_valid_pairs_count_per_cmd)
+{
+    lcs::RequestStats stats{};
+    for (const uint8_t cmd : kValidCmds) {
+        for (const uint8_t target : kValidTargets) {
+            const uint16_t param = (cmd == 0x68) ? 0x1234 : 0;
+            const can_frame frame = make_frame(cmd, target, param);
+            const std::optional<lcs::Request> req = lcs::decode_request(frame);
+            zassert_true(req.has_value(), "cmd 0x%02x target 0x%02x rejected", cmd, target);
+            lcs::enqueue_request([](const lcs::Request &) { return true; }, *req, stats);
+        }
+    }
+    zassert_equal(stats.zero_reset, 3U);
+    zassert_equal(stats.temp_drift_calib, 3U);
+    zassert_equal(stats.abort_cmd, 3U);
+    zassert_equal(stats.queued, 9U);
+}
+
+// Catches overflow handling: only the counter of the arriving cmd wraps, the others stay.
+ZTEST(lcs_request, test_sc12_07_cmd_counters_wrap)
+{
+    const auto max_stats = [] {
+        lcs::RequestStats stats{};
+        stats.received = 5;
+        stats.queued = 5;
+        stats.dropped_invalid = 5;
+        stats.dropped_full = 5;
+        stats.zero_reset = 0xFFFFFFFFu;
+        stats.temp_drift_calib = 0xFFFFFFFFu;
+        stats.abort_cmd = 0xFFFFFFFFu;
+        return stats;
+    };
+    {
+        lcs::RequestStats stats = max_stats();
+        lcs::count_request_cmd(stats, 0x48);
+        lcs::RequestStats expected = max_stats();
+        expected.zero_reset = 0;
+        expect_stats(stats, expected);
+    }
+    {
+        lcs::RequestStats stats = max_stats();
+        lcs::count_request_cmd(stats, 0x50);
+        lcs::RequestStats expected = max_stats();
+        expected.temp_drift_calib = 0;
+        expect_stats(stats, expected);
+    }
+    {
+        lcs::RequestStats stats = max_stats();
+        lcs::count_request_cmd(stats, 0x68);
+        lcs::RequestStats expected = max_stats();
+        expected.abort_cmd = 0;
+        expect_stats(stats, expected);
+    }
 }
