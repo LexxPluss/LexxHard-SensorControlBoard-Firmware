@@ -455,7 +455,7 @@ ZTEST(zcan_lcs, test_request_stats_mirror_follows_the_adapter)
     zassert_equal(mirror.abort_cmd, own.abort_cmd, "mirror abort_cmd differs");
 }
 
-// SC12-06: counting before or without the verification of the frame
+// A frame that fails verification must not be counted per cmd
 ZTEST(zcan_lcs, test_sc12_06_rejected_frames_leave_cmd_counters_unchanged)
 {
     const std::array<can_frame, 7> rejected{with_dlc(7),
@@ -474,7 +474,7 @@ ZTEST(zcan_lcs, test_sc12_06_rejected_frames_leave_cmd_counters_unchanged)
     }
 }
 
-// SC12-06b: the cmd count follows the cmd of the frame, and a full queue does not stop it
+// The cmd count follows the cmd of the frame, and a full queue does not stop it
 ZTEST(zcan_lcs, test_sc12_06b_valid_frames_count_per_cmd)
 {
     const std::array<can_frame, 3> frames{make_request_frame(0x48, 0, 0),
