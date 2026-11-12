@@ -347,7 +347,10 @@ void run(void *p1, void *p2, void *p3)
             [](const lcs::DownlinkFrame &frame) { return send_frame(frame); })};
         if (action == lcs::ActionOutcome::Sent)
             ++g_lcs.req.forwarded;
-        lcs::assign_request_stats(g_lcs.req, g_request_stats);
+        /* One copy, so that both groups come from the same snapshot. */
+        const lcs::RequestStats request_stats{g_request_stats};
+        lcs::assign_request_stats(g_lcs.req, request_stats);
+        lcs::assign_cmd_stats(g_lcs.cmd, request_stats);
         recover_rx();
         restart_rx();
         guard_tx();

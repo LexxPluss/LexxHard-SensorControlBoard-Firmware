@@ -53,19 +53,27 @@ struct ReqGroup {
     uint32_t forwarded;
 };
 
+struct CmdGroup {
+    uint32_t zero_reset;
+    uint32_t temp_drift_calib;
+    uint32_t abort_cmd;
+};
+
 struct Diag {
     RxGroup rx;
     TxGroup tx;
     SyncGroup sync;
     IsrGroup isr;
     ReqGroup req;
+    CmdGroup cmd;
 };
 
-inline constexpr size_t kDiagWords{21};
+inline constexpr size_t kDiagWords{24};
 
 /* Four characters per field, in struct order. */
 inline constexpr std::string_view kDiagNames{"dlvrcrcesofmtoutuerrfdwnunknrstrsyncskipbusytouttxerlatemaxiovfl"
-                                             "recvquedinvlfullfwrd"};
+                                             "recvquedinvlfullfwrd"
+                                             "zrsttdclabrt"};
 
 static_assert(sizeof(Diag) == kDiagWords * 4);
 static_assert(std::is_trivially_copyable_v<Diag>);
@@ -77,12 +85,13 @@ struct DiagGroup {
     size_t count;
 };
 
-inline constexpr std::array<DiagGroup, 5> kDiagGroups{{
+inline constexpr std::array<DiagGroup, 6> kDiagGroups{{
     {"rx", 0, 8},
     {"tx", 8, 5},
     {"sync", 13, 2},
     {"isr", 15, 1},
     {"req", 16, 5},
+    {"cmd", 21, 3},
 }};
 
 /* Counts a failed uart_tx (any non-zero return code) of a downlink frame. */
@@ -100,6 +109,15 @@ void assign_request_stats(ReqGroup &group, const Stats &stats)
     group.queued = stats.queued;
     group.dropped_invalid = stats.dropped_invalid;
     group.dropped_full = stats.dropped_full;
+}
+
+/* A template for the same reason; copies the per-command counts of the request statistics. */
+template <typename Stats>
+void assign_cmd_stats(CmdGroup &group, const Stats &stats)
+{
+    group.zero_reset = stats.zero_reset;
+    group.temp_drift_calib = stats.temp_drift_calib;
+    group.abort_cmd = stats.abort_cmd;
 }
 
 /* true: "<group> <name>=<value> ..."; false: "<group> <value> ...". The names cost flash, so the build selects. */

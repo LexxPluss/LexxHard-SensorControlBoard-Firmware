@@ -34,18 +34,44 @@ struct Request {
     uint16_t param;
 };
 
-/* received = queued + dropped_invalid + dropped_full. */
+/*
+ * received = queued + dropped_invalid + dropped_full.
+ * zero_reset + temp_drift_calib + abort_cmd = queued + dropped_full: every accepted request is counted by its command,
+ * whatever happens in the queue.
+ */
 struct RequestStats {
     uint32_t received{0};
     uint32_t queued{0};
     uint32_t dropped_invalid{0};
     uint32_t dropped_full{0};
+    uint32_t zero_reset{0};
+    uint32_t temp_drift_calib{0};
+    uint32_t abort_cmd{0};
 };
 
-/* When the queue is full the new request is dropped and the queued ones are kept. */
+inline void count_request_cmd(RequestStats &stats, const uint8_t cmd)
+{
+    switch (cmd) {
+    case kCmdZeroReset:
+        ++stats.zero_reset;
+        break;
+    case kCmdTempDriftCalib:
+        ++stats.temp_drift_calib;
+        break;
+    case kCmdAbort:
+        ++stats.abort_cmd;
+        break;
+    default:
+        // decode_request accepts no other cmd.
+        break;
+    }
+}
+
+/* When the queue is full the new request is dropped and the queued ones are kept. The command is counted either way. */
 template <typename Put>
 void enqueue_request(Put &&put, const Request &request, RequestStats &stats)
 {
+    count_request_cmd(stats, request.cmd);
     if (put(request))
         ++stats.queued;
     else

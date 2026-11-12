@@ -37,15 +37,15 @@
 #include "lcs_diag.hpp"
 #include "lcs_request.hpp"
 
+using lexxhard::lcs::assign_cmd_stats;
 using lexxhard::lcs::assign_request_stats;
+using lexxhard::lcs::CmdGroup;
 using lexxhard::lcs::Diag;
 using lexxhard::lcs::format_group;
 using lexxhard::lcs::IntervalTracker;
 using lexxhard::lcs::kDiagGroups;
 using lexxhard::lcs::kDiagLineMax;
-#ifdef ENABLE_LCS_DIAG_NAMES
 using lexxhard::lcs::kDiagNames;
-#endif
 using lexxhard::lcs::kDiagWords;
 using lexxhard::lcs::ReqGroup;
 using lexxhard::lcs::RequestStats;
@@ -89,6 +89,9 @@ Diag make_numbered()
     d.req.dropped_invalid = 19;
     d.req.dropped_full = 20;
     d.req.forwarded = 21;
+    d.cmd.zero_reset = 22;
+    d.cmd.temp_drift_calib = 23;
+    d.cmd.abort_cmd = 24;
     return d;
 }
 
@@ -101,6 +104,7 @@ Diag make_all_max()
     d.sync = {kMax, kMax};
     d.isr = {kMax};
     d.req = {kMax, kMax, kMax, kMax, kMax};
+    d.cmd = {kMax, kMax, kMax};
     return d;
 }
 
@@ -126,13 +130,13 @@ ZTEST(lcs_diag, test_dg1_group_counts_sum_to_words)
         total += g.count;
     }
     zassert_equal(total, kDiagWords);
-    zassert_equal(kDiagGroups.size(), 5u);
+    zassert_equal(kDiagGroups.size(), 6u);
 }
 
 ZTEST(lcs_diag, test_dg2_group_order_and_names)
 {
-    const std::string_view expected[]{"rx", "tx", "sync", "isr", "req"};
-    zassert_equal(kDiagGroups.size(), 5u);
+    const std::string_view expected[]{"rx", "tx", "sync", "isr", "req", "cmd"};
+    zassert_equal(kDiagGroups.size(), 6u);
     for (size_t i{0}; i < kDiagGroups.size(); ++i) {
         zassert_true(kDiagGroups[i].name == expected[i]);
     }
@@ -157,8 +161,9 @@ ZTEST(lcs_diag, test_dg4_golden_lines)
         "sync 14 15",
         "isr 16",
         "req 17 18 19 20 21",
+        "cmd 22 23 24",
     };
-    for (size_t g{0}; g < 5; ++g) {
+    for (size_t g{0}; g < 6; ++g) {
         char buf[kDiagLineMax];
         const size_t len{format_group(d, g, buf, sizeof(buf))};
         zassert_equal(len, strlen(expected[g]));
@@ -175,8 +180,9 @@ ZTEST(lcs_diag, test_dg4_named_golden_lines)
         "sync late=14 maxi=15",
         "isr ovfl=16",
         "req recv=17 qued=18 invl=19 full=20 fwrd=21",
+        "cmd zrst=22 tdcl=23 abrt=24",
     };
-    for (size_t g{0}; g < 5; ++g) {
+    for (size_t g{0}; g < 6; ++g) {
         char buf[kDiagLineMax];
         const size_t len{format_group(d, g, buf, sizeof(buf))};
         zassert_equal(len, strlen(expected[g]));
@@ -236,7 +242,7 @@ ZTEST(lcs_diag, test_dg4_group_out_of_range_returns_zero)
     const Diag d{make_numbered()};
     char buf[kDiagLineMax];
     memset(buf, 0x5A, sizeof(buf));
-    zassert_equal(format_group(d, 5, buf, sizeof(buf)), 0u);
+    zassert_equal(format_group(d, 6, buf, sizeof(buf)), 0u);
     zassert_equal(buf[0], 0x5A);
 }
 
@@ -250,12 +256,14 @@ ZTEST(lcs_diag, test_dg7_zero_values_print_as_0)
     expect_line(d, 2, "sync 0 0");
     expect_line(d, 3, "isr 0");
     expect_line(d, 4, "req 0 0 0 0 0");
+    expect_line(d, 5, "cmd 0 0 0");
 #else
     expect_line(d, 0, "rx dlvr=0 crce=0 sofm=0 tout=0 uerr=0 fdwn=0 unkn=0 rstr=0");
     expect_line(d, 1, "tx sync=0 skip=0 busy=0 tout=0 txer=0");
     expect_line(d, 2, "sync late=0 maxi=0");
     expect_line(d, 3, "isr ovfl=0");
     expect_line(d, 4, "req recv=0 qued=0 invl=0 full=0 fwrd=0");
+    expect_line(d, 5, "cmd zrst=0 tdcl=0 abrt=0");
 #endif
 }
 
@@ -311,6 +319,60 @@ ZTEST(lcs_diag, test_sc07_07_assign_request_stats_copies_four_words)
     zassert_equal(group.dropped_invalid, 3u);
     zassert_equal(group.dropped_full, 4u);
     zassert_equal(group.forwarded, 5u);
+}
+
+/* Catches: a swapped, skipped or extra field copy, and another group being overwritten. */
+ZTEST(lcs_diag, test_sc12_08_assign_cmd_stats_copies_three_words)
+{
+    Diag d{make_numbered()};
+    RequestStats stats{};
+    stats.received = 1;
+    stats.queued = 2;
+    stats.dropped_invalid = 3;
+    stats.dropped_full = 4;
+    stats.zero_reset = 5;
+    stats.temp_drift_calib = 6;
+    stats.abort_cmd = 7;
+    assign_cmd_stats(d.cmd, stats);
+    zassert_equal(d.cmd.zero_reset, 5u);
+    zassert_equal(d.cmd.temp_drift_calib, 6u);
+    zassert_equal(d.cmd.abort_cmd, 7u);
+
+    const auto words{std::bit_cast<std::array<uint32_t, kDiagWords>>(d)};
+    const auto before{std::bit_cast<std::array<uint32_t, kDiagWords>>(make_numbered())};
+    for (size_t i{0}; i < 21; ++i) {
+        zassert_equal(words[i], before[i], "word %zu changed", i);
+    }
+}
+
+/* Catches: a wrong group position or count, and a names string that was not extended. */
+ZTEST(lcs_diag, test_sc12_10_layout_constants)
+{
+    zassert_equal(kDiagWords, 24u);
+    zassert_equal(sizeof(Diag), 96u);
+    zassert_equal(kDiagNames.size(), 96u);
+    zassert_equal(kDiagGroups.size(), 6u);
+    zassert_true(kDiagGroups[5].name == "cmd");
+    zassert_equal(kDiagGroups[5].first, 21u);
+    zassert_equal(kDiagGroups[5].count, 3u);
+    size_t total{0};
+    for (const auto &g : kDiagGroups) {
+        total += g.count;
+    }
+    zassert_equal(total, kDiagWords);
+}
+
+/* Catches: a command line longer than the line buffer. */
+ZTEST(lcs_diag, test_sc12_11_cmd_line_with_all_max_fits)
+{
+    const Diag d{make_all_max()};
+#ifndef ENABLE_LCS_DIAG_NAMES
+    expect_line(d, 5, "cmd 4294967295 4294967295 4294967295");
+#else
+    expect_line(d, 5, "cmd zrst=4294967295 tdcl=4294967295 abrt=4294967295");
+#endif
+    char buf[kDiagLineMax];
+    zassert_true(format_group(d, 5, buf, sizeof(buf)) < kLongestLine);
 }
 
 /* Catches: counting a success, counting nothing, counting twice, or writing another field. */
