@@ -24,13 +24,25 @@
 		sensor-boot-ms = <2000>;
 		/* PROVISIONAL, and unresolved in the cliff wire contract. Stated
 		 * here rather than defaulted in firmware so that the number is
-		 * visible in a diff and has an owner. 20 Hz acquisition with a
-		 * 5 Hz heartbeat is the shape the contract's timing section
-		 * assumes; both must be replaced by approved values before
-		 * release. */
-		cycle-period-ms = <50>;
+		 * visible in a diff and has an owner; it must be replaced by an
+		 * approved value before release.
+		 *
+		 * 20 ms asks for 50 Hz per cliff corner, the rate the consumer
+		 * expects. It is a target, not a measured property of this image:
+		 * the only 20 ms measurement (E3, 49.95 Hz per corner, about 18 %
+		 * of cycles late) ran four L4 with no grid sensor on the bus. One
+		 * round of four L4 reads took about 15.3 ms there, and a grid read
+		 * adds about 7.5 ms, so a cycle that also collects a grid cannot
+		 * meet 20 ms. The scheduler then runs at the pace of the work and
+		 * counts each late cycle; read cycle_overruns in `tof cliff status`
+		 * before quoting a rate. The earlier 50 ms value met every deadline
+		 * with both grid sensors running.
+		 *
+		 * The health period is independent of this one and the cliff
+		 * contract's timing profile still assumes a 50 ms cycle. */
+		cycle-period-ms = <20>;
 		health-period-ms = <200>;
-		/* Also provisional. The join timeout has to cover a cycle (50 ms)
+		/* Also provisional. The join timeout has to cover a cycle (20 ms)
 		 * plus one blocking sensor read, and 500 ms is a generous bound
 		 * chosen to make a REFUSAL the outcome rather than a long wait;
 		 * the stack is a guess until a watermark exists, and the priority
@@ -59,7 +71,7 @@
 		cliff-distance-mode = <2>;	/* MEDIUM */
 		/* THE GRID PAIR'S RATE, and provisional in the strong sense: the
 		 * sustainable rate has never been measured on this chain. 5 Hz is
-		 * below the 20 Hz cycle on purpose -- most cycles then find nothing
+		 * below the 50 Hz cycle on purpose -- most cycles then find nothing
 		 * ready, which is the ordinary case and costs one non-blocking check.
 		 * Read only by an image that enables ENABLE_TOF_L7_ULD. */
 		grid-frequency-hz = <5>;
