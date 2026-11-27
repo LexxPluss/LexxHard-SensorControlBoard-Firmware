@@ -49,6 +49,18 @@ struct RxStats {
     uint32_t unknown_sender{0};
 };
 
+/* Compare-and-wrap instead of a modulo: kMaxLen is not a power of two. */
+constexpr size_t next_ring_index(const size_t index)
+{
+    return index + 1 == kMaxLen ? 0 : index + 1;
+}
+
+/* Compare-and-wrap instead of a modulo: kMaxLen is not a power of two. */
+constexpr size_t ring_window_start(const size_t head, const size_t len)
+{
+    return head >= len ? head - len : head + kMaxLen - len;
+}
+
 class UplinkReceiver {
 public:
     /* One received byte with the tick of its drain. Returns the uplink this byte completes, if any. */
@@ -57,7 +69,7 @@ public:
         expire(tick);
         const bool idle{count_ == 0};
         ring_[head_] = byte;
-        head_ = (head_ + 1U) % kMaxLen;
+        head_ = next_ring_index(head_);
         advance_candidates(byte);
         if (byte == kSof) {
             start_candidate(tick, is_covered());
@@ -181,8 +193,10 @@ private:
                 ++i;
                 continue;
             }
+            size_t index{ring_window_start(head_, len)};
             for (size_t k{0}; k < len; ++k) {
-                frame[k] = ring_[(head_ + kMaxLen - len + k) % kMaxLen];
+                frame[k] = ring_[index];
+                index = next_ring_index(index);
             }
             const uint16_t received{static_cast<uint16_t>((frame[len - 2] << 8) | frame[len - 1])};
             if (crc16(frame.data(), len - 2) != received) {

@@ -556,3 +556,26 @@ ZTEST(lcs_sync_schedule, test_lcs_sync_reset_returns_to_boot_state)
         }
     }
 }
+
+ZTEST(lcs_sync_schedule, test_sc05_20_poll_next_due_follows_the_scheduler)
+{
+    SyncScheduler scheduler;
+    Sink sink;
+    const auto check = [](const SyncScheduler &owner, const SyncPoll &result, const SyncOutcome want,
+                          const char *what) {
+        zassert_equal(static_cast<int>(result.outcome), static_cast<int>(want), "%s: outcome", what);
+        zassert_equal(result.next_due, owner.next_due(), "%s: next_due", what);
+    };
+    check(scheduler, scheduler.poll(1000, sink), SyncOutcome::Sent, "first poll");
+    check(scheduler, scheduler.poll(1050, sink), SyncOutcome::NotDue, "before due");
+    check(scheduler, scheduler.poll(1103, sink), SyncOutcome::Sent, "due + 3");
+    sink.accept = false;
+    check(scheduler, scheduler.poll(1200, sink), SyncOutcome::Skipped, "refused");
+    sink.accept = true;
+    check(scheduler, scheduler.poll(1400, sink), SyncOutcome::Sent, "late, grid realigned");
+
+    SyncScheduler wrapped;
+    check(wrapped, wrapped.poll(4294967185U, sink), SyncOutcome::Sent, "first poll before the wrap");
+    check(wrapped, wrapped.poll(4294967285U + 3U, sink), SyncOutcome::Sent, "due + 3 before the wrap");
+    check(wrapped, wrapped.poll(89U, sink), SyncOutcome::Sent, "due after the wrap");
+}

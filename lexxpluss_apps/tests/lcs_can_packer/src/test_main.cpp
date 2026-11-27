@@ -277,3 +277,25 @@ ZTEST(lcs_can_packer, test_lcs_can_packer_stream_matches_independent_oracle)
         expected_counter[sender] = static_cast<uint8_t>((expected_counter[sender] + 1U) % 256U);
     }
 }
+
+/* SC06-01: the WP7 statuses (diagnostic and error codes) pass through the packer untouched. */
+ZTEST(lcs_can_packer, test_sc06_01_wp7_statuses_copied_verbatim)
+{
+    constexpr std::array<uint8_t, 6> kStatuses{0x9A, 0xA2, 0xA3, 0x82, 0x28, 0x18};
+    for (const uint8_t status : kStatuses) {
+        for (const uint8_t sender : {uint8_t{0}, uint8_t{1}}) {
+            CanPacker packer;
+            const auto frame = packer.pack(Uplink{sender, status, {0x01, 0x02, 0x03}, {0x04, 0x05, 0x06}});
+            zassert_true(frame.has_value(), "no frame");
+            zassert_equal(frame->board, sender);
+            zassert_equal(frame->data[0], status);
+            zassert_equal(frame->data[1], 0x01);
+            zassert_equal(frame->data[2], 0x02);
+            zassert_equal(frame->data[3], 0x03);
+            zassert_equal(frame->data[4], 0x04);
+            zassert_equal(frame->data[5], 0x05);
+            zassert_equal(frame->data[6], 0x06);
+            zassert_equal(frame->data[7], 0);
+        }
+    }
+}
