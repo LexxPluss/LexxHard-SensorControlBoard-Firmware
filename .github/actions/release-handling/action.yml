@@ -1,0 +1,59 @@
+name: release-handling
+description: Parse the release tag, create or publish the Release, and re-assert Latest
+inputs:
+  mode:
+    description: parse, release or reassert
+    required: true
+  tag:
+    description: Pushed tag name
+    required: true
+  token:
+    description: GitHub token with contents access
+    required: true
+  release_action:
+    description: Action reported by the release job (reassert mode)
+    required: false
+    default: ''
+  release_id:
+    description: Release id reported by the release job (reassert mode)
+    required: false
+    default: ''
+  release_prerelease:
+    description: Pre-release flag reported by the release job (reassert mode)
+    required: false
+    default: ''
+outputs:
+  action:
+    description: skip, publish, create or fail (release mode)
+    value: ${{ steps.run.outputs.action }}
+  release_id:
+    description: Id of the created or published Release (release mode)
+    value: ${{ steps.run.outputs.release_id }}
+  prerelease:
+    description: Pre-release flag of the created or published Release (release mode)
+    value: ${{ steps.run.outputs.prerelease }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      uses: actions/github-script@v7
+      env:
+        RH_MODE: ${{ inputs.mode }}
+        RH_TAG: ${{ inputs.tag }}
+        RH_RELEASE_ACTION: ${{ inputs.release_action }}
+        RH_RELEASE_ID: ${{ inputs.release_id }}
+        RH_RELEASE_PRERELEASE: ${{ inputs.release_prerelease }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const run = require(process.env.GITHUB_WORKSPACE + '/.github/actions/release-handling/run.js');
+          await run({
+            github,
+            context,
+            core,
+            mode: process.env.RH_MODE,
+            tag: process.env.RH_TAG,
+            releaseAction: process.env.RH_RELEASE_ACTION,
+            releaseId: process.env.RH_RELEASE_ID,
+            releasePrerelease: process.env.RH_RELEASE_PRERELEASE,
+          });
